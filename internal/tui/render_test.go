@@ -537,7 +537,7 @@ func TestHeaderContent(t *testing.T) {
 
 func TestWelcomeScreen(t *testing.T) {
 	r := testRenderer(80)
-	joined := strings.Join(plainLines(r.RenderWelcome(0)), "\n")
+	joined := strings.Join(plainLines(r.RenderWelcome(0, nil)), "\n")
 	if !strings.Contains(joined, WelcomeMessage) {
 		t.Errorf("welcome missing its greeting:\n%s", joined)
 	}

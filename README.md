@@ -34,30 +34,40 @@ ln -sf "$PWD/evilcode" ~/.local/bin/ec      # short form
 
 ## What works today
 
-Phase 0 (bootstrap and the probe rig) and most of Phase 1 (a drivable core).
+Phases 0 and 1 complete; Phase 2 in progress. See `plan.md` for the full spec.
 
 **Interactive TUI** — `evilcode tui`
 
 - Packed-vs-scrolling transcript: while the conversation fits, it hugs the composer;
   on overflow it becomes a scrolling viewport with a hysteretic scrollbar.
+- Widgets docked into the transcript's blank margin at zero layout cost, anchored to a
+  transcript line so they scroll with the content instead of skittering.
 - Rainbow-decayed prompt numbers on the user band, markdown prose, syntax-highlighted
   code blocks with streaming chrome, and inline diffs tinted toward add/delete while
   keeping their highlighting.
-- Slash palette (zero layout height, fuzzy recolor) and an inline model picker.
-- Composer with the readline edit set, three newline paths, and paste collapsing.
+- Slash palette and Ctrl+R history search (both zero layout height), an inline model
+  picker, and a full-screen help overlay.
+- Centered mode, elastic pull-to-reveal facts line, typing scroll lock.
+- Four palettes with `/theme`, including Oklab scoring and palette generation.
+
+**The harness argues back** — the §12 discipline system
+
+`/plan` injects a planning turn and renders the reply as a violet plan card. The `todo`
+tool records confidence, intent, and feedback-loop scores; histories are tool-owned so
+the model cannot author its own evidence trail. Auto-poke pushes back at turn end when
+work is marked done without validation, with circuit breakers on every path.
 
 **Headless** — `evilcode run "prompt"`
 
 Text on stdout, tool rows and notices on stderr, exit 130 on interrupt.
 
 **Under the hood** — provider clients (Ollama native, OpenAI-compatible, and a
-deterministic mock), TOML config with `model@provider` refs, the tool set
-(read/write/edit/glob/grep/bash) with bounded-concurrency batching, the agent loop with
-safe-point interleaving and retry classification, and JSONL sessions with crash
-detection.
+deterministic mock), TOML config with `model@provider` refs and role routing, the tool
+set (read/write/edit with hash anchors, glob/grep/bash, git helpers, `ask`) with
+bounded-concurrency batching, the agent loop with safe-point interleaving and retry
+classification, and JSONL sessions with crash detection.
 
-Not yet built: the todo/plan discipline system, memory, the daemon and swarms, and
-graphics. See `plan.md` for the full spec and phase list.
+Not yet built: memory, the daemon and swarms, and graphics.
 
 ## Config reference
 

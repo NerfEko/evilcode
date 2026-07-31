@@ -107,6 +107,14 @@ type Model struct {
 	// typingLock keeps the view where it is while typing (Alt+S, §4.5).
 	typingLock bool
 
+	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
+	entryAnim EntryAnimation
+
+	// artVariant is chosen once per process so the welcome animation stays the
+	// same one for a session, and decorate gates all decorative animation.
+	artVariant Variant
+	decorate   bool
+
 	// helpOpen and helpScroll drive the full-screen help overlay (§5.5).
 	helpOpen   bool
 	helpScroll int
@@ -145,6 +153,8 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		dock:         NewDock(),
 		widgetsOn:    true,
 		overscroll:   Overscroll{Mode: OverscrollPull},
+		artVariant:   PickVariant(h.SessionName),
+		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 	}
 }
 
@@ -1122,6 +1132,11 @@ func (m *Model) submit(text string) {
 	})
 	m.promptCount++
 	m.renumberPrompts()
+	if !Deterministic() {
+		// The flourish is decorative, so it is frozen in test mode along with
+		// everything else animated (invariant 5).
+		m.entryAnim = NewEntryAnimation(len(m.blocks) - 1)
+	}
 	if m.prompts != nil {
 		_ = m.prompts.Add(text)
 	}
@@ -1194,12 +1209,17 @@ func (m *Model) contentHeight() int {
 func (m *Model) transcriptLines() []string {
 	var out []string
 	if len(m.blocks) == 0 {
-		return m.renderer.RenderWelcome(0)
+		return m.renderer.RenderWelcome(0, m.idleArt())
 	}
 	out = append(out, m.renderer.RenderHeader(m.header)...)
 	out = append(out, "")
+	animT, animating := m.entryAnim.Progress(time.Now())
+
 	for i := range m.blocks {
 		lines := m.renderer.Lines(&m.blocks[i])
+		if animating && i == m.entryAnim.Block {
+			lines = m.renderer.animateEntry(lines, animT)
+		}
 		out = append(out, lines...)
 		if len(lines) > 0 {
 			out = append(out, "")
@@ -1458,6 +1478,34 @@ func spliceOverlay(rows, overlay []string, screenHeight, composerRows int) []str
 		rows[idx] = line
 	}
 	return rows
+}
+
+// idleArt renders the welcome art, sized to the space actually available so it
+// never pushes the composer off a short terminal.
+//
+// When decorative animation is gated off the art still draws — frozen at frame
+// zero. What SSH and deterministic mode are protecting against is the repaint
+// cost of animating, not the picture itself; omitting it entirely would remove
+// the welcome screen rather than quiet it (plan.md §10).
+func (m *Model) idleArt() []string {
+	rows := min(ArtHeight, max(m.height-12, 0))
+	if rows < 6 || m.width < 40 {
+		return nil
+	}
+	width, _ := ContentWidth(m.width, m.centered)
+
+	elapsed := 0.0
+	if m.animate() {
+		elapsed = time.Since(m.started).Seconds()
+	}
+	return RenderArt(SamplerFor(m.artVariant), min(width, 72), rows, elapsed, m.animate())
+}
+
+// animate reports whether decorative animation is on. It is gated by
+// deterministic mode (so golden frames stay reproducible), by SSH (a remote
+// terminal pays for every repaint), and by config (plan.md §10).
+func (m *Model) animate() bool {
+	return m.decorate && !Deterministic()
 }
 
 // factStack gathers the always-true, never-urgent facts (§8.6).

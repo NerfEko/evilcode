@@ -1014,7 +1014,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Centered mode: 96-col cap, centering by literal left-padding (not per-line Center alignment — keeps copy/column math sane), per-role exemptions (tool/system/code-block rows stay left), left-side widget margin only exists here, cursor offset math, images split slack both sides, part of the render cache key, `/alignment` persist.
 - [x] Theme engine: roles, palettes (dracula/nosferatu/gloom/daywalker), two-pass substitution, literals file + tests (§7.1–7.4).
 - [x] Harmony scoring + generation + `/theme score|generate` + calibration tests (§7.5).
-- [ ] Prompt-entry animation (§10.2). Idle art: subpixel renderer + `eye` + `blackhole` (§10.1).
+- [x] Prompt-entry animation (§10.2). Idle art: subpixel renderer + `eye` + `blackhole` (§10.1).
 - [ ] Reasoning display modes + GC (§9.7, §4.6).
 - [ ] Diff modes cycle + side panel + file-diff view (§9.4, §3.1, Ctrl+1..4).
 - [ ] Session picker full UI (§5.4) + `/fork /transfer /save /rename` + title derivation (§18). `/checkpoint` + collapse-and-report `/rewind` (§18).

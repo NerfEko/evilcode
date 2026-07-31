@@ -588,3 +588,24 @@ Verified: 13 harmony tests including the calibration ordering, the generation fl
 across six seeds on both backgrounds, conventional hues surviving generation, and that
 the repair pass terminates — greedy pairwise repair provably cycles on the
 success/warning/error triangle. PNG looked at with nosferatu live.
+
+## 2026-07-31 P2.20 — idle art
+
+Done: the subpixel renderer with `eye` and `blackhole`, wired into the welcome screen.
+The prompt-entry animation (§10.2) was already in place from the animation pass.
+
+Each cell is sampled 3×3 and the glyph chosen from the 9-bit occupancy pattern, so a
+character can suggest a diagonal or a band rather than only density. Colour is the
+travelling hue wave the spec describes, which keeps a static silhouette alive without
+moving anything.
+
+Two fixes came from looking at the output. The blackhole's Doppler term dimmed the far
+side of the disk below the visibility threshold, so half the shape vanished and it read
+as broken rather than as lit from one side; the base was raised so the whole disk stays
+drawn. And the art was being omitted entirely whenever decorative animation was gated —
+which, on this machine, is always, since the session is over SSH. §10 gates the
+*animation*, not the decoration: the art now draws frozen at frame zero instead of
+disappearing. That is also what makes the golden stable.
+
+Verified: art tests plus the existing entry-animation suite. PNG looked at — the
+blackhole's disk, horizon, and lens ring all read correctly under the hue wave.

@@ -1,0 +1,6 @@
+# The welcome screen's idle art (§10.1): a subpixel-sampled shape with a
+# travelling hue wave. Frozen at frame zero under deterministic mode, so the
+# golden is stable.
+
+boot tui
+capture idle-art

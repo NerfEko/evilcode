@@ -114,8 +114,19 @@ var SuggestionChips = []string{
 	"what changed on this branch?",
 }
 
-// RenderWelcome draws the empty-transcript screen.
-func (r *Renderer) RenderWelcome(chipIndex int) []string {
+// RenderWelcome draws the empty-transcript screen with its idle art.
+//
+// Widgets are suppressed while this is showing: an empty screen decorated with
+// status boxes is busier than the thing it decorates (plan.md §8.3).
+func (r *Renderer) RenderWelcome(chipIndex int, art []string) []string {
+	out := r.welcomeText(chipIndex)
+	if len(art) == 0 {
+		return out
+	}
+	return append(append(art, ""), out...)
+}
+
+func (r *Renderer) welcomeText(chipIndex int) []string {
 	accent := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
 	dim := r.style(theme.RoleDim)
