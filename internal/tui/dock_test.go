@@ -37,7 +37,7 @@ func TestDockPlacesIntoBlankMargin(t *testing.T) {
 	d := NewDock()
 	rows := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
-	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false)
+	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false)
 	if len(got) != 1 {
 		t.Fatalf("placements = %d, want 1", len(got))
 	}
@@ -50,18 +50,16 @@ func TestDockPlacesIntoBlankMargin(t *testing.T) {
 	}
 }
 
-func TestDockPlacesOverTextWhenThereIsNoMargin(t *testing.T) {
-	// Widgets overlay prose rather than waiting for a gap. Requiring clear
-	// columns meant boxes only appeared beside short rows — tool calls, lists —
-	// and never beside a paragraph, because prose wraps to the full measure.
-	// They arrive after a delay and can be dismissed, so covering text is the
-	// better trade against never being visible.
+func TestDockRefusesWhenTextFillsTheRow(t *testing.T) {
+	// Widgets live in the margin, not over the text. Overlaying was tried and
+	// reverted: there is always somewhere to put a box if you are willing to
+	// cover prose, so widgets appeared constantly and were harder to read past
+	// than a missing box is to live without.
 	d := NewDock()
 	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98, 98, 98, 98,
 		98, 98, 98, 98, 98, 98, 98, 98, 98, 98)
-	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false)
-	if len(got) != 1 {
-		t.Fatalf("placements = %+v, want the widget placed over the text", got)
+	if got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false); len(got) != 0 {
+		t.Errorf("placements = %+v, want none when there is no margin", got)
 	}
 }
 
@@ -72,7 +70,7 @@ func TestDockPrefersAClearSlotToCoveringText(t *testing.T) {
 	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
 
-	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false)
+	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false)
 	if len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
@@ -90,12 +88,12 @@ func TestDockHoldsItsAnchorAcrossFrames(t *testing.T) {
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, rows, 100, 0, false)
+	first := d.Layout(w, rows, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 	for i := 0; i < 10; i++ {
-		got := d.Layout(w, rows, 100, 0, false)
+		got := d.Layout(w, rows, 100, 0, 999, false)
 		if len(got) != 1 || got[0].Row != first[0].Row {
 			t.Fatalf("frame %d moved the widget from row %d to %+v", i, first[0].Row, got)
 		}
@@ -115,14 +113,14 @@ func TestDockScrollsWithTheText(t *testing.T) {
 
 	// Dock while the view is scrolled down, so the widget has an absolute
 	// anchor well inside the transcript.
-	first := d.Layout(w, rows, 100, 10, false)
+	first := d.Layout(w, rows, 100, 10, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 	wantAnchor := first[0].Row + 10
 
 	// Scroll up by three: the same absolute line is now three rows lower.
-	second := d.Layout(w, rows, 100, 7, false)
+	second := d.Layout(w, rows, 100, 7, 999, false)
 	if len(second) != 1 {
 		t.Fatal("expected a placement after scrolling")
 	}
@@ -143,25 +141,24 @@ func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, open, 100, 0, false)
+	first := d.Layout(w, open, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 
-	// A wide line slides under it. It now overlays rather than hiding, but it
-	// must not move.
+	// A wide line slides under it: it hides in place rather than jumping, and
+	// comes back to the same slot once the line passes.
 	blocked := append([]string(nil), open...)
 	for i := first[0].Row; i < first[0].Row+3; i++ {
 		blocked[i] = strings.Repeat("x", 98)
 	}
 
-	got := d.Layout(w, blocked, 100, 0, false)
-	if len(got) != 1 || got[0].Row != first[0].Row {
-		t.Errorf("widget moved to %+v, want it held at row %d", got, first[0].Row)
+	if got := d.Layout(w, blocked, 100, 0, 999, false); len(got) != 0 {
+		t.Errorf("widget moved to %+v, want it hidden in place", got)
 	}
 
 	// Once the line passes, it comes back to the same slot.
-	back := d.Layout(w, open, 100, 0, false)
+	back := d.Layout(w, open, 100, 0, 999, false)
 	if len(back) != 1 || back[0].Row != first[0].Row {
 		t.Errorf("widget did not return to its slot: %+v", back)
 	}
@@ -178,7 +175,7 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 	}
 
 	low := []Widget{widget(WidgetTips, 3)}
-	first := d.Layout(low, rows, 100, 0, false)
+	first := d.Layout(low, rows, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
@@ -186,7 +183,7 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 	// A higher-priority widget now claims the same rows first.
 	both := []Widget{widget(WidgetTodos, 3), widget(WidgetTips, 3)}
 	for i := 0; i < RehomeFrames-1; i++ {
-		got := d.Layout(both, rows, 100, 0, false)
+		got := d.Layout(both, rows, 100, 0, 999, false)
 		for _, p := range got {
 			if p.Kind == WidgetTips && p.Row != first[0].Row {
 				t.Fatalf("frame %d: tips jumped to row %d rather than holding %d",
@@ -198,7 +195,7 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 	// Past the threshold it is allowed to find a new home.
 	var moved bool
 	for i := 0; i < 3 && !moved; i++ {
-		for _, p := range d.Layout(both, rows, 100, 0, false) {
+		for _, p := range d.Layout(both, rows, 100, 0, 999, false) {
 			if p.Kind == WidgetTips && p.Row != first[0].Row {
 				moved = true
 			}
@@ -219,7 +216,7 @@ func TestDockNeverOverlapsWidgets(t *testing.T) {
 		widget(WidgetTodos, 3),
 		widget(WidgetContextUsage, 3),
 		widget(WidgetModelInfo, 3),
-	}, rows, 100, 0, false)
+	}, rows, 100, 0, 999, false)
 
 	if len(got) < 2 {
 		t.Fatalf("placements = %d, want several", len(got))
@@ -249,7 +246,7 @@ func TestLeftWidgetsFallBackToTheRightMargin(t *testing.T) {
 	if left.Kind.PreferredSide() != SideLeft {
 		t.Fatal("BackgroundTasks should prefer the left margin")
 	}
-	got := d.Layout([]Widget{left}, rows, 100, 0, false)
+	got := d.Layout([]Widget{left}, rows, 100, 0, 999, false)
 	if len(got) != 1 {
 		t.Fatalf("a left-preferring widget did not dock at all: %+v", got)
 	}
@@ -544,17 +541,17 @@ func TestWidgetReturnsToTheSameSlotAfterAGap(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, rows, 100, 0, false)
+	first := d.Layout(w, rows, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 
 	// Gone for a frame.
-	if got := d.Layout(nil, rows, 100, 0, false); len(got) != 0 {
+	if got := d.Layout(nil, rows, 100, 0, 999, false); len(got) != 0 {
 		t.Fatalf("an empty list placed %+v", got)
 	}
 
-	back := d.Layout(w, rows, 100, 0, false)
+	back := d.Layout(w, rows, 100, 0, 999, false)
 	if len(back) != 1 {
 		t.Fatal("the widget did not come back")
 	}
@@ -574,11 +571,11 @@ func TestWidgetRehomesImmediatelyWhenItScrollsOffTheTop(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	if got := d.Layout(w, rows, 100, 0, false); len(got) != 1 {
+	if got := d.Layout(w, rows, 100, 0, 999, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
 	// The content it was riding has scrolled well above the viewport.
-	got := d.Layout(w, rows, 100, 500, false)
+	got := d.Layout(w, rows, 100, 500, 999, false)
 	if len(got) != 1 {
 		t.Error("the widget disappeared instead of re-homing after scrolling off")
 	}
@@ -594,13 +591,67 @@ func TestWidgetSurvivesTheScrollbarAppearing(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	wide := d.Layout(w, rows, 100, 0, false)
-	narrow := d.Layout(w, rows, 100-ScrollbarReserve, 0, false)
+	wide := d.Layout(w, rows, 100, 0, 999, false)
+	narrow := d.Layout(w, rows, 100-ScrollbarReserve, 0, 999, false)
 	if len(wide) != 1 || len(narrow) != 1 {
 		t.Fatal("expected placements at both widths")
 	}
 	if narrow[0].Col+narrow[0].Width > 100-ScrollbarReserve {
 		t.Errorf("widget right edge at %d, past the reserved width",
 			narrow[0].Col+narrow[0].Width)
+	}
+}
+
+func TestDockRehomesWhenContentShrinks(t *testing.T) {
+	// A thinking trace collapsing from nine lines to one the instant the answer
+	// starts removes lines from *above* the widgets. An anchor is an absolute
+	// content line, so every one of them silently starts naming different
+	// content and the box lurches to wherever its old number now points.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	first := d.Layout(w, rows, 100, 20, 200, false)
+	if len(first) != 1 {
+		t.Fatal("expected a placement")
+	}
+
+	// Eight lines vanish from above, as a collapsing trace does.
+	got := d.Layout(w, rows, 100, 12, 192, false)
+	if len(got) != 1 {
+		t.Fatal("the widget disappeared when the transcript shortened")
+	}
+	// It re-homed cleanly rather than holding a line that now means something
+	// else. What matters is that it is placed and on screen.
+	if got[0].Row < 0 || got[0].Row+got[0].Height > len(rows) {
+		t.Errorf("widget landed off screen at row %d", got[0].Row)
+	}
+}
+
+func TestDockKeepsItsAnchorWhileContentOnlyGrows(t *testing.T) {
+	// Growing is the ordinary case — streaming appends — and must not re-home.
+	// The anchor is an absolute content line, so holding it is what makes the
+	// widget ride along with the text instead of snapping to a fresh slot.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	if got := d.Layout(w, rows, 100, 0, 100, false); len(got) != 1 {
+		t.Fatal("expected a placement")
+	}
+	before := d.anchors[WidgetTodos].ContentTop
+
+	// Several frames of content arriving.
+	for i := 1; i <= 5; i++ {
+		d.Layout(w, rows, 100, 0, 100+i, false)
+	}
+	if got := d.anchors[WidgetTodos].ContentTop; got != before {
+		t.Errorf("anchor moved from %d to %d while content only grew", before, got)
 	}
 }

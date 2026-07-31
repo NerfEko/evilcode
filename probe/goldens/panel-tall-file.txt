@@ -1,13 +1,13 @@
- evilcode · v0.1.0                           ╭──────────────────────╮ │ testdata/big.go
- session: Dracula 🧛                         │ Context 408/200k     │ │   1 │ package testdata
- /model to switch · local:mock · mock-large  │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │   2 │
- ● ollama-local  ○ ollama-cloud  ● mock      ╰──────────────────────╯ │     │-// big is a probe fixture for the side panel: a file long enou
+ evilcode · v0.1.0                                                    │ testdata/big.go
+ session: Dracula 🧛                                                  │   1 │ package testdata
+ /model to switch · local:mock · mock-large                           │   2 │
+ ● ollama-local  ○ ollama-cloud  ● mock                               │     │-// big is a probe fixture for the side panel: a file long enou
  skills: /commit /selfdev                                             │     │-// does not fit the panel, which is where a panel that cannot
  <repo> (main)                       │     │-// first half and silently drops the rest.
-                                   ╭────────────────────────────────╮ │     │-//
- 1│ 💡 Ctrl+R searches your prompt │                                  │     │-// Committed in the state BEFORE the scenario's write, for the
-                                   │ history                        │ │     │-// clamp.go is: the probe restores testdata from git before ev
- Renumbering all                   ╰────────────────────────────────╯ │     │-// uncommitted fixture stays rewritten and every later run see
+                                                                      │     │-//
+ 1› renumber them                                                     │     │-// Committed in the state BEFORE the scenario's write, for the
+                                                                      │     │-// clamp.go is: the probe restores testdata from git before ev
+ Renumbering all of them.                                             │     │-// uncommitted fixture stays rewritten and every later run see
                                                                       │     │-func alpha(a int) int    { return a + 1 }
    ✓ write testdata/big.go · 7 tok (+15 -22)                          │     │-func bravo(a int) int    { return a + 2 }
                                                                       │     │-func charlie(a int) int  { return a + 3 }

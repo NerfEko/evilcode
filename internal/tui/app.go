@@ -2171,7 +2171,7 @@ func (m *Model) View() tea.View {
 	// inset are painted into these rows. Docking last meant measuring rows that
 	// were already full width and concluding there was nowhere to go, which is
 	// why the boxes vanished (plan.md §8.3).
-	rows = m.dockWidgets(rows, res.Transcript, start)
+	rows = m.dockWidgets(rows, res.Transcript, start, len(content))
 
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
@@ -2542,7 +2542,7 @@ func (m *Model) contextMax() int {
 //
 // Widgets are suppressed entirely while the welcome art is showing: an empty
 // screen decorated with status boxes is busier than the thing it decorates.
-func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop int) []string {
+func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHeight int) []string {
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
 		return rows
 	}
@@ -2567,7 +2567,7 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop int) []stri
 		usable -= ScrollbarReserve
 	}
 
-	placements := m.dock.Layout(widgets, region, usable, scrollTop, m.centered)
+	placements := m.dock.Layout(widgets, region, usable, scrollTop, contentHeight, m.centered)
 
 	byKind := make(map[WidgetKind]Widget, len(widgets))
 	for _, w := range widgets {

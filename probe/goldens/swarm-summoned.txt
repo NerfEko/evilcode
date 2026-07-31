@@ -1,20 +1,20 @@
- evilcode · v0.1.0                           ╭──────────────────────╮
- server: Dracula 🧛 · client: Bat 🦇         │ Context 330/200k     │
- /model to switch│ ▱▱▱▱▱▱▱▱▱▱ 0%        │
- ● ollama-local  ○ ollama-cloud  ● mock      ╰──────────────────────╯
- /mnt/cachyos-home/e               ╭────────────────────────────────╮
-                                   │ 💡 Ctrl+R searches your prompt │
- 1│ history                        │
-                                   ╰────────────────────────────────╯
+ evilcode · v0.1.0
+ server: Dracula 🧛 · client: Bat 🦇
+ /model to switch · socket:daemon · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo>
+
+ 1› look at the clamp
+
  Let me look at the clamp.
 
    ✓ read testdata/clamp.go · 151 tok
 
  It clamps with > where it wants >=. Summoning help.
-
-   👉 Summoned dracula-2
-   fix the clamp
-
+                                             ╭──────────────────────╮
+   👉 Summoned dracula-2                     │ Context 330/200k     │
+   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+                                             ╰──────────────────────╯
    Its result will arrive as a message.
  💡 Ctrl+R searches your prompt history
  2>
@@ -39,14 +39,14 @@
 
 
 --- pane 1 ---
- evilcode · v0.1.0                            ╭──────────────────────╮
- server: Dracula 🧛 · client: Serpent 🐉      │ Context 330/200k     │
- /model to switch · socket:daemon · mock-large│ ▱▱▱▱▱▱▱▱▱▱ 0%        │
- ● ollama-local  ○ ollama-cloud  ● mock       ╰──────────────────────╯
- /mnt/cachyos-home/ek               ╭────────────────────────────────╮
-                                    │ 💡 Ctrl+R searches your prompt │
- 1│ history                        │
-                                    ╰────────────────────────────────╯
+ evilcode · v0.1.0
+ server: Dracula 🧛 · client: Serpent 🐉
+ /model to switch · socket:daemon · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo>
+
+ 1› look at the clamp
+
  Let me look at the clamp.
 
    ✓ read testdata/clamp.go · 151 tok

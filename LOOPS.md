@@ -1384,3 +1384,40 @@ Verified against a real vision model — `gemma4:31b-cloud` through evilcode's o
 Ollama provider, reading the mermaid diagram the graphics work produced earlier
 and describing the build loop it depicts. Both encodings are unit-tested, but the
 one that mattered was watching a model actually see the picture.
+
+## 2026-07-31 — Widgets, corrected
+
+Three symptoms from real use: widgets showed up far too often, they did not
+scroll cleanly, and they destroyed text they were not even covering. All three
+were mine, from the previous loop.
+
+**Destroying text was the worst and had nothing to do with widgets.**
+`truncateCells` measured by iterating runes and calling `lipgloss.Width` on each
+one — so every byte of an ANSI escape counted as a cell. A styled row carries a
+~40-byte SGR prefix, so cutting it "at column 102" actually cut around column 60
+and left a severed escape sequence behind. `1› explain the config` rendered as
+`1› ex`. That bug was latent across the whole UI — the help box, the picker, every
+notice — and only became destructive when the widget painter started cutting rows
+for real. It is `ansi.Truncate` now, which also closes any style it cuts through.
+
+**Showing up too often was the overlay experiment, and it was a bad idea.** The
+reasoning had been that prose wraps to the full measure, so requiring a clear
+margin means boxes rarely appear. True, but the conclusion was wrong: there is
+always somewhere to put a box if you are willing to cover text, so widgets
+appeared constantly and a box over a paragraph is harder to read past than a
+missing box is to live without. Reverted to margin-only. The click-to-dismiss
+affordance stays, since it costs nothing and answers a widget that is in the way.
+
+**The scrolling was the thinking traces, exactly as reported.** An anchor is an
+absolute content line, so anything that removes lines *above* a widget silently
+changes what its anchor names — and a trace collapsing from nine lines to one the
+instant the answer starts does precisely that, every turn. The dock now notices
+the transcript getting *shorter* and re-homes rather than holding a line number
+that has come to mean something else. Growth, the ordinary streaming case, still
+holds its anchor, and there is a test for each direction.
+
+The lesson worth keeping: I shipped the overlay change on an argument rather than
+on use. It was agreed up front, which made it feel settled, but the first real
+session with it was the first honest test and it failed immediately. A design
+decision that can be checked by looking should be checked by looking before it
+lands, not after.

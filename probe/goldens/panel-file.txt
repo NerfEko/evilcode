@@ -1,17 +1,17 @@
- evilcode · v0.1.0                           ╭──────────────────────╮ │ testdata/clamp.go
- session: Dracula 🧛                         │ Context 386/200k     │ │   8 │ // makes every scenario's edit fail with "old string not found
- /model to switch · local:mock · mock-large  │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │   9 │ // goldens then bake in the failure — which is exactly what ha
- ● ollama-local  ○ ollama-cloud  ● mock      ╰──────────────────────╯ │  10 │ func clamp(offset, max int) int {
- skills: /commit /selfdev    ╭──────────────────────────────────────╮ │     │-    if offset > max {
- /mnt/cachyo                 │ ⚡ mock-large                        │ │  11 │+    if offset >= max {
-                             │ 1 sessions · dracula                 │ │  12 │         return max
- │ …os-home/eko/projects/evilcode  main │                             │  13 │     }
-                             │ ☁ mock                               │ │  14 │     return offset
- Fixing the╰──────────────────────────────────────╯                   │
-                                   ╭────────────────────────────────╮ │
-   ✓ │ 💡 Ctrl+R searches your prompt │                               │
-                                   │ history                        │ │
- That was the cla                  ╰────────────────────────────────╯ │
+ evilcode · v0.1.0                                                    │ testdata/clamp.go
+ session: Dracula 🧛                                                  │   8 │ // makes every scenario's edit fail with "old string not found
+ /model to switch · local:mock · mock-large                           │   9 │ // goldens then bake in the failure — which is exactly what ha
+ ● ollama-local  ○ ollama-cloud  ● mock                               │  10 │ func clamp(offset, max int) int {
+ skills: /commit /selfdev                                             │     │-    if offset > max {
+ <repo> (main)                       │  11 │+    if offset >= max {
+                                                                      │  12 │         return max
+ 1› fix the clamp                                                     │  13 │     }
+                                                                      │  14 │     return offset
+ Fixing the off-by-one.                                               │
+                                                                      │
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                           │
+                                                                      │
+ That was the clamp bug.                                              │
  💡 Ctrl+R searches your prompt history                               │
  Diff mode: file                                                      │
  2>                                                                   │

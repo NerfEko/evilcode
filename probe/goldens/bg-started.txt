@@ -1,18 +1,17 @@
- evilcode · v0.1.0                                                                                                  ╭──────────────────────╮
- session: Dracula 🧛                                                                                                │ Context 308/200k     │
- /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
- ● ollama-local  ○ ollama-cloud  ● mock                                                                             ╰──────────────────────╯
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
  skills: /commit /selfdev
  <repo> (main)
-                                                                                                                 ╭─────────────────────────╮
- 1› build it                                                                                                     │ Background              │
-                                                                                                                 │ ✓ sleep 2 && echo built │
- Starting the build.  ╰─────────────────────────╯
-                                                                                                          ╭────────────────────────────────╮
-   ✓ bash sleep 2 && echo built · 20 tok                                                                  │ 💡 Ctrl+R searches your prompt │
-                                                                                                          │ history                        │
- Kicked off; I will report when it lands. ╰────────────────────────────────╯
+
+ 1› build it
+
+ Starting the build.
+
+   ✓ bash sleep 2 && echo built · 20 tok
+
+ Kicked off; I will report when it lands.
  💡 Ctrl+R searches your prompt history
- ✓ background: sleep 2 && echo built
  2>
    mock-large · 308/200k ctx · dracula

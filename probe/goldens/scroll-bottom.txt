@@ -1,7 +1,7 @@
- Line 4 of a deliberately long answer.╭──────────────────────╮
- Line 5 of a deliberately long answer.│ Context 700/200k     │
- Line 6 of a deliberately long answer.│ ▱▱▱▱▱▱▱▱▱▱ 0%        │
- Line 7 of a deliberately long answer.╰──────────────────────╯
+ Line 4 of a deliberately long answer.
+ Line 5 of a deliberately long answer.
+ Line 6 of a deliberately long answer.
+ Line 7 of a deliberately long answer.
  Line 8 of a deliberately long answer.
  Line 9 of a deliberately long answer.
  Line 10 of a deliberately long answer.

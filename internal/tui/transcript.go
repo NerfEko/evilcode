@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"evilcode/internal/graphics"
 	"evilcode/internal/memory"
@@ -639,20 +640,18 @@ func wrapPlain(s string, width int) []string {
 
 // truncateCells cuts a string to a cell width, respecting wide glyphs.
 func truncateCells(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
 	if lipgloss.Width(s) <= width {
 		return s
 	}
-	var b strings.Builder
-	used := 0
-	for _, r := range s {
-		w := lipgloss.Width(string(r))
-		if used+w > width {
-			break
-		}
-		b.WriteRune(r)
-		used += w
-	}
-	return b.String()
+	// ansi.Truncate, not a rune loop: measuring runes counts every byte of an
+	// escape sequence as a cell, so a styled row's ~40-byte SGR prefix ate 40 of
+	// the budget and the visible text was cut roughly 40 columns early — and the
+	// result carried a severed escape sequence. It also closes any style it cuts
+	// through, which a hand-rolled loop cannot.
+	return ansi.Truncate(s, width, "")
 }
 
 // dropCells returns the remainder after truncateCells.

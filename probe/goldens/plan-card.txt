@@ -1,9 +1,9 @@
- evilcode · v0.1.0                                                                                  ╭──────────────────────────────────────╮
- session: Dracula 🧛                                                                                │ ⚡ mock-large                        │
- /model to switch · local:mock · mock-large                                                         │ 1 sessions · dracula                 │
- ● ollama-local  ○ ollama-cloud  ● mock                                                             │ …os-home/eko/projects/evilcode  main │
- skills: /commit /selfdev                                                                           │ ☁ mock                               │
- <repo> (main)                                                     ╰──────────────────────────────────────╯
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit /selfdev
+ <repo> (main)
 
  Here is the plan.
  ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮               ╭──────────────────────╮

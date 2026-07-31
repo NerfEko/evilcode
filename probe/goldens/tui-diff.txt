@@ -1,23 +1,23 @@
- evilcode · v0.1.0                                                                                                  ╭──────────────────────╮
- session: Dracula 🧛                                                                                                │ Context 386/200k     │
- /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
- ● ollama-local  ○ ollama-cloud  ● mock                                                                             ╰──────────────────────╯
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
  skills: /commit /selfdev
  <repo> (main)
-                                                                                                          ╭────────────────────────────────╮
- 1› fi                                                                                                    │ 💡 Ctrl+R searches your prompt │
-                                                                                                          │ history                        │
- Fixing the off-by-one.  ╰────────────────────────────────╯
 
-   ✓ edit testdata/clamp.go · 8 tok (+1 -1)
- ┌─ diff
- │  // makes every scenario's edit fail with "old string not found", and the
- │  // goldens then bake in the failure — which is exactly what happened once.
- │  func clamp(offset, max int) int {
- │ -    if offset > max {
- │ +    if offset >= max {
- │          return max
- │      }
+ 1› fix the clamp
+
+ Fixing the off-by-one.
+                                                                                                                    ╭──────────────────────╮
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                                                                         │ Context 386/200k     │
+ ┌─ diff                                                                                                            │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ │  // makes every scenario's edit fail with "old string not found", and the                                        ╰──────────────────────╯
+ │  // goldens then bake in the failure — which is exactly what happened once.                      ╭──────────────────────────────────────╮
+ │  func clamp(offset, max int) int {                                                               │ ⚡ mock-large                        │
+ │ -    if offset > max {                                                                           │ 1 sessions · dracula                 │
+ │ +    if offset >= max {                                                                          │ …os-home/eko/projects/evilcode  main │
+ │          return max                                                                              │ ☁ mock                               │
+ │      }                                                                                           ╰──────────────────────────────────────╯
  │      return offset
  └─ (+1 -1 total)
 

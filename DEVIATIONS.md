@@ -221,26 +221,21 @@ Unicode 6.0, and rendered correctly in the probe's font stack.
 **When this would need revisiting:** immediately, if you would rather they were
 something else — this is a taste call and it is yours, not mine.
 
-## 9. Widgets overlay text and can be dismissed, rather than living only in blank space
+## 9. Widgets can be dismissed by clicking them
 
-**Spec:** §8.3 docks widgets into "negative space" — the blank columns beside the
-transcript — and never over text.
+**Spec:** §8.3 docks widgets into "negative space" and says nothing about
+dismissing them.
 
-**Built:** widgets prefer clear space and fall back to sitting *over* prose, with
-a click on a box hiding it for the session and `Alt+I` bringing them all back.
+**Built:** widgets live in the margin as specced, and a click on a box hides it
+for the session; `Alt+I` brings them all back.
 
-**Why:** prose wraps to the full measure, so on a 140-column terminal a paragraph
-leaves no margin at all. Honouring "blank space only" meant boxes appeared beside
-tool rows and lists and never beside an actual answer — which is most of the
-screen most of the time. The alternative considered was capping the prose measure
-at 96 columns to manufacture a permanent margin, but that changes how every
-message reads in order to serve the chrome. Overlaying is the smaller cost, and
-it is only acceptable *because* dismissal exists: a box that can cover your text
-has to be swattable.
-
-**When this would need revisiting:** if the prose measure is ever capped for
-readability on its own merits, the fallback becomes rare and the dismissal
-affordance could go back to being optional.
+**Why:** an earlier attempt let widgets *overlay* prose when no margin existed,
+on the reasoning that prose wraps to the full measure so boxes would otherwise
+rarely appear. That was wrong in practice and has been reverted — there is always
+somewhere to put a box if you are willing to cover text, so widgets appeared
+constantly, and a box sitting over a paragraph is harder to read past than a
+missing box is to live without. The dismissal affordance is kept: it costs
+almost nothing and it is the answer to a widget that is in the way.
 
 ## 10. Left-preferring widgets dock on the right
 

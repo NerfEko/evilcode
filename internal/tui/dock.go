@@ -134,6 +134,13 @@ type anchor struct {
 // Dock places widgets into the blank space beside the transcript.
 type Dock struct {
 	anchors map[WidgetKind]*anchor
+
+	// lastHeight is the transcript's content height last frame. An anchor is an
+	// absolute content line, so anything that removes lines *above* a widget
+	// silently changes what its anchor points at — and the widget lurches. A
+	// collapsing thinking trace does exactly that, going from nine lines to one
+	// the instant the answer starts.
+	lastHeight int
 }
 
 // NewDock builds an empty dock.
@@ -178,10 +185,20 @@ func reliableWidth(free []int, start, height int) int {
 // already-placed widgets hold their slot and merely shrink or hide in place
 // when a wide line slides under them, and only re-home after the slot has been
 // unusable for RehomeFrames consecutive frames.
-func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop int, centered bool) []Placement {
+func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop, contentHeight int, centered bool) []Placement {
 	if len(widgets) == 0 || totalWidth <= WidgetMinWidth+WidgetGap {
 		return nil
 	}
+
+	// The transcript got shorter, so lines were removed rather than added and
+	// every anchor below the removal now names the wrong content. Re-home
+	// instead of holding a stale line: a widget that lands somewhere sensible
+	// reads better than one that lurches to wherever its old number now points.
+	if contentHeight < d.lastHeight {
+		d.anchors = map[WidgetKind]*anchor{}
+	}
+	d.lastHeight = contentHeight
+
 	free := FreeWidth(rows, totalWidth)
 
 	// occupied tracks rows already claimed, so two widgets never overlap each
@@ -222,7 +239,7 @@ func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop int
 				// through without aging. This is what lets a widget scroll with
 				// the text *and* stay visible, which used to be in conflict.
 
-			case fits(occupied, row, height):
+			case fits(free, occupied, row, height, w.Width()):
 				out = append(out, place(w, a, row, height))
 				continue
 
@@ -250,42 +267,33 @@ func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop int
 	return out
 }
 
-// fits reports whether a widget of the given size can sit at row without
-// colliding with another widget.
+// fits reports whether a widget can sit at row: the rows are free of other
+// widgets, and the text there leaves enough clear columns.
 //
-// It deliberately does not consult free width. Widgets may overlay text: prose
-// wraps to the full measure, so requiring clear columns meant boxes only ever
-// appeared beside short rows — tool calls and lists — and never beside a
-// paragraph. They arrive after a delay and can be dismissed with a click, so
-// covering text is an acceptable trade for being visible at all.
-func fits(occupied []bool, row, height int) bool {
+// Overlaying text was tried and reverted. It made widgets appear constantly —
+// there is always *somewhere* to put a box if you are willing to cover prose —
+// and a box sitting over a paragraph is harder to read past than a missing box
+// is to live without.
+func fits(free []int, occupied []bool, row, height, width int) bool {
 	if row < 0 || row+height > len(occupied) {
 		return false
 	}
 	for i := row; i < row+height; i++ {
-		if occupied[i] {
+		if occupied[i] || free[i] < width+WidgetGap {
 			return false
 		}
 	}
 	return true
 }
 
-// findSlot picks where a widget goes: the topmost run of rows with genuinely
-// free columns if there is one, otherwise the topmost free run at all.
-//
-// Clear space is preferred, not required — the second pass is what makes a
-// widget appear beside prose instead of not appearing.
+// findSlot picks the topmost row where a widget fits against the look-ahead
+// profile, so a fresh placement is not covered by the next line that arrives.
 func findSlot(free []int, occupied []bool, height, width int) (int, bool) {
 	for row := 0; row+height <= len(occupied); row++ {
-		if !fits(occupied, row, height) {
+		if reliableWidth(free, row, height) < width+WidgetGap {
 			continue
 		}
-		if reliableWidth(free, row, height) >= width+WidgetGap {
-			return row, true
-		}
-	}
-	for row := 0; row+height <= len(occupied); row++ {
-		if fits(occupied, row, height) {
+		if fits(free, occupied, row, height, width) {
 			return row, true
 		}
 	}
