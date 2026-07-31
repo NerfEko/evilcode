@@ -197,13 +197,14 @@ func Truncate(s string) string {
 	if len(s) <= MaxResultBytes {
 		return s
 	}
-	const note = "\n\n[... %d bytes truncated; narrow the request to see the rest ...]\n\n"
-	head := MaxResultBytes * 2 / 3
-	tail := MaxResultBytes - head
+	const note = "\n\n… output truncated; narrow the request to see the rest …\n\n"
+	available := MaxResultBytes - len(note)
+	head := available * 2 / 3
+	tail := available - head
 	// Cut on rune boundaries so truncation never emits a broken sequence.
 	head = backToRuneBoundary(s, head)
 	tailStart := forwardToRuneBoundary(s, len(s)-tail)
-	return s[:head] + fmt.Sprintf(note, tailStart-head) + s[tailStart:]
+	return s[:head] + note + s[tailStart:]
 }
 
 func backToRuneBoundary(s string, i int) int {

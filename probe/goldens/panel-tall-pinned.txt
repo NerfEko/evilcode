@@ -1,5 +1,5 @@
- skills: /commit /selfdev                                             │ testdata/big.go
- <repo> (main)                       │ ┌─ diff
+ skills: /agent-architect /agent-browser /commit /dreaming +15 more   │ testdata/big.go
+ <repo> (main)                                   │ ┌─ diff
                                                                       │ │  package testdata
  1› renumber them                                                     │ │
                                                                       │ │ -// big is a probe fixture for the side panel: a file long enough
@@ -8,10 +8,10 @@
    ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ -//
                                                                       │ │ -// Committed in the state BEFORE the scenario's write, for the sa
  All fifteen now multiply.                                            │ │ ... 25 more changes ...
-                                             ╭──────────────────────╮ │ │ +func india(a int) int    { return a * 9 }
-                                             │ Context 408/200k     │ │ │ +func juliet(a int) int   { return a * 10 }
-                                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │ │ +func kilo(a int) int     { return a * 11 }
-                                             ╰──────────────────────╯ │ │ +func lima(a int) int     { return a * 12 }
+                                                                      │ │ +func india(a int) int    { return a * 9 }
+                                                                      │ │ +func juliet(a int) int   { return a * 10 }
+                                                                      │ │ +func kilo(a int) int     { return a * 11 }
+                                                                      │ │ +func lima(a int) int     { return a * 12 }
  💡 Ctrl+R searches your prompt history                               │ │ +func mike(a int) int     { return a * 13 }
  Diff mode: pinned                                                    │ │ +func november(a int) int { return a * 14 }
  2>                                                                   │ │ +func oscar(a int) int    { return a * 15 }

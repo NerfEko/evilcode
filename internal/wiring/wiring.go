@@ -239,7 +239,9 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 			return mem.Recall(ctx, in)
 		}
 		if opts.Extract {
-			a.Hooks = agent.NewMemoryHook(mem)
+			hook := agent.NewMemoryHook(mem)
+			a.Hooks = hook
+			out.closers = append(out.closers, hook.Close)
 		}
 	}
 	return out, nil

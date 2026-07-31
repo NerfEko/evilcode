@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -96,6 +97,11 @@ type Manager struct {
 	// transcript accumulates the turn text ambient extraction reads. It is
 	// cleared after each extraction so the same exchange is never mined twice.
 	transcript []string
+
+	// Only one extractor may own a transcript batch at a time. Without this,
+	// two slow side-calls can both peek the same batch; the second clear then
+	// drops turns that arrived after the first call.
+	extractMu sync.Mutex
 }
 
 // NewManager builds a manager. A nil store yields a disabled manager, which is
@@ -330,6 +336,9 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 	if !m.Enabled() || m.Router == nil {
 		return 0, nil
 	}
+	m.extractMu.Lock()
+	defer m.extractMu.Unlock()
+
 	text, n := m.peekTranscript()
 	if strings.TrimSpace(text) == "" {
 		return 0, nil
@@ -337,9 +346,7 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 
 	out, err := m.Router.SideCall(ctx, "smol", extractSystem, Truncate(text, 12000))
 	if err != nil {
-		m.mu.Lock()
-		m.act.Failed = err.Error()
-		m.mu.Unlock()
+		m.setStage(StageIdle, func(a *Activity) { a.Failed = err.Error() })
 		return 0, err
 	}
 
@@ -351,11 +358,11 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 		// A small model that answers in prose is a normal failure, not an error
 		// worth surfacing: the turns stay queued and the next extraction tries
 		// again over the same (plus any newly arrived) text.
+		m.setStage(StageIdle, nil)
 		return 0, nil
 	}
-	m.clearTranscript(n)
-
 	saved := 0
+	var saveErr error
 	for _, it := range items {
 		if strings.TrimSpace(it.Text) == "" {
 			continue
@@ -363,10 +370,20 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 		if !it.Kind.Valid() {
 			it.Kind = KindFact
 		}
-		if _, merged, err := m.Remember(ctx, it.Text, it.Kind); err == nil && !merged {
+		if _, merged, err := m.Remember(ctx, it.Text, it.Kind); err != nil {
+			saveErr = errors.Join(saveErr, err)
+		} else if !merged {
 			saved++
 		}
 	}
+	if saveErr != nil {
+		m.setStage(StageIdle, func(a *Activity) { a.Failed = saveErr.Error() })
+		return saved, saveErr
+	}
+	// Keep the source turns until every extracted record is durable. A failed
+	// store append must be retryable rather than silently deleting the only
+	// copy of the conversation.
+	m.clearTranscript(n)
 	m.setStage(StageIdle, nil)
 	return saved, nil
 }

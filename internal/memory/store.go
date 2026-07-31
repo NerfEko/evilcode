@@ -12,12 +12,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -100,8 +102,12 @@ func Open(dataDir string) (*Store, error) {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
 		return nil, err
 	}
 	s.file, s.w = f, bufio.NewWriter(f)
@@ -114,7 +120,7 @@ func Open(dataDir string) (*Store, error) {
 // back in the log, and returns an error naming its line number rather than
 // vanishing silently before the next write buries the evidence.
 func (s *Store) load(path string) error {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -170,14 +176,35 @@ func (s *Store) load(path string) error {
 		return err
 	}
 	if havePending {
+		var probe Record
+		badFinal := json.Unmarshal(pendingLine, &probe) != nil
 		if err := apply(pendingNo, pendingLine, true); err != nil {
 			return err
+		}
+		if badFinal {
+			end, err := f.Seek(0, io.SeekEnd)
+			if err != nil {
+				return err
+			}
+			cut := end - int64(len(pendingLine))
+			if cut < 0 {
+				return fmt.Errorf("%s: malformed final memory record has an invalid offset", path)
+			}
+			if err := f.Truncate(cut); err != nil {
+				return err
+			}
+			if err := f.Sync(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 func (s *Store) append(r Record) error {
+	if s.file == nil || s.w == nil {
+		return fmt.Errorf("memory store is closed")
+	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -200,6 +227,7 @@ func (s *Store) Close() error {
 		err = cerr
 	}
 	s.file = nil
+	s.w = nil
 	return err
 }
 

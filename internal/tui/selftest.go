@@ -13,6 +13,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/ansirender"
 	"evilcode/internal/config"
+	"evilcode/internal/provider"
 )
 
 // runCompact summarizes the conversation and starts a fresh context from it.
@@ -405,6 +406,114 @@ func (m *Model) contextCommand() tea.Cmd {
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: strings.TrimRight(b.String(), "\n")})
 	m.scroll.FollowBottom()
 	return nil
+}
+
+func (m *Model) statsCommand() tea.Cmd {
+	toolCalls := 0
+	for _, b := range m.blocks {
+		if b.Kind == BlockTool {
+			toolCalls++
+		}
+	}
+	text := fmt.Sprintf("Session stats\n"+
+		"session: %s · model: %s · provider: %s\n"+
+		"prompts: %d · blocks: %d · tool calls: %d\n"+
+		"tokens: in %d · out %d · context %s/%s\n"+
+		"generation: %dms",
+		m.header.SessionName, m.header.Model, m.header.Provider,
+		m.promptCount, len(m.blocks), toolCalls,
+		m.sessionTokensIn, m.sessionTokensOut,
+		humanTokens(m.ctxUsed), humanTokens(m.contextMax()), m.genMS)
+	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: text})
+	m.scroll.FollowBottom()
+	return nil
+}
+
+func (m *Model) loginCommand(arg string) tea.Cmd {
+	if arg == "status" {
+		cfg, err := config.Load()
+		if err != nil {
+			m.notice = "Ollama Cloud login status unavailable"
+			return nil
+		}
+		present := false
+		for _, p := range cfg.Providers {
+			if p.Name == "ollama-cloud" {
+				present = p.APIKeyValue() != ""
+				break
+			}
+		}
+		if present {
+			m.notice = "Ollama Cloud login: key present"
+		} else {
+			m.notice = "Ollama Cloud login: no key configured"
+		}
+		return nil
+	}
+	if arg != "" {
+		m.notice = "usage: /login or /login status"
+		return nil
+	}
+	m.loginMode = true
+	m.editor = Editor{}
+	m.notice = "Ollama Cloud API key · input hidden · Enter saves · Esc cancels"
+	return nil
+}
+
+func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "ctrl+c":
+		m.loginMode = false
+		m.editor = Editor{}
+		m.notice = "Ollama Cloud login cancelled"
+		return m, nil
+	case "enter":
+		keyText := m.editor.Text
+		m.loginMode = false
+		m.editor = Editor{}
+		if strings.TrimSpace(keyText) == "" {
+			m.notice = "Ollama Cloud login cancelled: no key entered"
+			return m, nil
+		}
+		if err := config.SaveProviderAPIKey("ollama-cloud", keyText); err != nil {
+			m.notice = "Ollama Cloud login failed"
+			return m, nil
+		}
+		if m.agent != nil {
+			if cloud, ok := m.agent.Provider.(*provider.Ollama); ok && cloud.Name() == "ollama-cloud" {
+				cloud.APIKey = keyText
+			}
+		}
+		m.notice = "Ollama Cloud API key saved"
+		return m, nil
+	case "backspace":
+		m.editor.Backspace()
+	case "delete":
+		m.editor.Delete()
+	case "ctrl+u":
+		m.editor.KillToStart()
+	case "ctrl+k":
+		m.editor.KillToEnd()
+	case "ctrl+w", "ctrl+backspace", "alt+backspace":
+		m.editor.DeleteWord()
+	case "ctrl+a", "home":
+		m.editor.Home()
+	case "ctrl+e", "end":
+		m.editor.End()
+	case "left":
+		m.editor.Left()
+	case "right":
+		m.editor.Right()
+	case "ctrl+b", "ctrl+left", "alt+left":
+		m.editor.WordLeft()
+	case "ctrl+f", "ctrl+right", "alt+right":
+		m.editor.WordRight()
+	default:
+		if text := msg.Key().Text; text != "" {
+			m.editor.Insert(text)
+		}
+	}
+	return m, nil
 }
 
 func timeNoun(n int) string {

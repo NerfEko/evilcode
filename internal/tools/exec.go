@@ -109,11 +109,32 @@ type Background struct {
 	OnDone func(*BackgroundTask)
 }
 
+// MaxCompletedBackgroundTasks bounds finished task metadata and captured
+// output retained for the widget. Running tasks are never evicted.
+const MaxCompletedBackgroundTasks = 8
+
 // Tasks returns the tracked tasks.
 func (b *Background) Tasks() []*BackgroundTask {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]*BackgroundTask(nil), b.tasks...)
+	completed := 0
+	kept := make([]*BackgroundTask, 0, len(b.tasks))
+	for i := len(b.tasks) - 1; i >= 0; i-- {
+		t := b.tasks[i]
+		done, _, _ := t.Snapshot()
+		if done {
+			completed++
+			if completed > MaxCompletedBackgroundTasks {
+				continue
+			}
+		}
+		kept = append(kept, t)
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	b.tasks = kept
+	return append([]*BackgroundTask(nil), kept...)
 }
 
 // add registers a task.

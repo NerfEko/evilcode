@@ -3,10 +3,12 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Prompt history limits (plan.md §5.2, §6.1).
@@ -45,7 +47,7 @@ func OpenHistory(dataDir string) (*History, error) {
 }
 
 func (h *History) load() error {
-	f, err := os.Open(h.Path)
+	f, err := os.OpenFile(h.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -79,49 +81,64 @@ func (h *History) Add(prompt string) error {
 	}
 
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	// Consecutive duplicates are noise; a repeat further back is legitimate
 	// history and stays.
 	if n := len(h.entries); n > 0 && h.entries[n-1] == prompt {
-		h.mu.Unlock()
 		return nil
 	}
+	old := append([]string(nil), h.entries...)
 	h.entries = append(h.entries, prompt)
 	needsCompaction := len(h.entries) >= CompactAt
-	h.mu.Unlock()
 
 	if needsCompaction {
-		return h.compact()
+		if err := h.compactLocked(); err != nil {
+			h.entries = old
+			return err
+		}
+		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(h.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(h.Path), 0o700); err != nil {
+		h.entries = old
 		return err
 	}
-	f, err := os.OpenFile(h.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(h.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
+		h.entries = old
 		return err
 	}
-	defer f.Close()
 	line, err := json.Marshal(prompt)
 	if err != nil {
+		_ = f.Close()
+		h.entries = old
 		return err
 	}
 	_, err = f.Write(append(line, '\n'))
-	return err
+	closeErr := f.Close()
+	if err != nil || closeErr != nil {
+		h.entries = old
+		return errors.Join(err, closeErr)
+	}
+	return nil
 }
 
 // compact rewrites the file with the most recent HistoryCap entries after
 // dropping older duplicates.
 func (h *History) compact() error {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.compactLocked()
+}
+
+func (h *History) compactLocked() error {
 	kept := dedupeKeepingLatest(h.entries)
 	if len(kept) > HistoryCap {
 		kept = kept[len(kept)-HistoryCap:]
 	}
-	h.entries = kept
 	snapshot := append([]string(nil), kept...)
-	h.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(h.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(h.Path), 0o700); err != nil {
 		return err
 	}
 	var b strings.Builder
@@ -135,11 +152,41 @@ func (h *History) compact() error {
 	}
 	// Write to a temp file and rename, so an interrupted compaction cannot
 	// leave a half-written history behind.
-	tmp := h.Path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(h.Path), ".prompt-history-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, h.Path)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write([]byte(b.String())); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, h.Path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(h.Path))
+	if err != nil {
+		return err
+	}
+	dirErr := dir.Sync()
+	closeErr := dir.Close()
+	if err := errors.Join(dirErr, closeErr); err != nil {
+		return err
+	}
+	h.entries = kept
+	return nil
 }
 
 // dedupeKeepingLatest removes earlier copies of repeated prompts, keeping the

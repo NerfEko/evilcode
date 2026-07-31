@@ -533,6 +533,18 @@ func TestWelcomeScreen(t *testing.T) {
 	}
 }
 
+func TestWelcomeChipSelectionUsesFilledBackground(t *testing.T) {
+	r := testRenderer(80)
+	selected := strings.Join(r.RenderWelcome(0, nil), "\n")
+	plain := strings.Join(r.RenderWelcome(-1, nil), "\n")
+	if !strings.Contains(selected, "48;2;") {
+		t.Fatalf("selected welcome chip has no filled background: %q", selected)
+	}
+	if selected == plain {
+		t.Fatal("focused and unfocused welcome chips render identically")
+	}
+}
+
 func TestTipRotation(t *testing.T) {
 	// Tips are visible for part of the period and quiet for the rest.
 	if got := TipAt(0, 80); got == "" {

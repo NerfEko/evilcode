@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -51,6 +55,15 @@ type Model struct {
 
 	blocks []Block
 	scroll Scroll
+
+	// transcriptCache is the assembled current-width transcript. A tick changes
+	// status widgets, not settled history, so retaining this one frame-sized
+	// slice avoids rebuilding every old row twelve times a second. It is cleared
+	// before state-changing messages and never populated for live streaming or
+	// entry animation.
+	transcriptCache      Rows
+	transcriptCacheWidth int
+	transcriptCacheValid bool
 
 	editor Editor
 
@@ -104,6 +117,10 @@ type Model struct {
 	// commandArg holds the argument of the command being run.
 	commandArg string
 
+	// loginMode owns the composer while a cloud key is entered. The editor is
+	// reset completely when it ends so undo/stash cannot resurrect the secret.
+	loginMode bool
+
 	// resumeTarget is set when the picker chose a session to switch to; the
 	// caller re-execs into it after the program exits.
 	resumeTarget string
@@ -128,6 +145,14 @@ type Model struct {
 	// placements is the last frame's widget geometry, for hit-testing clicks.
 	placements []Placement
 
+	// Widget airtime and change state keep the one dock slot from becoming a
+	// permanent ModelInfo billboard. They are bounded by WidgetKind, not by
+	// transcript length.
+	widgetClock       uint64
+	widgetLastShown   map[WidgetKind]uint64
+	widgetLastChanged map[WidgetKind]uint64
+	widgetHashes      map[WidgetKind]uint64
+
 	// dock places widgets in the transcript's negative space, and widgetsOn
 	// is the Alt+I toggle.
 	dock      *Dock
@@ -143,6 +168,10 @@ type Model struct {
 
 	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
 	entryAnim EntryAnimation
+
+	// welcomeChip is the focused starter prompt while the transcript is empty.
+	welcomeChip  int
+	welcomeFocus bool
 
 	// keymap resolves chords, and hotkeys drives the rare-chord and near-miss
 	// feedback of §6.8.
@@ -248,6 +277,12 @@ type Model struct {
 	// tokens-per-second is measured over.
 	genMS int
 
+	// sessionTokens are cumulative provider counts for /stats. StatusState is
+	// deliberately reset at turn end because its counters drive the live
+	// status line; keeping the session totals here prevents a completed turn
+	// from making the session look unused.
+	sessionTokensIn, sessionTokensOut int
+
 	// ctxUsed is the newest request's context size, for the meter. It is not
 	// the sum of the turn's requests — each one carries the whole conversation.
 	ctxUsed int
@@ -312,22 +347,25 @@ type Model struct {
 func NewModel(a *agent.Agent, h HeaderState) *Model {
 	p := theme.Dracula()
 	return &Model{
-		agent:         a,
-		renderer:      NewRenderer(p, 80),
-		header:        h,
-		started:       time.Now(),
-		streamingIdx:  -1,
-		reasoningIdx:  -1,
-		dock:          NewDock(),
-		widgetsOn:     true,
-		hiddenWidgets: map[WidgetKind]bool{},
-		thinking:      ThinkingCurrent,
-		diffMode:      DiffInline,
-		panelRatio:    50,
-		showHints:     true,
-		overscroll:    Overscroll{Mode: OverscrollPull},
-		artVariant:    PickVariant(h.SessionName),
-		decorate:      os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
+		agent:           a,
+		renderer:        NewRenderer(p, 80),
+		header:          h,
+		started:         time.Now(),
+		streamingIdx:    -1,
+		reasoningIdx:    -1,
+		dock:            NewDock(),
+		widgetsOn:       true,
+		hiddenWidgets:   map[WidgetKind]bool{},
+		widgetLastShown: map[WidgetKind]uint64{}, widgetLastChanged: map[WidgetKind]uint64{},
+		widgetHashes: map[WidgetKind]uint64{},
+		thinking:     ThinkingCurrent,
+		diffMode:     DiffInline,
+		panelRatio:   50,
+		showHints:    true,
+		overscroll:   Overscroll{Mode: OverscrollPull},
+		welcomeFocus: true,
+		artVariant:   PickVariant(h.SessionName),
+		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 	}
 }
 
@@ -423,6 +461,12 @@ func (m *Model) waitForEvent() tea.Cmd {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Tick only advances clocks. Every other message may change transcript
+	// content, layout, or renderer settings, so invalidate once at the shared
+	// boundary instead of trying to remember every mutation site.
+	if _, ok := msg.(tickMsg); !ok {
+		m.invalidateTranscriptCache()
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -503,16 +547,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tea.MouseClickMsg:
-		if m.dismissWidgetAt(msg.Mouse()) {
+		mouse := msg.Mouse()
+		if mouse.Button != tea.MouseLeft {
 			return m, nil
 		}
+		if m.dismissWidgetAt(mouse) {
+			return m, nil
+		}
+		m.openQuickViewAt(mouse)
 
 	case tea.PasteMsg:
+		if m.loginMode {
+			m.editor.Insert(msg.Content)
+			return m, nil
+		}
 		// Bracketed paste never inspects the clipboard for images: on Wayland
 		// a multi-MIME clipboard is routinely misidentified, and a stray image
 		// attachment is worse than a missing one (plan.md §6.6).
 		insert, stored := CollapsePaste(msg.Content)
 		m.editor.Insert(insert)
+		m.welcomeFocus = false
 		if stored != nil {
 			m.pastes = append(m.pastes, *stored)
 		}
@@ -594,9 +648,18 @@ func (m *Model) applyEvent(e agent.Event) {
 			Kind:       BlockTool,
 			ToolName:   e.Call.Name,
 			ToolTarget: toolTarget(e.Call.Args),
+			ToolPath:   toolPath(e.Call.Args),
 			ToolTokens: len(e.Output) / 4,
 			Failed:     e.IsError(),
 			Diff:       e.Diff,
+		}
+		if b.ToolPath != "" {
+			b.ToolPathExists = toolPathExists(m.cwd, b.ToolPath)
+			b.ToolPathMarkdown = b.ToolPathExists && strings.EqualFold(filepath.Ext(b.ToolPath), ".md")
+		}
+		if b.ToolName == "bash" {
+			b.ToolCommand = truncateToolCommand(toolCommand(e.Call.Args))
+			b.ToolOutput = tools.Truncate(e.Output)
 		}
 		if e.Intent != "" && !strings.Contains(e.Intent, b.ToolTarget) {
 			b.ToolIntent = e.Intent
@@ -652,6 +715,8 @@ func (m *Model) applyEvent(e agent.Event) {
 
 		m.status.TokensIn += e.Usage.In
 		m.status.TokensOut += e.Usage.Out
+		m.sessionTokensIn += e.Usage.In
+		m.sessionTokensOut += e.Usage.Out
 		m.ctxUsed = e.Usage.CtxUsed
 		m.genMS += e.Usage.GenMS
 		if m.genMS > 0 {
@@ -872,6 +937,9 @@ func (m *Model) flushPending() {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.loginMode {
+		return m.handleLoginKey(key, msg)
+	}
 
 	// A pending question owns the keyboard: the composer is an answer box
 	// until it is resolved (plan.md §17).
@@ -946,6 +1014,23 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Configurable bindings are resolved before the fixed keys, so a rebind
 	// genuinely takes the chord away from its default (plan.md §11).
+	if len(m.blocks) == 0 && m.editor.Text == "" && len(SuggestionChips) > 0 {
+		switch key {
+		case "up":
+			m.welcomeFocus = true
+			m.welcomeChip = (m.welcomeChip - 1 + len(SuggestionChips)) % len(SuggestionChips)
+			return m, nil
+		case "down":
+			m.welcomeFocus = true
+			m.welcomeChip = (m.welcomeChip + 1) % len(SuggestionChips)
+			return m, nil
+		case "enter":
+			m.editor.Text = SuggestionChips[m.welcomeChip%len(SuggestionChips)]
+			m.editor.Cursor = len([]rune(m.editor.Text))
+			return m.send(false)
+		}
+	}
+
 	if m.keymap != nil {
 		if b, ok := m.keymap.Lookup(key); ok {
 			if handled, model, cmd := m.runAction(b.Action); handled {
@@ -1193,6 +1278,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
 		m.editor.Insert(txt)
+		m.welcomeFocus = false
 		m.confirmQuit = false
 		// Typing normally follows the bottom; the lock keeps the reader where
 		// they were (plan.md §4.5).
@@ -1696,6 +1782,36 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.submitHidden(prompt)
 		return m, nil
 
+	case "review":
+		target := strings.TrimSpace(arg)
+		if target == "" {
+			target = "this branch"
+		}
+		m.submitHidden(fmt.Sprintf("Review %s. Read the diff or named path first. Report correctness issues, then clarity issues, then anything genuinely dangerous. No praise, no scope creep, and one line per finding with file:line.", target))
+		m.notice = "🔎 Reviewing " + truncateCells(target, 40)
+		return m, nil
+
+	case "bugfix":
+		if strings.TrimSpace(arg) == "" {
+			m.notice = "usage: /bugfix <symptom>"
+			return m, nil
+		}
+		m.submitHidden(fmt.Sprintf("Bug symptom: %s\n\nReproduce this first by writing the smallest failing test and explicitly report that it failed. Grep every caller to find the root cause. Fix the root cause, then run the test again and show it passing. Do not claim done without the fail-then-pass pair.", arg))
+		m.notice = "🛠 Reproducing bug: " + truncateCells(arg, 40)
+		return m, nil
+
+	case "describe":
+		target := strings.TrimSpace(arg)
+		if target == "" {
+			target = m.cwd
+			if target == "" {
+				target = "."
+			}
+		}
+		m.submitHidden(fmt.Sprintf("Explain %s for someone who has never seen this codebase. Start with the structure and how the pieces fit together, then cover the important behavior. Do not narrate every line.", target))
+		m.notice = "🧭 Describing " + truncateCells(target, 40)
+		return m, nil
+
 	case "poke":
 		if m.poke == nil {
 			m.notice = "auto-poke is not configured for this session"
@@ -1734,6 +1850,12 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "context":
 		return m, m.contextCommand()
+
+	case "stats":
+		return m, m.statsCommand()
+
+	case "login":
+		return m, m.loginCommand(strings.TrimSpace(arg))
 
 	case "productivity":
 		return m, m.productivityCommand()
@@ -2188,14 +2310,41 @@ func (m *Model) contentHeight() int {
 	return len(m.transcriptLines().Lines)
 }
 
+func (m *Model) invalidateTranscriptCache() {
+	m.transcriptCache = Rows{}
+	m.transcriptCacheWidth = 0
+	m.transcriptCacheValid = false
+}
+
 // transcriptLines renders every block to lines plus the provenance of each line
 // (§1.2). Owner[i] is the index into m.blocks that rendered Lines[i], or -1 for
 // chrome (the header, inter-block gaps, welcome art, todo card). The
 // per-block render cache is untouched: provenance is recorded around the cache,
 // not inside it, so a cache hit still costs nothing.
 func (m *Model) transcriptLines() Rows {
+	if m.renderer.DiffMode != m.diffMode {
+		m.renderer.DiffMode = m.diffMode
+		for i := range m.blocks {
+			if m.blocks[i].Diff != "" {
+				m.blocks[i].cache = nil
+			}
+		}
+		m.invalidateTranscriptCache()
+	}
+	animT, animating := m.entryAnim.Progress(time.Now())
+	cacheable := len(m.blocks) > 0 && !animating
+	for i := range m.blocks {
+		if m.blocks[i].Streaming {
+			cacheable = false
+			break
+		}
+	}
+	if cacheable && m.transcriptCacheValid && m.transcriptCacheWidth == m.renderer.Width {
+		return m.transcriptCache
+	}
+
 	if len(m.blocks) == 0 {
-		welcome := m.renderer.RenderWelcome(0, m.idleArt())
+		welcome := m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt())
 		owner := make([]int, len(welcome))
 		for i := range owner {
 			owner[i] = -1
@@ -2219,19 +2368,6 @@ func (m *Model) transcriptLines() Rows {
 
 	addChrome(m.renderer.RenderHeader(m.header))
 	addChrome([]string{""})
-	animT, animating := m.entryAnim.Progress(time.Now())
-
-	// The renderer needs the current mode, and changing it invalidates every
-	// cached block that drew a diff.
-	if m.renderer.DiffMode != m.diffMode {
-		m.renderer.DiffMode = m.diffMode
-		for i := range m.blocks {
-			if m.blocks[i].Diff != "" {
-				m.blocks[i].cache = nil
-			}
-		}
-	}
-
 	for i := range m.blocks {
 		lines := m.renderer.Lines(&m.blocks[i])
 		if animating && i == m.entryAnim.Block {
@@ -2265,7 +2401,13 @@ func (m *Model) transcriptLines() Rows {
 	if len(out) != len(owner) {
 		panic(fmt.Sprintf("transcriptLines: len(Lines)=%d != len(Owner)=%d", len(out), len(owner)))
 	}
-	return Rows{Lines: out, Owner: owner}
+	rows := Rows{Lines: out, Owner: owner}
+	if cacheable && (!m.transcriptCacheValid || m.transcriptCacheWidth == m.renderer.Width) {
+		m.transcriptCache = rows
+		m.transcriptCacheWidth = m.renderer.Width
+		m.transcriptCacheValid = true
+	}
+	return rows
 }
 
 // applyWrapWidth sets the renderer's wrap width, reserving a column for the
@@ -2277,12 +2419,17 @@ func (m *Model) applyWrapWidth() {
 	}
 	if width != m.renderer.Width {
 		m.renderer.SetWidth(max(width, 1))
+		m.invalidateTranscriptCache()
 	}
 }
 
 // stack builds the vertical layout request.
 func (m *Model) stack() Stack {
-	s := Stack{Available: m.height, ContentHeight: len(m.transcriptLines().Lines)}
+	return m.stackFor(len(m.transcriptLines().Lines))
+}
+
+func (m *Model) stackFor(contentHeight int) Stack {
+	s := Stack{Available: m.height, ContentHeight: contentHeight}
 	s.Heights[SlotStatus] = 1
 	if m.notice != "" {
 		s.Heights[SlotNotice] = 1
@@ -2303,6 +2450,42 @@ func (m *Model) stack() Stack {
 	return s
 }
 
+// contentHeightAtWidth probes scrollbar feedback without allocating a second
+// full Rows value. The old path built every line and every Owner slice again
+// just to count them, which made a long transcript increasingly expensive on
+// every 80ms tick.
+func (m *Model) contentHeightAtWidth(width int) int {
+	old := m.renderer.Width
+	if old != width {
+		m.renderer.SetWidth(max(width, 1))
+	}
+	height := m.transcriptHeightOnly()
+	if old != width {
+		m.renderer.SetWidth(old)
+	}
+	return height
+}
+
+func (m *Model) transcriptHeightOnly() int {
+	if len(m.blocks) == 0 {
+		return len(m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt()))
+	}
+	height := len(m.renderer.RenderHeader(m.header)) + 1
+	for i := range m.blocks {
+		lines := m.renderer.Lines(&m.blocks[i])
+		height += len(lines)
+		if len(lines) > 0 && needsGapAfter(m.blocks, i) {
+			height++
+		}
+	}
+	if m.showTodoCard && m.todos != nil {
+		height += len(m.renderer.RenderTodoCard(TodoCardState{
+			Items: m.todos.Items(), Plan: m.todos.Plan(), Goals: m.todos.Goals(),
+		})) + 1
+	}
+	return height
+}
+
 func (m *Model) composerState() ComposerState {
 	return ComposerState{
 		Text:         m.editor.Text,
@@ -2315,7 +2498,15 @@ func (m *Model) composerState() ComposerState {
 		Processing:   m.processing,
 		QueueMode:    m.queueMode,
 		PaletteOpen:  m.paletteOpen(),
+		Masked:       m.loginMode,
 	}
+}
+
+func (m *Model) welcomeIndex() int {
+	if !m.welcomeFocus || len(SuggestionChips) == 0 {
+		return -1
+	}
+	return m.welcomeChip % len(SuggestionChips)
 }
 
 func (m *Model) View() tea.View {
@@ -2347,8 +2538,8 @@ func (m *Model) View() tea.View {
 		return v
 	}
 
-	res := m.stack().Resolve()
 	tr := m.transcriptLines()
+	res := m.stackFor(len(tr.Lines)).Resolve()
 	content := tr.Lines
 	owner := tr.Owner
 
@@ -2396,13 +2587,9 @@ func (m *Model) View() tea.View {
 	withoutBar, withBar := len(content), len(content)
 	width := m.renderer.Width
 	if m.scrollbarOn {
-		m.renderer.SetWidth(width + 1)
-		withoutBar = len(m.transcriptLines().Lines)
-		m.renderer.SetWidth(width)
+		withoutBar = m.contentHeightAtWidth(width + 1)
 	} else {
-		m.renderer.SetWidth(max(width-1, 1))
-		withBar = len(m.transcriptLines().Lines)
-		m.renderer.SetWidth(width)
+		withBar = m.contentHeightAtWidth(width - 1)
 	}
 	m.scrollbarOn = ScrollbarVisible(m.scrollbarOn, withBar, withoutBar, res.Transcript)
 
@@ -2728,9 +2915,27 @@ func (m *Model) factStack() FactStack {
 	}
 }
 
-// activeWidgets builds the widget list in priority order, dropping any that
-// would render empty.
+const (
+	// WidgetDwellFrames keeps a visible box stable for about two seconds. The
+	// slot may still change sooner for a genuinely urgent context warning.
+	WidgetDwellFrames = 25
+	WidgetAirtimeCap  = 12
+	WidgetChangeBoost = 8
+)
+
+// activeWidgets builds the widget list, dropping empty boxes and ranking the
+// survivors by urgency plus airtime. A static kind sort made ModelInfo win the
+// only slot forever, so the list itself carries the decision into Dock.Layout.
 func (m *Model) activeWidgets() []Widget {
+	if m.widgetLastShown == nil {
+		m.widgetLastShown = map[WidgetKind]uint64{}
+	}
+	if m.widgetLastChanged == nil {
+		m.widgetLastChanged = map[WidgetKind]uint64{}
+	}
+	if m.widgetHashes == nil {
+		m.widgetHashes = map[WidgetKind]uint64{}
+	}
 	var out []Widget
 	add := func(w Widget) {
 		// Dismissed widgets are dropped here rather than at paint time, so a
@@ -2778,13 +2983,110 @@ func (m *Model) activeWidgets() []Widget {
 	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
 		add(m.renderer.TipsWidget(tip))
 	}
-	// Sorted rather than appended in order. The dock places in list order, and
-	// §8.3 fixes the priorities — which the WidgetKind constants already spell
-	// out, so sorting by kind is the priority list rather than a second copy of
-	// it that can drift. It drifted once: MemoryActivity outranks ModelInfo but
-	// was added after it, and lost its slot every frame.
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Kind < out[j].Kind })
+	if !Deterministic() {
+		m.widgetClock++
+	}
+	for i := range out {
+		w := &out[i]
+		hash := frameHash(strings.Join(w.Lines, "\n"))
+		if !Deterministic() {
+			if old, ok := m.widgetHashes[w.Kind]; ok && old != hash {
+				m.widgetLastChanged[w.Kind] = m.widgetClock
+			}
+		}
+		m.widgetHashes[w.Kind] = hash
+
+		age := m.widgetClock
+		if shown, ok := m.widgetLastShown[w.Kind]; ok && age >= shown {
+			age -= shown
+		}
+		airtime := minFloat(float64(age)/12, WidgetAirtimeCap)
+		change := 0.0
+		if !Deterministic() {
+			if changed, ok := m.widgetLastChanged[w.Kind]; ok && m.widgetClock >= changed {
+				change = maxFloat(WidgetChangeBoost-float64(m.widgetClock-changed)/6, 0)
+			}
+		}
+		w.Salience = m.widgetUrgency(*w) + airtime + change
+
+		incumbent := false
+		for _, p := range m.placements {
+			if p.Kind == w.Kind {
+				incumbent = true
+				break
+			}
+		}
+		if incumbent {
+			dwell := m.widgetClock
+			if shown, ok := m.widgetLastShown[w.Kind]; ok && dwell >= shown {
+				dwell -= shown
+			}
+			if dwell < WidgetDwellFrames {
+				w.Salience += 100
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Salience != out[j].Salience {
+			return out[i].Salience > out[j].Salience
+		}
+		return out[i].Kind < out[j].Kind
+	})
 	return out
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (m *Model) widgetUrgency(w Widget) float64 {
+	switch w.Kind {
+	case WidgetContextUsage:
+		total := m.contextMax()
+		if total <= 0 {
+			return 0
+		}
+		ratio := float64(m.ctxUsed) / float64(total)
+		switch {
+		case ratio >= .9:
+			return 120
+		case ratio >= .8:
+			return 30
+		case ratio >= .65:
+			return 8
+		}
+	case WidgetBackgroundTasks:
+		if m.bg != nil {
+			for _, t := range m.bg.Tasks() {
+				done, failed, _ := t.Snapshot()
+				if failed {
+					return 24
+				}
+				if !done {
+					return 12
+				}
+			}
+		}
+	case WidgetTodos:
+		return 3
+	case WidgetSwarmStatus:
+		if m.swarm != nil && len(m.swarm.Live()) > 0 {
+			return 12
+		}
+	case WidgetMemoryActivity:
+		return 2
+	}
+	return 0
 }
 
 // contextMax is the model's window, falling back to a common default so the
@@ -2811,20 +3113,9 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 		region = region[:transcriptRows]
 	}
 
-	// Window the per-line block provenance (§1.2) into the visible region the
-	// dock measures. rows[i] is the visible window; the content line it came
-	// from is scrollTop+i, so its owner is owner[scrollTop+i] when that is in
-	// range, or -1 for the slack/padding blanks below the text (§2.2: those are
-	// below settledEnd by construction and never dockable).
-	visOwner := make([]int, len(region))
-	for i := range region {
-		ci := scrollTop + i
-		if ci >= 0 && ci < len(owner) {
-			visOwner[i] = owner[ci]
-		} else {
-			visOwner[i] = -1
-		}
-	}
+	// Owner is kept as the full transcript provenance. The dock maps visible
+	// rows through scrollTop so it can resolve a block's first row even when
+	// that row is above the viewport.
 	// kindOf resolves a block index to its kind for the settled-region test
 	// (§2.3). Owner holds block indices into m.blocks.
 	blocks := m.blocks
@@ -2859,7 +3150,7 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 		}
 	}
 
-	placements := m.dock.Layout(widgets, region, visOwner, kindOf, streamingBlock, usable, scrollTop, contentHeight, m.centered)
+	placements := m.dock.Layout(widgets, region, owner, kindOf, streamingBlock, usable, scrollTop, contentHeight, m.centered)
 
 	byKind := make(map[WidgetKind]Widget, len(widgets))
 	for _, w := range widgets {
@@ -2878,6 +3169,9 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 			p.Row, p.Col, min(transcriptRows, len(rows)))
 	}
 	m.placements = placements
+	for _, p := range placements {
+		m.widgetLastShown[p.Kind] = m.widgetClock
+	}
 	return rows
 }
 
@@ -2916,18 +3210,165 @@ func paintWidget(rows, lines []string, top, col, limit int) {
 	}
 }
 
-// toolTarget pulls the one argument worth showing beside a tool name.
-func toolTarget(raw json.RawMessage) string {
+func toolArgs(raw json.RawMessage) map[string]any {
 	var args map[string]any
 	if json.Unmarshal(raw, &args) != nil {
-		return ""
+		return nil
 	}
+	return args
+}
+
+func toolArg(raw json.RawMessage, key string) string {
+	if v, ok := toolArgs(raw)[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// toolTarget pulls the one argument worth showing beside a tool name. The
+// display target is intentionally short; ToolPath and ToolCommand retain the
+// bounded full values for quick views.
+func toolTarget(raw json.RawMessage) string {
 	for _, key := range []string{"path", "pattern", "cmd", "query"} {
-		if v, ok := args[key].(string); ok && v != "" {
-			return truncateCells(strings.ReplaceAll(v, "\n", " "), 60)
+		if v := toolArg(raw, key); v != "" {
+			return truncateCells(core.SanitizeTerminal(strings.ReplaceAll(v, "\n", " ")), 60)
 		}
 	}
 	return ""
+}
+
+func toolPath(raw json.RawMessage) string    { return strings.TrimSpace(toolArg(raw, "path")) }
+func toolCommand(raw json.RawMessage) string { return toolArg(raw, "cmd") }
+
+func resolveToolPath(root, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	return filepath.Clean(filepath.Join(root, path))
+}
+
+func toolPathExists(root, path string) bool {
+	info, err := os.Stat(resolveToolPath(root, path))
+	return err == nil && info.Mode().IsRegular()
+}
+
+// truncateToolCommand keeps an unusually large shell script from becoming a
+// transcript retention leak while preserving the useful beginning verbatim.
+func truncateToolCommand(s string) string {
+	if len(s) <= tools.MaxResultBytes {
+		return s
+	}
+	const marker = "\n\n… command truncated …\n\n"
+	keep := tools.MaxResultBytes - len(marker)
+	for keep > 0 && !utf8.RuneStart(s[keep]) {
+		keep--
+	}
+	return s[:keep] + marker
+}
+
+func (m *Model) openQuickViewAt(mouse tea.Mouse) {
+	idx := m.transcriptBlockAt(mouse)
+	if idx < 0 || idx >= len(m.blocks) || m.blocks[idx].Kind != BlockTool {
+		return
+	}
+	b := m.blocks[idx]
+
+	// Markdown links get the external viewer first. If an optional dependency
+	// is missing, the same click degrades to the file quick view below.
+	if b.ToolPathMarkdown {
+		if launchMarkdown(resolveToolPath(m.cwd, b.ToolPath)) {
+			return
+		}
+		m.quickView = m.readQuickView(b.ToolPath)
+		return
+	}
+
+	switch strings.ToLower(b.ToolName) {
+	case "read":
+		m.quickView = m.readQuickView(b.ToolPath)
+	case "write", "edit":
+		body := []string(nil)
+		if b.Diff == "" {
+			body = []string{"no diff captured for this edit"}
+		}
+		m.quickView = &PanelContent{Title: b.ToolTarget, Path: b.ToolPath, Diff: b.Diff, Body: body}
+	case "bash":
+		command := b.ToolCommand
+		if command == "" {
+			command = b.ToolTarget
+		}
+		body := strings.Split("> "+command, "\n")
+		output := b.ToolOutput
+		if output == "" {
+			output = "(no output)"
+		}
+		body = append(body, strings.Split(strings.TrimSuffix(output, "\n"), "\n")...)
+		m.quickView = &PanelContent{Title: "bash", Body: body}
+	}
+}
+
+func (m *Model) readQuickView(path string) *PanelContent {
+	content := &PanelContent{Title: path, Path: path, Code: true}
+	if path == "" {
+		content.Code = false
+		content.Body = []string{"read did not include a file path"}
+		return content
+	}
+
+	file, err := os.Open(resolveToolPath(m.cwd, path))
+	if err != nil {
+		content.Code = false
+		content.Body = []string{"error: " + err.Error()}
+		return content
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, int64(tools.MaxResultBytes)+1))
+	if err != nil {
+		content.Code = false
+		content.Body = []string{"error reading file: " + err.Error()}
+		return content
+	}
+	content.Body = strings.Split(tools.Truncate(string(data)), "\n")
+	return content
+}
+
+func terminalForMarkdown() string {
+	if configured := strings.TrimSpace(os.Getenv("TERMINAL")); configured != "" {
+		if path, err := exec.LookPath(configured); err == nil {
+			return path
+		}
+		return ""
+	}
+	for _, name := range []string{"kitty", "wezterm", "alacritty", "foot", "xterm"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func launchMarkdown(path string) bool {
+	if path == "" {
+		return false
+	}
+	if _, err := exec.LookPath("glow"); err != nil {
+		return false
+	}
+	terminal := terminalForMarkdown()
+	if terminal == "" {
+		return false
+	}
+	cmd := exec.Command(terminal, "-e", "glow", path)
+	// nil means the OS null device for os/exec; the TUI must keep the keyboard.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	if err := cmd.Start(); err != nil {
+		return false
+	}
+	go func() { _ = cmd.Wait() }()
+	return true
 }
 
 // Run starts the TUI over a bare agent.
@@ -3001,7 +3442,8 @@ func (m *Model) dismissWidgetAt(mouse tea.Mouse) bool {
 	}
 	// Placements are in transcript-region coordinates, and the region starts at
 	// the top of the frame, so the mouse row maps straight through.
-	kind, ok := m.dock.Hit(m.placements, mouse.X-Inset(m.centered), mouse.Y)
+	_, pad := ContentWidth(m.width, m.centered)
+	kind, ok := m.dock.Hit(m.placements, mouse.X-pad, mouse.Y)
 	if !ok {
 		return false
 	}
@@ -3009,4 +3451,31 @@ func (m *Model) dismissWidgetAt(mouse tea.Mouse) bool {
 	m.dock.Forget(kind)
 	m.notice = "Hidden · Alt+I brings the widgets back"
 	return true
+}
+
+// transcriptBlockAt maps a screen click back through the same windowing math
+// View uses. Rows.Owner is the source of truth; re-rendering or guessing from
+// block heights would drift as wrapping, scrolling, and slack change.
+func (m *Model) transcriptBlockAt(mouse tea.Mouse) int {
+	_, pad := ContentWidth(m.width, m.centered)
+	x := mouse.X - pad
+	chat, _ := Horizontal{
+		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.sidePaneOpen(),
+	}.Split()
+	if x < 0 || x >= chat || (m.scrollbarOn && x >= chat-ScrollbarReserve) || mouse.Y < 0 {
+		return -1
+	}
+
+	rows := m.transcriptLines()
+	res := m.stackFor(len(rows.Lines)).Resolve()
+	if mouse.Y >= res.Transcript {
+		return -1
+	}
+	start := clamp(len(rows.Lines)+m.scroll.Slack()-res.Transcript-m.scroll.Offset,
+		0, len(rows.Lines))
+	line := start + mouse.Y
+	if line < 0 || line >= len(rows.Owner) {
+		return -1
+	}
+	return rows.Owner[line]
 }

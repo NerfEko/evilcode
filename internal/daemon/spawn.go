@@ -14,6 +14,8 @@ import (
 	"evilcode/internal/wiring"
 )
 
+var errPublishedWorker = errors.New("worker was published but could not start")
+
 // Spawn starts a headless worker session on a task.
 //
 // A worker is an ordinary daemon session with no client attached (plan.md §20),
@@ -27,7 +29,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 		return nil, err
 	}
 	sess, err := s.spawn(task, files, schema, nil)
-	if err != nil {
+	if err != nil && !errors.Is(err, errPublishedWorker) {
 		s.swarm.release("")
 	}
 	return sess, err
@@ -48,11 +50,13 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	}
 
 	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
+	if s.closed {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("the daemon is shutting down")
 	}
+	s.builds.Add(1)
+	s.mu.Unlock()
+	defer s.builds.Done()
 
 	// The name and its log are settled before anything is built under them.
 	store, err := s.claimName()
@@ -95,6 +99,12 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		built.Close()
+		s.releaseName(store.Name)
+		return nil, fmt.Errorf("the daemon is shutting down")
+	}
 	s.sessions[sess.Name] = sess
 	delete(s.reserved, sess.Name)
 	s.mu.Unlock()
@@ -109,7 +119,10 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	done, ok := sess.beginTurn(cancel)
 	if !ok {
 		cancel()
-		return nil, fmt.Errorf("the session is shutting down")
+		// The worker was already published, so its reservation belongs to this
+		// session even though shutdown won the race with its first turn.
+		sess.markFinished()
+		return nil, fmt.Errorf("%w: daemon is shutting down", errPublishedWorker)
 	}
 	go func() {
 		defer close(done)

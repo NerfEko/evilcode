@@ -1,7 +1,7 @@
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit /selfdev
- <repo> (main)                                                                                            ╷
-                                                                                                                                           │
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                           ╭──────────────────────╮
+ skills: /agent-architect /agent-browser /commit /dreaming +15 more                                               │ Context 700/200k     │
+ <repo> (main)                                                                               │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ ╷
+                                                                                                                  ╰──────────────────────╯ │
  1› long answer                                                                                                                            │
                                                                                                                                            │
  Line 1 of a deliberately long answer.                                                                                                     │

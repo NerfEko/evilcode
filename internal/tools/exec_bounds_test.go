@@ -107,6 +107,17 @@ func TestBackgroundOutputIsBounded(t *testing.T) {
 	}
 }
 
+func TestBackgroundDropsOldFinishedTasks(t *testing.T) {
+	b := &Background{}
+	for i := 0; i < MaxCompletedBackgroundTasks+3; i++ {
+		task := b.add("task")
+		b.finish(task, "done", false)
+	}
+	if got := len(b.Tasks()); got != MaxCompletedBackgroundTasks {
+		t.Fatalf("retained %d completed tasks, want %d", got, MaxCompletedBackgroundTasks)
+	}
+}
+
 // H3.4: cancelling kills the shell but not its descendants, so a grandchild
 // outlives the timeout and keeps working in the workspace after the tool call
 // that started it has returned.

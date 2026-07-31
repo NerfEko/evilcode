@@ -112,3 +112,34 @@ func TestAttachmentsFollowAForkAndARename(t *testing.T) {
 		t.Errorf("the attachment came back as %q", renamed[0].Images[0])
 	}
 }
+
+func TestImageReferencesCannotEscapeTheBlobDirectory(t *testing.T) {
+	dir := t.TempDir()
+	store, err := CreateNamed(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path
+	store.Close()
+	outside := filepath.Join(dir, "outside.bin")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"role":"user","content":"look","image_refs":["../outside.bin"]}`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"user\",\"data\":" + data + "}\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := Messages(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Images) != 0 {
+		t.Fatalf("escaped image reference was loaded: %+v", msgs)
+	}
+}

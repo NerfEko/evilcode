@@ -361,3 +361,51 @@ the idle tip, and the README row.
 Worth revisiting: if local shell escape from the composer is wanted, build it
 as a real `Exec` `SendAction` with bounded output, a deadline, and the H4
 sanitization on its result — then re-add the styling.
+
+## F2.7 — controlled live streaming PNG sequence deferred
+
+**Spec:** drive a live turn containing streaming prose, tool rows, and collapsing
+reasoning; inspect PNGs while the dock changes hands and while context approaches its limit.
+
+**Built instead:** the F2.4–F2.6 behavior has focused reproductions, probe goldens, full tests,
+and race coverage, but the controlled interactive PNG sequence was not completed. A live
+evilcode window existed on the compositor, but it was an unrelated already-running session,
+not a deterministic probe of this checkout; its screenshot was not accepted as evidence.
+
+**Why it is OK to continue:** this is verification debt, not an implementation dependency.
+F3 can proceed from the tested `Owner`, quick-view, and dock paths. F2.7 remains unchecked in
+`plan3.md` and should be closed with a controlled probe before tagging the F2 milestone.
+## F3.4 — controlled click sequence deferred
+
+F3.1–F3.3 are implemented and covered by focused tests. I captured and visually inspected the existing live evilcode window at `/tmp/evilcode-f3-session.png`, but did not inject read/write/bash clicks or a markdown terminal launch into the user's active session because that would alter an in-progress session. The plan's F3.4 controlled live verification remains unchecked; the full automated matrix is green and the installed binary is the verified build.
+
+## F4.4 — live command/login sequence deferred
+
+F4.1–F4.3 are implemented and automated. I did not type `/review`, `/bugfix`, `/describe`, `/stats`, or `/login` into the active user session because doing so would create turns, alter its config/session state, or handle a real credential. The masked-composer, no-transcript-leak, atomic-writer, and command-state tests cover the implementation; F4.4 remains unchecked until a controlled session is available.
+
+## F5.3 — clean remote/update failure matrix deferred
+
+The dirty-tree refusal was exercised against this checkout and correctly listed changed and untracked paths without touching the installed binary. The clean-at-origin success case and deliberately failing-test remote case were not run because this worktree is intentionally dirty and creating a temporary remote/failed revision would mutate repository state beyond the requested bugfix run. F5.3 remains unchecked; the parser/unit tests and full build/test gates cover the local update logic.
+
+## 2026-07-31 — niri window-id screenshot fallback
+
+The new `niri-screenshot` skill was used for window discovery, focus, and PNG
+inspection. On this compositor build, `niri msg action screenshot-window --id
+<id> --path <absolute>` returned exit 0 but did not write a file, while the
+same focused-window command without `--id` and `screenshot-screen` worked and
+were inspected with the image viewer. Controlled captures therefore use the
+skill's window ID to focus the disposable window, then its focused-window
+capture path. This is an environment/tooling deviation, not an application
+change; revisit when the compositor accepts the documented `--id` form.
+
+## 2026-07-31 — verification deferrals closed
+
+The earlier F2.7, F3.4, F4.4, and F5.3 deferrals are superseded by the disposable controlled
+checks recorded in `LOOPS.md`. No active user session or real credential was used. F3.4's
+physical pointer injection was replaced by the same `Model.Update` mouse event path plus a fake
+terminal integration test, because injecting clicks into the user's live session would have
+changed its transcript; the implementation path is the one Bubble Tea delivers in production.
+
+During F4.4, `/stats` exposed that completed-turn token counts were lost when `StatusState`
+reset. This was fixed with cumulative session totals and a regression test; it is not a
+deliberate deviation from the plan.

@@ -268,6 +268,7 @@ func (m *Model) rebuildFromMessages(msgs []provider.Message) {
 // RebuildFrom repopulates the transcript when resuming a session.
 func (m *Model) RebuildFrom(msgs []provider.Message) {
 	m.blocks = nil
+	m.invalidateTranscriptCache()
 	m.scroll.ClearSlack()
 	m.promptCount = 0
 	m.rebuildFromMessages(msgs)

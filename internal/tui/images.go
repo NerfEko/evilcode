@@ -51,6 +51,7 @@ func (m *Model) WithGraphics(proto graphics.Protocol, cacheDir string) *Model {
 	m.graphics = proto
 	m.imagesOn = proto != graphics.ProtoNone
 	m.diagramDir = cacheDir
+	m.invalidateTranscriptCache()
 	return m
 }
 
@@ -283,15 +284,20 @@ func (m *Model) renderDiagrams(text string) {
 		if !seg.Code || seg.Lang != "mermaid" || seg.Open {
 			continue
 		}
+		m.diagramMu.Lock()
 		if m.diagrams == nil {
 			m.diagrams = map[string]string{}
 		}
-		if _, done := m.diagrams[seg.Text]; done {
+		_, done := m.diagrams[seg.Text]
+		if !done {
+			// Mark before starting the render, so a repaint cannot start a
+			// second headless browser for the same source.
+			m.diagrams[seg.Text] = ""
+		}
+		m.diagramMu.Unlock()
+		if done {
 			continue
 		}
-		// Marked before the render starts, so a repaint between kickoff and
-		// completion does not start a second headless browser.
-		m.diagrams[seg.Text] = ""
 
 		source, dir := seg.Text, m.diagramDir
 		go func() {
@@ -346,7 +352,9 @@ func (m *Model) drainDiagrams() {
 		m.notice = "mermaid: " + done.Err.Error()
 		return
 	}
+	m.diagramMu.Lock()
 	m.diagrams[done.Source] = done.Path
+	m.diagramMu.Unlock()
 
 	img, err := LoadImage(done.Path, m.chatWidth(), DiagramRows)
 	if err != nil {
@@ -356,6 +364,7 @@ func (m *Model) drainDiagrams() {
 	m.nextImageID++
 	img.ID = m.nextImageID
 	m.blocks = append(m.blocks, Block{Kind: BlockImage, Image: img})
+	m.invalidateTranscriptCache()
 	m.pendingImages += graphics.KittySequence(graphics.Image{
 		PNG: img.PNG, Cols: img.Cols, Rows: img.Rows, ID: img.ID,
 	})

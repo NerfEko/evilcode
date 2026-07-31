@@ -28,7 +28,7 @@
  /model              Switch model
  /models             List available models
  /plan               Plan before implementing
- /todos              Toggle the todo card
- /poke               Auto-poke on/off/status
- /selfdev            Work on evilcode itself
- /rebuild            Build, test, and restart into the new binary  +38 more
+ /review             Review a path or this branch
+ /bugfix             Reproduce and fix a bug
+ /describe           Explain code structure
+ /todos              Toggle the todo card  +43 more

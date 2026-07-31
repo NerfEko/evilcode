@@ -24,8 +24,8 @@ infrastructure. `[x]` items are done.
    edges with no background, so they don't read as buttons. Add a background to
    complete the button look, and make the buttons selectable.
 
-5. **Idle art.** Remove the black hole — replace it with something else like evilcode
-   ASCII art, or have nothing at all.
+5. **~~Idle art.~~** Dropped — keeping the black hole. The eye and the black hole both
+   stay as built (`internal/tui/idleart.go`).
 
 ## TUI rendering
 

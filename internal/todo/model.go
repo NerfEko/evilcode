@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Status is a todo item's state.
@@ -159,8 +161,16 @@ type Store struct {
 
 // NewStore opens (or creates) a session's todo state.
 func NewStore(dataDir, session string) (*Store, error) {
+	if session == "" || session == "." || session == ".." ||
+		filepath.Base(session) != session || strings.ContainsAny(session, `/\\`) ||
+		strings.ContainsRune(session, 0) || filepath.IsAbs(session) {
+		return nil, fmt.Errorf("invalid todo namespace %q", session)
+	}
 	s := &Store{Dir: filepath.Join(dataDir, "todos"), Session: session}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(s.Dir, 0o700); err != nil {
 		return nil, err
 	}
 	return s, s.load()
@@ -183,11 +193,16 @@ func (s *Store) load() error {
 // legitimate empty state; anything else — a permissions error, a corrupt
 // file — is real trouble and must not be mistaken for the same thing.
 func readJSON(path string, dst any) error {
-	data, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	data, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
 		return err
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
@@ -260,9 +275,54 @@ func (s *Store) save() error {
 		}
 		staged = append(staged, tmp)
 	}
+	backups := make([]string, len(files))
+	restore := func() error {
+		var restoreErr error
+		for i, f := range files {
+			if backups[i] == "" {
+				continue
+			}
+			if err := os.RemoveAll(f.path); err != nil && !os.IsNotExist(err) {
+				restoreErr = errors.Join(restoreErr, err)
+				continue
+			}
+			if err := os.Rename(backups[i], f.path); err != nil {
+				restoreErr = errors.Join(restoreErr, err)
+			}
+		}
+		return restoreErr
+	}
+	for i, f := range files {
+		if _, err := os.Lstat(f.path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return errors.Join(err, restore())
+		}
+		old, err := os.CreateTemp(filepath.Dir(f.path), ".todo-backup-*")
+		if err != nil {
+			return errors.Join(err, restore())
+		}
+		backupName := old.Name()
+		if err := old.Close(); err != nil {
+			return errors.Join(err, restore())
+		}
+		if err := os.Remove(backupName); err != nil {
+			return errors.Join(err, restore())
+		}
+		if err := os.Rename(f.path, backupName); err != nil {
+			return errors.Join(err, restore())
+		}
+		backups[i] = backupName
+	}
 	for i, f := range files {
 		if err := os.Rename(staged[i], f.path); err != nil {
-			return err
+			return errors.Join(err, restore())
+		}
+	}
+	for _, old := range backups {
+		if old != "" {
+			_ = os.Remove(old)
 		}
 	}
 	return nil

@@ -281,6 +281,16 @@ type RenameResult struct {
 	// Diffs maps path → unified diff, for §9.3 rendering.
 	Before map[string]string
 	After  map[string]string
+	Modes  map[string]os.FileMode
+}
+
+func renameMode(res *RenameResult, path string) os.FileMode {
+	if res != nil && res.Modes != nil {
+		if mode := res.Modes[path]; mode != 0 {
+			return mode
+		}
+	}
+	return 0o644
 }
 
 // Rename renames a symbol across the workspace, atomically.
@@ -327,6 +337,7 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 		Files:  map[string]int{},
 		Before: map[string]string{},
 		After:  map[string]string{},
+		Modes:  map[string]os.FileMode{},
 	}
 	for file, edits := range changes {
 		// The paths come from the language server, which is a subprocess
@@ -346,6 +357,11 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 		}
 		res.Before[file] = string(data)
 		res.After[file] = updated
+		if info, err := os.Stat(file); err == nil {
+			res.Modes[file] = info.Mode().Perm()
+		} else {
+			res.Modes[file] = 0o644
+		}
 		res.Files[file] = len(edits)
 	}
 
@@ -387,10 +403,7 @@ func commitRename(res *RenameResult, forget func(string)) error {
 			rollbackStaging()
 			return fmt.Errorf("%s changed on disk since the rename was computed; refusing to overwrite it", file)
 		}
-		mode := os.FileMode(0o644)
-		if info, err := os.Stat(file); err == nil {
-			mode = info.Mode().Perm()
-		}
+		mode := renameMode(res, file)
 		tmp, err := os.CreateTemp(filepath.Dir(file), "."+filepath.Base(file)+".*")
 		if err != nil {
 			rollbackStaging()
@@ -418,13 +431,19 @@ func commitRename(res *RenameResult, forget func(string)) error {
 	committed := make(map[string]bool, len(staged))
 	for file, tmp := range staged {
 		if err := os.Rename(tmp, file); err != nil {
+			var rollbackErr error
 			for done := range committed {
-				os.WriteFile(done, []byte(res.Before[done]), 0o644)
+				if err := os.WriteFile(done, []byte(res.Before[done]), renameMode(res, done)); err != nil && rollbackErr == nil {
+					rollbackErr = err
+				}
 			}
 			for other, otherTmp := range staged {
 				if !committed[other] && other != file {
 					os.Remove(otherTmp)
 				}
+			}
+			if rollbackErr != nil {
+				return fmt.Errorf("rename failed committing %s: %w (rollback failed: %v)", file, err, rollbackErr)
 			}
 			return fmt.Errorf("rename failed committing %s: %w", file, err)
 		}
@@ -514,8 +533,12 @@ func ApplyEdits(text string, edits []TextEdit) (string, error) {
 		if e.Range.Start.Line < 0 || e.Range.Start.Line >= len(lines) {
 			return "", fmt.Errorf("edit at line %d is outside the file", e.Range.Start.Line+1)
 		}
-		if e.Range.End.Line >= len(lines) {
+		if e.Range.End.Line < 0 || e.Range.End.Line >= len(lines) {
 			return "", fmt.Errorf("edit ends at line %d, past the file", e.Range.End.Line+1)
+		}
+		if e.Range.End.Line < e.Range.Start.Line ||
+			(e.Range.End.Line == e.Range.Start.Line && e.Range.End.Character < e.Range.Start.Character) {
+			return "", fmt.Errorf("edit range ends before it starts")
 		}
 
 		startLine := lines[e.Range.Start.Line]

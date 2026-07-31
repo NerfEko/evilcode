@@ -19,11 +19,6 @@ const (
 	// runs before the bar is painted, so it has to leave room for it.
 	ScrollbarReserve = 2
 
-	// RehomeFrames is how long a slot must be unusable before a widget moves.
-	// Re-homing on the first bad frame makes widgets skitter as text streams
-	// under them; this is the hysteresis that keeps them still (invariant 4).
-	RehomeFrames = 120
-
 	// SettleMargin is the guard band above the live tail: a widget may not be
 	// placed within this many rows of the first row owned by a still-streaming
 	// block, so the next line to arrive does not grow into it (§2.3). It is a
@@ -78,6 +73,10 @@ func (k WidgetKind) PreferredSide() Side {
 type Widget struct {
 	Kind WidgetKind
 
+	// Salience is the frame-local score used to choose the single dock slot.
+	// It is UI state, not content, and is ignored by the painter.
+	Salience float64
+
 	// Title is drawn in the top border. Only WorkspaceMap uses one; the rest
 	// are recognizable by their content, and a title on each would turn the
 	// margin into a wall of labels.
@@ -115,35 +114,19 @@ type Placement struct {
 // anchor remembers where a widget lives between frames, which is what lets it
 // scroll with the text rather than snapping to a fresh slot each frame.
 type anchor struct {
-	// ContentTop is the absolute transcript line the widget's top row rides.
-	ContentTop int
+	// Block and Offset identify the transcript row the widget rides. Block is
+	// -1 for chrome (header/gap/slack), where Offset is the absolute row. A
+	// block-relative anchor survives that block gaining or losing lines above
+	// it; an absolute ContentTop did not.
+	Block  int
+	Offset int
 
 	Side Side
-
-	// BadFrames counts consecutive frames the slot has been unusable.
-	BadFrames int
-
-	// everPlaced records that this widget has actually reached the screen at
-	// some point. Hide-in-place is only correct for a widget the reader has
-	// seen; applying it to one that was never visible is what kept widgets
-	// hidden for 120 frames after they briefly dropped out of the list.
-	//
-	// Sticky rather than per-frame: hiding is itself a not-placed frame, so a
-	// per-frame flag made the widget re-home on the very next tick and the
-	// hysteresis never lasted longer than one frame.
-	everPlaced bool
 }
 
 // Dock places widgets into the blank space beside the transcript.
 type Dock struct {
 	anchors map[WidgetKind]*anchor
-
-	// lastHeight is the transcript's content height last frame. An anchor is an
-	// absolute content line, so anything that removes lines *above* a widget
-	// silently changes what its anchor points at — and the widget lurches. A
-	// collapsing thinking trace does exactly that, going from nine lines to one
-	// the instant the answer starts.
-	lastHeight int
 }
 
 // NewDock builds an empty dock.
@@ -168,10 +151,10 @@ func FreeWidth(rows []string, totalWidth int) []int {
 
 // Layout places widgets and returns where each landed.
 //
-// The two-phase structure is what keeps the screen still (plan.md §8.3):
-// already-placed widgets hold their slot and merely shrink or hide in place
-// when a wide line slides under them, and only re-home after the slot has been
-// unusable for RehomeFrames consecutive frames.
+// An existing anchor holds while its settled slot still fits. If the content
+// makes that slot unusable, it rehomes on this frame; settled placement means
+// ordinary streaming below it cannot churn the slot, so a long delay is not
+// needed and would make displaced widgets disappear for seconds.
 //
 // owner and kindOf carry the per-line block provenance of §1.2, which is what
 // implements the settled-region policy of §2.3: a widget may only sit on rows
@@ -183,18 +166,6 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 	if len(widgets) == 0 || totalWidth <= WidgetMinWidth+WidgetGap {
 		return nil
 	}
-
-	// The transcript got shorter, so lines were removed rather than added and
-	// every anchor below the removal now names the wrong content. Re-home
-	// instead of holding a stale line: a widget that lands somewhere sensible
-	// reads better than one that lurches to wherever its old number now points.
-	//
-	// NOTE: F2.4 replaces this wholesale wipe with block-index anchors that do
-	// not drift; it is kept here only until that task lands.
-	if contentHeight < d.lastHeight {
-		d.anchors = map[WidgetKind]*anchor{}
-	}
-	d.lastHeight = contentHeight
 
 	free := FreeWidth(rows, totalWidth)
 
@@ -210,7 +181,8 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 			// The first visible row owned by the streaming tail is where the
 			// unsettled region begins.
 			first := -1
-			for i, o := range owner {
+			for i := 0; i < len(rows); i++ {
+				o := ownerAt(owner, scrollTop, i)
 				if o == streamingBlock {
 					first = i
 					break
@@ -252,7 +224,7 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 			return false
 		}
 		for i := row; i < row+height; i++ {
-			o := owner[i]
+			o := ownerAt(owner, scrollTop, i)
 			if o != -1 && kindOf(o) == BlockAssistant {
 				return false
 			}
@@ -267,8 +239,6 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 	var out []Placement
 
 	place := func(w Widget, a *anchor, row, height int) Placement {
-		a.everPlaced = true
-		a.BadFrames = 0
 		return Placement{
 			Kind: w.Kind, Row: row, Col: totalWidth - w.Width(),
 			Width: w.Width(), Height: height,
@@ -289,10 +259,10 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 		height := w.Height()
 
 		if a != nil {
-			row := a.ContentTop - scrollTop
+			row, anchored := a.screenRow(owner, scrollTop, len(rows))
 
 			switch {
-			case row < 0 || row+height > len(rows):
+			case !anchored || row < 0 || row+height > len(rows):
 				// The anchored content scrolled out of the viewport. It was not
 				// on screen, so re-homing now cannot be seen as a jump — fall
 				// through without aging. This is what lets a widget scroll with
@@ -305,13 +275,8 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 				continue
 
 			default:
-				// On screen but the slot is taken or left the settled region.
-				// This is the one case hide-in-place is for, and only if it was
-				// visible.
-				a.BadFrames++
-				if a.everPlaced && a.BadFrames < RehomeFrames {
-					continue
-				}
+				// The slot is genuinely unusable. Find a new settled slot now;
+				// if none exists, the widget is absent until one opens.
 			}
 		}
 
@@ -323,7 +288,8 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 			a = &anchor{}
 			d.anchors[w.Kind] = a
 		}
-		a.ContentTop, a.Side = row+scrollTop, side
+		a.Block, a.Offset = anchorAt(owner, scrollTop, row)
+		a.Side = side
 		out = append(out, place(w, a, row, height))
 	}
 	// One slot: keep only the first placement. The widget that holds the slot
@@ -333,6 +299,54 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 		out = out[:1]
 	}
 	return out
+}
+
+// ownerAt maps a visible row back to the full transcript provenance. Keeping
+// the full Owner slice here matters: a block can be partly above the viewport,
+// and its first visible row is not necessarily its first row.
+func ownerAt(owner []int, scrollTop, row int) int {
+	if owner == nil {
+		return -1
+	}
+	i := scrollTop + row
+	if i < 0 || i >= len(owner) {
+		return -1
+	}
+	return owner[i]
+}
+
+// anchorAt converts a screen row into a block-relative anchor. Chrome has no
+// block index, so its absolute content row is retained as the -1 fallback.
+func anchorAt(owner []int, scrollTop, row int) (int, int) {
+	global := scrollTop + row
+	if owner == nil || global < 0 || global >= len(owner) || owner[global] < 0 {
+		return -1, global
+	}
+	block := owner[global]
+	first := global
+	for first > 0 && owner[first-1] == block {
+		first--
+	}
+	return block, global - first
+}
+
+// screenRow resolves a block-relative anchor against this frame's Owner data.
+func (a *anchor) screenRow(owner []int, scrollTop, visible int) (int, bool) {
+	if a.Block < 0 {
+		return a.Offset - scrollTop, true
+	}
+	first := -1
+	for i, block := range owner {
+		if block == a.Block {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return 0, false
+	}
+	row := first + a.Offset - scrollTop
+	return row, row >= -visible && row <= visible
 }
 
 // fits reports whether a widget can sit at row: the rows are in range and the

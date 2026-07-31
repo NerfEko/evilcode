@@ -1,14 +1,14 @@
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit /selfdev
+ session: Dracula 🧛                                                                                                ╭──────────────────────╮
+ /model to switch · local:mock · mock-large                                                                         │ Context 436/200k     │
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ skills: /agent-architect /agent-browser /commit /dreaming +15 more                                                 ╰──────────────────────╯
  <repo> (main)
 
  Here is the plan.
- ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮               ╭──────────────────────╮
- │ Goal                                                                                             │               │ Context 436/200k     │
- │ Make the refresh path survive a cold start.                                                      │               │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
- │                                                                                                  │               ╰──────────────────────╯
+ ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮
+ │ Goal                                                                                             │
+ │ Make the refresh path survive a cold start.                                                      │
+ │                                                                                                  │
  │ Approach                                                                                         │
  │ 1. Read the callback handler                                                                     │
  │ 2. Add the retry gate                                                                            │

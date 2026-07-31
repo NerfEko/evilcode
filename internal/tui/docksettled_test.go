@@ -172,4 +172,43 @@ func TestSettledRegionExcludesAssistantProse(t *testing.T) {
 	}
 }
 
+func TestDockAnchorFollowsBlockAfterRowsAboveCollapse(t *testing.T) {
+	// A line-number anchor points at the wrong content when a reasoning block
+	// above it collapses. The block-relative anchor must follow the tool block.
+	rows := make([]string, 18)
+	owner := make([]int, len(rows))
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+		if i < 8 {
+			owner[i] = 0 // assistant/reasoning above the widget
+		} else {
+			owner[i] = 1 // settled tool block the widget rides
+		}
+	}
+	widgets := []Widget{widget(WidgetTodos, 3)}
+	d := NewDock()
+	kindOf := kindOfFixed(BlockAssistant, BlockTool)
+	first := d.Layout(widgets, rows, owner, kindOf, -1, 100, 0, len(rows), false)
+	if len(first) != 1 || first[0].Row != 8 {
+		t.Fatalf("initial placement = %+v, want row 8 in the tool block", first)
+	}
+
+	// The assistant block shrinks from eight rows to one. The tool block is now
+	// at row 1, and the widget must move with it instead of holding stale row 8.
+	rows = make([]string, 11)
+	owner = make([]int, len(rows))
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+		if i == 0 {
+			owner[i] = 0
+		} else {
+			owner[i] = 1
+		}
+	}
+	second := d.Layout(widgets, rows, owner, kindOf, -1, 100, 0, len(rows), false)
+	if len(second) != 1 || second[0].Row != 1 {
+		t.Fatalf("after collapse placement = %+v, want row 1 in the same tool block", second)
+	}
+}
+
 // (test helpers kept minimal; strings.Repeat is used directly.)

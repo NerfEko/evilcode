@@ -1,11 +1,14 @@
 package session
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"evilcode/internal/provider"
@@ -95,39 +98,49 @@ func RewindPoints(path string) ([]RewindPoint, error) {
 // Written through a temp file and synced, so an interrupted backup cannot
 // destroy the previous one and a rename that lands cannot precede its contents.
 func backup(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readSessionFile(path)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".bak.tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, FilePerm)
+	return writeSessionFile(path+".bak", data)
+}
+
+// writeSessionFile replaces a session sidecar or log through a unique,
+// no-follow temp file. Fixed .tmp names can be planted as symlinks and then
+// followed by os.WriteFile; rename of the finished temp replaces that link
+// instead of writing through it.
+func writeSessionFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(FilePerm); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := os.Rename(tmp, path+".bak"); err != nil {
+	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// Sync the directory too: without it the rename can be lost to a crash
-	// while the primary log has already been replaced, which is the one
-	// outcome this whole function exists to prevent.
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	dirErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(dirErr, closeErr)
 }
 
 // Rewind truncates a session back to an entry index and returns the resulting
@@ -163,11 +176,7 @@ func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
 		b.Write(line)
 		b.WriteByte('\n')
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), FilePerm); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := writeSessionFile(path, []byte(b.String())); err != nil {
 		return nil, err
 	}
 	return Messages(path)
@@ -234,8 +243,8 @@ func CollapseSummary(discarded []provider.Message) string {
 	fmt.Fprintf(&b, "The removed stretch contained %d prompt(s) and %d tool call(s). ", prompts, tools)
 	if lastAssistant != "" {
 		summary := lastAssistant
-		if len(summary) > 400 {
-			summary = summary[:400] + "…"
+		if runes := []rune(summary); len(runes) > 400 {
+			summary = string(runes[:400]) + "…"
 		}
 		b.WriteString("Where it left off: " + summary + " ")
 	}
@@ -252,12 +261,12 @@ func Save(dataDir, name string, pinned bool) error {
 	// Not st.Close(): this is a side channel onto a log the real session may
 	// still hold open, and Close's clean_exit marker would falsely mark a
 	// live session as having exited cleanly (H5.11).
-	defer st.closeFile()
 	kind := MetaSaved
 	if !pinned {
 		kind = MetaUnsaved
 	}
-	return st.WriteMeta(Meta{Kind: kind})
+	writeErr := st.WriteMeta(Meta{Kind: kind})
+	return errors.Join(writeErr, st.closeFile())
 }
 
 // Rename moves a session's file, refusing to overwrite an existing one.
@@ -277,44 +286,56 @@ func Rename(dataDir, from, to string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(dst); err == nil {
-		return fmt.Errorf("session %q already exists", to)
-	}
-	if err := os.Rename(src, dst); err != nil {
-		return err
-	}
-	// The attachments travel with the log. Left behind, every image reference
-	// in the renamed session resolves to nothing and the pictures vanish on the
-	// next resume.
-	if _, err := os.Stat(blobDir(src)); err == nil {
-		return os.Rename(blobDir(src), blobDir(dst))
-	}
-	return nil
+	return moveSession(src, dst)
 }
 
 // Transfer compacts a session into a summary handoff in a fresh one, carrying
 // the durable state across (plan.md §18).
 func Transfer(dataDir, from, to, summary string) error {
-	dst, err := pathFor(dataDir, to)
+	st, err := createExclusive(dataDir, to)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(dst); err == nil {
-		return fmt.Errorf("session %q already exists", to)
-	}
-	st, err := Open(dataDir, to)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
+	ok := false
+	defer func() {
+		_ = st.Close()
+		if !ok {
+			_ = os.Remove(st.Path)
+		}
+	}()
 
 	if err := st.WriteMeta(Meta{Kind: MetaStart, Note: "transferred from " + from}); err != nil {
 		return err
 	}
-	return st.WriteMessage(provider.Message{
+	if err := st.WriteMessage(provider.Message{
 		Role:    provider.RoleUser,
 		Content: "[transferred] Continuing from session " + from + ".\n\n" + summary,
-	})
+	}); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func createExclusive(dataDir, name string) (*Store, error) {
+	path, err := pathFor(dataDir, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(Dir(dataDir), DirPerm); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, FilePerm)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(FilePerm); err != nil {
+		return nil, errors.Join(err, f.Close(), os.Remove(path))
+	}
+	return &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}, nil
 }
 
 // DeriveTitle picks a session's display title.
@@ -388,11 +409,7 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 		write(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), FilePerm); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := writeSessionFile(path, []byte(b.String())); err != nil {
 		return nil, err
 	}
 	return Messages(path)

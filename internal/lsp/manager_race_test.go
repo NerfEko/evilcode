@@ -69,3 +69,35 @@ func TestConcurrentForStartsOneServerPerLanguage(t *testing.T) {
 		}
 	}
 }
+
+func TestCloseDoesNotPublishASlowStartingClient(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	m := &Manager{
+		Root:     t.TempDir(),
+		Commands: map[string][]string{"go": {"gopls"}},
+		clients:  map[string]*Client{},
+		failed:   map[string]error{},
+		start: func(context.Context, string, string, []string) (*Client, error) {
+			close(started)
+			<-finish
+			return &Client{Name: "gopls"}, nil
+		},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := m.For(context.Background(), "main.go")
+		result <- err
+	}()
+	<-started
+	m.Close()
+	close(finish)
+	if err := <-result; err == nil {
+		t.Fatal("a client started after manager close")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.clients) != 0 {
+		t.Fatalf("closed manager published %d clients", len(m.clients))
+	}
+}

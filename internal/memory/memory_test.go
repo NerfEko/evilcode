@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -242,6 +243,39 @@ func TestReloadSkipsCorruptLines(t *testing.T) {
 	}
 }
 
+func TestReloadRemovesMalformedTailBeforeTheNextAppend(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	s.Add("keep me", KindFact, "a", vec(1, 0), time.Now())
+	s.Close()
+	path := filepath.Join(dir, FileName)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"id":2,"text":"truncated`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := again.Add("new record", KindFact, "a", vec(0, 1), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	again.Close()
+	final, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer final.Close()
+	if final.Len() != 2 {
+		t.Errorf("reload after appending over a crash tail has %d memories, want 2", final.Len())
+	}
+}
+
 func TestReloadErrorsOnMidLogCorruption(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)
@@ -321,6 +355,34 @@ type stubRouter struct {
 func (s *stubRouter) SideCall(_ context.Context, role, _, user string) (string, error) {
 	s.role, s.user = role, user
 	return s.reply, s.err
+}
+
+type blockingRouter struct {
+	mu      sync.Mutex
+	started chan struct{}
+	release chan struct{}
+	replies []string
+	inputs  []string
+	calls   int
+}
+
+func (r *blockingRouter) SideCall(_ context.Context, _ string, _, user string) (string, error) {
+	r.mu.Lock()
+	i := r.calls
+	r.calls++
+	r.inputs = append(r.inputs, user)
+	r.mu.Unlock()
+	if i == 0 {
+		close(r.started)
+		<-r.release
+	}
+	return r.replies[i], nil
+}
+
+func (r *blockingRouter) inputsSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.inputs...)
 }
 
 func TestRecallInjectsAboveThresholdOnly(t *testing.T) {
@@ -479,6 +541,48 @@ func TestExtractKeepsTranscriptOnUnparsableReply(t *testing.T) {
 	}
 	if text, _ := m.peekTranscript(); !strings.Contains(text, "the user deploys with make release") {
 		t.Errorf("an unparsable reply must not drain the transcript, got %q", text)
+	}
+}
+
+func TestExtractKeepsTranscriptWhenMemorySaveFails(t *testing.T) {
+	store := openTemp(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(store, nil, &stubRouter{reply: `[{"text":"keep this","kind":"fact"}]`}, "a", true)
+	m.ObserveTurn("the user deploys with make release")
+
+	if _, err := m.Extract(context.Background()); err == nil {
+		t.Fatal("expected the closed memory store to reject the extracted record")
+	}
+	if text, _ := m.peekTranscript(); text == "" {
+		t.Fatal("a failed memory save must leave the source transcript queued")
+	}
+}
+
+func TestExtractSerializesSlowCalls(t *testing.T) {
+	router := &blockingRouter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		replies: []string{"[]", "[]"},
+	}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	m.ObserveTurn("first exchange")
+
+	done := make(chan error, 2)
+	go func() { _, err := m.Extract(context.Background()); done <- err }()
+	<-router.started
+	m.ObserveTurn("second exchange")
+	go func() { _, err := m.Extract(context.Background()); done <- err }()
+	close(router.release)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	inputs := router.inputsSnapshot()
+	if len(inputs) != 2 || !strings.Contains(inputs[1], "second exchange") {
+		t.Fatalf("serialized extraction inputs = %q, want the second call to see the queued turn", inputs)
 	}
 }
 

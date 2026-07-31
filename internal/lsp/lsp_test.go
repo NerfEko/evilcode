@@ -65,6 +65,16 @@ func TestApplyEditsRefusesAnOutOfRangeEdit(t *testing.T) {
 	}); err == nil {
 		t.Error("an edit past the end of a line was accepted")
 	}
+	if _, err := ApplyEdits("short\n", []TextEdit{
+		{Range: Range{Position{0, 0}, Position{-1, 0}}, NewText: "x"},
+	}); err == nil {
+		t.Error("an edit with a negative end line was accepted")
+	}
+	if _, err := ApplyEdits("short\n", []TextEdit{
+		{Range: Range{Position{0, 4}, Position{0, 2}}, NewText: "x"},
+	}); err == nil {
+		t.Error("an edit whose end precedes its start was accepted")
+	}
 }
 
 func TestURIRoundTrip(t *testing.T) {

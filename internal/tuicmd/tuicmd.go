@@ -25,7 +25,7 @@ import (
 )
 
 // Version is the build's version string.
-const Version = "v0.1.0"
+var Version = "v0.1.0"
 
 // Run starts the interactive TUI.
 // Run starts the interactive TUI, and re-enters it for each session switch.
@@ -159,7 +159,9 @@ func runOnce(args []string) (string, error) {
 
 	// Memory first in the chain: it never appends, so it must not sit behind a
 	// hook that does, or an auto-poked turn is never observed.
-	a.Hooks = agent.Chain{agent.NewMemoryHook(mem), poke}
+	memoryHook := agent.NewMemoryHook(mem)
+	defer memoryHook.Close()
+	a.Hooks = agent.Chain{memoryHook, poke}
 
 	// Compaction persists through the session store rather than only in memory:
 	// assigning the message slice was what made a compacted session come back

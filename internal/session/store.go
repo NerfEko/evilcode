@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,6 +71,10 @@ type Store struct {
 	mu   sync.Mutex
 	file *os.File
 	w    *bufio.Writer
+
+	closeOnce sync.Once
+	closeErr  error
+	closed    bool
 }
 
 // Dir returns the sessions directory under the data directory.
@@ -134,6 +139,9 @@ func Open(dataDir, name string) (*Store, error) {
 	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(Dir(dataDir), DirPerm); err != nil {
+		return nil, err
+	}
 	// O_NOFOLLOW: pathFor is lexical, so a name that is a perfectly good
 	// basename can still be a symlink pointing out of the sessions directory —
 	// planted by anything that can write there, or by an earlier version of
@@ -144,6 +152,10 @@ func Open(dataDir, name string) (*Store, error) {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, fmt.Errorf("session %q is a symlink; refusing to write through it", name)
 		}
+		return nil, err
+	}
+	if err := f.Chmod(FilePerm); err != nil {
+		f.Close()
 		return nil, err
 	}
 	return &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}, nil
@@ -215,6 +227,9 @@ func CreateNamed(dataDir, name string) (*Store, error) {
 	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(Dir(dataDir), DirPerm); err != nil {
+		return nil, err
+	}
 
 	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY | os.O_APPEND | syscall.O_NOFOLLOW
 	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
@@ -224,14 +239,17 @@ func CreateNamed(dataDir, name string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.Chmod(FilePerm); err != nil {
+		f.Close()
+		return nil, err
+	}
 	st := &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}
 	cwd, _ := os.Getwd()
 	if err := st.WriteMeta(Meta{Kind: MetaStart, Cwd: cwd}); err != nil {
 		// A store returned alongside an error is a store nobody closes: the
 		// caller takes the error path and the descriptor, and the claimed name,
 		// stay held for the life of the process.
-		f.Close()
-		return nil, err
+		return nil, errors.Join(err, f.Close(), os.Remove(path))
 	}
 	return st, nil
 }
@@ -247,6 +265,9 @@ func (s *Store) Append(e Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.file == nil || s.w == nil {
+		return errors.New("session store is closed")
+	}
 	if _, err := s.w.Write(append(line, '\n')); err != nil {
 		return err
 	}
@@ -317,21 +338,56 @@ func (s *Store) Rename(dataDir, to string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src := s.Path
-	if _, err := os.Stat(dst); err == nil {
-		return fmt.Errorf("session %q already exists", to)
-	}
-	if err := os.Rename(src, dst); err != nil {
+	if err := moveSession(src, dst); err != nil {
 		return err
-	}
-	// The attachments travel with the log. Left behind, every image reference
-	// in the renamed session resolves to nothing on the next resume.
-	if _, err := os.Stat(blobDir(src)); err == nil {
-		if err := os.Rename(blobDir(src), blobDir(dst)); err != nil {
-			return err
-		}
 	}
 	s.Name = to
 	s.Path = dst
+	return nil
+}
+
+// moveSession moves a log and its attachment directory without overwriting a
+// destination. Linking the log first gives us a rollback point if moving the
+// blobs fails; os.Rename alone would silently replace a destination that
+// appeared after the existence check.
+func moveSession(src, dst string) error {
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("session %q already exists", strings.TrimSuffix(filepath.Base(dst), ".jsonl"))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Link(src, dst); err != nil {
+		return err
+	}
+	removeLink := true
+	defer func() {
+		if removeLink {
+			_ = os.Remove(dst)
+		}
+	}()
+
+	srcBlobs, dstBlobs := blobDir(src), blobDir(dst)
+	blobMoved := false
+	if _, err := os.Lstat(srcBlobs); err == nil {
+		if _, err := os.Lstat(dstBlobs); err == nil {
+			return fmt.Errorf("session attachments already exist at %s", dstBlobs)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(srcBlobs, dstBlobs); err != nil {
+			return err
+		}
+		blobMoved = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Remove(src); err != nil {
+		if blobMoved {
+			_ = os.Rename(dstBlobs, srcBlobs)
+		}
+		return err
+	}
+	removeLink = false
 	return nil
 }
 
@@ -341,6 +397,9 @@ func (s *Store) Rename(dataDir, to string) error {
 // orphaned inode — the window is narrow but it is a busy one, since a rewrite
 // is proportional to the size of the log.
 func (s *Store) reopenLocked() error {
+	if s.closed {
+		return errors.New("session store is closed")
+	}
 	// Flush to the old inode first: whatever is still buffered was written
 	// before the rewrite and belongs to the file that is now the backup.
 	var flushErr error
@@ -366,8 +425,14 @@ func (s *Store) reopenLocked() error {
 // here used to skip closeFile entirely, leaking the fd for the life of the
 // process on top of whatever the meta-write error already reported (H5.12).
 func (s *Store) Close() error {
-	metaErr := s.WriteMeta(Meta{Kind: MetaCleanExit})
-	return errors.Join(metaErr, s.closeFile())
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		metaErr := s.WriteMeta(Meta{Kind: MetaCleanExit})
+		s.closeErr = errors.Join(metaErr, s.closeFile())
+	})
+	return s.closeErr
 }
 
 // closeFile flushes and releases the descriptor without a lifecycle marker.
@@ -379,10 +444,14 @@ func (s *Store) Close() error {
 func (s *Store) closeFile() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.file == nil || s.w == nil {
+		return nil
+	}
 	// Both run regardless of the other's outcome: a flush failure used to
 	// return before file.Close(), leaking the descriptor (H5.12).
 	flushErr := s.w.Flush()
 	closeErr := s.file.Close()
+	s.file, s.w = nil, nil
 	return errors.Join(flushErr, closeErr)
 }
 
@@ -507,7 +576,7 @@ func Describe(dataDir, name string) (Info, error) {
 // mid-log corruption, and returns an error naming its line number rather than
 // vanishing silently before the next write buries the evidence.
 func Read(path string) ([]Entry, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -549,11 +618,76 @@ func Read(path string) ([]Entry, error) {
 		return nil, err
 	}
 	if havePending {
+		var probe Entry
+		badFinal := json.Unmarshal([]byte(pendingLine), &probe) != nil
 		if err := parse(pendingNo, pendingLine, true); err != nil {
 			return nil, err
 		}
+		if badFinal {
+			end, err := f.Seek(0, io.SeekEnd)
+			if err != nil {
+				return nil, err
+			}
+			cut := end - int64(len(pendingLine))
+			if cut < 0 {
+				return nil, fmt.Errorf("%s: malformed final session record has an invalid offset", path)
+			}
+			if err := f.Truncate(cut); err != nil {
+				return nil, err
+			}
+			if err := f.Sync(); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return out, nil
+}
+
+func truncateLastRecord(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	end, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	if end > 0 {
+		var last [1]byte
+		if _, err := f.ReadAt(last[:], end-1); err != nil {
+			return err
+		}
+		if last[0] == '\n' {
+			end--
+		}
+	}
+	const blockSize = 4096
+	var block [blockSize]byte
+	for end > 0 {
+		n := int64(len(block))
+		if n > end {
+			n = end
+		}
+		start := end - n
+		if _, err := f.ReadAt(block[:n], start); err != nil {
+			return err
+		}
+		for i := int(n) - 1; i >= 0; i-- {
+			if block[i] == '\n' {
+				end = start + int64(i) + 1
+				if err := f.Truncate(end); err != nil {
+					return err
+				}
+				return f.Sync()
+			}
+		}
+		end = start
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // stubMissingResult marks a tool_call replayed with no matching result — the
@@ -583,6 +717,9 @@ func Messages(path string) ([]provider.Message, error) {
 		m, err := decodeMessage(path, e.Data)
 		if err != nil {
 			if i == len(entries)-1 {
+				if trimErr := truncateLastRecord(path); trimErr != nil {
+					return nil, errors.Join(err, trimErr)
+				}
 				break
 			}
 			return nil, fmt.Errorf("%s: malformed message record (entry %d): %w", path, i+1, err)
@@ -646,8 +783,7 @@ func Resume(dataDir, name string) (*Store, []provider.Message, error) {
 	// if this run crashes without ever closing, the log's last lifecycle marker
 	// is this one, not the stale clean_exit from the run being resumed.
 	if err := st.WriteMeta(Meta{Kind: MetaOpen}); err != nil {
-		st.file.Close()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, st.closeFile())
 	}
 	return st, msgs, nil
 }
@@ -662,17 +798,63 @@ func Fork(dataDir, from, to string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(dst); err == nil {
+	if _, err := os.Lstat(dst); err == nil {
 		return fmt.Errorf("session %q already exists", to)
 	}
-	data, rerr := os.ReadFile(src)
+	if _, err := os.Lstat(blobDir(dst)); err == nil {
+		return fmt.Errorf("session attachments already exist at %s", to)
+	}
+	data, rerr := readSessionFile(src)
 	if rerr != nil {
 		return rerr
 	}
-	if err := os.WriteFile(dst, data, FilePerm); err != nil {
+	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
 		return err
 	}
-	return copyBlobs(blobDir(src), blobDir(dst))
+	tmp, err := os.CreateTemp(Dir(dataDir), ".fork-*.jsonl")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(FilePerm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	blobTmp, err := os.MkdirTemp(Dir(dataDir), ".fork-blobs-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(blobTmp)
+	if err := copyBlobs(blobDir(src), blobTmp); err != nil {
+		return err
+	}
+	blobEntries, err := os.ReadDir(blobTmp)
+	if err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, dst); err != nil {
+		return err
+	}
+	if len(blobEntries) > 0 {
+		if err := os.Rename(blobTmp, blobDir(dst)); err != nil {
+			_ = os.Remove(dst)
+			return err
+		}
+	}
+	return nil
 }
 
 // copyBlobs duplicates a session's attachments alongside a fork. Content-
@@ -689,10 +871,10 @@ func copyBlobs(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		data, err := readBlob(filepath.Join(src, e.Name()))
 		if err != nil {
 			return err
 		}

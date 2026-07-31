@@ -1,7 +1,7 @@
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit /selfdev
- <repo> (main)
-
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                   ╭────────────────────────────────╮
+ skills: /agent-architect /agent-browser /commit /dreaming +15 more                                       │ 💡 Ctrl+R searches your prompt │
+ <repo> (main)                                                                       │ history                        │
+                                                                                                          ╰────────────────────────────────╯
  1› explain the config
 
    ▸ thought (9 lines)

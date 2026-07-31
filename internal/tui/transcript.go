@@ -48,14 +48,19 @@ type Block struct {
 	Decay int
 
 	// Tool row fields (plan.md §9.5).
-	ToolName   string
-	ToolTarget string
-	ToolIntent string
-	ToolTokens int
-	Added      int
-	Removed    int
-	HasDiff    bool
-	Failed     bool
+	ToolName         string
+	ToolTarget       string
+	ToolIntent       string
+	ToolPath         string
+	ToolCommand      string
+	ToolOutput       string
+	ToolTokens       int
+	Added            int
+	Removed          int
+	HasDiff          bool
+	Failed           bool
+	ToolPathExists   bool
+	ToolPathMarkdown bool
 
 	// Diff is a unified diff rendered inline (§9.3).
 	Diff string
@@ -79,7 +84,26 @@ type Block struct {
 	// cache holds the rendered lines, keyed by the width they were made for.
 	cache      []string
 	cacheWidth int
-	cacheKey   string
+	cacheKey   blockCacheKey
+}
+
+// blockCacheKey deliberately keeps the source strings as strings instead of
+// formatting the whole block into one key. String headers are cheap to copy and
+// unchanged strings compare without allocating; the old fmt.Sprintf key copied
+// every byte of a long reply on every repaint, even when the cache hit.
+type blockCacheKey struct {
+	kind, number, decay                                          int
+	toolTokens, added, removed                                   int
+	text, toolName, toolTarget, toolIntent                       string
+	toolPath, toolCommand, toolOutput                            string
+	diff                                                         string
+	hasDiff, failed, collapsed, toolPathExists, toolPathMarkdown bool
+	graphics                                                     graphics.Protocol
+	imagesOn, centered, toolDetails                              bool
+	diffMode                                                     DiffMode
+	imagePath                                                    string
+	imageCols, imageRows, imageID                                int
+	imageBytes                                                   int
 }
 
 // Rows is a rendered transcript plus the provenance of every line. Owner[i] is
@@ -160,7 +184,7 @@ func rgbStyle(r, g, b uint8) lipgloss.Style {
 
 // Lines renders a block, using its cache when the width has not changed.
 func (r *Renderer) Lines(b *Block) []string {
-	key := b.cacheContentKey()
+	key := b.cacheContentKey(r)
 	if !b.Streaming && b.cache != nil && b.cacheWidth == r.Width && b.cacheKey == key {
 		return b.cache
 	}
@@ -171,8 +195,20 @@ func (r *Renderer) Lines(b *Block) []string {
 	return lines
 }
 
-func (b *Block) cacheContentKey() string {
-	return fmt.Sprintf("%d|%d|%d|%v|%s|%s", b.Kind, b.Number, b.Decay, b.Collapsed, b.Text, b.Diff)
+func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
+	return blockCacheKey{
+		kind: int(b.Kind), number: b.Number, decay: b.Decay,
+		toolTokens: b.ToolTokens, added: b.Added, removed: b.Removed,
+		text: b.Text, toolName: b.ToolName, toolTarget: b.ToolTarget,
+		toolIntent: b.ToolIntent, toolPath: b.ToolPath,
+		toolCommand: b.ToolCommand, toolOutput: b.ToolOutput, diff: b.Diff,
+		hasDiff: b.HasDiff, failed: b.Failed, collapsed: b.Collapsed,
+		toolPathExists: b.ToolPathExists, toolPathMarkdown: b.ToolPathMarkdown,
+		graphics: r.Graphics, imagesOn: r.ImagesOn, centered: r.Centered,
+		toolDetails: r.ToolDetails, diffMode: r.DiffMode,
+		imagePath: b.Image.Path, imageCols: b.Image.Cols, imageRows: b.Image.Rows,
+		imageID: b.Image.ID, imageBytes: len(b.Image.PNG),
+	}
 }
 
 // AtWidth returns a renderer that lays out into a narrower region, reusing the
@@ -207,6 +243,7 @@ func (r *Renderer) render(b *Block) []string {
 	clean.ToolName = core.SanitizeTerminal(b.ToolName)
 	clean.ToolTarget = core.SanitizeTerminal(b.ToolTarget)
 	clean.ToolIntent = core.SanitizeTerminal(b.ToolIntent)
+	clean.ToolPath = core.SanitizeTerminal(b.ToolPath)
 	clean.Diff = core.SanitizeTerminal(b.Diff)
 	b = &clean
 
@@ -371,6 +408,9 @@ func (r *Renderer) renderTool(b *Block) []string {
 	dim := r.style(theme.RoleDim)
 	toolStyle := r.style(theme.RoleTool)
 	link := r.style(theme.RoleFileLink)
+	if b.ToolPathMarkdown && b.ToolPathExists {
+		link = link.Underline(true)
+	}
 
 	var b2 strings.Builder
 	b2.WriteString("  " + iconStyle.Render(icon) + " " + toolStyle.Render(b.ToolName))
@@ -393,7 +433,11 @@ func (r *Renderer) renderTool(b *Block) []string {
 
 	out := []string{b2.String()}
 	if b.Diff != "" && r.DiffMode == DiffInline {
-		out = append(out, r.renderDiffLang(b.Diff, langFromPath(b.ToolTarget))...)
+		path := b.ToolPath
+		if path == "" {
+			path = b.ToolTarget
+		}
+		out = append(out, r.renderDiffLang(b.Diff, langFromPath(path))...)
 	}
 	return out
 }

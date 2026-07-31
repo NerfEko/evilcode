@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"evilcode/internal/provider"
 )
@@ -103,11 +106,41 @@ func decodeMessage(path string, data []byte) (provider.Message, error) {
 	// the change.
 	m.Images = stored.Images
 	for _, ref := range stored.Refs {
-		img, err := os.ReadFile(filepath.Join(blobDir(path), ref))
+		if ref == "" || filepath.Base(ref) != ref || strings.ContainsAny(ref, `/\\`) {
+			continue
+		}
+		img, err := readBlob(filepath.Join(blobDir(path), ref))
 		if err != nil {
 			continue
 		}
 		m.Images = append(m.Images, img)
 	}
 	return m, nil
+}
+
+const maxBlobBytes = 4 << 20
+
+func readBlob(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBlobBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBlobBytes {
+		return nil, fmt.Errorf("image blob exceeds %d bytes", maxBlobBytes)
+	}
+	return data, nil
+}
+
+func readSessionFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }

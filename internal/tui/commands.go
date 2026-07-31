@@ -31,6 +31,12 @@ var Commands = []Command{
 	{Name: "plan", Help: "Plan before implementing",
 		Long: "Injects a planning turn: the model researches and returns a plan card,\n" +
 			"then stops. Approval is conversational — it starts work when you say so."},
+	{Name: "review", Help: "Review a path or this branch",
+		Long: "/review [path|this branch]\n\nReviews correctness first, then clarity, then genuinely dangerous issues."},
+	{Name: "bugfix", Help: "Reproduce and fix a bug",
+		Long: "/bugfix <symptom>\n\nReproduces with a failing test before fixing and proving it passes."},
+	{Name: "describe", Help: "Explain code structure",
+		Long: "/describe [path]\n\nExplains the structure and behavior for someone new to the codebase."},
 	{Name: "todos", Help: "Toggle the todo card"},
 	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
 	{Name: "poke", Help: "Auto-poke on/off/status"},
@@ -63,7 +69,11 @@ var Commands = []Command{
 	{Name: "cls", Help: "Clear the transcript", Hidden: true},
 
 	{Name: "context", Help: "Show context usage"},
+	{Name: "stats", Help: "Show current session statistics"},
 	{Name: "info", Help: "Show session info"},
+	{Name: "login", Help: "Set or inspect Ollama Cloud login",
+		Long: "/login        enter a masked Ollama Cloud API key\n" +
+			"/login status report whether a key is present without printing it."},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
 	{Name: "theme", Help: "Switch, score, or generate a palette",
@@ -158,15 +168,15 @@ type HelpSection struct {
 // shows them under "More commands". A newly registered command can therefore
 // never be invisible (plan.md §5.5).
 var HelpSections = []HelpSection{
-	{"Getting around", []string{"help", "keys", "context", "info", "version"}},
+	{"Getting around", []string{"help", "keys", "context", "stats", "info", "version"}},
 	{"Models", []string{"model", "models"}},
-	{"Working", []string{"plan", "todos", "poke", "memory"}},
+	{"Working", []string{"plan", "review", "bugfix", "describe", "todos", "poke", "memory"}},
 	{"Swarm", []string{"summon", "agents"}},
 	{"Analysis", []string{"lsp", "advisor", "productivity", "overnight"}},
 	{"Self-development", []string{"selfdev", "rebuild", "reload"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
-	{"System", []string{"config", "theme", "terminal-setup", "screenshot",
+	{"System", []string{"config", "theme", "login", "terminal-setup", "screenshot",
 		"compact", "fix", "btw", "cancel", "quit"}},
 }
 

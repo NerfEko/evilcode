@@ -58,6 +58,10 @@ type PanelContent struct {
 
 	// Body is free-form pinned content (a `/btw` answer, pinned markdown).
 	Body []string
+
+	// Code asks the panel to syntax-highlight Body as a file preview. It is
+	// used by read quick views; ordinary side-panel text stays plain.
+	Code bool
 }
 
 // Empty reports whether there is nothing to show.
@@ -97,6 +101,8 @@ func (r *Renderer) RenderSidePanel(c PanelContent, mode DiffMode, width, height 
 		body = r.fileDiffLines(c.Path, c.Diff, inner)
 	case c.Diff != "":
 		body = r.renderDiffLang(c.Diff, langFromPath(c.Path))
+	case c.Code:
+		body = HighlightLines(langFromPath(c.Path), strings.Join(c.Body, "\n"))
 	default:
 		body = make([]string, len(c.Body))
 		for i, line := range c.Body {

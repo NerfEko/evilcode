@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -471,4 +472,62 @@ func TestOverridesApplyToTheResolvedModel(t *testing.T) {
 	if got := cfg.ModelOverrides(""); got.AnchorEdits {
 		t.Error("an empty ref should not match an override; that is the bug")
 	}
+}
+
+func TestSaveProviderAPIKeyPreservesUnknownTOMLAndUses0600(t *testing.T) {
+	path := write(t, `default_model = "glm@ollama-cloud"
+unknown_setting = "keep me"
+
+[[provider]]
+name = "ollama-cloud"
+kind = "ollama"
+base_url = "https://ollama.com"
+api_key_env = "OLLAMA_API_KEY"
+api_key = "old"
+
+[[provider]]
+name = "future"
+kind = "mock"
+future_setting = "also keep"
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+	key := "sk-test-secret"
+	if err := SaveProviderAPIKey("ollama-cloud", key); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !containsAll(text, "unknown_setting = \"keep me\"", "future_setting = \"also keep\"") {
+		t.Fatalf("writer dropped unknown TOML: %s", text)
+	}
+	if !containsAll(text, "api_key = \""+key+"\"") {
+		t.Fatalf("writer did not update provider key: %s", text)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("config mode = %o, want 0600", info.Mode().Perm())
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Providers[0].APIKeyValue(); got != key {
+		t.Fatalf("loaded key = %q, want saved key", got)
+	}
+}
+
+func containsAll(text string, values ...string) bool {
+	for _, value := range values {
+		if !strings.Contains(text, value) {
+			return false
+		}
+	}
+	return true
 }

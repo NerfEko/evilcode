@@ -25,10 +25,10 @@ subcommands:
   run        headless one-shot: evilcode run "prompt"
   serve      background daemon hosting sessions
   attach     attach a TUI to a running daemon session
+  update     fetch, test, and atomically install the newest build
   completions print a shell completion script: bash | zsh | fish
   probe      self-test rig; see 'evilcode probe -h'
   dictate    speech-to-text into the composer
-  completions generate a shell completion script (bash, zsh, fish)
 
 Run 'evilcode <subcommand> -h' for subcommand flags.
 `
@@ -62,6 +62,8 @@ func run(args []string) error {
 		return servecmd.Run(args)
 	case "attach":
 		return attachcmd.Run(args)
+	case "update":
+		return runUpdate()
 	case "completions":
 		return completions.RunCompletions(args)
 	case "__complete":

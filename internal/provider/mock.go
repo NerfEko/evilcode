@@ -340,6 +340,41 @@ var mockScenarios = map[string][][]Chunk{
 		append(text("All three came back clean."), done(600, 8)),
 	},
 
+	// The whole F2.7 transition in one turn: a reasoning trace collapses when
+	// prose starts, then a batched tool result lands before the final answer.
+	// Keeping this scripted makes the visual check repeatable without a live
+	// provider or a deliberately slow test-only clock.
+	"f27": {
+		{
+			{Reasoning: "I am tracing the request path before answering.\n"},
+			{Reasoning: "The settled transcript must keep the dock out of the tail.\n"},
+			{Text: "I found the path; checking the relevant files now."},
+			{ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+				{ID: "call_2", Name: "grep", Args: json.RawMessage(`{"pattern":"TODO"}`)},
+				{ID: "call_3", Name: "bash", Args: json.RawMessage(`{"cmd":"printf 'dock check\\n'"}`)},
+			}},
+			done(280, 34),
+		},
+		append(text("The trace is collapsed, the batch is complete, and the answer stayed below it."), done(620, 16)),
+	},
+
+	// One disposable turn with every quick-view source. The edit target is
+	// supplied by the probe in /tmp, so the live click check never writes into
+	// the checkout that is running it.
+	"clicks": {
+		{
+			{Text: "Opening the three views."},
+			{ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+				{ID: "call_2", Name: "edit", Args: json.RawMessage(`{"path":"/tmp/evilcode-plan3-click.go","old":"return 1","new":"return 2"}`)},
+				{ID: "call_3", Name: "bash", Args: json.RawMessage(`{"cmd":"printf 'quick view output\\n'"}`)},
+			}},
+			done(240, 24),
+		},
+		append(text("All three are ready to inspect."), done(360, 10)),
+	},
+
 	// A plan fence chunked mid-marker.
 	"plan": {planChunks},
 

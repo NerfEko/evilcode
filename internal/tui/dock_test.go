@@ -141,9 +141,10 @@ func TestDockScrollsWithTheText(t *testing.T) {
 	}
 }
 
-func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
-	// The anchor is the point: a widget keeps the same row as content changes
-	// beneath it, rather than being re-placed every frame.
+func TestDockRehomesImmediatelyWhenItsSlotIsBlocked(t *testing.T) {
+	// Settled provenance prevents normal streaming churn from reaching an
+	// anchor. When a real line does block the slot, the widget should rehome on
+	// the next frame rather than wait ten seconds behind hysteresis.
 	d := NewDock()
 	open := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
@@ -161,14 +162,16 @@ func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
 		blocked[i] = strings.Repeat("x", 98)
 	}
 
-	if got := layoutDock(d, w, blocked, 100, 0, 999, false); len(got) != 0 {
-		t.Errorf("widget moved to %+v, want it hidden in place", got)
+	moved := layoutDock(d, w, blocked, 100, 0, 999, false)
+	if len(moved) != 1 || moved[0].Row == first[0].Row {
+		t.Errorf("widget did not rehome immediately: first=%+v moved=%+v", first, moved)
 	}
 
-	// Once the line passes, it comes back to the same slot.
+	// Once the line passes, it returns to the new anchor rather than the stale
+	// blocked row.
 	back := layoutDock(d, w, open, 100, 0, 999, false)
-	if len(back) != 1 || back[0].Row != first[0].Row {
-		t.Errorf("widget did not return to its slot: %+v", back)
+	if len(back) != 1 || back[0].Row != moved[0].Row {
+		t.Errorf("widget did not hold its rehomed slot: moved=%+v back=%+v", moved, back)
 	}
 }
 
@@ -210,7 +213,7 @@ func TestDockSecondCandidateGetsNoSlotWhileFirstHolds(t *testing.T) {
 	}
 
 	both := []Widget{widget(WidgetTodos, 3), widget(WidgetTips, 3)}
-	for i := 0; i < RehomeFrames+2; i++ {
+	for i := 0; i < 2; i++ {
 		got := layoutDock(d, both, rows, 100, 0, 999, false)
 		if len(got) != 1 {
 			t.Fatalf("frame %d: placed %d widgets, want 1 (one slot)", i, len(got))
@@ -250,6 +253,38 @@ func TestEmptyWidgetDrawsNothing(t *testing.T) {
 	if got := r.RenderWidget(Widget{Kind: WidgetTodos}); got != nil {
 		t.Errorf("an empty widget rendered %d rows", len(got))
 	}
+}
+
+func TestContextSaliencePreemptsStaticModelInfo(t *testing.T) {
+	m := NewModel(nil, HeaderState{Model: "mock"})
+	m.ctxUsed = 190_000
+	widgets := m.activeWidgets()
+	if len(widgets) == 0 || widgets[0].Kind != WidgetContextUsage {
+		t.Fatalf("top widget = %+v, want near-full context meter", widgets)
+	}
+}
+
+func TestWidgetSlotEventuallyChangesHands(t *testing.T) {
+	// F2.5's airtime must be observable outside deterministic goldens: after
+	// the incumbent's dwell expires, another live candidate gets the slot.
+	t.Setenv("EVILCODE_DETERMINISTIC", "")
+	m := NewModel(nil, HeaderState{Model: "mock", SessionName: "s", Provider: "mock"})
+	m.width, m.height = 140, 40
+	first := m.activeWidgets()
+	if len(first) < 2 {
+		t.Fatalf("need at least two widget candidates, got %+v", first)
+	}
+	incumbent := first[0].Kind
+	m.placements = []Placement{{Kind: incumbent}}
+	m.widgetLastShown[incumbent] = m.widgetClock
+
+	for i := 0; i < WidgetDwellFrames+WidgetAirtimeCap*12; i++ {
+		widgets := m.activeWidgets()
+		if len(widgets) > 0 && widgets[0].Kind != incumbent {
+			return
+		}
+	}
+	t.Fatalf("widget slot stayed with %v after dwell; candidates did not rotate", incumbent)
 }
 
 func TestWidgetBoxIsRectangular(t *testing.T) {
@@ -634,13 +669,13 @@ func TestDockKeepsItsAnchorWhileContentOnlyGrows(t *testing.T) {
 	if got := layoutDock(d, w, rows, 100, 0, 100, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
-	before := d.anchors[WidgetTodos].ContentTop
+	before := d.anchors[WidgetTodos].Offset
 
 	// Several frames of content arriving.
 	for i := 1; i <= 5; i++ {
 		layoutDock(d, w, rows, 100, 0, 100+i, false)
 	}
-	if got := d.anchors[WidgetTodos].ContentTop; got != before {
+	if got := d.anchors[WidgetTodos].Offset; got != before {
 		t.Errorf("anchor moved from %d to %d while content only grew", before, got)
 	}
 }

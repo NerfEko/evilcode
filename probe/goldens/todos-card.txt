@@ -1,7 +1,7 @@
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit /selfdev                                                                                                                  ╷
- <repo> (main)                                                                                            │
+ /model to switch · local:mock · mock-large                                                             ╭────────────────────────────────╮
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                 │ 💡 Ctrl+R searches your prompt │
+ skills: /agent-architect /agent-browser /commit /dreaming +15 more                                     │ history			 │ ╷
+ <repo> (main)                                                                     ╰────────────────────────────────╯ │
                                                                                                                                            │
  1› wire the auth flow                                                                                                                     │
                                                                                                                                            │
@@ -23,16 +23,16 @@
  Done.                                                                                                                                     │
                                                                                                                                            │
    ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.           │
- Understands user intent 87%                                                                                      ╭──────────────────────╮ │
-   User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before                │ Context 122/200k     │ │
-                    work starts                                                                                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │
- auth flow  ●●○○                                                                                                  ╰──────────────────────╯ │
-   Closed feedback loop 92% · Ownership 88%                                                       ╭──────────────────────────────────────╮ │
-   Feedback · go test ./internal/auth/...                                                         │ ⚡ mock-large                        │ │
-   ● Wire the refresh path                                                                        │ 1 sessions · dracula                 │ │
-   ⊳ Add the retry gate (blocked)                                                                 │ …os-home/eko/projects/evilcode  main │ │
-   ○ Write the integration test                                                                   │ ☁ mock                               │ │
-   ✓ Read the OAuth callback handler · 75→100%                                                    ╰──────────────────────────────────────╯ │
+ Understands user intent 87%                                                                                                               │
+   User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before                                         │
+                    work starts                                                                                                            │
+ auth flow  ●●○○                                                                                                                           │
+   Closed feedback loop 92% · Ownership 88%                                                                                                │
+   Feedback · go test ./internal/auth/...                                                                                                  │
+   ● Wire the refresh path                                                                                                                 │
+   ⊳ Add the retry gate (blocked)                                                                                                          │
+   ○ Write the integration test                                                                                                            │
+   ✓ Read the OAuth callback handler · 75→100%                                                                                             │
                                                                                                                                            ╵
 
  👉 3 incomplete todos. We poked it for you. /poke off to stop.

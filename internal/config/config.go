@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -253,6 +254,123 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// SaveProviderAPIKey updates only the requested provider key while preserving
+// unknown TOML text. A full decode/encode round trip would silently delete
+// settings newer than this binary knows about.
+func SaveProviderAPIKey(providerName, key string) error {
+	if providerName == "" {
+		return fmt.Errorf("config: provider name is required")
+	}
+	path := os.Getenv(EnvConfigPath)
+	if path == "" {
+		path = filepath.Join(ConfigDir(), "config.toml")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	updated, found, err := updateProviderKey(string(data), providerName, key)
+	if err != nil {
+		return fmt.Errorf("config: updating %s: %w", path, err)
+	}
+	if !found {
+		if updated != "" && !strings.HasSuffix(updated, "\n") {
+			updated += "\n"
+		}
+		if updated != "" {
+			updated += "\n"
+		}
+		updated += "[[provider]]\n" +
+			"name = " + strconv.Quote(providerName) + "\n" +
+			"kind = \"ollama\"\n" +
+			"api_key = " + strconv.Quote(key) + "\n"
+	}
+	return writeConfigAtomic(path, []byte(updated))
+}
+
+func updateProviderKey(text, providerName, key string) (string, bool, error) {
+	if text == "" {
+		return text, false, nil
+	}
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	lines := strings.SplitAfter(text, "\n")
+	for start := 0; start < len(lines); start++ {
+		if strings.TrimSpace(lines[start]) != "[[provider]]" {
+			continue
+		}
+		end := start + 1
+		for end < len(lines) {
+			trimmed := strings.TrimSpace(lines[end])
+			if strings.HasPrefix(trimmed, "[[") || (strings.HasPrefix(trimmed, "[") && trimmed != "") {
+				break
+			}
+			end++
+		}
+		var header struct {
+			Providers []ProviderConfig `toml:"provider"`
+		}
+		if _, err := toml.Decode(strings.Join(lines[start:end], ""), &header); err != nil {
+			return text, false, err
+		}
+		if len(header.Providers) == 0 || header.Providers[0].Name != providerName {
+			start = end - 1
+			continue
+		}
+		value := "api_key = " + strconv.Quote(key) + "\n"
+		for i := start + 1; i < end; i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			name, _, ok := strings.Cut(trimmed, "=")
+			if !ok || strings.TrimSpace(name) != "api_key" {
+				continue
+			}
+			indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+			lines[i] = indent + value
+			return strings.Join(lines, ""), true, nil
+		}
+		lines = append(lines[:end], append([]string{value}, lines[end:]...)...)
+		return strings.Join(lines, ""), true, nil
+	}
+	return text, false, nil
+}
+
+func writeConfigAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".config.toml.*")
+	if err != nil {
+		return fmt.Errorf("creating temporary config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting config permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("installing config: %w", err)
+	}
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
 }
 
 func applyEnv(cfg *Config) {

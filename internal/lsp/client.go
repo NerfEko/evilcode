@@ -473,6 +473,12 @@ func LanguageID(path string) string {
 // Close shuts the server down.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
+		if c.cmd == nil {
+			if c.stop != nil {
+				c.stop()
+			}
+			return
+		}
 		// Best-effort politeness, then the hammer. A server that ignores
 		// shutdown must not keep the process alive.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -543,6 +549,7 @@ type Manager struct {
 	// their own server — the losers used to be overwritten in clients and leak
 	// a process, a pipe pair and two goroutines apiece until exit.
 	starting map[string]chan struct{}
+	closed   bool
 
 	// start is the launcher, swappable so tests do not need a real server.
 	start func(ctx context.Context, name, root string, command []string) (*Client, error)
@@ -597,12 +604,20 @@ func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 		}
 		if wait, busy := m.starting[lang]; busy {
 			m.mu.Unlock()
-			<-wait
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 			// Round again: the launcher recorded either a client or a failure,
 			// and this caller should see whichever it was.
 			continue
 		}
 		var ok bool
+		if m.closed {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("language-server manager is closed")
+		}
 		command, ok = m.Commands[lang]
 		if !ok {
 			m.mu.Unlock()
@@ -625,8 +640,16 @@ func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 
 	m.mu.Lock()
 	delete(m.starting, lang)
+	closed := m.closed
 	if err != nil {
 		m.failed[lang] = err
+	} else if closed {
+		// Close can race a slow startup. Do not publish a live process into a
+		// manager that has already dropped its client map.
+		m.mu.Unlock()
+		c.Close()
+		close(launching)
+		return nil, fmt.Errorf("language-server manager is closed")
 	} else {
 		m.clients[lang] = c
 	}
@@ -671,6 +694,11 @@ func (m *Manager) Status() []Status {
 // Close stops every running server.
 func (m *Manager) Close() {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
 	clients := make([]*Client, 0, len(m.clients))
 	for _, c := range m.clients {
 		clients = append(clients, c)

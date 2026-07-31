@@ -4132,3 +4132,158 @@ via the `layoutDock` legacy helper.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green;
 `go test -tags probe -count=1 ./probe/...` green.
+
+## 2026-07-31 — plan3 bugfix pass: lag and dock anchor follow-up (in progress)
+
+The long-session lag had a concrete redraw cause: `View` assembled the entire transcript
+for `stack`, assembled it again for the frame, and built it a third time while probing the
+alternate scrollbar width. Every old block also formatted its entire `Text` and `Diff` into
+a new cache-key string on each pass. That work grew with the whole conversation even when a
+tick only changed a spinner.
+
+Changes in this pass:
+
+- `Model` reuses one current-width `Rows`/`Owner` assembly across a frame and invalidates it
+  at the `Update` boundary for state-changing messages. Live streaming and entry animation
+  bypass the cache; ticks reuse settled transcript rows.
+- Scrollbar probing now counts rendered lines at the alternate width without allocating a
+  second full `Rows` and provenance slice.
+- Block cache keys are a comparable struct of scalar fields and string headers. This keeps
+  direct content-change detection while removing the `fmt.Sprintf` copy of every long body;
+  renderer settings that change a block's output are included too.
+- F2.4 is underway: dock anchors now store block index plus offset from that block's first
+  row (with an absolute chrome fallback). The dock receives full `Owner` provenance, so a
+  block partly above the viewport still resolves correctly. The old wholesale anchor wipe
+  on transcript shrink is gone.
+- F2.6 is underway: the 120-frame rehome delay and its dead anchor aging fields are removed.
+  Settled placement already prevents normal streaming churn; a genuinely unusable slot is
+  rehomed immediately instead of hiding a widget for roughly ten seconds.
+
+Reproduction added: `TestDockAnchorFollowsBlockAfterRowsAboveCollapse` proves a widget follows
+the same tool block when rows above it collapse; existing block-cache content-change coverage
+remains green. Full verification is pending after the salience/slot pass.
+
+F2.5 is now covered in the same pass: `Widget.Salience` ranks urgency, bounded airtime,
+decaying rendered-line change boost, incumbent bonus, and a 25-frame minimum dwell. Near-full
+context is deliberately dominant; airtime and change boost stay frozen in deterministic mode.
+`TestContextSaliencePreemptsStaticModelInfo` catches the old permanent static-priority winner.
+
+Separate retention finding: `tools.Background` kept every finished task and its captured output
+for the process lifetime. `Tasks` now retains all running tasks plus the eight newest completed
+tasks, and `TestBackgroundDropsOldFinishedTasks` verifies the bound. This keeps the widget and
+the registry from growing with every detached command.
+
+## 2026-07-31 — plan3 lag/dock pass verified
+
+Reproductions now pass: `TestDockAnchorFollowsBlockAfterRowsAboveCollapse`,
+`TestDockRehomesImmediatelyWhenItsSlotIsBlocked`,
+`TestContextSaliencePreemptsStaticModelInfo`, `TestBlockCacheInvalidatesOnContentChange`,
+and `TestBackgroundDropsOldFinishedTasks`. The existing settled-tail, assistant-prose,
+single-slot, provenance, and resize tests remain green.
+
+Verified with:
+
+- `GOCACHE=/tmp/evilcode-gocache go test ./...`
+- `GOCACHE=/tmp/evilcode-race-cache go test -race ./...`
+- `GOCACHE=/tmp/evilcode-gocache go vet ./...`
+- `GOCACHE=/tmp/evilcode-gocache go build ./...`
+- `GOCACHE=/tmp/evilcode-gocache go test -tags probe -count=1 ./probe/...`
+- `git diff --check`
+
+F2.7's controlled live streaming/PNG sequence remains open: the compositor had an existing
+evilcode window, but it was not a controlled probe of this checkout, so its screenshot was
+not used as acceptance evidence. `plan3.md` leaves F2.7 unchecked for that reason.
+
+## 2026-07-31 — installed current build
+
+Rebuilt the checkout with `go build -trimpath` and atomically replaced
+`/home/eko/.local/bin/evilcode`. `/home/eko/.local/bin/ec` remains a symlink to that
+binary; both resolve to the same path and SHA-256 (`f2ad8b32a31a312838f695db840b4a94181a004ef9dfc9087ed22160abab3550`).
+## 2026-07-31 — plan3 F3 click-to-look pass
+
+- Implemented F3.1: left-clicks now resolve the visible transcript row through `Rows.Owner` and the same scroll/slack window math as `View`, after widget hit-testing. `read` opens a bounded, syntax-highlighted file quick view; `write`/`edit` opens the captured diff; missing files and missing diffs show explicit panel errors. Quick views replace each other and leave persistent `/diff` state untouched.
+- Implemented F3.2: bash blocks retain a bounded full command and tool output for the quick view. `tools.Truncate` now truly stays within `MaxResultBytes` (the previous marker made the result exceed the cap) and includes the explicit `… output truncated …` marker. Giant commands use a separate bounded command marker.
+- Implemented F3.3: existing `.md` path targets are underlined only when regular files exist. Clicks attempt a detached `$TERMINAL`/kitty/wezterm/alacritty/foot/xterm `-e glow path` child with null stdin/stdout/stderr and a wait goroutine; missing glow/terminal falls back to the file quick view. Added regression tests for read/missing-read/write/bash clicks, retention caps, diff-state isolation, and markdown underline gating.
+- Verified `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `go test -tags probe -count=1 ./probe/...`, and `git diff --check`. Rebuilt and installed `/home/eko/.local/bin/evilcode`; `/home/eko/.local/bin/ec` remains a symlink to it. Installed SHA-256: `7878c4078eb6b1ab959f85e9fa9b36f4cdc230fbf638f78b9fa9529d21bda30d`.
+- Captured and inspected `/tmp/evilcode-f3-session.png` from the existing live evilcode window. It is a healthy long-transcript baseline, but F3.4's controlled read/write/bash click sequence and markdown terminal launch were not injected into the user's active session; F3.4 remains unchecked and is recorded in `DEVIATIONS.md`.
+
+## 2026-07-31 — plan3 F4 command/login pass
+
+- Implemented F4.1: registered `/review`, `/bugfix`, and `/describe` with help text, dispatch, notices, and hidden-turn prompts. `/bugfix` requires a symptom and explicitly requires the reproduce-fail, root-cause search, fix, and pass sequence.
+- Implemented F4.2: `/stats` appends one `BlockNotice` from current session state (identity, prompts/blocks/tool calls, token counts, context, and generation time). `/btw` was already implemented and unchanged.
+- Implemented F4.3: `/login` and `/login status`; key entry owns a masked composer, paste is masked too, Enter clears editor/undo state, status never prints key material, and the active Ollama client is updated when applicable. `config.SaveProviderAPIKey` performs a same-directory `0600` temp-write/sync/rename, preserves unknown TOML text, and the key stays out of transcript/UI notices. Added tests for masking, no transcript block, unknown-key preservation, mode, and load round-trip.
+- Found and fixed a config loader bug exposed by the writer test: a configured provider array could be appended to defaults and produce duplicate provider names. Explicit provider tables now replace defaults while partial configs still retain defaults.
+- Automated F4 implementation checks are green (`internal/config`, `internal/tui`). F4.4's live command/PNG end-to-end remains open for the same reason as F3.4: no safe controlled interaction was injected into the active user session; it is recorded in `DEVIATIONS.md`.
+
+## 2026-07-31 — plan3 F5/F6 update and welcome pass
+
+- Implemented F5.1/F5.2: `evilcode update` fixes the duplicate `completions` usage line, follows `origin/<branch>`, refuses dirty/ahead/diverged/detached states, checks install writability without privilege escalation, builds/tests before replacement, resolves the executable through symlinks, preserves mode, swaps atomically, and stamps `internal/tuicmd.Version`. A dirty-tree run was exercised and listed every changed path without touching the binary.
+- Implemented F6.1: welcome chips are filled controls (inactive chips use their cap foreground as label background; the focused chip uses the accent), arrow keys cycle the selected starter, and Enter submits it. Added a render regression test.
+- Implemented F6.3: added `looks.md` as a concrete visual menu covering widget chrome, tool rows, prompt bands, status, palettes, diffs, spinner, header, welcome art/chips, todo, and plan cards with file/cost notes.
+- F6.4 controlled disposable mock session: captured `/tmp/evilcode-f6-welcome-final.png`, pressed Down and captured `/tmp/evilcode-f6-down.png`, pressed Enter and captured `/tmp/evilcode-f6-submitted.png`, then closed the disposable window. Visual result: selection moved to the next chip and submitted prompt 1; all three screenshots were inspected. Full verification follows after this pass.
+- F5.3 clean-at-origin and deliberately failing-test update scenarios remain unrun; no safe clean checkout or alternate failing remote was available without mutating the user's worktree. Logged in `DEVIATIONS.md`.
+
+## 2026-07-31 — final plan3 F5/F6 verification
+
+- Final `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `go test -tags probe -count=1 ./probe/...`, and `git diff --check` are green after the update/welcome work.
+- Reinstalled the final checkout with `go build -trimpath`; `/home/eko/.local/bin/ec` and `/home/eko/.local/bin/evilcode` both resolve to `/home/eko/.local/bin/evilcode`. Final installed SHA-256: `f13e3e05f8e1f7a0daa8777adde5014f145fe7cb93af9795d52767f39a42c0e4`.
+- Remaining unchecked plan3 verification items are F2.7, F3.4, F4.4, and F5.3. Each has an append-only explanation in `DEVIATIONS.md`; no implementation task was silently marked complete.
+
+## 2026-07-31 — update rollback hardening
+
+- Review found that a fast-forward followed by a failed build/test could leave the source checkout advanced while the old binary remained installed. `update.go` now rolls a still-clean checkout back to its original HEAD on post-merge build/test/install failure, and refuses to reset if another process dirtied it during the run.
+- Re-ran `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `go test -tags probe -count=1 ./probe/...`, and `git diff --check`; all green. Reinstalled final binary and aliases; final SHA-256: `6e48a3d2c6e780a1755bb24efbd99da9a771d903994953f114cbc97f7ff1d408`.
+- Verified the updater's `-ldflags` version stamp independently by building a disposable `test-stamp` binary; the stamp is accepted by the linker.
+
+## 2026-07-31 — plan3 F2.1/F2.7 verification and stats correction
+
+- Closed F2.1. `TestBashRowShowsCommandOnce` and the long-command regression verify that
+  a bash row stores the full bounded command once and uses the exit/output summary as its
+  intent. The previous duplicate-command behavior was reproduced in the companion test.
+- Added the deterministic `f27` mock transition and inspected the real-Kitty PNGs
+  `/tmp/evilcode-plan3-f27-run-inflight.png`, `...-mid.png`, and `...-settled.png`.
+  The frame showed one collapsed two-line thought, prose, three tool rows, one bash command,
+  and no second widget beside the answer. `/tmp/evilcode-plan3-context-f27-near-full-colored.png`
+  showed the 636/500 (127%) context widget taking the single slot. `TestWidgetSlotEventuallyChangesHands`
+  proves the non-deterministic dwell/airtime handoff; deterministic mode remains frozen by design.
+- The first live `/stats` probe found a real bug: completed turns reset `StatusState`, so the
+  notice said `tokens: in 0 · out 0` after real usage. Added cumulative session token totals,
+  kept the per-turn status counters unchanged, and added `TestStatsKeepsProviderCountsAfterTurnEnds`.
+  The rerun reported `tokens: in 450 · out 32`.
+
+## 2026-07-31 — plan3 F3.4/F4.4 controlled verification
+
+- F3.4 controlled event-path checks now cover `Model.Update` mouse routing for read, write,
+  and bash rows, Esc closing without changing `/diff`, bounded bash output, and a markdown
+  click launching a fake terminal with `-e glow path`, with stdin verified as non-TTY. The
+  existing colored live quick-view capture was inspected; no active user session was changed.
+- F4.4 disposable probe `/tmp/evilcode-plan3-f44-fixed-frames` ran `/review this branch`,
+  `/bugfix flaky test`, `/describe internal/tui`, and `/stats`. Notices and hidden-turn
+  responses were present; `/stats` reported real cumulative counts. The login probe wrote a
+  disposable config at mode 0600, showed only bullets in `/tmp/evilcode-plan3-f44-login-frames/login-masked.png`,
+  reported key presence without printing it, and the session JSONL and PNG contained no key.
+
+## 2026-07-31 — plan3 F5.3 temporary update matrix
+
+The first matrix attempt exposed only a test harness error (a bare remote had no HEAD, so its
+writer clone did not check out main); it was not counted. The corrected matrix used a temporary
+checkout and bare origin: clean-at-origin exited 0 with `already up to date`, an untracked
+`plan3-dirty-marker.txt` caused a non-zero refusal naming the file, and a pushed deliberate
+failing test caused a non-zero refusal containing `tests failed; binary unchanged`. The source
+HEAD rolled back to its prior revision, the running binary SHA stayed unchanged, and the source
+checkout ended clean. All temporary repositories were outside the user checkout.
+
+## 2026-07-31 — plan3 final gates, probe repair, and install
+
+The first full probe gate caught stale text goldens after the intentional widget changes;
+the colored PNGs had already been inspected, so `UPDATE_GOLDENS=1` regenerated the affected
+probe goldens. The next probe run caught a real harness permission bug: `probe.sh` created its
+`XDG_RUNTIME_DIR` as 0755 while the daemon correctly requires a private runtime directory.
+`chmod 700 "$TMUX_TMPDIR"` fixes that at creation, and `go test -tags probe -count=1 ./probe/...`
+now passes.
+
+Final gates all pass: `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`,
+`go test -tags probe -count=1 ./probe/...`, and `git diff --check`. The final checkout was built
+with `-trimpath` and atomically installed at `/home/eko/.local/bin/evilcode`; `/home/eko/.local/bin/ec`
+still resolves through the `evilcode` symlink. Both resolve to SHA-256
+`db837b4b2fac7f3f5eefad8a8e0bde38c144a5d7a51cee6f1704eb270787c174`.

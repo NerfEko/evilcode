@@ -91,6 +91,10 @@ type ComposerState struct {
 	// PaletteOpen hides the hint line, since the palette floats where it goes.
 	PaletteOpen bool
 
+	// Masked keeps secrets in the composer while making every rendered frame
+	// safe to screenshot.
+	Masked bool
+
 	// Pending counts staged messages, for the send-mode indicator.
 	Pending int
 }
@@ -200,6 +204,17 @@ func (r *Renderer) RenderComposer(s ComposerState) []string {
 
 	textStyle := r.style(theme.RoleUserText)
 	body := s.Text
+	if s.Masked {
+		var masked strings.Builder
+		for _, ch := range body {
+			if ch == '\n' {
+				masked.WriteRune(ch)
+			} else {
+				masked.WriteRune('•')
+			}
+		}
+		body = masked.String()
+	}
 
 	wrapped := wrapPlain(body, max(r.Width-prefixWidth-1, 1))
 	// Follow the cursor: keep the last rows visible rather than the first.

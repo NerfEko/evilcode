@@ -169,18 +169,38 @@ func (r *Renderer) RenderWelcome(chipIndex int, art []string) []string {
 func (r *Renderer) welcomeText(chipIndex int) []string {
 	accent := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
-	dim := r.style(theme.RoleDim)
-	chipStyle := r.style(theme.RoleAI)
+	inactiveCap := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleDim)))
+	inactiveChip := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAIText))).
+		Background(lipgloss.Color(r.Palette.Hex(theme.RoleDim)))
+	selectedCap := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent)))
+	selectedChip := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAIText))).
+		Background(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
 
 	out := []string{accent.Render(WelcomeMessage), ""}
 
 	if len(SuggestionChips) > 0 {
-		idx := ((chipIndex % len(SuggestionChips)) + len(SuggestionChips)) % len(SuggestionChips)
+		focused := chipIndex >= 0
+		idx := 0
+		if focused {
+			idx = ((chipIndex % len(SuggestionChips)) + len(SuggestionChips)) % len(SuggestionChips)
+		}
 		// Show a rotating window of chips rather than all of them; the point
 		// is a nudge, not a menu.
 		for i := 0; i < min(3, len(SuggestionChips)); i++ {
 			chip := SuggestionChips[(idx+i)%len(SuggestionChips)]
-			out = append(out, dim.Render("  ◖")+chipStyle.Render(" "+chip+" ")+dim.Render("◗"))
+			if focused && i == 0 {
+				out = append(out, selectedCap.Render("  ◖")+
+					selectedChip.Render(" "+chip+" ")+
+					selectedCap.Render("◗"))
+			} else {
+				out = append(out, inactiveCap.Render("  ◖")+
+					inactiveChip.Render(" "+chip+" ")+
+					inactiveCap.Render("◗"))
+			}
 		}
 	}
 	return out

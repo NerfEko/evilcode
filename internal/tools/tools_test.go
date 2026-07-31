@@ -507,11 +507,14 @@ func TestTruncate(t *testing.T) {
 
 	big := strings.Repeat("a", MaxResultBytes*2)
 	got := Truncate(big)
-	if len(got) >= len(big) {
-		t.Errorf("len = %d, want it shorter than %d", len(got), len(big))
+	if len(got) > MaxResultBytes {
+		t.Errorf("len = %d, want at most %d", len(got), MaxResultBytes)
 	}
 	if !strings.Contains(got, "truncated") {
 		t.Error("a truncated result must say so")
+	}
+	if !strings.Contains(got, "output truncated") {
+		t.Error("a truncated result must identify output truncation")
 	}
 }
 

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -151,7 +152,7 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 		}
 		s.swarm.mu.Unlock()
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errPublishedWorker) {
 		s.swarm.release(spawner)
 		return "", err
 	}
@@ -191,6 +192,7 @@ func (s *Server) reportWorkerResult(worker *Session) bool {
 				worker.mu.Lock()
 				worker.retried = true
 				worker.retrying = true
+				originalDone := worker.turnDone
 				worker.mu.Unlock()
 				worker.built.Agent.Interject(agent.Interrupt{
 					Source: agent.SourceSystem,
@@ -198,9 +200,28 @@ func (s *Server) reportWorkerResult(worker *Session) bool {
 						"Reply with only the JSON, no prose and no code fence.", err),
 				})
 				go func() {
+					// The original Run still owns the session reservation until its
+					// deferred cleanup runs after TurnEnd is observed. Waiting here
+					// prevents the retry from sharing the conversation with that tail.
+					if originalDone != nil {
+						<-originalDone
+					}
 					ctx, cancel := context.WithTimeout(context.Background(), WorkerTimeout)
-					defer cancel()
-					err := worker.built.Agent.Loop(ctx)
+					done, ok := worker.beginRetryTurn(cancel)
+					if !ok {
+						cancel()
+						worker.mu.Lock()
+						worker.retrying = false
+						worker.mu.Unlock()
+						worker.markFinished()
+						return
+					}
+					err := func() error {
+						defer close(done)
+						defer worker.endTurn()
+						defer cancel()
+						return worker.built.Agent.Loop(ctx)
+					}()
 					worker.mu.Lock()
 					worker.retrying = false
 					worker.mu.Unlock()

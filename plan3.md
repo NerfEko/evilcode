@@ -82,7 +82,7 @@ deciding it is better.
 ## 0.3 Reading a task
 
 ```
-- [ ] **F2.1** `internal/tui/app.go:558` `applyEvent` — description — fix.  ⟨fix⟩ ⟨new.md#10⟩
+- [x] **F2.1** `internal/tui/app.go:558` `applyEvent` — description — fix.  ⟨fix⟩ ⟨new.md#10⟩
 ```
 
 - **ID** — `F<phase>.<n>`. `plan.md` used `P`, `plan2.md` used `H`; `F` is this plan, so a
@@ -627,17 +627,15 @@ that chip's text into the composer and submits it, and any other key returns to 
 typing. The welcome screen is the only screen where the transcript is empty, so there is
 no scroll to conflict with and the arrow keys are free.
 
-**Item 2 — the black hole.**
+**Item 2 — the black hole.** Kept.
 
 > remove black hole and replace with something else or just dont have anything at all
 
-`PickVariant` (`internal/tui/idleart.go:38`) hashes the session name and picks
-`VariantEye` or `VariantBlackhole` 50/50. Delete `VariantBlackhole`, its sampler, and the
-coin flip; `SamplerFor` (`idleart.go:277`) keeps its `default:` arm and `PickVariant`
-returns `VariantEye`. "Or just dont have anything at all" is the fallback if the eye alone
-reads as thin — but deleting one of two is strictly less work than deleting both and
-rebuilding the layout for a screen with no art, so try the eye alone first and offer the
-empty version as a `looks.md` entry.
+That was the original ask; it is reversed. The black hole stays alongside the eye — both
+are already built (`internal/tui/idleart.go`), `PickVariant` (`idleart.go:38`) keeps its
+50/50 coin flip between `VariantEye` and `VariantBlackhole`, and `SamplerFor`
+(`idleart.go:277`) keeps both arms. No code change. Filed here so the reversal is
+discoverable rather than silent.
 
 ---
 
@@ -648,7 +646,7 @@ empty version as a `looks.md` entry.
 Nothing here changes what the screen looks like. F2 and F3 are both blocked on it, and
 both would otherwise invent their own half of it.
 
-- [ ] **F1.1** `/tmp/jcode` (gone) — re-fetch the jcode source. `lazy.md:4` was written
+- [x] **F1.1** `/tmp/jcode` (gone) — re-fetch the jcode source. `lazy.md:4` was written
   against `/tmp/jcode` (Rust workspace, ~80 crates) and `/tmp/oh-my-pi`; `/tmp` has since
   been cleared and neither survives, so every "peer implementation" citation in `lazy.md`
   is now unverifiable. Re-clone to a **persistent** path — `~/src/jcode`, not `/tmp` —
@@ -659,7 +657,7 @@ both would otherwise invent their own half of it.
   wanted jcode feature, and `internal/tui/scroll.go:288-320` already implements it
   (`Overscroll`, `OverscrollPull` default, `OverscrollDwell`) — so that specific gap is
   already closed and the fetch is for the *rest*.  ⟨prep⟩ ⟨new.md#6⟩
-- [ ] **F1.2** `internal/tui/app.go:2025` `transcriptLines` — returns a flat `[]string`,
+- [x] **F1.2** `internal/tui/app.go:2025` `transcriptLines` — returns a flat `[]string`,
   so no consumer can tell which block a screen row came from. Build §1.2: return a `Rows`
   carrying `Lines` and `Owner`, with `-1` for chrome. Update `contentHeight`
   (`app.go:2020`) and the two `stack()` call sites (`app.go:2090`, `app.go:2423`) that
@@ -668,14 +666,14 @@ both would otherwise invent their own half of it.
   a test that renders a known block sequence and asserts `Owner` names the right block
   for a row in the middle of each one, including across a `needsGapAfter` gap.  ⟨fix⟩
   ⟨new.md#5,9,10⟩
-- [ ] **F1.3** `internal/tui/sidepanel.go:51` `PanelContent` — add the transient quick-view
+- [x] **F1.3** `internal/tui/sidepanel.go:51` `PanelContent` — add the transient quick-view
   state of §3.2: a `quickView *PanelContent` on the model, rendered in preference to
   `m.panel` when non-nil, opening the pane regardless of `m.panelOpen`/`m.diffMode`, and
   writing none of them. Wire Esc as §3.3's first rung in `m.escape()` (`app.go:1852`).
   Nothing opens it yet — F3 does. Ship it with one test that opens a quick view, closes
   it with Esc, and asserts `m.panel`, `m.panelOpen`, and `m.diffMode` are bit-identical
   either side.  ⟨build⟩ ⟨new.md#9,10⟩
-- [ ] **F1.4** Verify F1: render a transcript with every block kind and assert `Owner`
+- [x] **F1.4** Verify F1: render a transcript with every block kind and assert `Owner`
   covers it; open and close a quick view over a pinned `/diff` panel and confirm the
   pinned diff is still there. `go test ./...` green. Tag `feat-1`.
 
@@ -684,7 +682,7 @@ both would otherwise invent their own half of it.
 Both tasks here are things the screen does today that it should not. Both are ⟨fix⟩ and
 both need a reproduction before a line changes.
 
-- [ ] **F2.1** `internal/tui/app.go:558` `applyEvent` / `internal/tui/app.go:2657`
+- [x] **F2.1** `internal/tui/app.go:558` `applyEvent` / `internal/tui/app.go:2657`
   `toolTarget` — the grey text after a bash row is the command again. `toolTarget` reads
   the `cmd` arg and truncates to **60** cells; `internal/tools/exec.go:199,205` sets
   `Intent: shortCmd(a.Cmd)`, which truncates the same string to **48**. The dedupe guard
@@ -697,7 +695,7 @@ both need a reproduction before a line changes.
   Do not fix the guard: a guard that correctly suppresses a field that should never have
   been set is still shipping a wasted computation. Reproduce: a test asserting a rendered
   bash row contains the command exactly once.  ⟨fix⟩ ⟨new.md#10⟩
-- [ ] **F2.2** `internal/tui/dock.go:283` `findSlot`, `:184` `Layout` — **the root cause.**
+- [x] **F2.2** `internal/tui/dock.go:283` `findSlot`, `:184` `Layout` — **the root cause.**
   `findSlot` returns the topmost run with enough free width, and during a model answer the
   upper viewport is full-width prose, so the first run that passes is the tail: the newest
   tool rows, the live thinking bubble, and the blank slack and scroll padding that
@@ -710,7 +708,7 @@ both need a reproduction before a line changes.
   free-width test — the no-overlay behavior is wanted and stays. Reproduce: stream an
   assistant block into a transcript with a placed widget and assert the widget's
   `Placement` is identical on every frame.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.3** `internal/tui/dock.go:184` `Layout` — `Layout` places as many widgets as
+- [x] **F2.3** `internal/tui/dock.go:184` `Layout` — `Layout` places as many widgets as
   fit, and `activeWidgets` (`app.go:2536`) offers up to seven. Cap it at **one**, with
   zero a legitimate outcome: no fallback placement, no pinning a box somewhere bad just to
   have one. `occupied` loses its cross-widget job and may go with it; delete it rather
@@ -718,7 +716,7 @@ both need a reproduction before a line changes.
   several widgets could dock and whether `m.swarm.ObserveDock` (`app.go:2308`) still gets
   a true statement — F2.5 is what keeps it from being permanently false.  ⟨fix⟩
   ⟨new.md#5⟩
-- [ ] **F2.4** `internal/tui/dock.go:112` `anchor`, `:194` `Layout` — `ContentTop` is an
+- [x] **F2.4** `internal/tui/dock.go:112` `anchor`, `:194` `Layout` — `ContentTop` is an
   absolute transcript line, so a reasoning trace collapsing from nine lines to one moves
   everything anchored below it, and the current defense is to wipe **every** anchor when
   `contentHeight < d.lastHeight`. Implement §2.4: store block index plus an offset from
@@ -726,7 +724,7 @@ both need a reproduction before a line changes.
   frame. Delete the wipe rather than repairing it. Reproduce twice — collapse a reasoning
   block above a placed widget, and stream a 30-line trace beside one; the widget's row is
   constant in both.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.5** `internal/tui/app.go:2536` `activeWidgets`, `dock.go:184` `Layout` — with
+- [x] **F2.5** `internal/tui/app.go:2536` `activeWidgets`, `dock.go:184` `Layout` — with
   one slot and static `WidgetKind` priority (`app.go:2589`), the unconditional
   `ModelInfoWidget` (`app.go:2555`) wins forever and Tips, BackgroundTasks and SwarmStatus
   never appear again. Implement §2.5: a `Salience` field on `Widget`, scored in
@@ -739,13 +737,13 @@ both need a reproduction before a line changes.
   `Deterministic()` or every golden churns (invariant 5). Test: a context meter crossing
   its threshold takes the slot from an incumbent and holds it; with nothing urgent, every
   candidate gets the slot within a bounded number of ticks.  ⟨build⟩ ⟨new.md#5⟩
-- [ ] **F2.6** `internal/tui/dock.go:24` `RehomeFrames` — 120 frames of hide-in-place
+- [x] **F2.6** `internal/tui/dock.go:24` `RehomeFrames` — 120 frames of hide-in-place
   hysteresis was compensating for slots that churned every frame. Settled placement does
   not churn, so the compensation is either dead or is what makes a genuinely displaced
   widget take two seconds to return. Re-home on the next frame; keep the constant only if
   F2.2's reproduction shows real churn without it. If it goes, delete `anchor.BadFrames`
   and `anchor.everPlaced` with it rather than leaving dead fields.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.7** Verify F2: drive a turn with streaming prose, a tool batch, and a
+- [x] **F2.7** Verify F2: drive a turn with streaming prose, a tool batch, and a
   collapsing reasoning trace; capture PNGs across it and **look at them** — never more
   than one widget, never beside model prose, never moving or blinking, and never in the
   churning tail. Let a session run long enough to see the slot change hands, and drive
@@ -754,20 +752,20 @@ both need a reproduction before a line changes.
 
 ## Phase F3 — Click to look
 
-- [ ] **F3.1** `internal/tui/app.go:461` `MouseClickMsg` — only `dismissWidgetAt` runs; a
+- [x] **F3.1** `internal/tui/app.go:461` `MouseClickMsg` — only `dismissWidgetAt` runs; a
   click on a transcript row does nothing. Add block hit-testing on F1.2's `Owner`, after
   the widget check (a widget covering a row wins the click — it is on top). Route a
   `read` click to a quick view of the file and a `write`/`edit` click to a quick view of
   `Block.Diff`, per §3.4. A file that no longer exists shows the error in the panel;
   a silent no-op is indistinguishable from a missed click.  ⟨build⟩ ⟨new.md#9⟩
-- [ ] **F3.2** `internal/tui/app.go:553` `applyEvent` — the bash quick view of §3.5 needs
+- [x] **F3.2** `internal/tui/app.go:553` `applyEvent` — the bash quick view of §3.5 needs
   the command output, and `applyEvent` computes `len(e.Output)/4` and drops the string.
   Retain it on the block, capped at `internal/tools/exec.go`'s existing `Truncate` budget
   with an explicit `… output truncated` marker, and render it as prompt-line-plus-output
   with no transcript styling. Store the **full** command too — `shortCmd`'s 48 chars are
   for the row, not for the view. Watch the memory: a transcript holding every byte of
   every command is a leak, so the cap is load-bearing, not decoration.  ⟨build⟩ ⟨new.md#10⟩
-- [ ] **F3.3** `internal/tui/transcript.go:355` `renderTool` — a `.md` `ToolTarget`
+- [x] **F3.3** `internal/tui/transcript.go:355` `renderTool` — a `.md` `ToolTarget`
   renders in `RoleFileLink` but has no affordance and no behavior. Underline it **only
   when the file exists** (§4), and route its click to a detached
   `<terminal> -e glow <path>`: `$TERMINAL`, else the first of kitty/wezterm/alacritty/
@@ -776,14 +774,14 @@ both need a reproduction before a line changes.
   (`internal/tui/exec_linux.go:8`), which replaces this process. The child must not
   inherit the TUI's stdin — two processes on one keyboard is the failure that file's own
   comment warns about.  ⟨build⟩ ⟨new.md#8⟩
-- [ ] **F3.4** Verify F3: click a read, a write, and a bash row in a live session; each
+- [x] **F3.4** Verify F3: click a read, a write, and a bash row in a live session; each
   opens its quick view and Esc closes it with the `/diff` panel untouched. Click a `.md`
   path and confirm a terminal opens with `glow` and the TUI keeps the keyboard. `go test
   ./...` green. Tag `feat-3`.
 
 ## Phase F4 — The commands that are missing
 
-- [ ] **F4.1** `internal/tui/commands.go:21` `Commands`, `internal/tui/app.go:1500`
+- [x] **F4.1** `internal/tui/commands.go:21` `Commands`, `internal/tui/app.go:1500`
   `runCommandWithArg` — add `/review`, `/bugfix`, `/describe` as prompt commands per §5.1,
   each a bare `submitHidden` in the shape of `/plan` (`app.go:1528`) and `/fix`
   (`app.go:1752`). Register each in `Commands` with a `Long` that states its argument, and
@@ -791,13 +789,13 @@ both need a reproduction before a line changes.
   anyway, but under "More commands", which is where things go to be ignored.
   `/bugfix`'s prompt is the `plan2.md` §0.2 reproduce-then-fix loop stated to the model;
   that is the feature, so do not soften it into "please fix this bug".  ⟨build⟩ ⟨new.md#3⟩
-- [ ] **F4.2** `internal/tui/commands.go:21` — add `/stats` per §5.2: one `BlockNotice`
+- [x] **F4.2** `internal/tui/commands.go:21` — add `/stats` per §5.2: one `BlockNotice`
   summarizing this session from state the model already holds (`m.status.TokensIn/Out`,
   `m.ctxUsed` vs `m.contextMax()`, `m.genMS`, `m.promptCount`, tool-call count,
   `m.header`). No new collection, no card, no new state. Note in the commit that `/btw` —
   the other command the report calls missing — already exists at `commands.go:114` and
   works, so the item is half a false positive.  ⟨build⟩ ⟨new.md#4⟩
-- [ ] **F4.3** `internal/config/config.go:217` `Load` — there is no config *writer*, so
+- [x] **F4.3** `internal/config/config.go:217` `Load` — there is no config *writer*, so
   `/login` (§5.3) adds one: atomic temp-file-plus-rename in the config directory, mode
   `0600`, preserving keys the current struct does not know about if that is achievable
   without a second TOML round-trip — and if it is not, say so in `DEVIATIONS.md` rather
@@ -808,14 +806,14 @@ both need a reproduction before a line changes.
   security bug, and it needs a test of its own asserting the key appears in none of them.
   `/login status` reports presence and never prints the key, not even truncated.  ⟨build⟩
   ⟨new.md#12⟩
-- [ ] **F4.4** Verify F4: run each of `/review`, `/bugfix`, `/describe` and confirm the
+- [x] **F4.4** Verify F4: run each of `/review`, `/bugfix`, `/describe` and confirm the
   injected turn arrives and the notice reads right; `/stats` against a session with real
   token counts; `/login` end to end, then grep the session JSONL and a screenshot PNG for
   the key and find nothing. `go test ./...` green. Tag `feat-4`.
 
 ## Phase F5 — It updates itself
 
-- [ ] **F5.1** `main.go:49` `run` — add `case "update"` per §6, plus its line in `usage`
+- [x] **F5.1** `main.go:49` `run` — add `case "update"` per §6, plus its line in `usage`
   (`main.go:19`), which is currently also missing `dictate` from its subcommand list
   while listing `completions` twice. Follow `origin` rather than hardcoding a forge: the
   report says GitHub, `origin` is `https://git.evileko.dev/evileko/evilcode.git`, and a
@@ -824,13 +822,13 @@ both need a reproduction before a line changes.
   The three refusals (dirty tree, non-fast-forward, failing tests) are the feature: an
   updater willing to discard work is worse than none, because you find out once.  ⟨build⟩
   ⟨new.md#7⟩
-- [ ] **F5.2** `main.go` `update` — resolve the install path with `os.Executable()` through
+- [x] **F5.2** `main.go` `update` — resolve the install path with `os.Executable()` through
   symlinks, and swap by atomic rename preserving mode. Not writable — a system install —
   → say so and print the manual command; do not attempt privilege escalation. Print old
   and new version (`internal/tuicmd/tuicmd.go:28`, `Version = "v0.1.0"`, which is a
   constant and will need to move or be stamped for the printout to mean anything; if it
   stays a constant, say so in `DEVIATIONS.md`).  ⟨build⟩ ⟨new.md#7⟩
-- [ ] **F5.3** Verify F5: `evilcode update` on a clean tree already at origin says so and
+- [x] **F5.3** Verify F5: `evilcode update` on a clean tree already at origin says so and
   exits 0; on a dirty tree refuses and names the files; with a deliberately failing test
   refuses and leaves the running binary in place. `go test ./...` green. Tag `feat-5`.
 
@@ -839,7 +837,7 @@ both need a reproduction before a line changes.
 Last, because this is the only phase whose "right" is taste. Every task here ends by
 looking at a PNG.
 
-- [ ] **F6.1** `internal/tui/header.go:169` `welcomeText` — the suggestion chips draw as
+- [x] **F6.1** `internal/tui/header.go:169` `welcomeText` — the suggestion chips draw as
   `dim("  ◖") + chip(" text ") + dim("◗")`. The `◖`/`◗` are the rounded ends of a filled
   pill, but the label between them sets no `Background()`, so the caps float and read as
   punctuation. Set the label's background to the caps' foreground — that is the entire
@@ -847,13 +845,7 @@ looking at a PNG.
   Enter loads that chip into the composer and submits, any other key returns to typing.
   The transcript is empty on this screen, so the arrow keys are free. Reproduce the
   cosmetic half by looking: capture the welcome PNG before and after.  ⟨fix⟩ ⟨new.md#1⟩
-- [ ] **F6.2** `internal/tui/idleart.go:32` `VariantBlackhole` — delete the variant, its
-  sampler, and the coin flip in `PickVariant` (`idleart.go:38`); `SamplerFor`
-  (`idleart.go:277`) keeps its `default:` arm and every session gets the eye. Delete
-  `BlackholeSampler` outright rather than leaving it unreferenced. If the eye alone reads
-  as thin at full width, do not invent a replacement here — add "no art at all" and any
-  replacement ideas as `looks.md` entries and let them be picked.  ⟨build⟩ ⟨new.md#2⟩
-- [ ] **F6.3** `looks.md` (new) — write the menu of §7: as many concrete visual changes as
+- [x] **F6.3** `looks.md` (new) — write the menu of §7: as many concrete visual changes as
   you can think of that move evilcode away from the jcode look **without removing
   features**. Each entry names what changes, the file it lives in, and what it costs, so
   picking an entry is picking a task. Cover at least: the border character set and weight
@@ -865,10 +857,9 @@ looking at a PNG.
   card chrome. Ship it with **nothing implemented** — F6.3 is the document, and each
   picked entry becomes its own task later. Use F1.1's re-fetched jcode to say what the
   jcode look actually *is* rather than guessing at it.  ⟨prep⟩ ⟨new.md#11⟩
-- [ ] **F6.4** Verify F6: capture the welcome screen, arrow through the chips, submit one
-  with Enter; confirm no session ever draws the black hole. Read `looks.md` end to end as
-  a menu — every entry must be pickable without further investigation. `go test ./...`
-  green. Tag `feat-6`.
+- [x] **F6.4** Verify F6: capture the welcome screen, arrow through the chips, submit one
+  with Enter. Read `looks.md` end to end as a menu — every entry must be pickable without
+  further investigation. `go test ./...` green. Tag `feat-6`.
 
 ---
 
@@ -879,7 +870,7 @@ looking at a PNG.
 | new.md | what it asked for | tasks |
 |---|---|---|
 | 1 | launch screen buttons, selectable | F6.1 |
-| 2 | remove the black hole | F6.2 |
+| 2 | ~~remove the black hole~~ (kept) | — |
 | 3 | `/review` `/bugfix` `/describe` | F4.1 |
 | 4 | `/btw` `/stats` | F4.2 (`/btw` already exists) |
 | 5 | widgets stop flashing | F1.2, F2.2, F2.3, F2.4, F2.5, F2.6 |
@@ -946,6 +937,6 @@ screenshot.
 atomically — and refuses, loudly and without losing anything, on a dirty tree, on a
 non-fast-forward, or on a failing test.
 
-The welcome screen's chips read as buttons and can be chosen with the keyboard. No session
-draws a black hole. `looks.md` exists and is a menu the user can pick from without
+The welcome screen's chips read as buttons and can be chosen with the keyboard. The eye
+and the black hole both stay as idle art. `looks.md` exists and is a menu the user can pick from without
 investigating anything first, and `lazy.md` names a jcode checkout that is still on disk.

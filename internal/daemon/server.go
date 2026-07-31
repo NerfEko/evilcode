@@ -60,6 +60,12 @@ type Server struct {
 	// the winner is still writing to.
 	opening map[string]chan struct{}
 
+	// builds keeps shared stores alive while a session is being assembled. A
+	// close racing a slow provider resolve used to close the shared memory bank
+	// underneath the build, then let the finished session publish into the
+	// already-closed server.
+	builds sync.WaitGroup
+
 	// todos and bank are the swarm's shared state, owned here and handed to
 	// every session by reference. Opened per session they were N copies of one
 	// set of files, each writing the whole file back over the others.
@@ -271,6 +277,10 @@ func (s *Server) Close() {
 	if ln != nil {
 		ln.Close()
 	}
+	// A build may have opened the shared bank before Close took the lock. Let it
+	// finish (or observe the closed flag and clean itself up) before closing the
+	// bank it borrows.
+	s.builds.Wait()
 	os.Remove(s.Path)
 	for _, sess := range sessions {
 		sess.close()
@@ -329,7 +339,9 @@ func (s *Server) Open(name string) (*Session, error) {
 		}
 		if name == "" {
 			// A fresh session has no name to collide on.
+			s.builds.Add(1)
 			s.mu.Unlock()
+			defer s.builds.Done()
 			break
 		}
 		if sess, ok := s.sessions[name]; ok {
@@ -348,7 +360,9 @@ func (s *Server) Open(name string) (*Session, error) {
 		}
 		built := make(chan struct{})
 		s.opening[name] = built
+		s.builds.Add(1)
 		s.mu.Unlock()
+		defer s.builds.Done()
 		defer func() {
 			s.mu.Lock()
 			delete(s.opening, name)
@@ -380,6 +394,11 @@ func (s *Server) Open(name string) (*Session, error) {
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		built.Close()
+		return nil, fmt.Errorf("the daemon is shutting down")
+	}
 	// Another client may have opened the same session while this one was being
 	// built. The first one in wins and the loser is discarded, so two clients
 	// naming one session never end up talking to two agents over one file.
@@ -661,13 +680,28 @@ func (sess *Session) beginTurn(cancel context.CancelFunc) (chan struct{}, bool) 
 	done := make(chan struct{})
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if sess.closing || sess.running {
+	if sess.closing || sess.running || sess.retrying {
 		return nil, false
 	}
 	// The previous turn is finished — running says so — and cancelling a
 	// finished turn only releases its context.
 	if sess.cancel != nil {
 		sess.cancel()
+	}
+	sess.running = true
+	sess.cancel, sess.turnDone = cancel, done
+	return done, true
+}
+
+// beginRetryTurn reserves the same session slot for a schema retry. The retry
+// is launched after the original turn's completion channel closes, so it must
+// take the reservation itself before it calls Agent.Loop.
+func (sess *Session) beginRetryTurn(cancel context.CancelFunc) (chan struct{}, bool) {
+	done := make(chan struct{})
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.closing || sess.running {
+		return nil, false
 	}
 	sess.running = true
 	sess.cancel, sess.turnDone = cancel, done

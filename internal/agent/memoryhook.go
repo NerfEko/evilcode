@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
@@ -18,23 +19,64 @@ type MemoryHook struct {
 
 	// extract is swappable so a test can observe the call without a model.
 	extract func(context.Context, *memory.Manager)
+
+	mu     sync.Mutex
+	active map[int]context.CancelFunc
+	next   int
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // NewMemoryHook builds the hook.
 func NewMemoryHook(m *memory.Manager) *MemoryHook {
-	return &MemoryHook{Manager: m, extract: runExtraction}
+	h := &MemoryHook{Manager: m, active: map[int]context.CancelFunc{}}
+	h.extract = h.startExtraction
+	return h
 }
 
 // runExtraction is the default sink: a detached side-call, because extraction
 // takes a model round-trip and the turn has already ended. Its own context
 // bounds it so a hung `smol` provider cannot leak a goroutine for the session's
 // lifetime.
-func runExtraction(_ context.Context, m *memory.Manager) {
+func (h *MemoryHook) startExtraction(_ context.Context, m *memory.Manager) {
+	ctx, cancel := context.WithTimeout(context.Background(), memory.ExtractTimeout)
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		cancel()
+		return
+	}
+	h.next++
+	id := h.next
+	h.active[id] = cancel
+	h.wg.Add(1)
+	h.mu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), memory.ExtractTimeout)
 		defer cancel()
+		defer h.wg.Done()
+		defer func() {
+			h.mu.Lock()
+			delete(h.active, id)
+			h.mu.Unlock()
+		}()
 		_, _ = m.Extract(ctx)
 	}()
+}
+
+// Close cancels and joins detached extraction calls before their store can be
+// closed. Without this, a TUI session switch left a side-call goroutine holding
+// a memory store reference into the next session's lifetime.
+func (h *MemoryHook) Close() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.closed = true
+	for _, cancel := range h.active {
+		cancel()
+	}
+	h.mu.Unlock()
+	h.wg.Wait()
 }
 
 // PostTurn implements Hooks.

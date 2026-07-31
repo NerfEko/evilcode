@@ -36,6 +36,7 @@ ROWS=${PROBE_ROWS:-40}
 # bytes. A long TMPDIR silently breaks tmux, so pin a short one.
 export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp/evilprobe-$UID-$PROBE_ID}"
 mkdir -p "$TMUX_TMPDIR"
+chmod 700 "$TMUX_TMPDIR"
 
 # A throwaway HOME keeps the probe away from the real config and session store,
 # so a probe run can never scribble on the user's actual state.

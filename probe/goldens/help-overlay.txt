@@ -3,6 +3,7 @@
 │   /help              Show help                                                                                                           │
 │   /keys              Show the keymap                                                                                                     │
 │   /context           Show context usage                                                                                                  │
+│   /stats             Show current session statistics                                                                                     │
 │   /info              Show session info                                                                                                   │
 │   /version           Show version                                                                                                        │
 │                                                                                                                                          │
@@ -12,6 +13,9 @@
 │                                                                                                                                          │
 │ Working                                                                                                                                  │
 │   /plan              Plan before implementing                                                                                            │
+│   /review            Review a path or this branch                                                                                        │
+│   /bugfix            Reproduce and fix a bug                                                                                             │
+│   /describe          Explain code structure                                                                                              │
 │   /todos             Toggle the todo card                                                                                                │
 │   /poke              Auto-poke on/off/status                                                                                             │
 │   /memory            Long-term memory on/off/status                                                                                      │
@@ -31,8 +35,4 @@
 │   /rebuild           Build, test, and restart into the new binary                                                                        │
 │   /reload            Restart, keeping this session                                                                                       │
 │                                                                                                                                          │
-│ Sessions                                                                                                                                 │
-│   /resume            Resume a previous session                                                                                           │
-│   /sessions          List sessions                                                                                                       │
-│   /rename            Rename this session                                                                                                 │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘

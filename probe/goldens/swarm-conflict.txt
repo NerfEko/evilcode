@@ -11,10 +11,10 @@
    ✓ read testdata/clamp.go · 151 tok
 
  It clamps with > where it wants >=. Summoning help.
-                                             ╭──────────────────────╮
-   👉 Summoned dracula-2                     │ Context 428/200k     │
-   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
-                                             ╰──────────────────────╯
+                                              ╭──────────────────────╮
+   👉 Summoned dracula-2                      │ Context 428/200k     │
+   fix the clamp                              │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+                                              ╰──────────────────────╯
    Its result will arrive as a message.
 
  2› anything else?

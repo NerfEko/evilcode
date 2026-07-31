@@ -346,6 +346,21 @@ func TestHistorySkipsConsecutiveDuplicates(t *testing.T) {
 	}
 }
 
+func TestHistoryDoesNotKeepAnUnpersistedPrompt(t *testing.T) {
+	h, _ := OpenHistory(t.TempDir())
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.Path = filepath.Join(blocked, "history.jsonl")
+	if err := h.Add("must not stick"); err == nil {
+		t.Fatal("writing below a regular file unexpectedly succeeded")
+	}
+	if h.Len() != 0 {
+		t.Fatalf("history retained an unpersisted prompt: %v", h.All())
+	}
+}
+
 func TestHistoryCompaction(t *testing.T) {
 	dir := t.TempDir()
 	h, _ := OpenHistory(dir)
@@ -534,6 +549,18 @@ func TestCollapseSummaryDescribesWhatWasLost(t *testing.T) {
 	}
 }
 
+func TestCollapseSummaryDoesNotSplitUTF8(t *testing.T) {
+	got := CollapseSummary([]provider.Message{
+		{Role: provider.RoleAssistant, Content: strings.Repeat("🔥", 401)},
+	})
+	if !strings.Contains(got, "…") || !strings.HasSuffix(got, "memories were kept.") {
+		t.Fatalf("summary was not formed: %q", got)
+	}
+	if !strings.Contains(got, strings.Repeat("🔥", 400)) {
+		t.Fatal("summary lost or split a complete rune")
+	}
+}
+
 func TestSaveMarksTheSession(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := Open(dir, "bat")
@@ -595,6 +622,30 @@ func TestRenameRefusesCollisionsAndBadNames(t *testing.T) {
 	}
 	if err := Rename(dir, "bat", "raven"); err != nil {
 		t.Errorf("a valid rename failed: %v", err)
+	}
+}
+
+func TestStoreRenameRollsBackWhenAttachmentDestinationExists(t *testing.T) {
+	dir := t.TempDir()
+	st, err := CreateNamed(dir, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := os.Mkdir(blobDir(st.Path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blobDir(filepath.Join(Dir(dir), "new.jsonl")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Rename(dir, "new"); err == nil {
+		t.Fatal("rename succeeded despite an existing attachment destination")
+	}
+	if st.Name != "old" || st.Path != filepath.Join(Dir(dir), "old.jsonl") {
+		t.Fatalf("live identity changed after failed rename: %q %q", st.Name, st.Path)
+	}
+	if _, err := os.Stat(st.Path); err != nil {
+		t.Fatalf("source log disappeared after failed rename: %v", err)
 	}
 }
 
@@ -667,6 +718,37 @@ func TestReadTakesTruncatedFinalLine(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected only the surviving first entry, got %d", len(entries))
+	}
+}
+
+func TestReadRemovesTruncatedTailBeforeTheNextAppend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(Dir(dir), "bat.jsonl")
+	if err := os.MkdirAll(Dir(dir), DirPerm); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"user","data":{"role":"user","content":"first"}}` + "\n" +
+		`{"ts":"2026-01-01T00:00:01Z","type":"user","data":{"role":"user`
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("appending after a crash tail left %d entries, want 3 including clean exit", len(entries))
 	}
 }
 
