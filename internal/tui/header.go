@@ -29,6 +29,13 @@ type HeaderState struct {
 
 	// Skills and MCP servers, when present.
 	Skills []string
+	MCP    []MCPStatus
+}
+
+// MCPStatus is one connected server, for the header line.
+type MCPStatus struct {
+	Name  string
+	Tools int
 }
 
 // ProviderStatus is one provider dot.
@@ -81,6 +88,20 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 			}
 		}
 		out = append(out, strings.Join(dots, dim.Render("  ")))
+	}
+
+	if len(h.MCP) > 0 {
+		var parts []string
+		shown := h.MCP
+		suffix := ""
+		if len(shown) > 3 {
+			suffix = fmt.Sprintf(" +%d more", len(shown)-3)
+			shown = shown[:3]
+		}
+		for _, s := range shown {
+			parts = append(parts, fmt.Sprintf("%s (%d tools)", s.Name, s.Tools))
+		}
+		out = append(out, dim.Render("mcp: "+strings.Join(parts, ", ")+suffix))
 	}
 
 	if len(h.Skills) > 0 {

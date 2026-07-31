@@ -1018,7 +1018,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Reasoning display modes + GC (§9.7, §4.6).
 - [x] Diff modes cycle + side panel + file-diff view (§9.4, §3.1, Ctrl+1..4).
 - [x] Session picker full UI (§5.4) + `/fork /transfer /save /rename` + title derivation (§18). `/checkpoint` + collapse-and-report `/rewind` (§18).
-- [ ] Skills system + MCP client (§15, §17) + header mcp/skills lines.
+- [x] Skills system + MCP client (§15, §17) + header mcp/skills lines.
 - [ ] `/compact` with context_epoch. `/fix`. `/btw` (side-panel side-question).
 - [ ] Self-test commands: `/screenshot /screenshot-mode /record /debug-visual /onboarding-sim /smoothness` (§14, §13).
 - [ ] Background bash UI: `⌥B bg` hint, BackgroundTasks widget, completion notices.

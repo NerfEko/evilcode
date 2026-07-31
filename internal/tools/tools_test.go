@@ -846,3 +846,81 @@ func TestConfineExplainsHowToTurnItOff(t *testing.T) {
 		t.Errorf("err = %q, want it to name the setting", err)
 	}
 }
+
+func TestSkillIndexLoadsSummariesNotBodies(t *testing.T) {
+	// Only names and one-liners go into the prompt; a body that big in the
+	// system prompt would invalidate the cache on every added skill.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "commit.md"), []byte(
+		"---\ndescription: write a commit message\n---\n\nThe full instructions go here.\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "review.md"), []byte(
+		"# Review\n\nCheck the diff carefully.\n"), 0o644)
+
+	set := LoadSkills([]string{dir})
+	idx := set.Index()
+	if len(idx) != 2 {
+		t.Fatalf("skills = %+v, want 2", idx)
+	}
+	// Sorted by name, so commit comes first.
+	if idx[0].Name != "commit" || idx[0].Desc != "write a commit message" {
+		t.Errorf("front-matter description not used: %+v", idx[0])
+	}
+	if idx[1].Desc != "Check the diff carefully." {
+		t.Errorf("first prose line should be the fallback description: %+v", idx[1])
+	}
+}
+
+func TestSkillBodyStripsFrontMatter(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "x.md"), []byte(
+		"---\ndescription: d\n---\nreal instructions\n"), 0o644)
+
+	set := LoadSkills([]string{dir})
+	body, err := set.Body("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "description:") {
+		t.Errorf("front matter leaked into the body:\n%s", body)
+	}
+	if !strings.Contains(body, "real instructions") {
+		t.Errorf("body = %q", body)
+	}
+}
+
+func TestNearestSkillDirWins(t *testing.T) {
+	// A repo skill should shadow a global one of the same name.
+	repo, global := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(repo, "commit.md"), []byte("repo version\n"), 0o644)
+	os.WriteFile(filepath.Join(global, "commit.md"), []byte("global version\n"), 0o644)
+
+	set := LoadSkills([]string{repo, global})
+	if len(set.Index()) != 1 {
+		t.Fatalf("skills = %+v, want one", set.Index())
+	}
+	body, _ := set.Body("commit")
+	if !strings.Contains(body, "repo version") {
+		t.Errorf("global skill shadowed the repo one: %q", body)
+	}
+}
+
+func TestSkillToolReportsUnknownNames(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "known.md"), []byte("body\n"), 0o644)
+	set := LoadSkills([]string{dir})
+
+	_, err := run(t, Set{NewSkillTool(set)}, "skill", map[string]any{"name": "missing"})
+	if err == nil {
+		t.Fatal("want an error for an unknown skill")
+	}
+	if !strings.Contains(err.Error(), "known") {
+		t.Errorf("err = %q, want it to list what is available", err)
+	}
+}
+
+func TestMissingSkillDirIsFine(t *testing.T) {
+	set := LoadSkills([]string{filepath.Join(t.TempDir(), "absent")})
+	if len(set.Index()) != 0 {
+		t.Errorf("skills = %+v", set.Index())
+	}
+}

@@ -3,6 +3,7 @@
 package tuicmd
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/mcp"
 	"evilcode/internal/session"
 	"evilcode/internal/todo"
 	"evilcode/internal/tools"
@@ -62,7 +64,29 @@ func Run(args []string) error {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return err
 	}
-	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
+
+	// Skills contribute only their names and one-liners to the prompt; bodies
+	// load through the skill tool, which keeps the prompt cacheable as the set
+	// grows (plan.md §15).
+	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
+	var promptSkills []agent.Skill
+	for _, sk := range skills.Index() {
+		promptSkills = append(promptSkills, agent.Skill{Name: sk.Name, Desc: sk.Desc, Path: sk.Path})
+	}
+
+	// A server that is not installed is a normal state, not a startup failure.
+	mcpClient := mcp.New()
+	var mcpServers []mcp.ServerConfig
+	for _, srv := range cfg.MCP {
+		mcpServers = append(mcpServers, mcp.ServerConfig{
+			Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env,
+		})
+	}
+	for _, err := range mcpClient.Connect(context.Background(), mcpServers) {
+		fmt.Fprintln(os.Stderr, "evilcode:", err)
+	}
+	defer mcpClient.Close()
+	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
 	if prior > 0 {
 		_, msgs, err := session.Resume(dataDir, *resume)
 		if err != nil {
@@ -92,7 +116,13 @@ func Run(args []string) error {
 		fmt.Fprintln(os.Stderr, "evilcode: "+p)
 	}
 
-	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd)).
+	var mcpStatus []tui.MCPStatus
+	for _, s := range mcpClient.Summaries() {
+		mcpStatus = append(mcpStatus, tui.MCPStatus{Name: s.Name, Tools: s.Tools})
+	}
+
+	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
+		skills.Names(), mcpStatus)).
 		WithTodos(todos, poke).
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
@@ -109,6 +139,10 @@ func Run(args []string) error {
 	ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))
+	if len(promptSkills) > 0 {
+		ts = append(ts, tools.NewSkillTool(skills))
+	}
+	ts = append(ts, mcpClient.Tools()...)
 	a.Tools = ts
 
 	a.NumCtx = overrides.ContextWindow
@@ -134,7 +168,8 @@ func modelArgs(model string) []string {
 	return []string{"-m", model}
 }
 
-func headerState(cfg *config.Config, sessionName, model, providerName, cwd string) tui.HeaderState {
+func headerState(cfg *config.Config, sessionName, model, providerName, cwd string,
+	skillNames []string, mcpSummaries []tui.MCPStatus) tui.HeaderState {
 	h := tui.HeaderState{
 		SessionName: sessionName,
 		Version:     Version,
@@ -142,6 +177,8 @@ func headerState(cfg *config.Config, sessionName, model, providerName, cwd strin
 		Model:       model,
 		Cwd:         prettyPath(cwd),
 		Branch:      gitBranch(cwd),
+		Skills:      skillNames,
+		MCP:         mcpSummaries,
 	}
 	for _, p := range cfg.Providers {
 		h.Providers = append(h.Providers, tui.ProviderStatus{

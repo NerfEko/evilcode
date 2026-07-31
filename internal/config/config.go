@@ -101,6 +101,14 @@ type Features struct {
 	ConfineToWorkspace bool `toml:"confine_to_workspace"`
 }
 
+// MCPServer is one `[[mcp]]` block.
+type MCPServer struct {
+	Name    string   `toml:"name"`
+	Command string   `toml:"command"`
+	Args    []string `toml:"args"`
+	Env     []string `toml:"env"`
+}
+
 // Config is the whole configuration.
 type Config struct {
 	DefaultModel string            `toml:"default_model"`
@@ -110,6 +118,7 @@ type Config struct {
 	Display      Display           `toml:"display"`
 	Features     Features          `toml:"features"`
 	Keybindings  map[string]string `toml:"keybindings"`
+	MCP          []MCPServer       `toml:"mcp"`
 
 	// Path records where this config was loaded from, or "" for defaults.
 	Path string `toml:"-"`
