@@ -154,12 +154,12 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   then writes four files sequentially; any failure leaves memory and disk disagreeing.
   Fix: apply to a clone, stage and sync every file, commit atomically, then publish.
   ⟨codex⟩
-- [ ] **H1.12** `internal/tui/app.go:658` — `m.stepOvernight()` is called **twice** per
+- [x] **H1.12** `internal/tui/app.go:658` — `m.stepOvernight()` is called **twice** per
   `EventTurnEnd`. Turn counters double-increment (halving the real cap), and both calls
   can pass `ShouldContinue` and each `submitHidden(OvernightPrompt)` — two concurrent
   `agent.Run`s on one agent. Fix: delete one line; add a one-turn/one-continuation test.
   ⟨both⟩
-- [ ] **H1.13** `internal/tui/app.go:653` — overnight accounting reads the turn's token
+- [x] **H1.13** `internal/tui/app.go:653` — overnight accounting reads the turn's token
   count *after* status reset, and **assigns** rather than accumulates. The budget breaker
   never fires. Invariant 6 (`plan.md` §1.3) says every auto-continuation path has a working
   breaker; this one is decorative. Fix: capture tokens before reset, add to the running

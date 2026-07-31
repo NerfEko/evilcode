@@ -650,13 +650,17 @@ func (m *Model) applyEvent(e agent.Event) {
 	case agent.EventTurnEnd:
 		m.finishStreaming()
 		m.processing = false
+		// Read before the reset: the status line is per-turn and is cleared in
+		// the next statement, so the overnight budget was always told zero.
+		spent := m.status.TokensIn + m.status.TokensOut
 		m.status = StatusState{Phase: PhaseIdle}
 		m.flushPending()
 		// The unattended loop advances here, after everything the turn produced
 		// has been folded in — so its stall detector reads the todo list as it
-		// actually stands rather than as it stood mid-turn.
-		m.stepOvernight()
-		m.stepOvernight()
+		// actually stands rather than as it stood mid-turn. Once: this was
+		// called twice, which counted every turn twice against the cap and
+		// could start two continuations on one agent.
+		m.stepOvernight(spent)
 	}
 }
 

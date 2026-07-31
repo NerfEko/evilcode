@@ -70,13 +70,17 @@ func (o *Overnight) Stop(reason string) {
 }
 
 // ShouldContinue reports whether another turn is allowed, and why not if it is
-// not. It is called once per finished turn.
-func (o *Overnight) ShouldContinue(now time.Time, todoState string, tokens int) (bool, string) {
+// not. It is called once per finished turn, and spent is what that turn cost.
+//
+// The cost accumulates. Assigning it made the budget the most any single turn
+// had spent, which no turn ever approaches, so the one breaker that bounds the
+// bill could not fire.
+func (o *Overnight) ShouldContinue(now time.Time, todoState string, spent int) (bool, string) {
 	if !o.Active {
 		return false, o.Stopped
 	}
 	o.Turns++
-	o.Tokens = tokens
+	o.Tokens += spent
 
 	// Every stop disarms. Returning false while still Active left the loop
 	// armed for the next call, which both lies to `/overnight status` and lets
@@ -183,8 +187,10 @@ func (m *Model) overnightCommand(arg string) tea.Cmd {
 	return nil
 }
 
-// stepOvernight runs after a turn ends, continuing or stopping the loop.
-func (m *Model) stepOvernight() {
+// stepOvernight runs after a turn ends, continuing or stopping the loop. spent
+// is what the finished turn cost, which the caller reads before the status line
+// is reset.
+func (m *Model) stepOvernight(spent int) {
 	if !m.overnight.Active {
 		return
 	}
@@ -192,8 +198,7 @@ func (m *Model) stepOvernight() {
 	if m.todos != nil {
 		state = m.todos.Summary()
 	}
-	ok, why := m.overnight.ShouldContinue(
-		time.Now(), state, m.status.TokensIn+m.status.TokensOut)
+	ok, why := m.overnight.ShouldContinue(time.Now(), state, spent)
 	if ok {
 		m.submitHidden(OvernightPrompt)
 		return

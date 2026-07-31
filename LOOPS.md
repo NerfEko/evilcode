@@ -1891,3 +1891,53 @@ for a tenth of the change.
 
 Verified: memory and disk agree after the failed write, `go test ./... -race`
 green.
+
+## 2026-07-31 H1.12/H1.13 — The overnight loop counted twice and spent nothing
+
+Both live in the same four lines of the turn-end handler, and the fix to one
+moves the other, so they are one commit rather than two.
+
+**H1.12** was two identical calls in a row:
+
+```go
+m.stepOvernight()
+m.stepOvernight()
+```
+
+Every finished turn advanced the counter twice, so a 40-turn cap stopped at 20 —
+and since both calls can pass `ShouldContinue`, each can submit a continuation,
+which is two `agent.Run` goroutines on one agent. H2.3's single-flight guard is
+the backstop that would have contained it; there is no such guard yet.
+
+```
+one turn advanced the counter by 2, want 1
+```
+
+The reproduction needed a real todo list to be worth anything. With `m.todos`
+nil the first call halts the loop ("there is no todo list to work through") and
+the second returns immediately on `!Active` — so the test passed against the
+broken code, for a reason that had nothing to do with the bug. A test that
+passes before the fix is not a reproduction, and this one was one edit away from
+being filed as evidence.
+
+**H1.13** was the budget breaker not working at all, for two independent
+reasons. The tokens were read from the status line *after* it had been reset to
+`StatusState{Phase: PhaseIdle}` in the statement above — always zero — and
+`ShouldContinue` then *assigned* rather than added, so `Tokens` would have meant
+"the most any single turn spent" even with a real number.
+
+```
+Tokens = 1000 after three 1000-track turns, want 3000
+stopped for "reached the 40-turn cap" after spending 100001 of a 400000 budget
+overnight recorded 0 tokens for a 1000-token turn
+```
+
+The last line is the whole feature: a 1000-token turn recorded as zero. Invariant
+6 says every auto-continuation path has a working breaker; this one had a
+decorative one, and the turn cap was silently doing all the work — at half its
+stated value, thanks to H1.12.
+
+The turn's cost is now read before the reset and passed in, and accumulates.
+
+Verified: all four reproductions fail before and pass after; `go test ./...
+-race` green.
