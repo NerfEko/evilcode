@@ -1656,3 +1656,32 @@ change and passes after, which is the point of having written it first.
 
 Verified: the reader observes only whole versions, modes survive both tools,
 `go test ./...` green.
+
+## 2026-07-31 H1.6 — Two edits, one file, one survivor
+
+A batch runs eight-way concurrent and `edit` is read-modify-write, so two edits
+to the same file in one batch both read the same original, both compute their
+replacement against it, and the second write erases the first. Nothing reports
+it: both calls return success, both diffs look right, and one of the two changes
+is simply not in the file.
+
+Reproduced on the first attempt with a 4,000-line file and two edits at opposite
+ends of it:
+
+```
+attempt 0: "LAST" is missing — the other edit in the batch overwrote it from a stale read
+```
+
+A per-canonical-path mutex now spans the read through the write in both `edit`
+and `write` — `write` because it reads the old contents for its diff and is the
+same hazard with a shorter body. The lock has to cover the read, not just the
+write: two writes that are individually atomic (H1.5) still lose one of two
+edits if both computed against the same `before`, which is exactly why H1.5 was
+not enough on its own and why the plan pairs them.
+
+The map of mutexes is never pruned. It holds one per file edited in a session,
+bounded by how much work a session does, and it is marked `ponytail:` rather
+than swept.
+
+Verified: five attempts, both edits land every time; `go test ./... -race`
+green.

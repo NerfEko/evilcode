@@ -19,3 +19,5 @@
 10. currently the grey text after a bash command is just a repeat of the command, and it shows on top of widgets and messes with allignment. it should be a summary of the command or something. you should be able to click on it to view it side by side like the quickdiff system, it should show a side by side of what it would look like if the command ran in a terminal for example the bash command rm -rf would appear in the side by side like '> rm -rf' and the output would be under it like a real terminal. pressing esc closes.
 
 11. we need to divert looks away from jcode look. come up with ways to make changes that give evilcode its own visual identity without removing features and write a looks.md with as many changes as you can think of and ill pick the ones i like
+
+12. needs a /login that lets you input ollama cloud api key

@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -115,5 +117,47 @@ func TestWriteAndEditPreservePermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode after edit = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// H1.6: a batch runs eight-way concurrent and edit is read-modify-write with no
+// per-path lock, so two edits to one file in one batch both count against the
+// same `before` and the second write erases the first.
+func TestConcurrentEditsToOneFileBothLand(t *testing.T) {
+	// Enough lines that the read-modify-write takes long enough to overlap.
+	var lines []string
+	for i := range 4000 {
+		lines = append(lines, fmt.Sprintf("line %04d", i))
+	}
+	body := strings.Join(lines, "\n") + "\n"
+
+	for attempt := range 5 {
+		f := tempFS(t, map[string]string{"a.txt": body})
+		set := f.Tools()
+
+		mk := func(old, new string) Call {
+			raw, _ := json.Marshal(map[string]any{"path": "a.txt", "old": old, "new": new})
+			return Call{ID: old, Name: "edit", Args: raw}
+		}
+		outs := set.RunBatch(context.Background(), []Call{
+			mk("line 0000", "FIRST"),
+			mk("line 3999", "LAST"),
+		})
+		for _, o := range outs {
+			if o.Err != nil {
+				t.Fatalf("attempt %d: edit %s failed: %v", attempt, o.Call.ID, o.Err)
+			}
+		}
+
+		got, err := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"FIRST", "LAST"} {
+			if !strings.Contains(string(got), want) {
+				t.Fatalf("attempt %d: %q is missing — the other edit in the batch "+
+					"overwrote it from a stale read", attempt, want)
+			}
+		}
 	}
 }

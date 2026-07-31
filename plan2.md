@@ -125,7 +125,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
 - [x] **H1.5** `internal/tools/fs.go:252` `writeTool`/`editTool` — truncate the destination
   in place, so a crash, short write, or full disk leaves a partially written file. Fix:
   write + sync a same-directory temp file, preserve permissions, atomic rename.  ⟨codex⟩
-- [ ] **H1.6** `internal/tools/fs.go:331` `editTool` — batches run 8-way concurrent
+- [x] **H1.6** `internal/tools/fs.go:331` `editTool` — batches run 8-way concurrent
   (`tools.go:101`) and edit/write are read-modify-write with no per-path lock. Two edits
   to one file in one batch both `strings.Count` against the same `before`; one is silently
   lost. Fix: per-canonical-path mutex, revalidate immediately before the replace from

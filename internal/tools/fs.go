@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/aymanbagabas/go-udiff"
 )
@@ -34,6 +35,34 @@ type FS struct {
 	Anchors bool
 
 	anchors *anchorStore
+
+	// paths serializes read-modify-write on one file. A batch runs eight-way
+	// concurrent, and two edits to the same file would otherwise both compute
+	// their replacement against the same original and the second would erase
+	// the first.
+	pathMu sync.Mutex
+	paths  map[string]*sync.Mutex
+}
+
+// lockPath serializes changes to one file, returning the unlock.
+//
+// ponytail: the map is never pruned. It holds one mutex per file edited in a
+// session, which is bounded by how much work one session does; a sweep is worth
+// adding only if that stops being true.
+func (f *FS) lockPath(full string) func() {
+	f.pathMu.Lock()
+	if f.paths == nil {
+		f.paths = map[string]*sync.Mutex{}
+	}
+	mu, ok := f.paths[full]
+	if !ok {
+		mu = &sync.Mutex{}
+		f.paths[full] = mu
+	}
+	f.pathMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // NewFS builds the filesystem tool group rooted at dir.
@@ -287,6 +316,8 @@ func (f *FS) writeTool() Tool {
 				return Result{}, err
 			}
 
+			defer f.lockPath(full)()
+
 			before := ""
 			if old, err := os.ReadFile(full); err == nil {
 				before = string(old)
@@ -373,6 +404,8 @@ func (f *FS) editTool() Tool {
 			if err != nil {
 				return Result{}, err
 			}
+			defer f.lockPath(full)()
+
 			data, err := os.ReadFile(full)
 			if err != nil {
 				return Result{}, err
