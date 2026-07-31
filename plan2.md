@@ -59,7 +59,7 @@ the suite stayed green, and green is exactly what it was before you started.
 ## 0.3 Reading a task
 
 ```
-- [ ] **H1.3** `internal/tui/app.go:658` `stepOvernight` — description — fix.  ⟨both⟩
+- [x] **H1.3** `internal/tui/app.go:658` `stepOvernight` — description — fix.  ⟨both⟩
 ```
 
 - **ID** — cite it in the commit subject and the LOOPS.md heading.

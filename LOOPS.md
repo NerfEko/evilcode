@@ -1522,3 +1522,27 @@ everything else gets `stubSkipped`, the same stub safe point C already writes.
 The `_ = i` left over in the safe-point-C loop went with it.
 
 Verified: reproduction passes, `go test ./...` green.
+
+## 2026-07-31 H1.3 — The same unanswered call, arriving by the other door
+
+H1.2 covered calls abandoned during a round. This is the round that never
+started: the stream had finished delivering a `tool_call` when the interrupt
+landed, `stream` returned the accumulated message with `context.Canceled`, and
+`commitPartial` checked Content and Reasoning for emptiness and then appended
+the whole thing — call included. Nothing downstream will ever answer it, because
+`runTools` was never reached.
+
+```
+cancel_test.go:134: tool call "call_9" (blocker) has no result message
+```
+
+Fixed by dropping `ToolCalls` on the partial. Stubbing them like safe point C
+was the other option in the plan and is worse here: a stub says a call was
+attempted and skipped, and this one was never attempted. The text is what the
+reader wanted kept; the calls were an intention, not an event.
+
+The assertion helper is shared with H1.2's test, and it is the invariant rather
+than the symptom: every `tool_call` in the conversation has a result message
+with its ID. Both interrupt paths are now checked against it.
+
+Verified: reproduction passes, partial text still kept, `go test ./...` green.

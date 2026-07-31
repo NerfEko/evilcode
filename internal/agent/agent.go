@@ -435,10 +435,17 @@ func (a *Agent) endTurn(reason EndReason) {
 
 // commitPartial keeps interrupted output as a real assistant message rather
 // than discarding it.
+//
+// Tool calls do not survive the interrupt. A call the stream had finished
+// delivering but the loop never dispatched can never acquire a result, and an
+// unanswered tool_call is a transcript strict endpoints reject — the same
+// invariant runTools defends from the other side. The text is what the reader
+// wanted kept; the calls were an intention, not an event.
 func (a *Agent) commitPartial(msg provider.Message) {
 	if strings.TrimSpace(msg.Content) == "" && strings.TrimSpace(msg.Reasoning) == "" {
 		return
 	}
+	msg.ToolCalls = nil
 	a.Conv.Append(msg)
 }
 

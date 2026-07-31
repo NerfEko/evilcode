@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"evilcode/internal/provider"
@@ -66,6 +67,71 @@ func TestCancelledToolRoundStillAnswersEveryCall(t *testing.T) {
 	}
 
 	assertToolCallsAnswered(t, a.Conv.Messages())
+}
+
+// partialCallProvider emits text and a tool call, then hangs until cancelled,
+// so the interrupt lands after the call was received but before it was run.
+type partialCallProvider struct{ started chan struct{} }
+
+func (p *partialCallProvider) Name() string { return "partialcall" }
+func (p *partialCallProvider) Embed(ctx context.Context, t []string) ([][]float32, error) {
+	return nil, nil
+}
+func (p *partialCallProvider) Models(ctx context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *partialCallProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk)
+	go func() {
+		defer close(ch)
+		select {
+		case ch <- provider.Chunk{Text: "let me look"}:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case ch <- provider.Chunk{ToolCalls: []provider.ToolCall{
+			{ID: "call_9", Name: "blocker", Args: json.RawMessage(`{}`)},
+		}}:
+		case <-ctx.Done():
+			return
+		}
+		close(p.started)
+		<-ctx.Done()
+	}()
+	return ch, nil
+}
+
+// H1.3: commitPartial checked Content and Reasoning for emptiness and then
+// appended the whole message — including tool calls that were received but
+// never dispatched, and so can never have results.
+func TestInterruptedPartialDropsUnrunToolCalls(t *testing.T) {
+	pp := &partialCallProvider{started: make(chan struct{})}
+	a := newTestAgent(t, pp, tools.Set{})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := collect(t, a, func() error {
+		go func() {
+			<-pp.started
+			cancel()
+		}()
+		return a.Run(ctx, "go")
+	})
+	if err != nil {
+		t.Fatalf("an interrupt is not an error: %v", err)
+	}
+
+	msgs := a.Conv.Messages()
+	var kept bool
+	for _, m := range msgs {
+		if m.Role == provider.RoleAssistant && strings.Contains(m.Content, "let me look") {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Error("partial text must still be kept")
+	}
+	assertToolCallsAnswered(t, msgs)
 }
 
 // assertToolCallsAnswered checks the invariant every OpenAI-compatible endpoint
