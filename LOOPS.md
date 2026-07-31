@@ -3790,3 +3790,49 @@ Verified: `go build ./... && go vet ./... && go test ./...` green across
 every package, including `internal/daemon`, whose two `wiring.Build` callers
 both pass an explicit `TodoNamespace` and are exactly the case this fix makes
 stricter.
+
+## 2026-07-31 H5.21 — The other half of the UTF-16 boundary
+
+H1.4 fixed the inbound direction: an LSP server's UTF-16 character offsets
+were being sliced into Go strings as byte offsets. `docPosition` is the
+outbound direction, discovered while fixing that one — the `lsp` tool takes a
+1-based column the way a human (or a model reading the `read` tool's printed
+text) would count characters, and `docPosition` sent `char - 1` straight
+through as the protocol's zero-based UTF-16 column, with no conversion at
+all.
+
+The reason this one is easy to miss even after fixing H1.4: a rune and a
+UTF-16 code unit agree for every character in the Basic Multilingual Plane —
+an accented letter, a CJK character, anything most non-ASCII test fixtures
+reach for is one rune and one UTF-16 unit, same as ASCII. They only diverge
+for a character *outside* the BMP: an emoji needs a surrogate pair, one rune
+but two UTF-16 units. `héllo` (H1.4's own fixture family) cannot demonstrate
+this bug; `🔥` can, which is why the new tests need a different line than the
+ones already covering H1.4.
+
+Fix: `docPosition` now reads the target line (`readLine`, a small
+`bufio.Scanner` walk to the 1-based line number) and converts the rune column
+to a UTF-16 column (`runeToUTF16`) before building the wire params —
+iterating by rune and widening the running count by 2 instead of 1 wherever
+a rune is outside the BMP, the mirror image of `utf16ToByte`'s own loop.
+Reading the file means `docPosition` can now fail, so its signature grew an
+error return; all four callers (`Definition`, `References`, `Hover`,
+`Rename`) already had an early `if err != nil` shape right next to the call,
+so threading it through was mechanical.
+
+Reproduce: `internal/lsp/doc_position_test.go`.
+`TestDocPositionConvertsRuneColumnPastAnAstralCharacter` writes `x := "🔥";
+old := 1` to a real file and asserts `docPosition` resolves rune column 11
+(where "old" starts) to UTF-16 offset 11 — not 10, which is what `char - 1`
+alone would have produced, and which names the space before "old" rather than
+"old" itself. `TestDocPositionAgreesWithRuneColumnWhenNoAstralCharacters`
+covers the BMP case (`héllo`) to confirm the fix doesn't introduce a shift
+where none belongs. `TestRuneToUTF16` and `TestRuneToUTF16RefusesOutOfRange`
+test the conversion directly. Confirmed the astral-character case fails
+against the pre-fix code (reverted `docPosition` to a bare `char - 1`,
+stubbed `runeToUTF16` so the test file would still compile, reran, restored):
+got 10, wanted 11 — everything else, including the BMP case, still passed,
+which is exactly why this bug survives review by inspection.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green across
+every package.

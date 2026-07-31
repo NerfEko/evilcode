@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,13 +12,82 @@ import (
 )
 
 // docPosition is the parameter shape most position-based requests share.
-func docPosition(path string, line, char int) map[string]any {
+//
+// char is a 1-based rune column — the units a human, or a model reading a
+// file's printed text, would count. LSP positions are UTF-16 code units (see
+// utf16ToByte), so on a line with non-ASCII text to the left of char, the
+// rune column and the protocol column disagree: sending the rune number
+// directly points the server at the wrong token. This reads the target
+// line and converts, the outbound counterpart of utf16ToByte.
+func docPosition(path string, line, char int) (map[string]any, error) {
+	text, err := readLine(path, line)
+	if err != nil {
+		return nil, err
+	}
+	utf16Char, err := runeToUTF16(text, char)
+	if err != nil {
+		return nil, fmt.Errorf("%s:%d: %w", path, line, err)
+	}
 	return map[string]any{
 		"textDocument": map[string]any{"uri": URIFromPath(path)},
 		// The protocol is zero-based; every human-facing number in evilcode is
 		// one-based, so the conversion happens once, here, at the boundary.
-		"position": map[string]any{"line": line - 1, "character": char - 1},
+		"position": map[string]any{"line": line - 1, "character": utf16Char - 1},
+	}, nil
+}
+
+// readLine returns a file's line-th line (1-based), without its terminator.
+func readLine(path string, line int) (string, error) {
+	if line < 1 {
+		return "", fmt.Errorf("line %d is not 1-based", line)
 	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	n := 0
+	for sc.Scan() {
+		n++
+		if n == line {
+			return sc.Text(), nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("line %d is past the end of %s (%d lines)", line, path, n)
+}
+
+// runeToUTF16 converts a 1-based rune column into a 1-based UTF-16 code unit
+// column — the outbound counterpart of utf16ToByte. `é` is one rune, one
+// UTF-16 unit; `🔥` is one rune, two UTF-16 units (a surrogate pair): counting
+// by rune and widening only where the protocol would is what keeps the two
+// agreeing on which token a position names.
+func runeToUTF16(line string, col int) (int, error) {
+	if col < 1 {
+		return 0, fmt.Errorf("column %d is not 1-based", col)
+	}
+	units := 0
+	n := 1
+	for _, r := range line {
+		if n == col {
+			return units + 1, nil
+		}
+		if r > 0xFFFF {
+			units += 2
+		} else {
+			units++
+		}
+		n++
+	}
+	if n == col {
+		return units + 1, nil
+	}
+	return 0, fmt.Errorf("column %d is past the end of the line", col)
 }
 
 // Definition resolves where a symbol is defined.
@@ -28,7 +98,11 @@ func (c *Client) Definition(ctx context.Context, path string, line, char int) ([
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 
-	raw, err := c.call(ctx, "textDocument/definition", docPosition(path, line, char))
+	params, err := docPosition(path, line, char)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.call(ctx, "textDocument/definition", params)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +117,10 @@ func (c *Client) References(ctx context.Context, path string, line, char int) ([
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 
-	params := docPosition(path, line, char)
+	params, err := docPosition(path, line, char)
+	if err != nil {
+		return nil, err
+	}
 	params["context"] = map[string]any{"includeDeclaration": true}
 	raw, err := c.call(ctx, "textDocument/references", params)
 	if err != nil {
@@ -88,7 +165,11 @@ func (c *Client) Hover(ctx context.Context, path string, line, char int) (string
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 
-	raw, err := c.call(ctx, "textDocument/hover", docPosition(path, line, char))
+	params, err := docPosition(path, line, char)
+	if err != nil {
+		return "", err
+	}
+	raw, err := c.call(ctx, "textDocument/hover", params)
 	if err != nil {
 		return "", err
 	}
@@ -222,7 +303,10 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 
-	params := docPosition(path, line, char)
+	params, err := docPosition(path, line, char)
+	if err != nil {
+		return nil, err
+	}
 	params["newName"] = newName
 	raw, err := c.call(ctx, "textDocument/rename", params)
 	if err != nil {

@@ -440,7 +440,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   malformed before H1.2/H1.3 landed — or truncated by a crash or a daemon shutdown mid-round
   — still produces the 400 those tasks fixed. Fix: stub the unanswered calls on replay, the
   way `runTools` stubs them live.  ⟨codex, reviewing H1.2⟩
-- [ ] **H5.21** `internal/lsp/ops.go` `docPosition` — the outbound direction of H1.4.
+- [x] **H5.21** `internal/lsp/ops.go` `docPosition` — the outbound direction of H1.4.
   The `lsp` tool takes a 1-based column "as read prints it" and sends it as a protocol
   character, which is a UTF-16 code unit: on a line with non-ASCII text to the left of the
   symbol, the server is pointed at the wrong token, so `definition`, `references`, `hover`
