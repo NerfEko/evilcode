@@ -2611,6 +2611,13 @@ func RunModel(m *Model) error {
 // at all: thinking_display was parsed, defaulted, documented, and then never
 // read by anything.
 func (m *Model) WithDisplay(d config.Display) *Model {
+	// display.theme was parsed, defaulted and documented, and then never read:
+	// NewModel hardcoded dracula. Same class of gap as thinking_display.
+	if d.Theme != "" {
+		m.setPalette(theme.ByName(d.Theme))
+	}
+	m.centered = d.Centered
+	m.renderer.Centered = d.Centered
 	if mode := ThinkingMode(d.ThinkingDisplay); mode.Valid() {
 		m.thinking = mode
 	}

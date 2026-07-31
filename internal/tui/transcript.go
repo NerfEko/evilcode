@@ -115,7 +115,11 @@ type Renderer struct {
 
 // NewRenderer builds a renderer at the given width.
 func NewRenderer(p *theme.Palette, width int) *Renderer {
-	return &Renderer{Palette: p, Markdown: NewMarkdown(width), Width: width, Animate: true, DiffMode: DiffInline}
+	return &Renderer{
+		Palette:  p,
+		Markdown: NewMarkdown(width, p.Prose),
+		Width:    width, Animate: true, DiffMode: DiffInline,
+	}
 }
 
 // SetWidth updates the wrap width, dropping caches that were built for the old

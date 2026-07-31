@@ -269,3 +269,30 @@ left margin exists; the `Side` on each anchor is already tracked for it.
 **Why:** widget width is derived from content, so shrinking means re-rendering
 each kind at a narrower measure — a second rendering path per widget. Overlay
 plus dismissal covers the case shrinking was for, at a fraction of the surface.
+
+## 12. Markdown headings follow the palette, and the default palette is Catppuccin Frappé
+
+**Spec:** §7.2 fixes the prose table, headings included, as an amber ramp
+(`#ffd764` → `#c89b4b`); §7.1 calls dracula the default palette.
+
+**Built:** each palette carries its own §7.2 table, headings ride that palette's
+accent, and the default is `catppuccin-frappe` with the Mauve accent.
+
+**Why:** the prose table was a package-level constant that `markdownStyleJSON`
+read unconditionally, so `/theme` recolored the chrome and left every heading in
+every reply the same amber — the prose did not follow the theme at all. Retuning
+the constant would have hidden that; making it palette-derived fixes it. Two
+neighbouring config keys turned out to be dead in the same way and are now
+applied: `display.theme` (NewModel hardcoded dracula) and `display.centered`.
+
+The default follows the desktop: the GTK theme here is
+`catppuccin-frappe-mauve-standard+default`. Catppuccin Frappé is a published
+palette, so its values are transcribed rather than invented, and it scores 70.3
+on the existing Oklab harmony scorer against dracula's 66.9.
+
+Everything in §7.2 other than the four heading colors is still the spec table
+verbatim, and the test asserting that still runs.
+
+**When this would need revisiting:** if evilcode is ever distributed rather than
+personal, the default should probably go back to a palette that owes nothing to
+the local desktop.

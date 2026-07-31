@@ -62,7 +62,7 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if !cfg.Features.AutoPoke {
 		t.Error("auto_poke defaults to true and was not set in the file")
 	}
-	if cfg.Display.Theme != "dracula" {
+	if cfg.Display.Theme != "catppuccin-frappe" {
 		t.Errorf("theme = %q, want the default", cfg.Display.Theme)
 	}
 	if len(cfg.Providers) != 2 {

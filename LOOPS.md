@@ -1251,3 +1251,33 @@ the chrome. DEVIATIONS #9–11.
 Verified live rather than only in the probe: a real streaming answer with the
 Context widget sampled every three seconds across a dozen frames, still there
 every time. The probe's settle-then-capture cycle cannot see that class of bug.
+
+## 2026-07-31 — Purple prose (plan item 2)
+
+"Move away from the yellow toward purple in agent replies." The yellow was the
+§7.2 heading ramp, `#ffd764` through `#c89b4b`, on every heading in every reply.
+
+The interesting part was why retuning it would have been the wrong fix.
+`markdownStyleJSON` called `theme.DefaultMarkdown()` unconditionally — a
+package-level constant with no palette parameter — so the prose colors were
+*global*. Switching to dracula, gloom or daywalker recolored the chrome and left
+the headings identical. The prose never followed the theme at all, and nobody had
+noticed because there was only ever one prose table to compare against.
+
+So the table moved onto `Palette`, each palette got its own, and `/theme` now
+swaps it and drops the render cache — otherwise a theme switch would recolor only
+the messages that arrived afterwards.
+
+Pulling that thread turned up two more dead config keys, the same class as
+`thinking_display` last week: `display.theme` was parsed, defaulted, documented
+and never read, because `NewModel` hardcoded `theme.Dracula()`. `display.centered`
+likewise. Both are applied now, which is also what made the new default actually
+take effect — without it the palette was still dracula no matter what the config
+said, and the first `/theme score` after adding Catppuccin still reported dracula.
+
+Catppuccin Frappé with the Mauve accent is the new default, matching the desktop's
+GTK theme. It is a published palette so the values are transcription rather than
+taste, and the existing Oklab scorer puts it at 70.3 against dracula's 66.9 —
+worth having as an objective check rather than trusting that it looked fine.
+
+DEVIATIONS #12.

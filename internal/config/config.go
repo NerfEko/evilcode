@@ -161,7 +161,7 @@ func Default() *Config {
 			{Name: "ollama-cloud", Kind: KindOllama, BaseURL: "https://ollama.com", APIKeyEnv: EnvOllamaKey},
 		},
 		Display: Display{
-			Theme:           "dracula",
+			Theme:           "catppuccin-frappe",
 			KeybindingHints: true,
 			IdleAnimation:   true,
 			Overscroll:      "overscroll",

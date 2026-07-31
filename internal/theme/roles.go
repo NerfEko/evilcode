@@ -100,6 +100,12 @@ type Palette struct {
 
 	// Light marks a palette designed for a light terminal background.
 	Light bool
+
+	// Prose is the §7.2 markdown table. It lives on the palette because it used
+	// to be a package-level constant, which meant `/theme` changed the chrome
+	// and left every heading in every reply the same amber — the prose simply
+	// did not follow the theme.
+	Prose Markdown
 }
 
 // Get returns the color for a role.

@@ -37,6 +37,7 @@ func Dracula() *Palette {
 	set(RoleError, "#ff5555")
 	set(RoleInfo, "#8cb4ff")
 	set(RoleSelectionBg, "#44475a")
+	p.Prose = DefaultMarkdown()
 	return p
 }
 
@@ -79,6 +80,7 @@ func Nosferatu() *Palette {
 	set(RoleError, "#a83c48")
 	set(RoleInfo, "#7e94b8")
 	set(RoleSelectionBg, "#3a2428")
+	p.Prose = DefaultMarkdown()
 	return p
 }
 
@@ -114,6 +116,7 @@ func Gloom() *Palette {
 	set(RoleError, "#c86868")
 	set(RoleInfo, "#8fa8b8")
 	set(RoleSelectionBg, "#2e3a44")
+	p.Prose = DefaultMarkdown()
 	return p
 }
 
@@ -150,26 +153,28 @@ func Daywalker() *Palette {
 	set(RoleError, "#c01c1c")
 	set(RoleInfo, "#2c56b0")
 	set(RoleSelectionBg, "#d4d8e8")
+	p.Prose = DefaultMarkdown()
 	return p
 }
 
 // Palettes returns every built-in palette by name.
 func Palettes() map[string]*Palette {
 	return map[string]*Palette{
-		"dracula":   Dracula(),
-		"nosferatu": Nosferatu(),
-		"gloom":     Gloom(),
-		"daywalker": Daywalker(),
+		"catppuccin-frappe": CatppuccinFrappe(),
+		"dracula":           Dracula(),
+		"nosferatu":         Nosferatu(),
+		"gloom":             Gloom(),
+		"daywalker":         Daywalker(),
 	}
 }
 
-// ByName returns a palette, falling back to dracula for an unknown name so a
+// ByName returns a palette, falling back to the default for an unknown name so a
 // typo in a config file degrades to the default rather than to a blank screen.
 func ByName(name string) *Palette {
 	if p, ok := Palettes()[name]; ok {
 		return p
 	}
-	return Dracula()
+	return CatppuccinFrappe()
 }
 
 // Markdown holds the prose palette of plan.md §7.2. It is separate from the
@@ -185,7 +190,8 @@ type Markdown struct {
 	Math, InlineMath, HTML color.RGBA
 }
 
-// DefaultMarkdown is the §7.2 table.
+// DefaultMarkdown is dracula's §7.2 table, kept as the fallback for a palette
+// that does not supply one.
 func DefaultMarkdown() Markdown {
 	must := func(hex string) color.RGBA {
 		c, err := ParseHex(hex)
@@ -195,10 +201,13 @@ func DefaultMarkdown() Markdown {
 		return c
 	}
 	return Markdown{
-		H1:         must("#ffd764"),
-		H2:         must("#f0be5a"),
-		H3:         must("#dcaa50"),
-		H4:         must("#c89b4b"),
+		// Headings ride the palette's own violet→pink rather than an amber ramp
+		// borrowed from nowhere: #bd93f9 is RoleUser and #ff79c6 is RoleAccent,
+		// so a heading now reads as part of the theme instead of against it.
+		H1:         must("#bd93f9"),
+		H2:         must("#c9a3fa"),
+		H3:         must("#d4b8fb"),
+		H4:         must("#cbb3e8"),
 		Body:       must("#c8c8c3"),
 		BoldText:   must("#f0f0eb"),
 		InlineCode: must("#b4b4b4"),
@@ -231,4 +240,72 @@ func TintDiff(syntax, diff color.RGBA) color.RGBA {
 		B: mix(syntax.B, diff.B),
 		A: 255,
 	}
+}
+
+// CatppuccinFrappe is the published Catppuccin Frappé palette with the Mauve
+// accent — the same one the desktop's GTK theme uses, so evilcode sits in the
+// session rather than beside it.
+//
+// The hex values are transcribed from the published spec, not chosen: base
+// #303446, text #c6d0f5, mauve #ca9ee6, lavender #babbf1, and so on. Where a
+// role has no direct Catppuccin equivalent the nearest named colour is used
+// rather than a blend, so the palette stays recognisably Frappé.
+func CatppuccinFrappe() *Palette {
+	p := &Palette{Name: "catppuccin-frappe"}
+	set := func(r Role, hex string) {
+		c, err := ParseHex(hex)
+		if err != nil {
+			panic("theme: bad literal in the catppuccin-frappe palette: " + hex)
+		}
+		p.Colors[r] = c
+	}
+	set(RoleUser, "#ca9ee6")          // mauve — the accent the GTK theme is built on
+	set(RoleAI, "#a6d189")            // green
+	set(RoleTool, "#838ba7")          // overlay1
+	set(RoleFileLink, "#8caaee")      // blue
+	set(RoleDim, "#626880")           // surface2
+	set(RoleAccent, "#f4b8e4")        // pink
+	set(RoleSystem, "#ef9f76")        // peach
+	set(RoleQueued, "#e5c890")        // yellow
+	set(RoleAsap, "#99d1db")          // sky
+	set(RolePending, "#737994")       // overlay0
+	set(RoleBorder, "#51576d")        // surface1
+	set(RoleUserText, "#c6d0f5")      // text
+	set(RoleUserBg, "#414559")        // surface0
+	set(RoleAIText, "#c6d0f5")        // text
+	set(RoleHeaderIcon, "#f4b8e4")    // pink
+	set(RoleHeaderName, "#ca9ee6")    // mauve
+	set(RoleHeaderSession, "#c6d0f5") // text
+	set(RoleSuccess, "#a6d189")       // green
+	set(RoleWarning, "#e5c890")       // yellow
+	set(RoleError, "#e78284")         // red
+	set(RoleInfo, "#8caaee")          // blue
+	set(RoleSelectionBg, "#51576d")   // surface1
+
+	must := func(hex string) color.RGBA {
+		c, err := ParseHex(hex)
+		if err != nil {
+			panic("theme: bad markdown literal in catppuccin-frappe: " + hex)
+		}
+		return c
+	}
+	p.Prose = Markdown{
+		// Mauve → lavender, so headings carry the accent the desktop already
+		// uses rather than the amber the §7.2 table shipped with.
+		H1:         must("#ca9ee6"),
+		H2:         must("#c0a3ea"),
+		H3:         must("#babbf1"),
+		H4:         must("#b5bfe2"),
+		Body:       must("#c6d0f5"),
+		BoldText:   must("#eff1f5"),
+		InlineCode: must("#a5adce"),
+		CodeBg:     must("#292c3c"),
+		Link:       must("#8caaee"),
+		Dim:        must("#737994"),
+		Table:      must("#949cbb"),
+		Math:       must("#85c1dc"),
+		InlineMath: must("#99d1db"),
+		HTML:       must("#838ba7"),
+	}
+	return p
 }

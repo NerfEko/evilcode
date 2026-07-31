@@ -105,6 +105,10 @@ func (m *Model) themeSwitch(name string) string {
 // built against the old colors.
 func (m *Model) setPalette(p *theme.Palette) {
 	m.renderer.Palette = p
+	// Prose follows the palette too. It used to be a package-level constant, so
+	// switching themes recolored the chrome and left every heading in every
+	// reply the same amber.
+	m.renderer.Markdown.SetProse(p.Prose)
 	for i := range m.blocks {
 		m.blocks[i].cache = nil
 	}

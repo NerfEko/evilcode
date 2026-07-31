@@ -3,7 +3,7 @@
  /model to switch · local:mock · mock-large  │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │   9 │ // goldens then bake in the failure — which is exactly what ha
  ● ollama-local  ○ ollama-cloud  ● mock      ╰──────────────────────╯ │  10 │ func clamp(offset, max int) int {
  skills: /commit /selfdev    ╭──────────────────────────────────────╮ │     │-    if offset > max {
- /mnt/cachyos-               │ ⚡ mock-large                        │ │  11 │+    if offset >= max {
+ /mnt/cachyo                 │ ⚡ mock-large                        │ │  11 │+    if offset >= max {
                              │ 1 sessions · dracula                 │ │  12 │         return max
  │ …os-home/eko/projects/evilcode  main │                             │  13 │     }
                              │ ☁ mock                               │ │  14 │     return offset

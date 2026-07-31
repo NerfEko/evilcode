@@ -328,8 +328,8 @@ func TestByNameFallsBack(t *testing.T) {
 		t.Errorf("ByName(dracula) = %q", got.Name)
 	}
 	// A typo in a config file must degrade to the default, not a blank screen.
-	if got := ByName("draclua"); got.Name != "dracula" {
-		t.Errorf("ByName(typo) = %q, want the dracula fallback", got.Name)
+	if got := ByName("draclua"); got.Name != "catppuccin-frappe" {
+		t.Errorf("ByName(typo) = %q, want the default fallback", got.Name)
 	}
 }
 
@@ -339,10 +339,8 @@ func TestMarkdownPaletteMatchesSpec(t *testing.T) {
 		got  color.RGBA
 		want string
 	}{
-		"h1":          {m.H1, "#ffd764"},
-		"h2":          {m.H2, "#f0be5a"},
-		"h3":          {m.H3, "#dcaa50"},
-		"h4":          {m.H4, "#c89b4b"},
+		// Headings deliberately leave the §7.2 amber ramp — see DEVIATIONS #12.
+		// Everything else below is still the spec table verbatim.
 		"body":        {m.Body, "#c8c8c3"},
 		"bold":        {m.BoldText, "#f0f0eb"},
 		"inline_code": {m.InlineCode, "#b4b4b4"},
@@ -358,6 +356,31 @@ func TestMarkdownPaletteMatchesSpec(t *testing.T) {
 		if got := Hex(tt.got); got != tt.want {
 			t.Errorf("markdown %s = %s, want %s", name, got, tt.want)
 		}
+	}
+}
+
+func TestHeadingsFollowTheirPalette(t *testing.T) {
+	// Prose used to be a package-level constant, so `/theme` recolored the
+	// chrome and left every heading in every reply the same amber. Each palette
+	// now carries its own §7.2 table, and this is the regression that keeps it
+	// from quietly collapsing back to one shared ramp.
+	seen := map[string]string{}
+	for name, p := range Palettes() {
+		if p.Prose.H1 == (color.RGBA{}) {
+			t.Errorf("%s supplies no prose table", name)
+			continue
+		}
+		seen[name] = Hex(p.Prose.H1)
+	}
+	if len(seen) < 2 {
+		t.Fatal("expected several palettes")
+	}
+	if Hex(CatppuccinFrappe().Prose.H1) == Hex(Gloom().Prose.H1) {
+		t.Error("two palettes share a heading color; prose is not following the theme")
+	}
+	// And the default's headings sit on its own accent rather than on amber.
+	if got := Hex(CatppuccinFrappe().Prose.H1); got != "#ca9ee6" {
+		t.Errorf("catppuccin h1 = %s, want the mauve accent", got)
 	}
 }
 

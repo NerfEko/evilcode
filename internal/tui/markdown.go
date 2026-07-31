@@ -13,8 +13,7 @@ import (
 // markdownStyleJSON is the glamour style implementing plan.md §7.2. Code
 // blocks are deliberately unstyled here: they are extracted and rendered by
 // renderCodeBlock so they can carry streaming chrome (§9.2).
-func markdownStyleJSON() []byte {
-	m := theme.DefaultMarkdown()
+func markdownStyleJSON(m theme.Markdown) []byte {
 	return []byte(fmt.Sprintf(`{
   "document":      {"block_prefix": "", "block_suffix": "", "color": %q, "margin": 0},
   "block_quote":   {"color": %q, "indent": 1, "indent_token": "│ "},
@@ -65,16 +64,29 @@ func markdownStyleJSON() []byte {
 // conversation (plan.md §9.1).
 type Markdown struct {
 	mu       sync.Mutex
+	prose    theme.Markdown
 	width    int
 	renderer *glamour.TermRenderer
 	cache    map[string]string
 }
 
 // NewMarkdown builds a renderer for the given wrap width.
-func NewMarkdown(width int) *Markdown {
-	md := &Markdown{cache: map[string]string{}}
+func NewMarkdown(width int, prose theme.Markdown) *Markdown {
+	md := &Markdown{cache: map[string]string{}, prose: prose}
 	md.setWidth(width)
 	return md
+}
+
+// SetProse swaps the palette's §7.2 table and rebuilds. Every cached render
+// carries the old colors, so the cache goes with it — otherwise `/theme` would
+// recolor only the messages that arrive afterwards.
+func (m *Markdown) SetProse(prose theme.Markdown) {
+	m.mu.Lock()
+	m.prose = prose
+	m.cache = map[string]string{}
+	width := m.width
+	m.mu.Unlock()
+	m.setWidth(width)
 }
 
 func (m *Markdown) setWidth(width int) {
@@ -82,7 +94,7 @@ func (m *Markdown) setWidth(width int) {
 		width = 1
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(markdownStyleJSON()),
+		glamour.WithStylesFromJSONBytes(markdownStyleJSON(m.prose)),
 		glamour.WithWordWrap(width),
 		glamour.WithPreservedNewLines(),
 	)
