@@ -250,6 +250,7 @@ func runOnce(args []string) (string, error) {
 	a.Tools = ts
 
 	a.NumCtx = overrides.ContextWindow
+	a.MaxSteps = cfg.Features.MaxSteps
 	defer a.Close()
 
 	if err := tui.RunModel(m); err != nil {

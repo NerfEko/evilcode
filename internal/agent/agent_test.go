@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -543,7 +544,9 @@ func TestChainStopsAtFirstAppend(t *testing.T) {
 }
 
 func TestMaxStepsBreaker(t *testing.T) {
-	// A model that never stops asking for tools has to be stopped somewhere.
+	// A model that never stops asking for tools has to be stoppable. The limit
+	// is off by default now, so this configures one — which is the behaviour
+	// worth testing: that the setting is honoured, not that a constant exists.
 	loop := &loopingProvider{}
 	noop := tools.Set{{
 		Name:   "spin",
@@ -554,12 +557,64 @@ func TestMaxStepsBreaker(t *testing.T) {
 		},
 	}}
 	a := newTestAgent(t, loop, noop)
+	a.MaxSteps = 5
 	evs, err := collect(t, a, func() error { return a.Run(context.Background(), "go") })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if evs[len(evs)-1].Reason != EndMaxSteps {
 		t.Errorf("reason = %v, want max_steps", evs[len(evs)-1].Reason)
+	}
+
+	var rounds int
+	for _, e := range evs {
+		if e.Kind == EventToolStart {
+			rounds++
+		}
+	}
+	if rounds != 5 {
+		t.Errorf("ran %d tool rounds against a limit of 5", rounds)
+	}
+}
+
+// Unset, the limit does not bound anything: the turn runs until the model
+// stops asking, which is what a long refactor needs.
+func TestNoMaxStepsByDefault(t *testing.T) {
+	if DefaultMaxSteps != 0 {
+		t.Fatalf("DefaultMaxSteps = %d, want 0 (unlimited)", DefaultMaxSteps)
+	}
+
+	loop := &loopingProvider{}
+	var rounds atomic.Int64
+	noop := tools.Set{{
+		Name:   "spin",
+		Desc:   "spin",
+		Schema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Run: func(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
+			rounds.Add(1)
+			return tools.Result{Output: "again"}, nil
+		},
+	}}
+
+	// Cancelled from outside rather than bounded from within — with no limit,
+	// that is the only thing that ends this turn, which is the point.
+	ctx, cancel := context.WithCancel(context.Background())
+	a := newTestAgent(t, loop, noop)
+	go func() {
+		for rounds.Load() <= 100 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	evs, err := collect(t, a, func() error { return a.Run(ctx, "go") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := evs[len(evs)-1].Reason; last == EndMaxSteps {
+		t.Error("a turn was cut off by a step limit that is supposed to be disabled")
+	}
+	if n := rounds.Load(); n <= 60 {
+		t.Errorf("ran only %d rounds; the old fixed cap of 60 still applies", n)
 	}
 }
 

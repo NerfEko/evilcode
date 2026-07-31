@@ -132,6 +132,7 @@ func Run(args []string) (int, error) {
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	a.NumCtx = overrides.ContextWindow
+	a.MaxSteps = cfg.Features.MaxSteps
 
 	// Compaction reaches headless and the daemon too. It was a *tui.Model
 	// method, so a long daemon session, an overnight run and every spawned

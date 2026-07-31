@@ -97,6 +97,7 @@ auto_poke = true
 memory = true
 advisor = false
 confine_to_workspace = false     # restrict file tools to the launch directory
+max_steps = 0                    # tool rounds per turn; 0 is unlimited
 
 [lsp]
 go = ["gopls"]

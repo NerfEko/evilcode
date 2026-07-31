@@ -13,10 +13,17 @@ import (
 	"evilcode/internal/tools"
 )
 
-// MaxSteps bounds tool-call rounds in a single turn. A model that keeps calling
-// tools without converging must stop somewhere; this is the outermost backstop
-// under the §12.6 breakers.
-const MaxSteps = 60
+// DefaultMaxSteps is the tool-round limit when none is configured.
+//
+// Zero: unlimited. The fixed cap of 60 was a guess standing in for a judgement
+// nobody had made, and it fired on exactly the turns least able to afford it —
+// a long refactor across many files converges slowly and legitimately, and
+// being cut off at round 60 with no way to raise it loses the work rather than
+// bounding it. The breakers that matter are elsewhere: the token budget, the
+// wall clock, the interrupt key, and the user watching.
+//
+// Set `max_steps` in `[features]` to reinstate a limit.
+const DefaultMaxSteps = 0
 
 // Agent runs the conversation loop. It is a plain struct driving a plain
 // function — not an actor system — so the whole flow reads top to bottom.
@@ -48,6 +55,10 @@ type Agent struct {
 
 	// NumCtx requests a context window from providers that accept one.
 	NumCtx int
+
+	// MaxSteps bounds tool-call rounds in one turn. Zero — the default — does
+	// not bound them at all; see DefaultMaxSteps.
+	MaxSteps int
 
 	// Retry policy for transient failures.
 	MaxRetries int
@@ -436,8 +447,10 @@ func (a *Agent) loop(ctx context.Context) error {
 	a.emit(start)
 
 	for step := 0; ; step++ {
-		if step >= MaxSteps {
-			a.Notice(LevelWarning, "Stopped after %d tool rounds without finishing.", MaxSteps)
+		if a.MaxSteps > 0 && step >= a.MaxSteps {
+			a.Notice(LevelWarning,
+				"Stopped after %d tool rounds without finishing (features.max_steps).",
+				a.MaxSteps)
 			a.endTurn(EndMaxSteps)
 			return nil
 		}

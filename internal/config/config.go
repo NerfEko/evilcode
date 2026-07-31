@@ -118,6 +118,12 @@ type Features struct {
 	// rather than protection. Turn it on for a session you want kept inside one
 	// tree — reviewing an unfamiliar repo, say.
 	ConfineToWorkspace bool `toml:"confine_to_workspace"`
+
+	// MaxSteps bounds tool-call rounds in a single turn. Zero — the default —
+	// means unbounded: a long refactor converges slowly and legitimately, and a
+	// fixed cap cuts off exactly the turns least able to afford losing the
+	// work. Set it to reinstate a limit.
+	MaxSteps int `toml:"max_steps"`
 }
 
 // MCPServer is one `[[mcp]]` block.
