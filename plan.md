@@ -1028,7 +1028,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 ## Phase 3 — Semantic memory
 
 - [x] Store + schema + vec search (§19). `remember`/`recall`/`reflect` tools. Passive recall + tile render. Ambient extraction (smol role) + dedupe. Consolidation. Session RAG in picker. MemoryActivity widget (§8.8). `/memory`. Tests: recall ranking fixture; probe: recall tile + widget states.
-- [ ] Verify: remember a fact → new session → passive recall injects it. Tag `phase-3`.
+- [x] Verify: remember a fact → new session → passive recall injects it. Tag `phase-3`.
 
 ## Phase 4 — Daemon + swarms
 

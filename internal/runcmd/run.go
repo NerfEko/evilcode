@@ -182,6 +182,22 @@ func printEvents(a *agent.Agent, store *session.Store, quiet bool) <-chan int {
 				newline()
 				fmt.Fprintln(os.Stderr, toolLine(e))
 
+			case agent.EventMemoryRecall:
+				// Headless has no tile, but it must not inject silently: a
+				// scripted run whose answer was shaped by a remembered fact
+				// should say so on stderr, where the tool lines already are.
+				if quiet {
+					continue
+				}
+				if hits, ok := e.Display.([]memory.Hit); ok {
+					newline()
+					fmt.Fprintf(os.Stderr, "🧠 recalled %d %s\n",
+						len(hits), plural(len(hits), "memory", "memories"))
+					for _, h := range hits {
+						fmt.Fprintf(os.Stderr, "   · %s\n", h.Text)
+					}
+				}
+
 			case agent.EventNotice:
 				if quiet {
 					continue
@@ -293,4 +309,13 @@ func humanCount(n int) string {
 	default:
 		return fmt.Sprint(n)
 	}
+}
+
+// plural picks a noun form. Two words rather than an -s rule, because "memory"
+// does not take one.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

@@ -760,3 +760,20 @@ takes the pane away mid-scenario. Every step is a separate `probe.sh`
 invocation, so there is no window to lock; the fix is `PROBE_ID`, which gives
 each run its own socket and frame directory. The test harness passes its pid.
 Three consecutive green runs after that, where before it was failing most runs.
+
+## 2026-07-31 P3.2 — Phase 3 verified
+
+Ran the criterion against real models rather than the mock. Session `snake`:
+`deepseek-v4-flash:cloud` calls `remember` with "Deploy this project with 'make
+ship-it', never with Docker." Session `toad`, a separate process: "How should I
+deploy this project?" comes back `🧠 recalled 1 memory` and the answer is `Run
+`make ship-it` to deploy.` The bank on disk holds one record with a 768-dim
+vector, which is the dimension §19 specifies.
+
+This needed `ollama pull nomic-embed-text` — the embedder §19 names as the
+default. Worth recording that the feature has a dependency nothing else in the
+repo has: without it, every path still works but only through the substring
+fallback, and the `/memory` status line says so by counting records with no
+embedding.
+
+Tagged `phase-3`.
