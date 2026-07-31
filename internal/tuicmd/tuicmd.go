@@ -207,6 +207,13 @@ func Run(args []string) error {
 	// After the TUI is down, so a slow summary shows as a pause at the prompt
 	// rather than a frozen frame.
 	m.ConsolidateMemory()
+	// A reload re-execs rather than rebuilding state in place: the binary may
+	// literally be a different one after /rebuild, and every subsystem here is
+	// bound to a session anyway.
+	if target := m.ReloadTarget(); target != "" {
+		return tui.Reexec(target)
+	}
+
 	// The session picker exits with a target rather than swapping state in
 	// place: the agent, todo store, history, and breakers are each bound to one
 	// session, and re-entering is a much smaller surface than rebuilding them.

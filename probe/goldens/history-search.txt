@@ -2,7 +2,7 @@
  session: Dracula 🧛
  /model to switch · local:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit
+ skills: /commit /selfdev
  <repo> (main)
 
  2› fix the auth redirect loop

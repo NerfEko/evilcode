@@ -34,7 +34,16 @@ var Commands = []Command{
 	{Name: "todos", Help: "Toggle the todo card"},
 	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
 	{Name: "poke", Help: "Auto-poke on/off/status"},
+	{Name: "selfdev", Help: "Work on evilcode itself"},
+	{Name: "rebuild", Help: "Build, test, and restart into the new binary"},
+	{Name: "reload", Help: "Restart, keeping this session"},
+
 	{Name: "productivity", Help: "What you have been doing, as a dashboard"},
+	{Name: "overnight", Help: "Work the todo list unattended, under hard caps",
+		Long: "  /overnight        arm it\n" +
+			"  /overnight off    stop now\n" +
+			"  /overnight status where it is\n" +
+			"It stops on turns, tokens, time, or a list that stopped moving — and says which."},
 	{Name: "advisor", Help: "Second-opinion model on/off/status"},
 	{Name: "lsp", Help: "Language server status"},
 
@@ -153,7 +162,8 @@ var HelpSections = []HelpSection{
 	{"Models", []string{"model", "models"}},
 	{"Working", []string{"plan", "todos", "poke", "memory"}},
 	{"Swarm", []string{"summon", "agents"}},
-	{"Analysis", []string{"lsp", "advisor", "productivity"}},
+	{"Analysis", []string{"lsp", "advisor", "productivity", "overnight"}},
+	{"Self-development", []string{"selfdev", "rebuild", "reload"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "terminal-setup", "screenshot",

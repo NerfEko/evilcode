@@ -197,6 +197,12 @@ type Model struct {
 	diagramInbox atomic.Pointer[mermaidRendered]
 	nextImageID  int
 
+	// reloadTo is the session to resume after a `/reload`, or "".
+	reloadTo string
+
+	// overnight is the supervised long-run loop (§5), inert unless armed.
+	overnight Overnight
+
 	// advisor is the §21 second opinion, and lsp the language-server manager.
 	// Both are nil when unconfigured, which every path has to survive.
 	advisor *agent.Advisor
@@ -349,6 +355,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
+		return m, nil
+
+	case rebuildResult:
+		if msg.err != nil {
+			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: msg.err.Error()})
+			m.notice = ""
+			m.scroll.FollowBottom()
+			return m, nil
+		}
+		m.notice = "🔄 Built and tested — restarting..."
+		return m, m.reloadCommand()
+
+	case reloadRequest:
+		m.reloadTo = msg.session
 		return m, nil
 
 	case tickMsg:
@@ -537,6 +557,11 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.processing = false
 		m.status = StatusState{Phase: PhaseIdle}
 		m.flushPending()
+		// The unattended loop advances here, after everything the turn produced
+		// has been folded in — so its stall detector reads the todo list as it
+		// actually stands rather than as it stood mid-turn.
+		m.stepOvernight()
+		m.stepOvernight()
 	}
 }
 
@@ -1431,6 +1456,18 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "memory":
 		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
+
+	case "selfdev":
+		return m, m.selfdevCommand()
+
+	case "rebuild":
+		return m, m.rebuildCommand()
+
+	case "reload":
+		return m, m.reloadCommand()
+
+	case "overnight":
+		return m, m.overnightCommand(strings.TrimSpace(m.commandArg))
 
 	case "productivity":
 		return m, m.productivityCommand()

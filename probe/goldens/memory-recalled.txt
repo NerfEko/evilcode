@@ -1,5 +1,5 @@
  ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit
+ skills: /commit /selfdev
  <repo> (main)
                                                                                                                                            ╷
  3› I like tabs                                                                                                                            │

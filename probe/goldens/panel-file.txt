@@ -2,7 +2,7 @@
  session: Dracula 🧛                                                  │   8 │ // makes every scenario's edit fail with "old string not found
  /model to switch · local:mock · mock-large                           │   9 │ // goldens then bake in the failure — which is exactly what ha
  ● ollama-local  ○ ollama-cloud  ● mock                               │  10 │ func clamp(offset, max int) int {
- skills: /commit                                                      │     │-    if offset > max {
+ skills: /commit /selfdev                                             │     │-    if offset > max {
  <repo> (main)                       │  11 │+    if offset >= max {
                                                                       │  12 │         return max
  1› fix the clamp                                                     │  13 │     }

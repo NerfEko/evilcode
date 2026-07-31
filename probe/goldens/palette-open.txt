@@ -30,5 +30,5 @@
  /plan               Plan before implementing
  /todos              Toggle the todo card
  /poke               Auto-poke on/off/status
- /advisor            Second-opinion model on/off/status
- /lsp                Language server status  +33 more
+ /selfdev            Work on evilcode itself
+ /rebuild            Build, test, and restart into the new binary  +38 more

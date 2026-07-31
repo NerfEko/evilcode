@@ -23,16 +23,16 @@
 │ Analysis                                                                                                                                 │
 │   /lsp               Language server status                                                                                              │
 │   /advisor           Second-opinion model on/off/status                                                                                  │
+│   /productivity      What you have been doing, as a dashboard                                                                            │
+│   /overnight         Work the todo list unattended, under hard caps                                                                      │
+│                                                                                                                                          │
+│ Self-development                                                                                                                         │
+│   /selfdev           Work on evilcode itself                                                                                             │
+│   /rebuild           Build, test, and restart into the new binary                                                                        │
+│   /reload            Restart, keeping this session                                                                                       │
 │                                                                                                                                          │
 │ Sessions                                                                                                                                 │
 │   /resume            Resume a previous session                                                                                           │
 │   /sessions          List sessions                                                                                                       │
 │   /rename            Rename this session                                                                                                 │
-│   /save              Pin this session so the picker marks it                                                                             │
-│   /fork              Copy this session under a new name                                                                                  │
-│   /checkpoint        Mark a point to rewind back to                                                                                      │
-│   /rewind            Collapse back to an earlier point                                                                                   │
-│   /clear             Clear the transcript                                                                                                │
-│                                                                                                                                          │
-│ System                                                                                                                                   │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘
