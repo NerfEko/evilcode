@@ -5,10 +5,10 @@
  <repo> (main)
 
  Here is the plan.
- ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮
- │ Goal                                                                                             │
- │ Make the refresh path survive a cold start.                                                      │
- │                                                                                                  │
+ ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮     ╭────────────────────────────────╮
+ │ Goal                                                                                             │     │ 💡 Ctrl+R searches your prompt │
+ │ Make the refresh path survive a cold start.                                                      │     │ history                        │
+ │                                                                                                  │     ╰────────────────────────────────╯
  │ Approach                                                                                         │
  │ 1. Read the callback handler                                                                     │
  │ 2. Add the retry gate                                                                            │

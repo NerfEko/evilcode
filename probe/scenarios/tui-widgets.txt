@@ -1,0 +1,9 @@
+# Widgets docked into the transcript's negative space (§8.3). They cost no
+# layout height — they live where the text is not — and hold their anchor
+# rather than skittering as content streams under them.
+
+scenario todos
+boot tui
+keys "wire the auth flow"
+keys Enter
+capture widgets-docked

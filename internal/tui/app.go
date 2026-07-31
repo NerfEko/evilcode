@@ -94,6 +94,11 @@ type Model struct {
 	// commandArg holds the argument of the command being run.
 	commandArg string
 
+	// dock places widgets in the transcript's negative space, and widgetsOn
+	// is the Alt+I toggle.
+	dock      *Dock
+	widgetsOn bool
+
 	// helpOpen and helpScroll drive the full-screen help overlay (§5.5).
 	helpOpen   bool
 	helpScroll int
@@ -129,6 +134,8 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		header:       h,
 		started:      time.Now(),
 		streamingIdx: -1,
+		dock:         NewDock(),
+		widgetsOn:    true,
 	}
 }
 
@@ -522,6 +529,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+r":
 		m.history.Open(m.editor.Text, m.editor.Cursor)
+		return m, nil
+
+	case "alt+i":
+		m.widgetsOn = !m.widgetsOn
+		m.dock.Reset()
+		if m.widgetsOn {
+			m.notice = "Info widgets: ON"
+		} else {
+			m.notice = "Info widgets: OFF"
+		}
 		return m, nil
 
 	case "ctrl+up", "alt+up":
@@ -1283,6 +1300,10 @@ func (m *Model) View() tea.View {
 
 	rows = append(rows, m.renderer.RenderComposer(m.composerState())...)
 
+	// Widgets dock into the blank space beside the transcript, so they cost no
+	// layout height at all — they live where the text is not (plan.md §8.3).
+	rows = m.dockWidgets(rows, res.Transcript, len(content))
+
 	// The palette is spliced over the finished frame rather than added to it,
 	// so opening it reserves no layout height and the transcript never moves
 	// (plan.md invariant 3). It runs before the inset so the overlay shares the
@@ -1369,6 +1390,78 @@ func spliceOverlay(rows, overlay []string, screenHeight, composerRows int) []str
 		// Assignment rather than overlay-onto: a shorter overlay row must not
 		// leave the tail of whatever was underneath visible.
 		rows[idx] = line
+	}
+	return rows
+}
+
+// activeWidgets builds the widget list in priority order, dropping any that
+// would render empty.
+func (m *Model) activeWidgets() []Widget {
+	var out []Widget
+	add := func(w Widget) {
+		if len(w.Lines) > 0 {
+			out = append(out, w)
+		}
+	}
+
+	if m.todos != nil {
+		add(m.renderer.TodosWidget(m.todos.Items(), m.todos.Goals(), 4))
+	}
+	if m.status.TokensIn > 0 && m.contextMax() > 0 {
+		add(m.renderer.ContextWidget(m.status.TokensIn+m.status.TokensOut, m.contextMax()))
+	}
+	add(m.renderer.ModelInfoWidget(m.header, 1))
+	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
+		add(m.renderer.TipsWidget(tip))
+	}
+	return out
+}
+
+// contextMax is the model's window, falling back to a common default so the
+// meter is useful before the provider has reported one.
+func (m *Model) contextMax() int {
+	if m.agent != nil && m.agent.NumCtx > 0 {
+		return m.agent.NumCtx
+	}
+	return 200_000
+}
+
+// dockWidgets paints widgets into the transcript's blank margin.
+//
+// Widgets are suppressed entirely while the welcome art is showing: an empty
+// screen decorated with status boxes is busier than the thing it decorates.
+func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []string {
+	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
+		return rows
+	}
+	// Only the transcript region is dockable; the composer and status line own
+	// their rows outright.
+	region := rows
+	if len(region) > transcriptRows {
+		region = region[:transcriptRows]
+	}
+
+	placements := m.dock.Layout(m.activeWidgets(), region, m.width-Inset(false),
+		max(contentLines-transcriptRows-m.scroll.Offset, 0), false)
+	if len(placements) == 0 {
+		return rows
+	}
+
+	byKind := map[WidgetKind]Widget{}
+	for _, w := range m.activeWidgets() {
+		byKind[w.Kind] = w
+	}
+
+	for _, p := range placements {
+		lines := m.renderer.RenderWidget(byKind[p.Kind])
+		for i, line := range lines {
+			row := p.Row + i
+			if row < 0 || row >= len(rows) || row >= transcriptRows {
+				continue
+			}
+			pad := max(p.Col-lipgloss.Width(rows[row]), 0)
+			rows[row] = rows[row] + strings.Repeat(" ", pad) + line
+		}
 	}
 	return rows
 }

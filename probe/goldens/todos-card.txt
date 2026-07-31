@@ -7,26 +7,26 @@
  1› wire the auth flow
 
  Tracking the work.
-
-   ✓ todo · 23 tok
-
-   ↳ 4 added  (1/4)
-     + Read the OAuth callback handler
-     + Wire the refresh path
-     + Add the retry gate
+                                                                                                        ╭──────────────────────────────────╮
+   ✓ todo · 23 tok                                                                                      │ Todos 1/4 ●●○○ · 100%            │
+                                                                                                        │   ● Wire the refresh path        │
+   ↳ 4 added  (1/4)                                                                                     │   ⊳ Add the retry gate (blocked) │
+     + Read the OAuth callback handler                                                                  │   ○ Write the integration        │
+     + Wire the refresh path                                                                            │   +1 done                        │
+     + Add the retry gate                                                                               ╰──────────────────────────────────╯
      + Write the integration test
 
  Tracked. Working through the refresh path next.Done.Done.Done.
-
- Understands user intent 87%
-   User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before
-                    work starts
- auth flow  ●●○○
-   Closed feedback loop 92% · Ownership 88%
-   Feedback · go test ./internal/auth/...
-   ● Wire the refresh path
-   ⊳ Add the retry gate (blocked)
-   ○ Write the integration test
+                                                                                                    ╭──────────────────────────────────────╮
+ Understands user intent 87%                                                                        │ ⚡ mock-large                        │
+   User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before  │ 1 sessions · dracula                 │
+                    work starts                                                                     │ /mnt/cachyos-home/eko/projects  main │
+ auth flow  ●●○○                                                                                    │ ☁ mock                               │
+   Closed feedback loop 92% · Ownership 88%                                                         ╰──────────────────────────────────────╯
+   Feedback · go test ./internal/auth/...                                                                 ╭────────────────────────────────╮
+   ● Wire the refresh path                                                                                │ 💡 Ctrl+R searches your prompt │
+   ⊳ Add the retry gate (blocked)                                                                         │ history                        │
+   ○ Write the integration test                                                                           ╰────────────────────────────────╯
    ✓ Read the OAuth callback handler · 75→100%
 
 

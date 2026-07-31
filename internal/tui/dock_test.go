@@ -1,0 +1,312 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+)
+
+// rowsOfWidth builds a frame whose rows are the given text widths.
+func rowsOfWidth(widths ...int) []string {
+	out := make([]string, len(widths))
+	for i, w := range widths {
+		out[i] = strings.Repeat("x", w)
+	}
+	return out
+}
+
+func widget(kind WidgetKind, lines int) Widget {
+	w := Widget{Kind: kind}
+	for i := 0; i < lines; i++ {
+		w.Lines = append(w.Lines, strings.Repeat("c", 20))
+	}
+	return w
+}
+
+func TestFreeWidthMeasuresTrailingSpace(t *testing.T) {
+	got := FreeWidth(rowsOfWidth(0, 40, 100), 100)
+	want := []int{100, 60, 0}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("free[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestDockPlacesIntoBlankMargin(t *testing.T) {
+	d := NewDock()
+	rows := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
+	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false)
+	if len(got) != 1 {
+		t.Fatalf("placements = %d, want 1", len(got))
+	}
+	p := got[0]
+	if p.Col+p.Width != 100 {
+		t.Errorf("widget right edge at %d, want the frame edge 100", p.Col+p.Width)
+	}
+	if p.Width < WidgetMinWidth || p.Width > WidgetMaxWidth {
+		t.Errorf("width = %d, want between %d and %d", p.Width, WidgetMinWidth, WidgetMaxWidth)
+	}
+}
+
+func TestDockRefusesWhenTextFillsTheRow(t *testing.T) {
+	d := NewDock()
+	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98, 98, 98, 98,
+		98, 98, 98, 98, 98, 98, 98, 98, 98, 98)
+	if got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false); len(got) != 0 {
+		t.Errorf("placements = %+v, want none when there is no margin", got)
+	}
+}
+
+func TestDockHoldsItsAnchorAcrossFrames(t *testing.T) {
+	// A widget that re-picks its slot every frame skitters as text streams
+	// under it. It must stay put (plan.md invariant 4).
+	d := NewDock()
+	rows := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	first := d.Layout(w, rows, 100, 0, false)
+	if len(first) != 1 {
+		t.Fatal("expected a placement")
+	}
+	for i := 0; i < 10; i++ {
+		got := d.Layout(w, rows, 100, 0, false)
+		if len(got) != 1 || got[0].Row != first[0].Row {
+			t.Fatalf("frame %d moved the widget from row %d to %+v", i, first[0].Row, got)
+		}
+	}
+}
+
+func TestDockScrollsWithTheText(t *testing.T) {
+	// The anchor is an absolute transcript line, not a viewport row, so the
+	// widget stays beside the content it was docked next to as the view
+	// scrolls rather than hovering at a fixed screen position.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	// Dock while the view is scrolled down, so the widget has an absolute
+	// anchor well inside the transcript.
+	first := d.Layout(w, rows, 100, 10, false)
+	if len(first) != 1 {
+		t.Fatal("expected a placement")
+	}
+	wantAnchor := first[0].Row + 10
+
+	// Scroll up by three: the same absolute line is now three rows lower.
+	second := d.Layout(w, rows, 100, 7, false)
+	if len(second) != 1 {
+		t.Fatal("expected a placement after scrolling")
+	}
+	if got := second[0].Row + 7; got != wantAnchor {
+		t.Errorf("anchor moved from line %d to %d; it must stay with its content",
+			wantAnchor, got)
+	}
+	if second[0].Row != first[0].Row+3 {
+		t.Errorf("row = %d, want %d", second[0].Row, first[0].Row+3)
+	}
+}
+
+func TestDockHidesInPlaceRatherThanJumping(t *testing.T) {
+	// When a wide line slides under a widget it hides rather than re-homing,
+	// and only moves after the slot has been unusable for a long time.
+	d := NewDock()
+	open := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	first := d.Layout(w, open, 100, 0, false)
+	if len(first) != 1 {
+		t.Fatal("expected a placement")
+	}
+
+	// A wide line covers the slot.
+	blocked := append([]string(nil), open...)
+	for i := first[0].Row; i < first[0].Row+3; i++ {
+		blocked[i] = strings.Repeat("x", 98)
+	}
+
+	got := d.Layout(w, blocked, 100, 0, false)
+	if len(got) != 0 {
+		t.Errorf("widget should hide in place, not move to %+v", got)
+	}
+
+	// Once the line passes, it comes back to the same slot.
+	back := d.Layout(w, open, 100, 0, false)
+	if len(back) != 1 || back[0].Row != first[0].Row {
+		t.Errorf("widget did not return to its slot: %+v", back)
+	}
+}
+
+func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
+	d := NewDock()
+	open := make([]string, 40)
+	for i := range open {
+		open[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	first := d.Layout(w, open, 100, 0, false)
+	if len(first) != 1 {
+		t.Fatal("expected a placement")
+	}
+
+	blocked := append([]string(nil), open...)
+	for i := first[0].Row; i < first[0].Row+3; i++ {
+		blocked[i] = strings.Repeat("x", 98)
+	}
+
+	// Just under the threshold: still hidden, not moved.
+	for i := 0; i < RehomeFrames-1; i++ {
+		if got := d.Layout(w, blocked, 100, 0, false); len(got) != 0 {
+			t.Fatalf("frame %d re-homed early to %+v", i, got)
+		}
+	}
+	// Past it: allowed to find a new home.
+	got := d.Layout(w, blocked, 100, 0, false)
+	if len(got) != 1 {
+		t.Fatal("expected a re-home once the slot was unusable for long enough")
+	}
+	if got[0].Row == first[0].Row {
+		t.Error("re-homed to the same blocked row")
+	}
+}
+
+func TestDockNeverOverlapsWidgets(t *testing.T) {
+	d := NewDock()
+	rows := make([]string, 60)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	got := d.Layout([]Widget{
+		widget(WidgetTodos, 3),
+		widget(WidgetContextUsage, 3),
+		widget(WidgetModelInfo, 3),
+	}, rows, 100, 0, false)
+
+	if len(got) < 2 {
+		t.Fatalf("placements = %d, want several", len(got))
+	}
+	used := map[int]WidgetKind{}
+	for _, p := range got {
+		for r := p.Row; r < p.Row+p.Height; r++ {
+			if prev, taken := used[r]; taken {
+				t.Fatalf("row %d claimed by both %v and %v", r, prev, p.Kind)
+			}
+			used[r] = p.Kind
+		}
+	}
+}
+
+func TestLeftWidgetsNeedCenteredMode(t *testing.T) {
+	// Only centered mode has a left margin to dock into.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	left := widget(WidgetBackgroundTasks, 3)
+	if left.Kind.PreferredSide() != SideLeft {
+		t.Fatal("BackgroundTasks should prefer the left margin")
+	}
+	if got := d.Layout([]Widget{left}, rows, 100, 0, false); len(got) != 0 {
+		t.Errorf("a left widget docked in left-aligned mode: %+v", got)
+	}
+}
+
+func TestEmptyWidgetDrawsNothing(t *testing.T) {
+	// An empty box claims space to say nothing, which is worse than absence.
+	r := testRenderer(80)
+	if got := r.RenderWidget(Widget{Kind: WidgetTodos}); got != nil {
+		t.Errorf("an empty widget rendered %d rows", len(got))
+	}
+}
+
+func TestWidgetBoxIsRectangular(t *testing.T) {
+	r := testRenderer(80)
+	rows := plainLines(r.RenderWidget(Widget{
+		Kind:  WidgetTodos,
+		Lines: []string{"short", strings.Repeat("much longer line", 3)},
+	}))
+	width := len([]rune(rows[0]))
+	for i, row := range rows {
+		if got := len([]rune(row)); got != width {
+			t.Errorf("row %d is %d cells, want %d: %q", i, got, width, row)
+		}
+	}
+	if width > WidgetMaxWidth {
+		t.Errorf("widget is %d cells wide, want at most %d", width, WidgetMaxWidth)
+	}
+}
+
+func TestWidgetTitleOnlyWhenSet(t *testing.T) {
+	r := testRenderer(80)
+	plainBox := plainLines(r.RenderWidget(Widget{Kind: WidgetTodos, Lines: []string{"x"}}))
+	if strings.Contains(plainBox[0], " ") && !strings.HasPrefix(plainBox[0], "╭─") {
+		t.Errorf("untitled widget has a title area: %q", plainBox[0])
+	}
+	titled := plainLines(r.RenderWidget(Widget{
+		Kind: WidgetWorkspaceMap, Title: "Workspace", Lines: []string{"x"},
+	}))
+	if !strings.Contains(titled[0], "Workspace") {
+		t.Errorf("titled widget = %q", titled[0])
+	}
+}
+
+func TestMeterColorsFollowRemaining(t *testing.T) {
+	// A bar that reddens as it fills is a progress bar; one that reddens as it
+	// empties is a warning. The spec wants the warning.
+	full := SegmentedBar(0, 100, 10)
+	nearlyGone := SegmentedBar(90, 100, 10)
+	if full == nearlyGone {
+		t.Fatal("bars at 0% and 90% used rendered identically")
+	}
+	if !strings.Contains(nearlyGone, "255;100;100") {
+		t.Errorf("a nearly-exhausted meter should be red:\n%q", nearlyGone)
+	}
+	if !strings.Contains(full, "100;200;100") {
+		t.Errorf("an empty meter should be green:\n%q", full)
+	}
+}
+
+func TestBarsHandleDegenerateInputs(t *testing.T) {
+	if got := SegmentedBar(5, 0, 10); got != "" {
+		t.Errorf("zero total = %q, want empty", got)
+	}
+	if got := SolidBar(5, 100, 0); got != "" {
+		t.Errorf("zero cells = %q, want empty", got)
+	}
+	// Over-full must clamp rather than repeat a negative count.
+	if got := SegmentedBar(500, 100, 10); got == "" {
+		t.Error("an over-full bar should still render")
+	}
+}
+
+func TestFactStackIsOneObject(t *testing.T) {
+	r := testRenderer(80)
+	rows := plainLines(r.RenderFactStack(FactStack{
+		Provider: "ollama-cloud", Auth: "api-key",
+		Model: "qwen3-coder 480b", Cwd: "~/projects/evilcode", Branch: "main",
+		Used: 84000, Total: 200000,
+	}))
+	if len(rows) != 4 {
+		t.Fatalf("rows = %d, want the four fact rows", len(rows))
+	}
+	joined := strings.Join(rows, "\n")
+	for _, want := range []string{"ollama-cloud", "api-key", "qwen3-coder", "main", "84.0k"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("fact stack is missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestFactStackOmitsUnknownFields(t *testing.T) {
+	r := testRenderer(80)
+	if got := r.RenderFactStack(FactStack{}); len(got) != 0 {
+		t.Errorf("an empty fact stack rendered %d rows", len(got))
+	}
+}

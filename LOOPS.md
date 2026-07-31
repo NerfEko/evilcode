@@ -472,3 +472,32 @@ and left the box ragged by three columns.
 
 Verified: 18 new tests. 24 goldens green. PNG looked at for the help overlay and the
 history search with its live composer preview.
+
+## 2026-07-31 P2.15 — widget dock engine
+
+Done: `internal/tui/dock.go` (placement, anchoring, hysteresis) and `widgets.go`
+(Todos, ContextUsage, ModelInfo, GitStatus, BackgroundTasks, Tips, plus the meters and
+the right fact stack).
+
+The dock measures, per transcript row, how many trailing columns are blank, and places
+boxes there. Widgets therefore cost zero layout height: they live where the text is not,
+and a long line simply pushes them aside.
+
+Anti-jitter is the whole design (invariant 4). A widget pins an *absolute transcript
+line*, not a viewport row, so it scrolls with the content it was docked beside. When a
+wide line slides under it, it hides in place rather than moving, and only re-homes after
+the slot has been unusable for 120 consecutive frames — re-homing on the first bad frame
+is what makes widgets skitter during streaming. New placements are chosen against a
+look-ahead profile of the next 12 rows, so a fresh slot is not covered by the next line
+to arrive.
+
+Meters are coloured by what REMAINS rather than what is used: a bar that reddens as it
+fills is a progress bar, and one that reddens as it empties is a warning. A test asserts
+the direction, since the two are one comparison apart.
+
+Verified: 17 dock/widget tests, including that a widget holds its row across ten frames,
+hides rather than jumps when covered, returns to the same slot afterwards, re-homes only
+past the threshold, and never overlaps another widget. One test bug found and fixed along
+the way — the first scroll test held the rows array constant while scrolling, which is
+not what scrolling does. PNG looked at: the Todos widget docked in the right margin.
+25 goldens green.
