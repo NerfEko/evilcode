@@ -2763,3 +2763,43 @@ connection.
 
 Verified: forty re-attaches leave no goroutines behind, ten opened-and-closed
 connections return to baseline; `go test ./... -race` green.
+
+## 2026-07-31 H3.10–H3.13 — Four ways to hand control to something else
+
+**The LSP reader trusted the header.** `Content-Length` is a claim, and the
+allocation happened before a byte of the body arrived:
+
+```
+error = "EOF", want it to name the size limit
+refusing the frame still allocated 68719479304 bytes
+```
+
+68 GB from a header with nothing behind it. Capped at 64 MiB, with negative and
+absent lengths refused separately — the old code folded all three into `length
+<= 0`, so "no Content-Length" and "Content-Length: -1" produced the same message
+for very different problems.
+
+**mmdc ran with no context and no timeout.** It starts a headless browser; one
+that hangs held a subprocess and its waiting goroutine for the life of the
+session. Bounded at sixty seconds, in its own process group, so the browser dies
+with the request rather than outliving it — the same shape as H3.4, in a
+different file.
+
+**The clipboard read shelled out from inside Update.** Every frame waits on the
+update loop, so a clipboard tool waiting on a selection owner that never answers
+freezes the interface with no way to type past it. Now a `tea.Cmd` with a
+five-second bound. The dropped-image path had the reverse of a bound: it read
+the whole file and *then* checked the 4 MiB limit, so refusing a two-gigabyte
+file cost two gigabytes. Stat first, then read at most the limit plus one — the
+stat can be stale, so the read needs its own ceiling regardless.
+
+**Two network calls in the update loop.** Opening the model picker fetched the
+list with a five-second timeout; the session picker embedded the query on every
+keystroke that found nothing — which is precisely the keystroke someone is still
+typing through. Both are commands now. The search carries its query back and is
+discarded if the filter has moved on, because a result for a question the user
+has already stopped asking is worse than no result.
+
+Verified: the picker opens without blocking and fills in after, pasting returns
+immediately, a stale search result is ignored, an oversized frame is refused
+without allocating; `go test ./... -race` green.

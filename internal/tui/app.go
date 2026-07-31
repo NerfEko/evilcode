@@ -425,6 +425,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyCompaction(msg)
 		return m, nil
 
+	case clipboardImage:
+		m.applyClipboardImage(msg)
+		return m, nil
+
+	case modelsLoaded:
+		m.applyModels(msg)
+		return m, nil
+
+	case semanticHits:
+		m.applySemanticHits(msg)
+		return m, nil
+
 	case rebuildResult:
 		if msg.err != nil {
 			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: msg.err.Error()})
@@ -1466,14 +1478,35 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// openPicker loads the provider's model list into the picker. The list is
-// fetched lazily and failures degrade to the configured model alone, because a
-// provider being unreachable should not make the picker unusable.
-func (m *Model) openPicker() {
-	if len(m.models) == 0 {
-		m.models = m.loadModels()
+// modelsLoaded carries a fetched model list back into the update loop.
+type modelsLoaded struct{ entries []ModelEntry }
+
+// openPicker shows the picker, fetching the model list in the background.
+//
+// The fetch is a network call with a five-second timeout, and it used to happen
+// inside Update — so opening the picker froze every frame until the provider
+// answered. It opens immediately now with whatever is known, and fills in.
+func (m *Model) openPicker() tea.Cmd {
+	m.showPicker(m.models)
+	if len(m.models) > 0 {
+		return nil
 	}
-	m.picker = PickerState{Entries: m.models, Height: DefaultPickerHeight}
+	m.picker.Entries = []ModelEntry{{
+		Name: m.header.Model, Provider: m.header.Provider, Current: true, Detail: "loading…",
+	}}
+	return func() tea.Msg { return modelsLoaded{entries: m.loadModels()} }
+}
+
+// applyModels fills the picker in once the provider has answered.
+func (m *Model) applyModels(msg modelsLoaded) {
+	m.models = msg.entries
+	if m.pickerOpen {
+		m.showPicker(m.models)
+	}
+}
+
+func (m *Model) showPicker(entries []ModelEntry) {
+	m.picker = PickerState{Entries: entries, Height: DefaultPickerHeight}
 	for i, e := range m.picker.Entries {
 		if e.Name == m.header.Model {
 			m.picker.Selected = i
@@ -1548,8 +1581,7 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "model", "models":
-		m.openPicker()
-		return m, nil
+		return m, m.openPicker()
 
 	case "plan":
 		// /plan is a one-shot synthetic user turn, not a mode: no flag, no

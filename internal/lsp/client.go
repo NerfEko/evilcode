@@ -295,8 +295,18 @@ func (c *Client) readLoop() {
 	}
 }
 
+// MaxFrameBytes bounds one protocol message.
+//
+// The header is a claim, not a fact: the allocation happens before any of the
+// body has arrived, so a broken server — or a proxy that mangled a frame — can
+// name a size larger than memory and take the process down without sending
+// anything. Generous enough for a real response; gopls' largest are workspace
+// symbol dumps in the low megabytes.
+const MaxFrameBytes = 64 << 20
+
 func (c *Client) readMessage() ([]byte, error) {
 	length := 0
+	sawLength := false
 	for {
 		line, err := c.out.ReadString('\n')
 		if err != nil {
@@ -308,11 +318,20 @@ func (c *Client) readMessage() ([]byte, error) {
 		}
 		if name, value, ok := strings.Cut(line, ":"); ok &&
 			strings.EqualFold(strings.TrimSpace(name), "Content-Length") {
-			fmt.Sscanf(strings.TrimSpace(value), "%d", &length)
+			if _, err := fmt.Sscanf(strings.TrimSpace(value), "%d", &length); err == nil {
+				sawLength = true
+			}
 		}
 	}
-	if length <= 0 {
+	if !sawLength || length == 0 {
 		return nil, fmt.Errorf("lsp: message with no Content-Length")
+	}
+	if length < 0 {
+		return nil, fmt.Errorf("lsp: message with a negative Content-Length (%d)", length)
+	}
+	if length > MaxFrameBytes {
+		return nil, fmt.Errorf("lsp: message of %d bytes is too large (limit %d)",
+			length, MaxFrameBytes)
 	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(c.out, body); err != nil {

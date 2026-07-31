@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -49,7 +50,7 @@ func (m *Model) handleSessionKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 		if txt := msg.Key().Text; txt != "" {
 			m.sessions.Filter += txt
 			m.sessions.Selected = 0
-			m.recallSessions()
+			return m, m.recallSessions()
 		}
 		return m, nil
 	}
@@ -279,25 +280,45 @@ const SemanticSearchMinLen = 4
 //
 // It runs only when the literal filter has already come up empty, which keeps
 // it off the keystroke path for every search that was going to work anyway.
-func (m *Model) recallSessions() {
+// semanticHits carries a finished session search back into the update loop.
+type semanticHits struct {
+	query string
+	hits  []memory.Hit
+}
+
+func (m *Model) recallSessions() tea.Cmd {
 	m.sessions.Semantic = nil
 	q := strings.TrimSpace(m.sessions.Filter)
 	if m.memory == nil || !m.memory.Enabled() || len(q) < SemanticSearchMinLen {
-		return
+		return nil
 	}
 	if len(m.sessions.Filtered()) > 0 {
-		return
+		return nil
 	}
 
-	// Synchronous, but bounded by the manager's embed timeout and only reached
-	// after a search that found nothing — the alternative is results that
-	// arrive after the user has already typed the next character.
-	hits := m.memory.SearchSessions(context.Background(), q, 8)
-	if len(hits) == 0 {
+	// In a command, not inline. The search embeds the query, which is a network
+	// call on a remote provider: doing it inside Update froze the picker on
+	// every keystroke that found nothing, which is exactly the keystroke a
+	// person is still typing through.
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), SemanticSearchTimeout)
+		defer cancel()
+		return semanticHits{query: q, hits: m.memory.SearchSessions(ctx, q, 8)}
+	}
+}
+
+// SemanticSearchTimeout bounds one session search.
+const SemanticSearchTimeout = 5 * time.Second
+
+// applySemanticHits shows what the search found, if the filter still matches
+// what was searched for — a result for a query the user has already typed past
+// is noise.
+func (m *Model) applySemanticHits(msg semanticHits) {
+	if strings.TrimSpace(m.sessions.Filter) != msg.query || len(msg.hits) == 0 {
 		return
 	}
-	m.sessions.Semantic = make(map[string]string, len(hits))
-	for _, h := range hits {
+	m.sessions.Semantic = make(map[string]string, len(msg.hits))
+	for _, h := range msg.hits {
 		if _, seen := m.sessions.Semantic[h.Session]; !seen {
 			m.sessions.Semantic[h.Session] = memory.Truncate(h.Text, 60)
 		}

@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -182,11 +186,51 @@ func RenderMermaid(dir, source string) (string, error) {
 		return "", err
 	}
 
-	cmd := exec.Command(MermaidCommand, "-i", in, "-o", out, "-b", "transparent")
-	if combined, err := cmd.CombinedOutput(); err != nil {
+	// Bounded, and in its own process group. mmdc starts a headless browser; a
+	// browser that hangs held a subprocess and the goroutine waiting on it for
+	// the life of the session, and killing the parent leaves the browser
+	// running.
+	ctx, cancel := context.WithTimeout(context.Background(), MermaidTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, MermaidCommand, "-i", in, "-o", out, "-b", "transparent")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 2 * time.Second
+
+	combined, err := runMermaid(ctx, cmd)
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("%s did not finish within %s", MermaidCommand, MermaidTimeout)
+	}
+	if err != nil {
 		return "", fmt.Errorf("%s: %w\n%s", MermaidCommand, err, combined)
 	}
 	return out, nil
+}
+
+// MermaidTimeout bounds one diagram render.
+const MermaidTimeout = 60 * time.Second
+
+// runMermaid runs the renderer, killing its whole process group on timeout so
+// the headless browser does not outlive the request that started it.
+func runMermaid(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		case <-done:
+		}
+	}()
+	err := cmd.Wait()
+	close(done)
+	return buf.Bytes(), err
 }
 
 // mermaidRendered carries a finished diagram from its goroutine into the render

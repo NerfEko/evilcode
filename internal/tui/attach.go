@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -77,17 +80,31 @@ var ClipboardImageCommands = [][]string{
 	{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"},
 }
 
+// ClipboardTimeout bounds one clipboard read. A clipboard tool that blocks —
+// waiting on a selection owner that never answers is the usual way — would
+// otherwise freeze the interface for as long as it felt like.
+const ClipboardTimeout = 5 * time.Second
+
 // readClipboardImage returns image bytes from the clipboard, if there are any.
-func readClipboardImage() ([]byte, error) {
+func readClipboardImage(ctx context.Context) ([]byte, error) {
 	var tried []string
 	for _, argv := range ClipboardImageCommands {
 		if _, err := exec.LookPath(argv[0]); err != nil {
 			continue
 		}
 		tried = append(tried, argv[0])
-		out, err := exec.Command(argv[0], argv[1:]...).Output()
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.WaitDelay = time.Second
+		out, err := cmd.Output()
 		if err == nil && len(out) > 0 {
+			if len(out) > MaxImageBytes {
+				return nil, fmt.Errorf("the clipboard image is %s, over the %s limit",
+					humanBytes(len(out)), humanBytes(MaxImageBytes))
+			}
 			return out, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%s did not answer within %s", argv[0], ClipboardTimeout)
 		}
 	}
 	if len(tried) == 0 {
@@ -96,22 +113,41 @@ func readClipboardImage() ([]byte, error) {
 	return nil, fmt.Errorf("no image on the clipboard")
 }
 
+// clipboardImage carries a finished clipboard read back into the update loop.
+type clipboardImage struct {
+	Data []byte
+	Err  error
+}
+
 // pasteImage implements Ctrl+V / Alt+V.
+//
+// The read happens in a command rather than inline: shelling out to a clipboard
+// tool from inside Update blocks the render loop, so a slow or hung tool froze
+// the whole interface with no way to type past it.
 func (m *Model) pasteImage() tea.Cmd {
-	data, err := readClipboardImage()
-	if err != nil {
-		m.notice = err.Error()
-		return nil
+	m.notice = "Reading the clipboard…"
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), ClipboardTimeout)
+		defer cancel()
+		data, err := readClipboardImage(ctx)
+		return clipboardImage{Data: data, Err: err}
 	}
-	placeholder, err := m.attachImage(data, "")
+}
+
+// applyClipboardImage attaches what the clipboard read produced.
+func (m *Model) applyClipboardImage(msg clipboardImage) {
+	if msg.Err != nil {
+		m.notice = msg.Err.Error()
+		return
+	}
+	placeholder, err := m.attachImage(msg.Data, "")
 	if err != nil {
 		m.notice = err.Error()
-		return nil
+		return
 	}
 	m.editor.Insert(placeholder)
 	m.notice = fmt.Sprintf("Pasted %s (%s)",
-		provider.DetectImageMIME(data), humanBytes(len(data)))
-	return nil
+		provider.DetectImageMIME(msg.Data), humanBytes(len(msg.Data)))
 }
 
 // DropPaths handles a file drop: images attach, everything else is inserted as a
@@ -129,7 +165,19 @@ func (m *Model) DropPaths(paths []string) {
 			files++
 			continue
 		}
-		data, err := os.ReadFile(path)
+		// Size first, then read at most the limit plus a byte: reading a
+		// multi-gigabyte file in full to then refuse it is the wrong order.
+		info, err := os.Stat(path)
+		if err != nil {
+			m.notice = "could not read " + path + ": " + err.Error()
+			continue
+		}
+		if info.Size() > MaxImageBytes {
+			m.notice = fmt.Sprintf("%s is %s, over the %s limit",
+				path, humanBytes(int(info.Size())), humanBytes(MaxImageBytes))
+			continue
+		}
+		data, err := readAtMost(path, MaxImageBytes+1)
 		if err != nil {
 			m.notice = "could not read " + path + ": " + err.Error()
 			continue
@@ -166,4 +214,24 @@ func dropNotice(images, files int) string {
 func (m *Model) WithVision(ok bool) *Model {
 	m.vision = ok
 	return m
+}
+
+// readAtMost reads a file, refusing to load more than limit bytes.
+//
+// The size check before it is a stat, which can be stale by the time the read
+// happens; this is the bound that holds regardless.
+func readAtMost(path string, limit int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) >= limit {
+		return nil, fmt.Errorf("larger than the %s limit", humanBytes(limit-1))
+	}
+	return data, nil
 }

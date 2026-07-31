@@ -284,17 +284,17 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   writer goroutine; the reader, the connection, and the event producers stay live until
   queues wedge. Fix: close the connection and cancel its context on any writer failure.
   ⟨codex⟩
-- [ ] **H3.10** `internal/lsp/client.go:311` — the protocol reader trusts `Content-Length`
+- [x] **H3.10** `internal/lsp/client.go:311` — the protocol reader trusts `Content-Length`
   and allocates the whole body; a broken or hostile server exhausts memory. Fix: maximum
   frame size, reject negative and oversized lengths.  ⟨codex⟩
-- [ ] **H3.11** `internal/tui/images.go:185` — `mmdc` is launched with no context and no
+- [x] **H3.11** `internal/tui/images.go:185` — `mmdc` is launched with no context and no
   timeout; a hung headless browser leaves a subprocess and a waiter goroutine forever. Fix:
   `CommandContext` with a bounded timeout, process-group cleanup.  ⟨codex⟩
-- [ ] **H3.12** `internal/tui/attach.go:88` — clipboard commands run synchronously inside
+- [x] **H3.12** `internal/tui/attach.go:88` — clipboard commands run synchronously inside
   the UI update loop with no timeout or output bound; a paste can freeze the interface.
   `attach.go:132` reads a dropped image fully before checking the 4 MiB limit. Fix: async
   `tea.Cmd` with `CommandContext`; check size first, read at most limit+1.  ⟨codex⟩
-- [ ] **H3.13** `internal/tui/app.go:1454` `loadModels` and `sessioncmd.go:288`
+- [x] **H3.13** `internal/tui/app.go:1454` `loadModels` and `sessioncmd.go:288`
   `recallSessions` — synchronous network calls (5s model list, embed call) inside `Update`
   freeze the whole UI. Both are acknowledged in comments. Fix: convert to `tea.Cmd`.
   ⟨fable⟩
