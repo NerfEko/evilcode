@@ -15,6 +15,14 @@ func rowsOfWidth(widths ...int) []string {
 	return out
 }
 
+// layoutDock is the legacy Layout call used by the synthetic-row unit tests:
+// no provenance, so the settled-region constraint is dropped and every row is a
+// candidate (the pre-F2.2 behavior). Tests that exercise the settled region
+// call d.Layout directly with a real owner array.
+func layoutDock(d *Dock, w []Widget, rows []string, totalWidth, scrollTop, contentHeight int, centered bool) []Placement {
+	return d.Layout(w, rows, nil, nil, -1, totalWidth, scrollTop, contentHeight, centered)
+}
+
 func widget(kind WidgetKind, lines int) Widget {
 	w := Widget{Kind: kind}
 	for i := 0; i < lines; i++ {
@@ -37,7 +45,7 @@ func TestDockPlacesIntoBlankMargin(t *testing.T) {
 	d := NewDock()
 	rows := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
-	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false)
+	got := layoutDock(d, []Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false)
 	if len(got) != 1 {
 		t.Fatalf("placements = %d, want 1", len(got))
 	}
@@ -58,7 +66,7 @@ func TestDockRefusesWhenTextFillsTheRow(t *testing.T) {
 	d := NewDock()
 	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98, 98, 98, 98,
 		98, 98, 98, 98, 98, 98, 98, 98, 98, 98)
-	if got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false); len(got) != 0 {
+	if got := layoutDock(d, []Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false); len(got) != 0 {
 		t.Errorf("placements = %+v, want none when there is no margin", got)
 	}
 }
@@ -70,7 +78,7 @@ func TestDockPrefersAClearSlotToCoveringText(t *testing.T) {
 	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
 
-	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false)
+	got := layoutDock(d, []Widget{widget(WidgetTodos, 3)}, rows, 100, 0, 999, false)
 	if len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
@@ -88,12 +96,12 @@ func TestDockHoldsItsAnchorAcrossFrames(t *testing.T) {
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, rows, 100, 0, 999, false)
+	first := layoutDock(d, w, rows, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 	for i := 0; i < 10; i++ {
-		got := d.Layout(w, rows, 100, 0, 999, false)
+		got := layoutDock(d, w, rows, 100, 0, 999, false)
 		if len(got) != 1 || got[0].Row != first[0].Row {
 			t.Fatalf("frame %d moved the widget from row %d to %+v", i, first[0].Row, got)
 		}
@@ -113,14 +121,14 @@ func TestDockScrollsWithTheText(t *testing.T) {
 
 	// Dock while the view is scrolled down, so the widget has an absolute
 	// anchor well inside the transcript.
-	first := d.Layout(w, rows, 100, 10, 999, false)
+	first := layoutDock(d, w, rows, 100, 10, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 	wantAnchor := first[0].Row + 10
 
 	// Scroll up by three: the same absolute line is now three rows lower.
-	second := d.Layout(w, rows, 100, 7, 999, false)
+	second := layoutDock(d, w, rows, 100, 7, 999, false)
 	if len(second) != 1 {
 		t.Fatal("expected a placement after scrolling")
 	}
@@ -141,7 +149,7 @@ func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, open, 100, 0, 999, false)
+	first := layoutDock(d, w, open, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
@@ -153,12 +161,12 @@ func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
 		blocked[i] = strings.Repeat("x", 98)
 	}
 
-	if got := d.Layout(w, blocked, 100, 0, 999, false); len(got) != 0 {
+	if got := layoutDock(d, w, blocked, 100, 0, 999, false); len(got) != 0 {
 		t.Errorf("widget moved to %+v, want it hidden in place", got)
 	}
 
 	// Once the line passes, it comes back to the same slot.
-	back := d.Layout(w, open, 100, 0, 999, false)
+	back := layoutDock(d, w, open, 100, 0, 999, false)
 	if len(back) != 1 || back[0].Row != first[0].Row {
 		t.Errorf("widget did not return to its slot: %+v", back)
 	}
@@ -175,7 +183,7 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 	}
 
 	low := []Widget{widget(WidgetTips, 3)}
-	first := d.Layout(low, rows, 100, 0, 999, false)
+	first := layoutDock(d, low, rows, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
@@ -183,7 +191,7 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 	// A higher-priority widget now claims the same rows first.
 	both := []Widget{widget(WidgetTodos, 3), widget(WidgetTips, 3)}
 	for i := 0; i < RehomeFrames-1; i++ {
-		got := d.Layout(both, rows, 100, 0, 999, false)
+		got := layoutDock(d, both, rows, 100, 0, 999, false)
 		for _, p := range got {
 			if p.Kind == WidgetTips && p.Row != first[0].Row {
 				t.Fatalf("frame %d: tips jumped to row %d rather than holding %d",
@@ -195,7 +203,7 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 	// Past the threshold it is allowed to find a new home.
 	var moved bool
 	for i := 0; i < 3 && !moved; i++ {
-		for _, p := range d.Layout(both, rows, 100, 0, 999, false) {
+		for _, p := range layoutDock(d, both, rows, 100, 0, 999, false) {
 			if p.Kind == WidgetTips && p.Row != first[0].Row {
 				moved = true
 			}
@@ -212,7 +220,7 @@ func TestDockNeverOverlapsWidgets(t *testing.T) {
 	for i := range rows {
 		rows[i] = strings.Repeat("x", 10)
 	}
-	got := d.Layout([]Widget{
+	got := layoutDock(d, []Widget{
 		widget(WidgetTodos, 3),
 		widget(WidgetContextUsage, 3),
 		widget(WidgetModelInfo, 3),
@@ -246,7 +254,7 @@ func TestLeftWidgetsFallBackToTheRightMargin(t *testing.T) {
 	if left.Kind.PreferredSide() != SideLeft {
 		t.Fatal("BackgroundTasks should prefer the left margin")
 	}
-	got := d.Layout([]Widget{left}, rows, 100, 0, 999, false)
+	got := layoutDock(d, []Widget{left}, rows, 100, 0, 999, false)
 	if len(got) != 1 {
 		t.Fatalf("a left-preferring widget did not dock at all: %+v", got)
 	}
@@ -541,17 +549,17 @@ func TestWidgetReturnsToTheSameSlotAfterAGap(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, rows, 100, 0, 999, false)
+	first := layoutDock(d, w, rows, 100, 0, 999, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 
 	// Gone for a frame.
-	if got := d.Layout(nil, rows, 100, 0, 999, false); len(got) != 0 {
+	if got := layoutDock(d, nil, rows, 100, 0, 999, false); len(got) != 0 {
 		t.Fatalf("an empty list placed %+v", got)
 	}
 
-	back := d.Layout(w, rows, 100, 0, 999, false)
+	back := layoutDock(d, w, rows, 100, 0, 999, false)
 	if len(back) != 1 {
 		t.Fatal("the widget did not come back")
 	}
@@ -571,11 +579,11 @@ func TestWidgetRehomesImmediatelyWhenItScrollsOffTheTop(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	if got := d.Layout(w, rows, 100, 0, 999, false); len(got) != 1 {
+	if got := layoutDock(d, w, rows, 100, 0, 999, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
 	// The content it was riding has scrolled well above the viewport.
-	got := d.Layout(w, rows, 100, 500, 999, false)
+	got := layoutDock(d, w, rows, 100, 500, 999, false)
 	if len(got) != 1 {
 		t.Error("the widget disappeared instead of re-homing after scrolling off")
 	}
@@ -591,8 +599,8 @@ func TestWidgetSurvivesTheScrollbarAppearing(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	wide := d.Layout(w, rows, 100, 0, 999, false)
-	narrow := d.Layout(w, rows, 100-ScrollbarReserve, 0, 999, false)
+	wide := layoutDock(d, w, rows, 100, 0, 999, false)
+	narrow := layoutDock(d, w, rows, 100-ScrollbarReserve, 0, 999, false)
 	if len(wide) != 1 || len(narrow) != 1 {
 		t.Fatal("expected placements at both widths")
 	}
@@ -614,13 +622,13 @@ func TestDockRehomesWhenContentShrinks(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, rows, 100, 20, 200, false)
+	first := layoutDock(d, w, rows, 100, 20, 200, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 
 	// Eight lines vanish from above, as a collapsing trace does.
-	got := d.Layout(w, rows, 100, 12, 192, false)
+	got := layoutDock(d, w, rows, 100, 12, 192, false)
 	if len(got) != 1 {
 		t.Fatal("the widget disappeared when the transcript shortened")
 	}
@@ -642,14 +650,14 @@ func TestDockKeepsItsAnchorWhileContentOnlyGrows(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	if got := d.Layout(w, rows, 100, 0, 100, false); len(got) != 1 {
+	if got := layoutDock(d, w, rows, 100, 0, 100, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
 	before := d.anchors[WidgetTodos].ContentTop
 
 	// Several frames of content arriving.
 	for i := 1; i <= 5; i++ {
-		d.Layout(w, rows, 100, 0, 100+i, false)
+		layoutDock(d, w, rows, 100, 0, 100+i, false)
 	}
 	if got := d.anchors[WidgetTodos].ContentTop; got != before {
 		t.Errorf("anchor moved from %d to %d while content only grew", before, got)

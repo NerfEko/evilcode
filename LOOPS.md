@@ -4073,3 +4073,39 @@ the rendered row (the bug). `TestBashRowShowsCommandOnce` — with the new summa
 command appears exactly once.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green.
+
+## 2026-07-31 F2.2 — settled-region placement (the root cause)
+
+Done: implemented §2.3. `Dock.Layout` now takes the per-line `owner` provenance
+(F1.2) plus a `kindOf` lookup and the streaming block index, and computes
+`settledEnd` — the first row owned by the still-streaming tail (minus
+`SettleMargin`=4), or the first row past the content when nothing is streaming.
+Rows at or below `settledEnd` are off-limits, and `BlockAssistant` rows are never
+dockable; chrome (owner -1) is. `findSlot` and the anchor-hold path both gate on
+a `dockable` closure. `fits` keeps both checks (occupied + free-width) — the
+no-overlay behavior is wanted and stays.
+
+`reliableWidth` and `LookAheadRows` are deleted: the look-ahead predicted a slot
+would not stay clear by scanning rows blank because content had not arrived yet,
+which is precisely the failure mode and — once placement is settled-only —
+actively blocked valid settled placement (the reproduction showed it skipping a
+clear tool region because it looked ahead into full-width streaming rows). A
+settled row does not change, so the instantaneous free-width test is sufficient.
+The plan permitted this deletion conditional on the reproduction, which
+confirmed the regression.
+
+`dockWidgets` windows `owner` into the visible region and resolves the streaming
+block. Nil owner (the synthetic-row dock unit tests) drops the settled constraint
+— legacy behavior — via a `layoutDock` test helper, so those tests stay
+meaningful as free-width/overlay checks.
+
+Reproduction (⟨fix⟩, fail-then-pass): `TestSettledRegionStopsTailPlacement` —
+legacy layout (nil owner) places the widget in the tail/slack (the bug, row>=12);
+settled layout (real owner) places none. `TestSettledRegionHoldsSlotAcrossStreaming`
+— a widget on settled tool rows holds an identical Placement across frames while
+the streaming tail churns below it. `TestSettledRegionExcludesAssistantProse` —
+a widget lands in a tool region sandwiched between assistant prose, never on the
+prose.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green;
+`go test -tags probe -count=1 ./probe/...` green (goldens unchanged).

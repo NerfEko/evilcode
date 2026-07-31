@@ -2348,7 +2348,9 @@ func (m *Model) View() tea.View {
 	}
 
 	res := m.stack().Resolve()
-	content := m.transcriptLines().Lines
+	tr := m.transcriptLines()
+	content := tr.Lines
+	owner := tr.Owner
 
 	// A shrink becomes slack rather than a downward haul: when a thinking trace
 	// collapses, the gap it leaves is kept below the text and spent by whatever
@@ -2408,7 +2410,7 @@ func (m *Model) View() tea.View {
 	// inset are painted into these rows. Docking last meant measuring rows that
 	// were already full width and concluding there was nowhere to go, which is
 	// why the boxes vanished (plan.md §8.3).
-	rows = m.dockWidgets(rows, res.Transcript, start, len(content))
+	rows = m.dockWidgets(rows, res.Transcript, start, len(content), owner)
 
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
@@ -2798,7 +2800,7 @@ func (m *Model) contextMax() int {
 //
 // Widgets are suppressed entirely while the welcome art is showing: an empty
 // screen decorated with status boxes is busier than the thing it decorates.
-func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHeight int) []string {
+func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHeight int, owner []int) []string {
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
 		return rows
 	}
@@ -2807,6 +2809,30 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 	region := rows
 	if len(region) > transcriptRows {
 		region = region[:transcriptRows]
+	}
+
+	// Window the per-line block provenance (§1.2) into the visible region the
+	// dock measures. rows[i] is the visible window; the content line it came
+	// from is scrollTop+i, so its owner is owner[scrollTop+i] when that is in
+	// range, or -1 for the slack/padding blanks below the text (§2.2: those are
+	// below settledEnd by construction and never dockable).
+	visOwner := make([]int, len(region))
+	for i := range region {
+		ci := scrollTop + i
+		if ci >= 0 && ci < len(owner) {
+			visOwner[i] = owner[ci]
+		} else {
+			visOwner[i] = -1
+		}
+	}
+	// kindOf resolves a block index to its kind for the settled-region test
+	// (§2.3). Owner holds block indices into m.blocks.
+	blocks := m.blocks
+	kindOf := func(idx int) BlockKind {
+		if idx < 0 || idx >= len(blocks) {
+			return BlockAssistant // treat unknown as undockable, never place on it
+		}
+		return blocks[idx].Kind
 	}
 
 	// One list, measured and painted. It used to be built twice per frame, and
@@ -2823,7 +2849,17 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 		usable -= ScrollbarReserve
 	}
 
-	placements := m.dock.Layout(widgets, region, usable, scrollTop, contentHeight, m.centered)
+	// The streaming tail is the live block whose rows are still changing — the
+	// boundary of the settled region (§2.3). At most one block is Streaming at a
+	// time (the newest), and -1 means the turn is finished.
+	streamingBlock := -1
+	for i := range blocks {
+		if blocks[i].Streaming {
+			streamingBlock = i
+		}
+	}
+
+	placements := m.dock.Layout(widgets, region, visOwner, kindOf, streamingBlock, usable, scrollTop, contentHeight, m.centered)
 
 	byKind := make(map[WidgetKind]Widget, len(widgets))
 	for _, w := range widgets {

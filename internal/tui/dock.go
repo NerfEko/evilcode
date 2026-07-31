@@ -24,9 +24,12 @@ const (
 	// under them; this is the hysteresis that keeps them still (invariant 4).
 	RehomeFrames = 120
 
-	// LookAheadRows is how far ahead the reliable-width profile looks when
-	// choosing a new home, so a fresh placement is not covered next frame.
-	LookAheadRows = 12
+	// SettleMargin is the guard band above the live tail: a widget may not be
+	// placed within this many rows of the first row owned by a still-streaming
+	// block, so the next line to arrive does not grow into it (§2.3). It is a
+	// feel value — the right number depends on stream speed and terminal height
+	// and will want tuning against a real session.
+	SettleMargin = 4
 )
 
 // WidgetKind identifies a dockable widget. The order is the priority order of
@@ -163,29 +166,20 @@ func FreeWidth(rows []string, totalWidth int) []int {
 	return out
 }
 
-// reliableWidth returns the width free across a band of upcoming rows, so a
-// fresh placement is not covered by the next line that arrives. Using the
-// instantaneous width instead is what makes widgets flicker in and out during
-// streaming.
-func reliableWidth(free []int, start, height int) int {
-	end := min(start+height+LookAheadRows, len(free))
-	if start >= end {
-		return 0
-	}
-	w := free[start]
-	for i := start + 1; i < end; i++ {
-		w = min(w, free[i])
-	}
-	return w
-}
-
 // Layout places widgets and returns where each landed.
 //
 // The two-phase structure is what keeps the screen still (plan.md §8.3):
 // already-placed widgets hold their slot and merely shrink or hide in place
 // when a wide line slides under them, and only re-home after the slot has been
 // unusable for RehomeFrames consecutive frames.
-func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop, contentHeight int, centered bool) []Placement {
+//
+// owner and kindOf carry the per-line block provenance of §1.2, which is what
+// implements the settled-region policy of §2.3: a widget may only sit on rows
+// the content has finished changing, and never beside model prose. When owner
+// is nil (the synthetic-row unit tests, and any caller without provenance) the
+// settled constraint is dropped and every row is a candidate — the legacy
+// behavior, so those tests stay meaningful as free-width/overlay checks.
+func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(int) BlockKind, streamingBlock, totalWidth, scrollTop, contentHeight int, centered bool) []Placement {
 	if len(widgets) == 0 || totalWidth <= WidgetMinWidth+WidgetGap {
 		return nil
 	}
@@ -194,12 +188,77 @@ func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop, co
 	// every anchor below the removal now names the wrong content. Re-home
 	// instead of holding a stale line: a widget that lands somewhere sensible
 	// reads better than one that lurches to wherever its old number now points.
+	//
+	// NOTE: F2.4 replaces this wholesale wipe with block-index anchors that do
+	// not drift; it is kept here only until that task lands.
 	if contentHeight < d.lastHeight {
 		d.anchors = map[WidgetKind]*anchor{}
 	}
 	d.lastHeight = contentHeight
 
 	free := FreeWidth(rows, totalWidth)
+
+	// settledEnd is the first row that is off-limits for placement: the first
+	// row owned by the still-streaming tail (the live block), or — when nothing
+	// is streaming — the first row past the content (the slack/padding below the
+	// text), minus a guard band. Rows at or below it are where the content is
+	// still changing or about to arrive, so a widget placed there is covered next
+	// frame. That is the root cause of the flashing (§2.2).
+	settledEnd := len(rows)
+	if owner != nil {
+		if streamingBlock >= 0 {
+			// The first visible row owned by the streaming tail is where the
+			// unsettled region begins.
+			first := -1
+			for i, o := range owner {
+				if o == streamingBlock {
+					first = i
+					break
+				}
+			}
+			if first < 0 {
+				// The streaming tail is outside this viewport (scrolled past it),
+				// so every visible row is settled.
+				settledEnd = len(rows)
+			} else {
+				settledEnd = first - SettleMargin
+			}
+		} else {
+			// Nothing streaming: the content is finished. The first row past the
+			// content in this window is where slack begins.
+			contentRows := contentHeight - scrollTop
+			if contentRows < 0 {
+				contentRows = 0
+			}
+			if contentRows > len(rows) {
+				contentRows = len(rows)
+			}
+			settledEnd = contentRows - SettleMargin
+		}
+	}
+	if settledEnd < 0 {
+		settledEnd = 0
+	}
+
+	// dockable reports whether a run of rows may hold a widget: each row is in
+	// the settled region and not owned by model prose (BlockAssistant). Chrome
+	// (owner -1) is dockable — the header and inter-block gaps are content
+	// nothing will rewrite.
+	dockable := func(row, height int) bool {
+		if owner == nil {
+			return true
+		}
+		if row+height > settledEnd {
+			return false
+		}
+		for i := row; i < row+height; i++ {
+			o := owner[i]
+			if o != -1 && kindOf(o) == BlockAssistant {
+				return false
+			}
+		}
+		return true
+	}
 
 	// occupied tracks rows already claimed, so two widgets never overlap each
 	// other. Text underneath is fair game — see the overlay note below.
@@ -239,13 +298,16 @@ func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop, co
 				// through without aging. This is what lets a widget scroll with
 				// the text *and* stay visible, which used to be in conflict.
 
-			case fits(free, occupied, row, height, w.Width()):
+			case fits(free, occupied, row, height, w.Width()) && dockable(row, height):
+				// Still in the settled region and still fits: hold the slot.
+				// Settled rows do not change, so this is the common case.
 				out = append(out, place(w, a, row, height))
 				continue
 
 			default:
-				// On screen but the slot is taken by another widget. This is the
-				// one case hide-in-place is for, and only if it was visible.
+				// On screen but the slot is taken or left the settled region.
+				// This is the one case hide-in-place is for, and only if it was
+				// visible.
 				a.BadFrames++
 				if a.everPlaced && a.BadFrames < RehomeFrames {
 					continue
@@ -253,7 +315,7 @@ func (d *Dock) Layout(widgets []Widget, rows []string, totalWidth, scrollTop, co
 			}
 		}
 
-		row, ok := findSlot(free, occupied, height, w.Width())
+		row, ok := findSlot(free, occupied, owner, dockable, height, w.Width())
 		if !ok {
 			continue
 		}
@@ -286,11 +348,19 @@ func fits(free []int, occupied []bool, row, height, width int) bool {
 	return true
 }
 
-// findSlot picks the topmost row where a widget fits against the look-ahead
-// profile, so a fresh placement is not covered by the next line that arrives.
-func findSlot(free []int, occupied []bool, height, width int) (int, bool) {
+// findSlot picks the topmost row where a widget fits, so a fresh placement is
+// not covered by the next line that arrives.
+//
+// The look-ahead profile (reliableWidth) is gone: it looked ahead in *space*
+// over rows that were blank because the content had not arrived yet, which is
+// weakest at the bottom edge and — once placement is settled-only — actively
+// harmful, predicting a slot will not stay clear when the settled region
+// guarantees it will (§2.3). The settled-region check (dockable) and fits'
+// instantaneous free-width test are enough: a settled row does not change, so
+// the width it has now is the width it keeps.
+func findSlot(free []int, occupied []bool, owner []int, dockable func(row, height int) bool, height, width int) (int, bool) {
 	for row := 0; row+height <= len(occupied); row++ {
-		if reliableWidth(free, row, height) < width+WidgetGap {
+		if !dockable(row, height) {
 			continue
 		}
 		if fits(free, occupied, row, height, width) {
