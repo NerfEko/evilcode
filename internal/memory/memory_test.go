@@ -454,6 +454,51 @@ func TestExtractDrainsItsTranscript(t *testing.T) {
 	}
 }
 
+// H5.15: a failed provider call or an unparsable reply must not lose the
+// turns that were queued for it — there is no second copy to extract from.
+func TestExtractKeepsTranscriptOnProviderError(t *testing.T) {
+	router := &stubRouter{err: errors.New("network blip")}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	m.ObserveTurn("the user deploys with make release")
+
+	if _, err := m.Extract(context.Background()); err == nil {
+		t.Fatal("expected the provider error to surface")
+	}
+	if text, _ := m.peekTranscript(); !strings.Contains(text, "the user deploys with make release") {
+		t.Errorf("a failed provider call must not drain the transcript, got %q", text)
+	}
+}
+
+func TestExtractKeepsTranscriptOnUnparsableReply(t *testing.T) {
+	router := &stubRouter{reply: "I don't think anything here is worth remembering."}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	m.ObserveTurn("the user deploys with make release")
+
+	if _, err := m.Extract(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if text, _ := m.peekTranscript(); !strings.Contains(text, "the user deploys with make release") {
+		t.Errorf("an unparsable reply must not drain the transcript, got %q", text)
+	}
+}
+
+func TestExtractKeepsTurnsQueuedDuringAnInFlightCall(t *testing.T) {
+	// A turn observed while an extraction is in flight must survive that
+	// extraction's clear — clearTranscript only drops what it actually sent.
+	m := NewManager(openTemp(t), nil, &stubRouter{reply: "[]"}, "a", true)
+	m.ObserveTurn("first exchange")
+	text, n := m.peekTranscript()
+	if !strings.Contains(text, "first exchange") || n != 1 {
+		t.Fatalf("peekTranscript = %q, %d", text, n)
+	}
+	m.ObserveTurn("second exchange, arrived mid-flight")
+	m.clearTranscript(n)
+	remaining, _ := m.peekTranscript()
+	if remaining != "second exchange, arrived mid-flight" {
+		t.Errorf("remaining transcript = %q, want only the mid-flight turn", remaining)
+	}
+}
+
 func TestConsolidateStoresASearchableEpisode(t *testing.T) {
 	store := openTemp(t)
 	router := &stubRouter{reply: "Wired the auth redirect loop and fixed the token refresh."}

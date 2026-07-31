@@ -408,7 +408,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [x] **H5.14** `internal/memory/store.go:206` — add, merge, and forget mutate in-memory
   records before appending their durable events, so a write failure leaves live state
   disagreeing with replay. Fix: persist first, commit to memory on success.  ⟨codex⟩
-- [ ] **H5.15** `internal/memory/pipeline.go:323` — extraction drains its transcript batch
+- [x] **H5.15** `internal/memory/pipeline.go:323` — extraction drains its transcript batch
   *before* the provider call and JSON parse succeed; either error loses those turns
   permanently. Fix: clear only after success, or restore on failure.  ⟨codex⟩
 - [ ] **H5.16** `internal/todo/model.go:282` — validation permits blank and duplicate IDs,

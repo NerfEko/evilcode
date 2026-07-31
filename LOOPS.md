@@ -3562,3 +3562,40 @@ the append failed, so `All()` (which filters deleted records) returned an
 empty slice and `s.All()[0]` went out of range.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green.
+
+## 2026-07-31 H5.15 — Don't drain what you haven't sent yet
+
+`Extract`'s `takeTranscript` cleared `m.transcript` before the provider call
+or the JSON parse had succeeded. A network error, or a small model answering
+in prose instead of JSON (the comment right there called this "a normal
+failure, not an error worth surfacing: the next extraction will try again" —
+which was false, since the transcript it would need to try again over was
+already gone), both lost those turns permanently. They were never extracted
+and never queued for retry; they just vanished.
+
+Fix: split the drain into `peekTranscript` (returns the joined text and how
+many turns it covers, without clearing) and `clearTranscript(n)` (drops
+exactly the first `n` turns). `Extract` now peeks, only calls
+`clearTranscript` after both the provider call and the JSON parse succeed,
+and returns early on either failure with the transcript still queued. Passing
+the count rather than clearing unconditionally also means a turn appended by
+`ObserveTurn` while an extraction is in flight survives that extraction's
+clear — it lands after the batch that was actually sent and stays queued for
+the next pass.
+
+Reproduce: `TestExtractKeepsTranscriptOnProviderError` and
+`TestExtractKeepsTranscriptOnUnparsableReply` in
+`internal/memory/memory_test.go`, plus `TestExtractKeepsTurnsQueuedDuringAnInFlightCall`
+for the concurrent-append case. The first attempt at the provider-error and
+unparsable-reply tests asserted on `router.user` after a second `Extract`
+call — that passed even against the buggy code, because the stub router
+records its prompt on the *first* (failing) call regardless of whether the
+transcript survived; it wasn't testing what it claimed to. Rewrote both to
+call `m.peekTranscript()` directly after the failing call, restored the
+pre-fix eager-clear ordering by hand (moving `clearTranscript` up before the
+provider call) to confirm both then failed exactly as the bug predicts
+(`peekTranscript` returns `""`), and confirmed they pass again with the
+ordering restored.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green, including
+the pre-existing `TestExtractDrainsItsTranscript` and `TestExtractToleratesProse`.

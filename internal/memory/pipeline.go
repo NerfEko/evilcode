@@ -290,13 +290,23 @@ func (m *Manager) ObserveTurn(text string) bool {
 	return m.turns%ExtractEvery == 0 && len(m.transcript) > 0
 }
 
-// takeTranscript drains the accumulated turn text.
-func (m *Manager) takeTranscript() string {
+// peekTranscript returns the accumulated turn text without clearing it, and
+// how many turns it covers. The turns stay queued until clearTranscript
+// confirms extraction succeeded — a provider error or an unparsable reply
+// must not lose them, since there is no other copy to retry from.
+func (m *Manager) peekTranscript() (string, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	text := strings.Join(m.transcript, "\n")
-	m.transcript = nil
-	return text
+	return strings.Join(m.transcript, "\n"), len(m.transcript)
+}
+
+// clearTranscript drops the first n turns, which is exactly the batch a
+// successful extraction just consumed. Turns appended while that extraction
+// was in flight land after them and stay queued for the next pass.
+func (m *Manager) clearTranscript(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transcript = append([]string(nil), m.transcript[n:]...)
 }
 
 const extractSystem = `You extract durable facts worth remembering about a user and their work.
@@ -320,7 +330,7 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 	if !m.Enabled() || m.Router == nil {
 		return 0, nil
 	}
-	text := m.takeTranscript()
+	text, n := m.peekTranscript()
 	if strings.TrimSpace(text) == "" {
 		return 0, nil
 	}
@@ -339,9 +349,11 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 	}
 	if err := json.Unmarshal([]byte(ExtractJSON(out)), &items); err != nil {
 		// A small model that answers in prose is a normal failure, not an error
-		// worth surfacing: the next extraction will try again.
+		// worth surfacing: the turns stay queued and the next extraction tries
+		// again over the same (plus any newly arrived) text.
 		return 0, nil
 	}
+	m.clearTranscript(n)
 
 	saved := 0
 	for _, it := range items {
