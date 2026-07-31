@@ -3945,3 +3945,69 @@ Verification, per the phase's own checklist:
 every package — the phase's `-race` requirement, not just a plain `go test`.
 
 Tag `harden-5`.
+
+## 2026-07-31 review-1 — full plan2 bugfix sweep before plan3
+
+Read all repository plan/ledger documents (`plan.md`, `plan2.md`, `plan3.md`,
+`plan4.md`, `planfiles.md`, `lazy.md`, `DEVIATIONS.md`) and reviewed the Go
+implementation and tests against the completed plan2 work. The existing dirty
+changes in `new.md` and `plan3.md` were left untouched.
+
+Fixed confirmed bugs found in the review:
+
+- **Daemon lifetime and swarm accounting:** session builds now keep the shared
+  stores alive through publication; shutdown cannot publish a slow build; a
+  worker that loses the shutdown race releases its reservation exactly once;
+  schema retries wait for the original turn and reserve the session before
+  looping, so retries cannot overlap normal input or close under an active
+  retry.
+- **Session durability and safety:** malformed crash-tail records are removed
+  before the next append (including semantically invalid final messages);
+  checkpoint/rewind/compact backups and rewrites use unique synced temp files;
+  transfer uses exclusive creation; failed named-session creation removes its
+  claim; closed stores reject appends and cannot be reopened; session/history/
+  memory files refuse symlinks and restore private permissions; rename/fork
+  attachment moves remain rollback-safe and bounded; UTF-8 collapse summaries
+  no longer split a rune.
+- **Memory correctness:** concurrent ambient extraction is serialized; source
+  turns remain queued until every extracted record is durable; save/provider
+  failures return the pipeline to idle with a visible error; closed memory
+  stores return errors instead of panicking.
+- **LSP correctness:** manager shutdown cannot publish a slow-starting client;
+  fake clients close safely; rename rollback preserves original modes even for
+  legacy results; malformed and reversed edit ranges are rejected before slice
+  indexing.
+- **Todo/UI/lifecycle:** todo namespace and JSON reads stay confined and the
+  four-file save rolls back on commit failure; hidden TUI prompts queue instead
+  of disappearing behind `ErrBusy`; scrollbar hysteresis measures both wrap
+  widths; concurrent mermaid map access is locked; detached memory extraction
+  is cancelled and joined during wiring/headless/TUI shutdown.
+
+Regression coverage was added for the daemon retry reservation, slow LSP
+startup, memory save/extraction races and crash tails, session attachment and
+rename rollback paths, invalid LSP edits, and the affected TUI behaviors.
+
+Verified: `GOCACHE=/tmp/evilcode-gocache go test ./...`,
+`GOCACHE=/tmp/evilcode-race-cache go test -race ./...`,
+`GOCACHE=/tmp/evilcode-gocache go vet ./...`,
+`GOCACHE=/tmp/evilcode-gocache go build ./...`, and `git diff --check` all pass.
+
+## 2026-07-31 F1.1 — re-fetch jcode source, record path in lazy.md
+
+Done: jcode source recovered at `/tmp/jcode-src` (not `/tmp/jcode` as `lazy.md` previously
+named it), upstream `https://github.com/1jehuang/jcode.git` (recovered from the checkout's
+own `origin`). Recorded both at the top of `lazy.md` so citations stay verifiable. Per
+user, the source stays in `/tmp` rather than being moved to `~/src/jcode`; the clone command
+is recorded so a `/tmp` clear is a one-liner to undo.
+
+oh-my-pi (`/tmp/oh-my-pi`) is gone and its upstream was not recoverable from shell history
+(`fish_history` shows only `curl https://jcode.sh/install` and `jcode`); noted in
+`lazy.md` that oh-my-pi citations are stale until re-fetched.
+
+The overscroll gap the report names is already closed: `internal/tui/scroll.go:288-320`
+implements `Overscroll`/`OverscrollPull`/`OverscrollDwell`. Confirmed in the checkout, no
+code change. The fetch is for the rest of the `lazy.md` citations and for F6.3's "what is
+the jcode look actually".
+
+⟨prep⟩ — no test. Verified: jcode checkout present at the recorded path, `origin` matches
+what was written into `lazy.md`.

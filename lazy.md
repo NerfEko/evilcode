@@ -1,9 +1,17 @@
 # lazy.md — lazy feature implementations in evilcode
 
-Reviewed against **oh-my-pi** (`/tmp/oh-my-pi`, fork of Pi, ~55k LOC Rust core + TS packages)
-and **jcode** (`/tmp/jcode`, Rust workspace, ~80 crates). Each entry cites the evilcode
-file, the peer implementation, and the specific way evilcode shipped thin where a peer
-went deep. Ordered roughly by impact.
+**Peer checkouts (recorded here so `/tmp` clearing does not make citations unverifiable
+again):**
+- **jcode** — `/tmp/jcode-src`, upstream `https://github.com/1jehuang/jcode.git`
+  (Rust workspace, ~80 crates). Re-clone: `git clone https://github.com/1jehuang/jcode.git /tmp/jcode-src`.
+- **oh-my-pi** — was `/tmp/oh-my-pi`, fork of Pi (~55k LOC Rust core + TS packages). It
+  is gone from `/tmp`; its upstream was not recoverable from shell history (only
+  `curl https://jcode.sh/install` and `jcode` appear in `fish_history`). Re-fetch from
+  source before citing oh-my-pi again, and record the URL here when you do.
+
+Reviewed against **oh-my-pi** (per above) and **jcode** (`/tmp/jcode-src`). Each entry cites
+the evilcode file, the peer implementation, and the specific way evilcode shipped thin
+where a peer went deep. Ordered roughly by impact.
 
 Features where evilcode is **already on par or better** are noted at the end so this
 isn't a one-sided list — the todo discipline, the swarm file-conflict registry, anchored
