@@ -1792,3 +1792,37 @@ nothing.
 
 Verified: fails without the fix (disk empty, conversation holding the prompt),
 passes with it across five runs; `go test ./... -race` green.
+
+## 2026-07-31 H1.10 — A namespace named the files, not the plan
+
+Every daemon session is built with `TodoNamespace: "swarm"`, and every one of
+them called `todo.NewStore` on it. A namespace names a *set of files*, and two
+stores over one set of files are two divergent copies: each loads its own
+snapshot at open, never reloads, and writes the whole file back at the end of a
+transaction. The same shape applies to the memory bank, opened per session over
+one log.
+
+```
+omen  sees [wire the auth flow], want both sessions' items — the swarm plan is not shared
+frost sees [add the retry gate], want both sessions' items
+```
+
+Two sessions, one plan, and each of them can see exactly half of it.
+
+The fix is the one the plan names: the store is owned at server scope and handed
+to every session by reference, exactly as the session registry already works.
+`wiring.Options` gained `Todos` and `Bank`, and the build does not close what it
+did not open — a worker finishing would otherwise close the swarm's memory bank
+out from under its spawner. The bank is closed last in `Server.Close`, after
+every session.
+
+The reproduction had to be corrected once, and the correction is the interesting
+part. The first version asserted that two independent writes both survive; they
+do not, and should not, because a todo write *replaces* the list. That is what
+makes the un-shared store dangerous rather than merely wrong: session two writes
+its list computed from a stale copy, and session one's items are not merged away
+but deleted. The test now reads the list, appends to what it finds, and checks
+both sessions see both — which is the behaviour §20 describes.
+
+Verified: fails before (each session seeing only its own half), passes after;
+`go test ./... -race` green.

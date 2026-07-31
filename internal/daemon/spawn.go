@@ -40,7 +40,11 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		return nil, fmt.Errorf("the daemon is shutting down")
 	}
 
-	built, err := wiring.Build(s.Cfg, wiring.Options{Model: s.Model, Cwd: s.Cwd, TodoNamespace: SwarmTodoNamespace})
+	todos, bank := s.shared()
+	built, err := wiring.Build(s.Cfg, wiring.Options{
+		Model: s.Model, Cwd: s.Cwd,
+		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
+	})
 	if err != nil {
 		return nil, err
 	}

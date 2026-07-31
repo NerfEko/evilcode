@@ -45,6 +45,16 @@ type Options struct {
 	// name across a daemon it becomes the shared plan of §20, where a group a
 	// worker closes is the same group its spawner is watching.
 	TodoNamespace string
+
+	// Todos and Bank are stores the caller already owns, shared by reference.
+	//
+	// A namespace names a set of files, and two stores over one set of files are
+	// two divergent copies of it — each reading its own snapshot and writing the
+	// whole file back. Sharing the *store* is what makes a namespace mean one
+	// plan rather than one filename. The build does not close what it did not
+	// open.
+	Todos *todo.Store
+	Bank  *memory.Store
 }
 
 // Session is everything a caller has to hold onto and close.
@@ -160,7 +170,11 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	if todoName == "" {
 		todoName = store.Name
 	}
-	if todos, terr := todo.NewStore(dataDir, todoName); terr == nil {
+	todos := opts.Todos
+	if todos == nil {
+		todos, _ = todo.NewStore(dataDir, todoName)
+	}
+	if todos != nil {
 		out.Todos = todos
 		if !opts.NoTools {
 			a.Tools = append(a.Tools, tools.NewTodo(todos, nil))
@@ -169,10 +183,22 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 
 	// A memory bank that will not open disables memory rather than failing the
 	// build: it is an enhancement, not a prerequisite (plan.md §19).
-	if bank, berr := memory.Open(dataDir); berr == nil {
+	bank := opts.Bank
+	owned := false
+	if bank == nil {
+		var berr error
+		if bank, berr = memory.Open(dataDir); berr != nil {
+			bank = nil
+		} else {
+			owned = true
+		}
+	}
+	if bank != nil {
 		mem := memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
 		out.Memory = mem
-		out.closers = append(out.closers, func() { bank.Close() })
+		if owned {
+			out.closers = append(out.closers, func() { bank.Close() })
+		}
 
 		if !opts.NoTools {
 			a.Tools = append(a.Tools, tools.NewMemory(mem)...)

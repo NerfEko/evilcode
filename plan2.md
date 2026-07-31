@@ -143,7 +143,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   immediately closes the store without waiting for the turn to unwind; trailing messages
   are written to a closed store and dropped. Fix: track active turns, await completion
   after cancel, then close.  ⟨codex⟩
-- [ ] **H1.10** `internal/wiring/wiring.go:163,172` + `internal/todo/model.go:159` — the
+- [x] **H1.10** `internal/wiring/wiring.go:163,172` + `internal/todo/model.go:159` — the
   daemon builds every session with `TodoNamespace: "swarm"`, but each session gets its
   **own** `todo.Store` and memory store over the same files: separate in-memory copies, no
   reload before read, whole-file last-write-wins through a **shared** `.tmp` path, and

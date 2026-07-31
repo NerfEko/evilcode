@@ -15,7 +15,9 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/memory"
 	"evilcode/internal/provider"
+	"evilcode/internal/todo"
 	"evilcode/internal/wiring"
 )
 
@@ -44,6 +46,28 @@ type Server struct {
 	sessions map[string]*Session
 	listener net.Listener
 	closed   bool
+
+	// todos and bank are the swarm's shared state, owned here and handed to
+	// every session by reference. Opened per session they were N copies of one
+	// set of files, each writing the whole file back over the others.
+	todos *todo.Store
+	bank  *memory.Store
+}
+
+// shared returns the swarm's todo store and memory bank, opening them once.
+//
+// A failure to open is not fatal — both are coordination and enhancement, and
+// a session builds without them the same way a solo one does.
+func (s *Server) shared() (*todo.Store, *memory.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.todos == nil {
+		s.todos, _ = todo.NewStore(config.DataDir(), SwarmTodoNamespace)
+	}
+	if s.bank == nil {
+		s.bank, _ = memory.Open(config.DataDir())
+	}
+	return s.todos, s.bank
 }
 
 // Session is one live conversation inside the daemon.
@@ -177,6 +201,8 @@ func (s *Server) Close() {
 	}
 	s.closed = true
 	ln := s.listener
+	bank := s.bank
+	s.bank = nil
 	sessions := make([]*Session, 0, len(s.sessions))
 	for _, sess := range s.sessions {
 		sessions = append(sessions, sess)
@@ -190,6 +216,11 @@ func (s *Server) Close() {
 	os.Remove(s.Path)
 	for _, sess := range sessions {
 		sess.close()
+	}
+	// The bank is the server's, so it outlives every session and is closed last:
+	// a session's own Close must not take the swarm's memory down with it.
+	if bank != nil {
+		bank.Close()
 	}
 }
 
@@ -247,9 +278,10 @@ func (s *Server) Open(name string) (*Session, error) {
 
 	// Built outside the lock: resolving a model can touch the network, and
 	// holding the server lock across that would stall `list` for every client.
+	todos, bank := s.shared()
 	built, err := wiring.Build(s.Cfg, wiring.Options{
 		Model: s.Model, Resume: name, Cwd: s.Cwd, Extract: true,
-		TodoNamespace: SwarmTodoNamespace,
+		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
 	})
 	if err != nil {
 		return nil, err
