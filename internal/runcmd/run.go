@@ -95,7 +95,8 @@ func Run(args []string) (int, error) {
 
 	var ts tools.Set
 	if !*noTools {
-		ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).Tools(),
+		ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
+			WithConfine(cfg.Features.ConfineToWorkspace).Tools(),
 			tools.NewExec(cwd).Tools()...)
 		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 		// Headless has nobody to ask, so `ask` is deliberately absent rather

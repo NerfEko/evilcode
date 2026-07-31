@@ -96,6 +96,7 @@ centered = false
 
 [features]
 auto_poke = true
+confine_to_workspace = false   # true restricts file tools to the launch directory
 ```
 
 Declaring any `[[provider]]` replaces the defaults entirely, so a provider can be

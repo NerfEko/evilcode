@@ -95,6 +95,10 @@ type Model struct {
 	// commandArg holds the argument of the command being run.
 	commandArg string
 
+	// resumeTarget is set when the picker chose a session to switch to; the
+	// caller re-execs into it after the program exits.
+	resumeTarget string
+
 	// dock places widgets in the transcript's negative space, and widgetsOn
 	// is the Alt+I toggle.
 	dock      *Dock
@@ -119,6 +123,14 @@ type Model struct {
 
 	// thinking is the reasoning display mode (§9.7).
 	thinking ThinkingMode
+
+	// sessions is the full-screen picker, and dataDir is where session state
+	// lives so the picker can act on it.
+	sessions     SessionPickerState
+	sessionsOpen bool
+	dataDir      string
+	store        *session.Store
+	cwd          string
 
 	// artVariant is chosen once per process so the welcome animation stays the
 	// same one for a session, and decorate gates all decorative animation.
@@ -185,6 +197,13 @@ func (m *Model) Asker() tools.Asker {
 			return nil, ctx.Err()
 		}
 	})
+}
+
+// WithSessions attaches the session store and data directory, enabling the
+// picker and the session commands.
+func (m *Model) WithSessions(dataDir, cwd string, store *session.Store) *Model {
+	m.dataDir, m.cwd, m.store = dataDir, cwd, store
+	return m
 }
 
 // WithKeymap attaches the resolved keymap and hotkey usage tracking.
@@ -439,6 +458,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if m.history.Active {
 		return m.handleHistoryKey(key, msg)
+	}
+
+	if m.sessionsOpen {
+		return m.handleSessionKey(key, msg)
 	}
 
 	if m.helpOpen {
@@ -1457,7 +1480,12 @@ func (m *Model) transcriptLines() []string {
 			lines = m.renderer.animateEntry(lines, animT)
 		}
 		out = append(out, lines...)
-		if len(lines) > 0 {
+
+		// Blank lines separate *ideas*, not every block. A batch of tool calls
+		// is one idea, so consecutive tool rows stay packed; a gap between each
+		// one triples the height of a five-call batch and reads as five
+		// unrelated events.
+		if len(lines) > 0 && needsGapAfter(m.blocks, i) {
 			out = append(out, "")
 		}
 	}
@@ -1535,6 +1563,13 @@ func (m *Model) View() tea.View {
 	// exists to damp: a visible bar narrows the wrap width, which changes the
 	// content height, which can change the decision.
 	m.applyWrapWidth()
+
+	if m.sessionsOpen {
+		v := tea.NewView(strings.Join(
+			m.renderer.RenderSessionPicker(m.sessions, m.width, m.height), "\n"))
+		v.AltScreen = true
+		return v
+	}
 
 	if m.helpOpen {
 		v := tea.NewView(strings.Join(
@@ -1714,6 +1749,31 @@ func spliceOverlay(rows, overlay []string, screenHeight, composerRows int) []str
 		rows[idx] = line
 	}
 	return rows
+}
+
+// needsGapAfter reports whether a blank line belongs after block i.
+//
+// The rule is that a gap marks a change of subject. Tool activity — the call
+// row, an error it produced, the todo delta under it — is one subject, so those
+// stay packed together; prose, prompts, and cards each get their own breathing
+// room.
+func needsGapAfter(blocks []Block, i int) bool {
+	if i+1 >= len(blocks) {
+		return false
+	}
+	return !sameSubject(blocks[i].Kind, blocks[i+1].Kind)
+}
+
+// sameSubject reports whether two adjacent block kinds are part of one thought.
+func sameSubject(a, b BlockKind) bool {
+	toolish := func(k BlockKind) bool {
+		switch k {
+		case BlockTool, BlockError, BlockTodoDelta:
+			return true
+		}
+		return false
+	}
+	return toolish(a) && toolish(b)
 }
 
 // idleArt renders the welcome art, sized to the space actually available so it

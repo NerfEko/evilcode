@@ -15,9 +15,15 @@ import (
 
 // FS holds the filesystem tools' shared settings.
 type FS struct {
-	// Root confines every path. A tool must not be able to read /etc/shadow
-	// because a model asked nicely.
+	// Root is the workspace: where relative paths resolve and what tool rows
+	// display paths relative to.
 	Root string
+
+	// Confine restricts every path to Root. It is OFF by default — this is a
+	// single-user tool on the user's own machine, and refusing to read a file
+	// next door is friction rather than protection there. Turn it on for a
+	// session you want kept inside one tree (`[features] confine_to_workspace`).
+	Confine bool
 
 	// MaxReadBytes caps a single file read before truncation.
 	MaxReadBytes int
@@ -48,9 +54,17 @@ func (f *FS) WithAnchors(on bool) *FS {
 	return f
 }
 
-// resolve turns a tool-supplied path into an absolute path inside Root, or
-// refuses. Symlinks are resolved before the check so a link cannot be used to
-// step outside the workspace.
+// WithConfine restricts paths to the workspace root.
+func (f *FS) WithConfine(on bool) *FS {
+	f.Confine = on
+	return f
+}
+
+// resolve turns a tool-supplied path into an absolute path.
+//
+// With Confine on it must land inside Root, and symlinks are resolved before
+// the check so a link cannot be used to step outside. With Confine off — the
+// default — any readable path is allowed, and this only normalizes.
 func (f *FS) resolve(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is required")
@@ -60,6 +74,10 @@ func (f *FS) resolve(path string) (string, error) {
 		full = filepath.Join(f.Root, full)
 	}
 	full = filepath.Clean(full)
+
+	if !f.Confine {
+		return full, nil
+	}
 
 	// Both sides of the comparison must be resolved the same way, or a
 	// workspace reachable through a symlink (a home directory bind-mounted at
@@ -72,7 +90,9 @@ func (f *FS) resolve(path string) (string, error) {
 
 	rel, err := filepath.Rel(root, checked)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q is outside the workspace", path)
+		return "", fmt.Errorf(
+			"path %q is outside the workspace %s; this session is confined to it "+
+				"(unset features.confine_to_workspace to allow anything)", path, f.Root)
 	}
 	return full, nil
 }

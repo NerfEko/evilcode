@@ -87,11 +87,18 @@ type Display struct {
 	ShowToolDetails bool   `toml:"show_tool_call_details"`
 }
 
-// Features gates behavior that argues back at the model.
+// Features gates optional behavior.
 type Features struct {
 	AutoPoke bool `toml:"auto_poke"`
 	Memory   bool `toml:"memory"`
 	Advisor  bool `toml:"advisor"`
+
+	// ConfineToWorkspace restricts the file tools to the directory evilcode was
+	// launched in. Off by default: this is a single-user tool on the user's own
+	// machine, where refusing to read a file one directory over is friction
+	// rather than protection. Turn it on for a session you want kept inside one
+	// tree — reviewing an unfamiliar repo, say.
+	ConfineToWorkspace bool `toml:"confine_to_workspace"`
 }
 
 // Config is the whole configuration.

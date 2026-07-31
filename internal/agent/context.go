@@ -73,6 +73,18 @@ func (c *Conversation) Last() (provider.Message, bool) {
 	return c.messages[len(c.messages)-1], true
 }
 
+// Reset replaces the history wholesale, which `/rewind` needs: the messages it
+// keeps are the truth, and appending to a stale list would double them.
+//
+// Like Compact it bumps the epoch, since anything caching by message index is
+// now looking at a different conversation.
+func (c *Conversation) Reset(msgs []provider.Message) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.messages = append([]provider.Message(nil), msgs...)
+	c.epoch++
+}
+
 // Compact replaces the history with a summary. This is the only sanctioned
 // rewrite; it bumps the epoch so index-keyed caches invalidate.
 func (c *Conversation) Compact(summary string) {

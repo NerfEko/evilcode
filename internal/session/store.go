@@ -41,6 +41,7 @@ type Meta struct {
 	Model     string `json:"model,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Note      string `json:"note,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
 	TokensIn  int    `json:"tokens_in,omitempty"`
 	TokensOut int    `json:"tokens_out,omitempty"`
 }
@@ -53,6 +54,8 @@ const (
 	MetaCheckpoint = "checkpoint"
 	MetaCleanExit  = "clean_exit"
 	MetaTitle      = "title"
+	MetaSaved      = "saved"
+	MetaUnsaved    = "unsaved"
 )
 
 // Store appends session entries to a JSONL file.
@@ -99,7 +102,8 @@ func Create(dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return st, st.WriteMeta(Meta{Kind: MetaStart})
+	cwd, _ := os.Getwd()
+	return st, st.WriteMeta(Meta{Kind: MetaStart, Cwd: cwd})
 }
 
 // Append writes one entry.
@@ -175,6 +179,13 @@ type Info struct {
 
 	// Crashed reports a session whose file has no clean-exit marker.
 	Crashed bool
+
+	// Saved marks a pinned session (📌 in the picker).
+	Saved bool
+
+	// Cwd is where the session was started, so the picker can flag the ones
+	// belonging to the directory you are in now.
+	Cwd string
 }
 
 // List returns every stored session, most recently modified first.
@@ -238,6 +249,14 @@ func Describe(dataDir, name string) (Info, error) {
 				info.Crashed = false
 			case MetaTitle:
 				info.Title = m.Note
+			case MetaStart:
+				if m.Cwd != "" {
+					info.Cwd = m.Cwd
+				}
+			case MetaSaved:
+				info.Saved = true
+			case MetaUnsaved:
+				info.Saved = false
 			}
 		}
 	}

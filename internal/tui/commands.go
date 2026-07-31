@@ -53,6 +53,16 @@ var Commands = []Command{
 	{Name: "graveyard", Help: "Resume a previous session", Hidden: true},
 	{Name: "sessions", Help: "List sessions"},
 	{Name: "rename", Help: "Rename this session"},
+	{Name: "save", Help: "Pin this session so the picker marks it"},
+	{Name: "unsave", Help: "Unpin this session", Hidden: true},
+	{Name: "fork", Help: "Copy this session under a new name"},
+	{Name: "checkpoint", Help: "Mark a point to rewind back to"},
+	{Name: "rewind", Help: "Collapse back to an earlier point",
+		Long: "/rewind          list the points you can return to\n" +
+			"/rewind N        collapse back to point N\n\n" +
+			"Rewinding prunes exploratory context. Files already changed stay\n" +
+			"changed, todos and memories survive, and a one-paragraph summary of\n" +
+			"what was pruned is handed to the model."},
 
 	{Name: "quit", Help: "Exit evilcode"},
 	{Name: "cancel", Help: "Cancel the current turn"},
@@ -109,7 +119,8 @@ var HelpSections = []HelpSection{
 	{"Getting around", []string{"help", "keys", "context", "info", "version"}},
 	{"Models", []string{"model", "models"}},
 	{"Working", []string{"plan", "todos", "poke"}},
-	{"Sessions", []string{"resume", "sessions", "rename", "clear"}},
+	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
+		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "terminal-setup", "screenshot", "cancel", "quit"}},
 }
 

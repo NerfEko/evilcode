@@ -1,0 +1,228 @@
+package session
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"evilcode/internal/provider"
+)
+
+// Checkpoint marks a point a session can be collapsed back to (plan.md §18).
+type Checkpoint struct {
+	// Name identifies the checkpoint.
+	Name string
+
+	// Entry is the index in the session's entry list where it was written.
+	Entry int
+}
+
+// WriteCheckpoint records a named marker at the current point.
+func (s *Store) WriteCheckpoint(name string) error {
+	return s.WriteMeta(Meta{Kind: MetaCheckpoint, Name: name})
+}
+
+// Checkpoints lists a session's markers, oldest first.
+func Checkpoints(path string) ([]Checkpoint, error) {
+	entries, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []Checkpoint
+	for i, e := range entries {
+		if e.Type != TypeMeta {
+			continue
+		}
+		var m Meta
+		if json.Unmarshal(e.Data, &m) != nil || m.Kind != MetaCheckpoint {
+			continue
+		}
+		out = append(out, Checkpoint{Name: m.Name, Entry: i})
+	}
+	return out, nil
+}
+
+// RewindPoint is one entry a `/rewind` can return to.
+type RewindPoint struct {
+	// Index is the numbered position shown to the user, 1-based and counting
+	// only user prompts — the only points anyone actually thinks in.
+	Index int
+
+	// Entry is the position in the raw entry list.
+	Entry int
+
+	// Prompt is the user message at this point.
+	Prompt string
+}
+
+// RewindPoints lists the user prompts a session can be rewound to.
+func RewindPoints(path string) ([]RewindPoint, error) {
+	entries, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []RewindPoint
+	n := 0
+	for i, e := range entries {
+		if e.Type != TypeUser {
+			continue
+		}
+		var m provider.Message
+		if json.Unmarshal(e.Data, &m) != nil {
+			continue
+		}
+		// Harness-authored continuations are not points a person would think
+		// of rewinding to.
+		if strings.HasPrefix(m.Content, "[automated ") {
+			continue
+		}
+		n++
+		out = append(out, RewindPoint{Index: n, Entry: i, Prompt: m.Content})
+	}
+	return out, nil
+}
+
+// Rewind truncates a session back to an entry index and returns the resulting
+// messages.
+//
+// Durable state — todos, memories — deliberately survives: rewinding prunes
+// exploratory *context*, not the work that was done (plan.md §18). The original
+// file is kept alongside as `.bak` so a mistaken rewind is recoverable.
+func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
+	path := filepath.Join(Dir(dataDir), name+".jsonl")
+	entries, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+	if entryIndex < 0 || entryIndex > len(entries) {
+		return nil, fmt.Errorf("rewind point %d is out of range", entryIndex)
+	}
+
+	if data, err := os.ReadFile(path); err == nil {
+		_ = os.WriteFile(path+".bak", data, 0o644)
+	}
+
+	kept := entries[:entryIndex]
+	var b strings.Builder
+	for _, e := range kept {
+		line, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
+	}
+	return Messages(path)
+}
+
+// CollapseSummary is the one-paragraph handoff injected after a rewind, so the
+// model knows what happened in the pruned stretch rather than silently losing it.
+func CollapseSummary(discarded []provider.Message) string {
+	if len(discarded) == 0 {
+		return ""
+	}
+	var prompts, tools int
+	var lastAssistant string
+	for _, m := range discarded {
+		switch m.Role {
+		case provider.RoleUser:
+			if !strings.HasPrefix(m.Content, "[automated ") {
+				prompts++
+			}
+		case provider.RoleTool:
+			tools++
+		case provider.RoleAssistant:
+			if strings.TrimSpace(m.Content) != "" {
+				lastAssistant = m.Content
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("[rewound] The conversation was collapsed back to an earlier point. ")
+	fmt.Fprintf(&b, "The removed stretch contained %d prompt(s) and %d tool call(s). ", prompts, tools)
+	if lastAssistant != "" {
+		summary := lastAssistant
+		if len(summary) > 400 {
+			summary = summary[:400] + "…"
+		}
+		b.WriteString("Where it left off: " + summary + " ")
+	}
+	b.WriteString("Any files already changed are still changed, and todos and memories were kept.")
+	return b.String()
+}
+
+// Save pins a session so the picker marks it and cleanup leaves it alone.
+func Save(dataDir, name string, pinned bool) error {
+	st, err := Open(dataDir, name)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	kind := MetaSaved
+	if !pinned {
+		kind = MetaUnsaved
+	}
+	return st.WriteMeta(Meta{Kind: kind})
+}
+
+// Rename moves a session's file, refusing to overwrite an existing one.
+func Rename(dataDir, from, to string) error {
+	if strings.ContainsAny(to, "/\\ ") || to == "" {
+		return fmt.Errorf("session names must be a single filesystem-safe word")
+	}
+	src := filepath.Join(Dir(dataDir), from+".jsonl")
+	dst := filepath.Join(Dir(dataDir), to+".jsonl")
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("session %q already exists", to)
+	}
+	return os.Rename(src, dst)
+}
+
+// Transfer compacts a session into a summary handoff in a fresh one, carrying
+// the durable state across (plan.md §18).
+func Transfer(dataDir, from, to, summary string) error {
+	if _, err := os.Stat(filepath.Join(Dir(dataDir), to+".jsonl")); err == nil {
+		return fmt.Errorf("session %q already exists", to)
+	}
+	st, err := Open(dataDir, to)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	if err := st.WriteMeta(Meta{Kind: MetaStart, Note: "transferred from " + from}); err != nil {
+		return err
+	}
+	return st.WriteMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: "[transferred] Continuing from session " + from + ".\n\n" + summary,
+	})
+}
+
+// DeriveTitle picks a session's display title.
+//
+// The order is deliberate: the group label of whatever is in progress, then the
+// stated user intention, then the first todo. The list ends up labeled by what
+// the agent understood you wanted, which is more useful than the first thing
+// you happened to type (plan.md §5.4).
+func DeriveTitle(activeGroup, userIntention, firstTodo, firstPrompt string) string {
+	for _, candidate := range []string{activeGroup, userIntention, firstTodo, firstPrompt} {
+		if s := strings.TrimSpace(candidate); s != "" {
+			if len(s) > 60 {
+				s = s[:59] + "…"
+			}
+			return strings.ReplaceAll(s, "\n", " ")
+		}
+	}
+	return ""
+}

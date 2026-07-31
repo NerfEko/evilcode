@@ -80,7 +80,7 @@ func TestReadRejectsBinaryAndDirectories(t *testing.T) {
 }
 
 func TestPathEscapeIsRefused(t *testing.T) {
-	f := tempFS(t, map[string]string{"a.txt": "x"})
+	f := tempFS(t, map[string]string{"a.txt": "x"}).WithConfine(true)
 	for _, path := range []string{"../outside.txt", "../../etc/passwd", "/etc/passwd"} {
 		if _, err := run(t, f.Tools(), "read", map[string]any{"path": path}); err == nil {
 			t.Errorf("reading %q must be refused", path)
@@ -98,7 +98,7 @@ func TestSymlinkEscapeIsRefused(t *testing.T) {
 	if err := os.Symlink(secret, filepath.Join(dir, "link.txt")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	f := NewFS(dir)
+	f := NewFS(dir).WithConfine(true)
 	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "link.txt"}); err == nil {
 		t.Error("a symlink pointing outside the workspace must be refused")
 	}
@@ -117,7 +117,7 @@ func TestWorkspaceReachableThroughSymlink(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	f := NewFS(link)
+	f := NewFS(link).WithConfine(true)
 	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "a.txt"}); err != nil {
 		t.Errorf("reading an existing file through a symlinked root: %v", err)
 	}
@@ -809,5 +809,40 @@ func TestLineAnchorIsWhitespaceSensitive(t *testing.T) {
 	}
 	if LineAnchor("a") != LineAnchor("a") {
 		t.Error("anchors must be stable")
+	}
+}
+
+func TestUnconfinedIsTheDefault(t *testing.T) {
+	// evilcode runs on the user's own machine as the user. Refusing to read a
+	// file one directory over is friction, not protection, so confinement is
+	// opt-in.
+	outside := t.TempDir()
+	target := filepath.Join(outside, "neighbour.txt")
+	if err := os.WriteFile(target, []byte("readable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := tempFS(t, nil)
+	if f.Confine {
+		t.Error("confinement must be off unless asked for")
+	}
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": target})
+	if err != nil {
+		t.Fatalf("an unconfined session should read any readable path: %v", err)
+	}
+	if !strings.Contains(res.Output, "readable") {
+		t.Errorf("output = %q", res.Output)
+	}
+}
+
+func TestConfineExplainsHowToTurnItOff(t *testing.T) {
+	// A refusal the user cannot act on is just an obstacle.
+	f := tempFS(t, nil).WithConfine(true)
+	_, err := run(t, f.Tools(), "read", map[string]any{"path": "/etc/hostname"})
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	if !strings.Contains(err.Error(), "confine_to_workspace") {
+		t.Errorf("err = %q, want it to name the setting", err)
 	}
 }

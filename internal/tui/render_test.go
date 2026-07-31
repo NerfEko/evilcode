@@ -630,3 +630,58 @@ func TestStreamingBlockIsNotCached(t *testing.T) {
 		t.Error("a streaming block must not be cached; it changes every frame")
 	}
 }
+
+func TestGapsSeparateSubjectsNotBlocks(t *testing.T) {
+	// A blank line marks a change of subject. Tool activity — the call row, an
+	// error it produced, the todo delta under it — is one subject, so a batch of
+	// calls stays packed instead of being spread across three times the height.
+	tests := []struct {
+		name     string
+		kinds    []BlockKind
+		wantGaps []bool // gap after each block except the last
+	}{
+		{
+			"consecutive tool rows stay packed",
+			[]BlockKind{BlockTool, BlockTool, BlockTool, BlockAssistant},
+			[]bool{false, false, true},
+		},
+		{
+			"an error stays with the call that produced it",
+			[]BlockKind{BlockTool, BlockError, BlockTool, BlockAssistant},
+			[]bool{false, false, true},
+		},
+		{
+			"a todo delta stays with its tool row",
+			[]BlockKind{BlockTool, BlockTodoDelta, BlockAssistant},
+			[]bool{false, true},
+		},
+		{
+			"prose and prompts each get room",
+			[]BlockKind{BlockUser, BlockAssistant, BlockUser},
+			[]bool{true, true},
+		},
+		{
+			"prose before a tool row is separated",
+			[]BlockKind{BlockAssistant, BlockTool},
+			[]bool{true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks := make([]Block, len(tt.kinds))
+			for i, k := range tt.kinds {
+				blocks[i] = Block{Kind: k}
+			}
+			for i, want := range tt.wantGaps {
+				if got := needsGapAfter(blocks, i); got != want {
+					t.Errorf("gap after block %d (%v -> %v) = %v, want %v",
+						i, tt.kinds[i], tt.kinds[i+1], got, want)
+				}
+			}
+			// Never a trailing gap: the composer provides its own separation.
+			if needsGapAfter(blocks, len(blocks)-1) {
+				t.Error("the last block should not be followed by a gap")
+			}
+		})
+	}
+}

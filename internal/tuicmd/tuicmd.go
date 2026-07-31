@@ -95,10 +95,15 @@ func Run(args []string) error {
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd)).
 		WithTodos(todos, poke).
 		WithHistory(prompts).
-		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints)
+		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
+		WithSessions(dataDir, cwd, store)
+	if prior > 0 {
+		m.RebuildFrom(conv.Messages())
+	}
 
 	overrides := cfg.ModelOverrides(*model)
-	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits)
+	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
+		WithConfine(cfg.Features.ConfineToWorkspace)
 
 	ts := append(fsTools.Tools(), tools.NewExec(cwd).Tools()...)
 	ts = append(ts, tools.NewGit(pc.Root).Tools()...)
@@ -109,7 +114,24 @@ func Run(args []string) error {
 	a.NumCtx = overrides.ContextWindow
 	defer a.Close()
 
-	return tui.RunModel(m)
+	if err := tui.RunModel(m); err != nil {
+		return err
+	}
+	// The session picker exits with a target rather than swapping state in
+	// place: the agent, todo store, history, and breakers are each bound to one
+	// session, and re-entering is a much smaller surface than rebuilding them.
+	if target := m.ResumeTarget(); target != "" {
+		return Run(append([]string{"-resume", target}, modelArgs(*model)...))
+	}
+	return nil
+}
+
+// modelArgs preserves an explicit -m across a session switch.
+func modelArgs(model string) []string {
+	if model == "" {
+		return nil
+	}
+	return []string{"-m", model}
 }
 
 func headerState(cfg *config.Config, sessionName, model, providerName, cwd string) tui.HeaderState {
