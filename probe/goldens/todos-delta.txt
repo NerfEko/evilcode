@@ -16,7 +16,13 @@
      + Add the retry gate                                                                               │   +1 done                        │
      + Write the integration test                                                                       ╰──────────────────────────────────╯
 
- Tracked. Working through the refresh path next.Done.Done.Done.
+ Tracked. Working through the refresh path next.
+
+ Done.
+
+ Done.
+
+ Done.
 
    ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
 

@@ -44,8 +44,13 @@ var mermaidCache struct {
 }
 
 // MermaidKey is the cache key for a diagram's source.
+//
+// It trims, because the writer and the reader do not see the same string:
+// RenderMermaid trims before keying, so a lookup on the untrimmed source missed
+// every time and re-rendered — a browser launch per frame, for a diagram
+// already sitting in the cache.
 func MermaidKey(src string) string {
-	sum := sha256.Sum256([]byte(src))
+	sum := sha256.Sum256([]byte(strings.TrimSpace(src)))
 	return hex.EncodeToString(sum[:8])
 }
 

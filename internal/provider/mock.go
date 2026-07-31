@@ -354,6 +354,15 @@ var mockScenarios = map[string][][]Chunk{
 		append(text("Right — I will re-read it before touching anything."), done(360, 12)),
 	},
 
+	// A mermaid fence (§5). With mmdc installed and a kitty-capable terminal the
+	// diagram renders inline; without either it falls back to highlighted
+	// source under the hint, which is the path most terminals take.
+	"mermaid": {
+		append(text("Here is the loop:\n\n```mermaid\ngraph TD\n  A[plan.md] --> B[implement]\n"+
+			"  B --> C{tests pass?}\n  C -->|yes| D[look at the PNG]\n  C -->|no| B\n"+
+			"  D --> E[commit]\n```\n\nThat is the whole discipline."), done(300, 60)),
+	},
+
 	"diff": {
 		{
 			{Text: "Fixing the off-by-one."},

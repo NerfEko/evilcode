@@ -527,6 +527,11 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 
 	case agent.EventNotice:
+		// A notice marks a boundary between two things the model said. Without
+		// closing the streaming block here, an auto-poked turn renders as one
+		// paragraph — "…refresh path next.Done.Done.Done." — because the poke
+		// continues the same Loop and so never emits a fresh turn start.
+		m.streamingIdx = -1
 		if e.Level == agent.LevelInfo || e.Level == "" {
 			m.notice = e.Text
 			break
@@ -2329,7 +2334,10 @@ func (m *Model) activeWidgets() []Widget {
 		}
 	}
 
-	if m.todos != nil {
+	// The widget stands down while the card is open. They carry the same items,
+	// and showing both is the duplication §8.3 exists to prevent — the card is
+	// the fuller view, so it wins.
+	if m.todos != nil && !m.showTodoCard {
 		add(m.renderer.TodosWidget(m.todos.Items(), m.todos.Goals(), 4))
 	}
 	if m.status.TokensIn > 0 && m.contextMax() > 0 {
