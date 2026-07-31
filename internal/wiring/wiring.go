@@ -102,24 +102,29 @@ func repoConfig(cfg *config.Config, root string) (*config.Config, error) {
 
 // Build assembles a session. On error nothing is left open.
 func Build(cfg *config.Config, opts Options) (*Session, error) {
-	prov, modelName, err := cfg.Resolve(opts.Model)
-	if err != nil {
-		return nil, err
-	}
-
 	cwd := opts.Cwd
 	if cwd == "" {
 		return nil, fmt.Errorf("wiring: no workspace directory")
 	}
 	dataDir := config.DataDir()
 
-	out := &Session{Config: cfg, Model: modelName}
-	// Any failure past this point unwinds what has already been opened, so a
-	// half-built session never leaks a file handle.
-	fail := func(err error) (*Session, error) {
-		out.Close()
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	// Onto a copy: cfg belongs to the daemon and is shared by every session it
+	// hosts. Applying a repository's overrides to it pinned one repo's model
+	// for all of them, and raced two builds against each other. Done before
+	// resolving, so a repo-pinned default_model actually takes effect on this
+	// build rather than the pre-override config winning.
+	cfg, err := repoConfig(cfg, pc.Root)
+	if err != nil {
 		return nil, err
 	}
+
+	prov, modelName, err := cfg.Resolve(opts.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &Session{Config: cfg, Model: modelName}
 
 	var store *session.Store
 	var prior []provider.Message
@@ -139,15 +144,6 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 	out.Store, out.Prior = store, len(prior)
 	out.closers = append(out.closers, func() { store.Close() })
-
-	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
-	// Onto a copy: cfg belongs to the daemon and is shared by every session it
-	// hosts. Applying a repository's overrides to it pinned one repo's model
-	// for all of them, and raced two builds against each other.
-	cfg, err = repoConfig(cfg, pc.Root)
-	if err != nil {
-		return fail(err)
-	}
 
 	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
 	conv.Append(prior...)

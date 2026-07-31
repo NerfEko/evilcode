@@ -3697,3 +3697,47 @@ Verified: `go build ./... && go vet ./... && go test ./...` green, including
 the existing `TestRenameRefusesPathsOutsideTheWorkspace` and
 `TestRenameAcceptsAWorkspaceReachedThroughASymlink`, unaffected since phase
 one's confinement check is unchanged.
+
+## 2026-07-31 H5.18 — Pinning a model after the decision was already made
+
+All three build paths — `wiring.Build` (daemon and TUI-shared), `runcmd.Run`
+(`evilcode run`), and `tuicmd.runOnce` (the interactive TUI) — resolved the
+model before loading the repository's `.evilcode.toml` overrides. `Resolve`
+reads `cfg.DefaultModel` at the moment it's called; the repo's pin, loaded a
+few lines later into a local copy of the config, could never retroactively
+change a decision that had already produced a live provider and a model name.
+A repo pinning `default_model` got silently ignored on every one of these
+three entry points — the daemon session, headless `run`, and the TUI all
+used the user's global default instead.
+
+Fix: reordered all three so `LoadProjectContext` (to find the repo root) and
+the repo-overrides load (`repoConfig` in wiring, `cfg.LoadRepoOverrides`
+directly in the other two, which don't share a config across sessions the
+way the daemon does) both run before `Resolve`. In `wiring.go` this also
+meant moving the `cwd` validation and `dataDir` lookup earlier, since
+`LoadProjectContext` needs `cwd`; the `fail` closure that used to unwind
+already-opened resources on a `repoConfig` failure became dead code, because
+nothing is open yet at that point in the new order, so it was deleted rather
+than left unused. `run.go` and `tuicmd.go` needed the same reorder with a
+duplicate declaration removed (the `pc :=` and `LoadRepoOverrides` call that
+used to sit lower in the function).
+
+Reproduce: `TestBuildResolvesAgainstTheRepoPinnedModel` in
+`internal/wiring/overrides_test.go` builds a session with `Cwd` pointed at a
+repo whose `.evilcode.toml` pins `default_model = "pinned-model@mock"`, over
+a config whose own default is a different mock model, and asserts
+`Session.Model` is the repo's pin. Confirmed it fails against the pre-fix
+ordering (stashed `wiring.go`, reran, restored): the resolved model came back
+as the config's own default, the repo's pin never seen.
+
+`run.go` and `tuicmd.go` got the identical mechanical fix — the same handful
+of lines moved above `Resolve`, no logic changed — verified by direct
+inspection rather than a second integration harness: neither function
+exposes the resolved model outside a full agent turn against a real or mock
+provider, and building that harness twice more for a call-site-identical
+reorder already proven at the `wiring.Build` level wasn't worth the added
+weight. `go test ./internal/runcmd/... ./internal/tuicmd/...` stayed green,
+confirming no existing behavior regressed.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green across
+every package.

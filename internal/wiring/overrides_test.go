@@ -49,3 +49,33 @@ func TestRepoOverridesApplyToTheSessionBeingBuilt(t *testing.T) {
 			local.DefaultModel)
 	}
 }
+
+// H5.18: Build used to resolve the model before applying repo overrides, so a
+// repo-pinned default_model never took effect — Resolve had already run
+// against the pre-override config by the time the pin was even loaded.
+func TestBuildResolvesAgainstTheRepoPinnedModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("HOME", home)
+
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, config.RepoConfigName),
+		[]byte("default_model = \"pinned-model@mock\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Providers = append(cfg.Providers, config.ProviderConfig{Name: "mock", Kind: config.KindMock})
+	cfg.DefaultModel = "unpinned-model@mock"
+
+	sess, err := Build(cfg, Options{Cwd: repo, NoTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	if sess.Model != "pinned-model" {
+		t.Errorf("resolved model = %q, want the repo's pinned model", sess.Model)
+	}
+}

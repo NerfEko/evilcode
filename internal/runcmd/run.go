@@ -64,13 +64,20 @@ func Run(args []string) (int, error) {
 	if err != nil {
 		return ExitError, err
 	}
+
+	cwd, _ := os.Getwd()
+	dataDir := config.DataDir()
+
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	// Overrides load before resolving, so a repo-pinned default_model actually
+	// takes effect on this run rather than the pre-override config winning.
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		return ExitError, err
+	}
 	prov, modelName, err := cfg.Resolve(*model)
 	if err != nil {
 		return ExitError, err
 	}
-
-	cwd, _ := os.Getwd()
-	dataDir := config.DataDir()
 
 	var store *session.Store
 	var priorMessages []provider.Message
@@ -87,7 +94,6 @@ func Run(args []string) (int, error) {
 	}
 	defer store.Close()
 
-	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
 	// Skills reach headless too. Without this a `run` cannot load a skill at
 	// all, which is how the selfdev verification discovered the gap: the model
 	// was told to load a skill and correctly reported it had no such tool.
@@ -104,9 +110,6 @@ func Run(args []string) (int, error) {
 		conv.Append(priorMessages...)
 	}
 
-	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
-		return ExitError, err
-	}
 	// Look overrides up by the *resolved* model, not the flag. Passing the
 	// flag means a session relying on default_model silently gets no
 	// per-model settings at all, which is how anchor_edits appeared to be

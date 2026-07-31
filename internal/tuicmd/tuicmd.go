@@ -70,13 +70,20 @@ func runOnce(args []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	cwd, _ := os.Getwd()
+	dataDir := config.DataDir()
+
+	// A repo may pin its roles and default model. Loaded before resolving, so
+	// a repo-pinned default_model actually takes effect on this run.
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		return "", err
+	}
 	prov, modelName, err := cfg.Resolve(*model)
 	if err != nil {
 		return "", err
 	}
-
-	cwd, _ := os.Getwd()
-	dataDir := config.DataDir()
 
 	var store *session.Store
 	var priorMessages []provider.Message
@@ -92,12 +99,6 @@ func runOnce(args []string) (string, error) {
 		}
 	}
 	defer store.Close()
-
-	// A repo may pin its roles and default model.
-	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
-	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
-		return "", err
-	}
 
 	// Skills contribute only their names and one-liners to the prompt; bodies
 	// load through the skill tool, which keeps the prompt cacheable as the set

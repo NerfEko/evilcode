@@ -418,7 +418,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   the write phase is sequential and in place, so a mid-way failure leaves the workspace
   partially renamed despite being described as atomic. Fix: stage and sync every
   replacement, verify sources are unchanged, commit with rollback.  ⟨both⟩
-- [ ] **H5.18** `internal/wiring/wiring.go:79`, `internal/runcmd/run.go:66`,
+- [x] **H5.18** `internal/wiring/wiring.go:79`, `internal/runcmd/run.go:66`,
   `internal/tuicmd/tuicmd.go:43` — provider and model resolution runs **before** repo
   overrides load, so a repo-pinned `default_model` never takes effect on the main run.
   §16 specifies per-repo pinning. Fix: load and apply overrides to the per-build config
