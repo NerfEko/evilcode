@@ -20,6 +20,7 @@ import (
 	"evilcode/internal/graphics"
 	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
+	"evilcode/internal/provider"
 	"evilcode/internal/session"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
@@ -247,6 +248,9 @@ type Model struct {
 
 	// keepThinking leaves finished traces expanded (display.keep_thinking).
 	keepThinking bool
+
+	// modelsPending guards against a second fetch while one is in flight.
+	modelsPending bool
 
 	// queuedHidden is a harness prompt waiting for an interrupted turn to end.
 	// Sending it immediately raced the turn it had just cancelled, and since
@@ -1488,17 +1492,26 @@ type modelsLoaded struct{ entries []ModelEntry }
 // answered. It opens immediately now with whatever is known, and fills in.
 func (m *Model) openPicker() tea.Cmd {
 	m.showPicker(m.models)
-	if len(m.models) > 0 {
+	if len(m.models) > 0 || m.modelsPending {
 		return nil
 	}
 	m.picker.Entries = []ModelEntry{{
 		Name: m.header.Model, Provider: m.header.Provider, Current: true, Detail: "loading…",
 	}}
-	return func() tea.Msg { return modelsLoaded{entries: m.loadModels()} }
+
+	// Captured here, on the update loop. The command runs on its own goroutine
+	// and must not read Model fields — the user can switch models while the
+	// fetch is in flight, and reading m.header from there is a race.
+	prov, current, providerName := m.agent.Provider, m.header.Model, m.header.Provider
+	m.modelsPending = true
+	return func() tea.Msg {
+		return modelsLoaded{entries: fetchModels(prov, current, providerName)}
+	}
 }
 
 // applyModels fills the picker in once the provider has answered.
 func (m *Model) applyModels(msg modelsLoaded) {
+	m.modelsPending = false
 	m.models = msg.entries
 	if m.pickerOpen {
 		m.showPicker(m.models)
@@ -1515,15 +1528,18 @@ func (m *Model) showPicker(entries []ModelEntry) {
 	m.pickerOpen = true
 }
 
-func (m *Model) loadModels() []ModelEntry {
+// fetchModels asks the provider for its model list. It takes everything it
+// needs as arguments: it runs off the update loop, where Model is not safe to
+// touch.
+func fetchModels(prov provider.Provider, current, providerName string) []ModelEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	infos, err := m.agent.Provider.Models(ctx)
+	infos, err := prov.Models(ctx)
 	if err != nil || len(infos) == 0 {
 		return []ModelEntry{{
-			Name:     m.header.Model,
-			Provider: m.header.Provider,
+			Name:     current,
+			Provider: providerName,
 			Current:  true,
 			Default:  true,
 		}}
@@ -1532,8 +1548,8 @@ func (m *Model) loadModels() []ModelEntry {
 	for _, info := range infos {
 		e := ModelEntry{
 			Name:     info.Name,
-			Provider: m.header.Provider,
-			Current:  info.Name == m.header.Model,
+			Provider: providerName,
+			Current:  info.Name == current,
 		}
 		if info.Size != "" {
 			e.Detail = info.Size

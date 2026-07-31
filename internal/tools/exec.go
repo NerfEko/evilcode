@@ -283,7 +283,7 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n := len(p)
-	if len(p) >= MaxOutputBytes {
+	if len(p) > MaxOutputBytes {
 		p = p[len(p)-MaxOutputBytes:]
 		w.buf = append(w.buf[:0], p...)
 		w.overflow = true

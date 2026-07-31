@@ -308,7 +308,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 Single-user, single-machine, no network listener — but "the workspace is trusted" is a
 different claim from "model output is trusted", and the first does not imply the second.
 
-- [ ] **H4.1** `internal/tui/highlight.go:114` and `internal/runcmd/run.go:222` — repository
+- [x] **H4.1** `internal/tui/highlight.go:114` and `internal/runcmd/run.go:222` — repository
   content and provider output reach the terminal without control-sequence sanitization. A
   file in a cloned repo, or a model persuaded to emit one, can run OSC 52 (clipboard write)
   or CSI operations against the user's terminal. `run.go:222` prints provider deltas
@@ -430,6 +430,11 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [ ] **H5.20** Verify H5: a conflict clears after a re-read and re-fires on the next write;
   `!ls` either runs or is not offered; a corrupt session line is reported with its number
   rather than skipped; a repo-pinned model actually loads. Tag `harden-5`.
+- [ ] **H5.23** `internal/tui/swarmwidget.go:213` → `internal/attachcmd/attach.go:133` — `/summon`
+  dials the daemon socket and does a synchronous send/receive, with no read deadline, from
+  inside `Update`. Same class as H3.13: a daemon that accepts the connection and then stalls
+  freezes the whole interface with no way to type past it. Fix: a `tea.Cmd` with a deadline.
+  ⟨codex, reviewing H3⟩
 - [ ] **H5.22** `internal/session/store.go` `Messages` — replay does not check that every
   assistant `tool_call` has an adjacent result, so a session whose log was already
   malformed before H1.2/H1.3 landed — or truncated by a crash or a daemon shutdown mid-round

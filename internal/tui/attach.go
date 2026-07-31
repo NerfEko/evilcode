@@ -95,12 +95,23 @@ func readClipboardImage(ctx context.Context) ([]byte, error) {
 		tried = append(tried, argv[0])
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		cmd.WaitDelay = time.Second
-		out, err := cmd.Output()
-		if err == nil && len(out) > 0 {
-			if len(out) > MaxImageBytes {
-				return nil, fmt.Errorf("the clipboard image is %s, over the %s limit",
-					humanBytes(len(out)), humanBytes(MaxImageBytes))
-			}
+		// Bounded as it arrives, not after: cmd.Output() buffers everything
+		// first, so a clipboard holding a gigabyte costs a gigabyte before the
+		// limit is consulted.
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
+			continue
+		}
+		if err := cmd.Start(); err != nil {
+			continue
+		}
+		out, readErr := io.ReadAll(io.LimitReader(pipe, MaxImageBytes+1))
+		waitErr := cmd.Wait()
+		if len(out) > MaxImageBytes {
+			return nil, fmt.Errorf("the clipboard image is over the %s limit",
+				humanBytes(MaxImageBytes))
+		}
+		if readErr == nil && waitErr == nil && len(out) > 0 {
 			return out, nil
 		}
 		if ctx.Err() != nil {

@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"evilcode/internal/core"
 	"evilcode/internal/graphics"
 	"evilcode/internal/memory"
 	"evilcode/internal/theme"
@@ -186,6 +187,19 @@ func (r *Renderer) AtWidth(width int) *Renderer {
 }
 
 func (r *Renderer) render(b *Block) []string {
+	// One choke point for untrusted text. Everything reaching a block came
+	// from the model, from a tool's output, or from a file — none of which is
+	// entitled to drive the terminal — and this is the last place before it is
+	// styled and laid out. Sanitizing the finished frame instead would strip
+	// the escapes evilcode itself puts there.
+	clean := *b
+	clean.Text = core.SanitizeTerminal(b.Text)
+	clean.ToolName = core.SanitizeTerminal(b.ToolName)
+	clean.ToolTarget = core.SanitizeTerminal(b.ToolTarget)
+	clean.ToolIntent = core.SanitizeTerminal(b.ToolIntent)
+	clean.Diff = core.SanitizeTerminal(b.Diff)
+	b = &clean
+
 	switch b.Kind {
 	case BlockUser:
 		return r.renderUser(b)

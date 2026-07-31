@@ -2844,3 +2844,79 @@ recursion where a loop belonged. Those do not fail, they hang, which is why the
 suite was green through all of them.
 
 Tagged `harden-3`.
+
+# Phase H4 — Boundaries
+
+## 2026-07-31 H4.1 — The terminal is not a display, it is an interpreter
+
+Repository content and provider output both reach the terminal, and neither was
+stripped of the sequences that make a terminal do things rather than show them.
+A file in a cloned repo, rendered — not executed, not opened, just *displayed* —
+could carry OSC 52 and write the user's clipboard. A model can be talked into
+emitting the same.
+
+The fixture is what a hostile file looks like: a clipboard write, a screen
+clear, a title change, wrapped in plausible Go. Rendered through the transcript,
+the frame came out carrying all of it.
+
+`core.SanitizeTerminal` drops C0, DEL and C1, keeps newline and tab, and
+consumes an escape sequence to its terminator rather than dropping the
+introducer and leaving the payload as visible text. Applied at two choke points:
+`renderTokens`, where highlighted repository content is styled, and the
+transcript renderer, where every block's text, tool name, target, intent and
+diff pass through. Before styling, deliberately — sanitizing the finished frame
+would strip the escapes evilcode itself puts there.
+
+Headless output is sanitized only when stdout is a terminal. Piped output stays
+byte-exact: the consumer there is a program that asked for the model's text, not
+a terminal to hijack, and mangling it would break `evilcode run | jq`.
+
+## 2026-07-31 — Corrections from the codex review of phase H3
+
+This review earned its keep. Twelve findings, most of them mine, and one is a
+regression I introduced that would have quietly damaged existing sessions.
+
+**Legacy sessions with attachments lost whole turns.** H3.5 moved images out of
+line by shadowing the `Images` field with `[]struct{}` so it could never
+marshal. Sessions written before that change hold their attachments there as
+base64 — which no longer unmarshals, and a record that fails to decode is
+*skipped*:
+
+```
+replayed 1 of 2 messages; a legacy inline attachment dropped its turn
+```
+
+Not the image: the message. Every turn with a screenshot in it, gone from any
+session predating the change. The shadow field keeps its `[][]byte` type now and
+decode reads it, so old sessions replay whole and new ones use references.
+
+**Attachments did not survive fork or rename.** Both move the log and leave the
+`.blobs` directory behind, so every reference resolves to nothing.
+
+**A paged read recorded its anchors from line 1** while showing them numbered
+from the offset, so an anchor the model quoted back pointed at a different line.
+That is H1.4's mistake in a different currency — two numbering schemes, one
+converted, one not.
+
+**A paged read checked only its first line for binary content**, where the whole
+path used to check the file. A binary whose NULs start further in now reads as
+text.
+
+Also fixed: `MsgDetach` unsubscribed without stopping the relay (H3.8's leak by
+a second route); a shutting-down server exited its writer while the reader stayed
+blocked on the connection; the clipboard read still buffered everything before
+consulting the limit; the model-list command read `Model` fields from its own
+goroutine; mermaid's output buffer was unbounded behind its new timeout; and the
+ring writer claimed overflow on an exactly-full write.
+
+Logged rather than fixed: `/summon` still does a synchronous socket round trip
+inside `Update` with no read deadline — the same class as H3.13, in a file H3.13
+did not name. It is **H5.23**.
+
+**A flake of my own, caught by the full-suite run:** H2.14's test assumed the
+three shell calls ran in the order given. Serializing them made the order
+arbitrary, so a relative `cd` sometimes started from where a different call had
+finished. Rewritten to test what serialization actually guarantees — mutual
+exclusion, with each call proving it about itself by claiming a marker — plus a
+separate test that a `cd` carries to the next call. The first version was
+testing an implementation detail it had accidentally frozen.

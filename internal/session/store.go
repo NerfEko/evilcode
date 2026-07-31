@@ -448,5 +448,36 @@ func Fork(dataDir, from, to string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		return err
+	}
+	return copyBlobs(blobDir(src), blobDir(dst))
+}
+
+// copyBlobs duplicates a session's attachments alongside a fork. Content-
+// addressed names mean copying is the whole job — no rewriting of references.
+func copyBlobs(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }

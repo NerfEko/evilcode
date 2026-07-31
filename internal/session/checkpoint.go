@@ -264,7 +264,16 @@ func Rename(dataDir, from, to string) error {
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("session %q already exists", to)
 	}
-	return os.Rename(src, dst)
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	// The attachments travel with the log. Left behind, every image reference
+	// in the renamed session resolves to nothing and the pictures vanish on the
+	// next resume.
+	if _, err := os.Stat(blobDir(src)); err == nil {
+		return os.Rename(blobDir(src), blobDir(dst))
+	}
+	return nil
 }
 
 // Transfer compacts a session into a summary handoff in a fresh one, carrying

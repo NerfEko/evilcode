@@ -47,10 +47,19 @@ func newAnchorStore() *anchorStore {
 
 // record captures a file's state at read time.
 func (s *anchorStore) record(path string, info os.FileInfo, lines []string) {
+	s.recordAt(path, info, lines, 0)
+}
+
+// recordAt records a window of lines starting at a zero-based offset.
+//
+// The offset matters because the model is shown the window numbered from where
+// it starts, not from one: recording a paged read as lines 1..N means an anchor
+// the model quotes back resolves to a different line entirely.
+func (s *anchorStore) recordAt(path string, info os.FileInfo, lines []string, offset int) {
 	anchors := make(map[string][]int, len(lines))
 	for i, line := range lines {
 		a := LineAnchor(line)
-		anchors[a] = append(anchors[a], i+1)
+		anchors[a] = append(anchors[a], offset+i+1)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

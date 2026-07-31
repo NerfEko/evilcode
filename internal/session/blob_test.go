@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -67,5 +68,47 @@ func TestALargeAttachmentDoesNotMakeASessionUnresumable(t *testing.T) {
 		if !bytes.Equal(img, images[i]) {
 			t.Errorf("image %d came back with %d bytes, want %d", i, len(img), len(images[i]))
 		}
+	}
+}
+
+// Attachments travel with the log. Left behind by a fork or a rename, every
+// reference in the copied session resolves to nothing.
+func TestAttachmentsFollowAForkAndARename(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := store.Name
+	if err := store.WriteMessage(provider.Message{
+		Role: provider.RoleUser, Content: "look", Images: [][]byte{[]byte("a picture")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	if err := Fork(dir, name, "forked"); err != nil {
+		t.Fatal(err)
+	}
+	forked, err := Messages(filepath.Join(Dir(dir), "forked.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forked) != 1 || len(forked[0].Images) != 1 {
+		t.Fatalf("the fork lost its attachment: %v", forked)
+	}
+
+	if err := Rename(dir, "forked", "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := Messages(filepath.Join(Dir(dir), "renamed.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(renamed) != 1 || len(renamed[0].Images) != 1 {
+		t.Fatalf("the rename lost its attachment: %v", renamed)
+	}
+	if string(renamed[0].Images[0]) != "a picture" {
+		t.Errorf("the attachment came back as %q", renamed[0].Images[0])
 	}
 }

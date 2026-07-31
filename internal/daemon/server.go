@@ -722,6 +722,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			case <-done:
 				return
 			case <-ctx.Done():
+				// The server is shutting down. The reader is blocked on the
+				// connection and will not notice on its own, so drop it.
+				drop()
 				return
 			}
 		}
@@ -823,6 +826,10 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			}
 
 		case MsgDetach:
+			// The relay stops with the subscription. Unsubscribing alone left
+			// it blocked on a channel nothing publishes to until the whole
+			// connection closed, which is the H3.8 leak by a second route.
+			stopRelay()
 			if sess != nil && sub != nil {
 				sess.unsubscribe(sub)
 				sess, sub = nil, nil

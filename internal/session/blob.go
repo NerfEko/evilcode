@@ -21,10 +21,12 @@ import (
 type storedMessage struct {
 	provider.Message
 
-	// Images shadows the embedded field so it is never marshalled inline.
-	Images  []struct{} `json:"images,omitempty"`
-	Refs    []string   `json:"image_refs,omitempty"`
-	Sidecar bool       `json:"-"`
+	// Images shadows the embedded field so nothing is marshalled inline. It
+	// keeps the [][]byte type on purpose: sessions written before this change
+	// hold their attachments here, and decoding into anything else fails the
+	// whole record — which does not lose the image, it loses the message.
+	Images [][]byte `json:"images,omitempty"`
+	Refs   []string `json:"image_refs,omitempty"`
 }
 
 // blobDir is where a session's attachments live.
@@ -92,7 +94,9 @@ func decodeMessage(path string, data []byte) (provider.Message, error) {
 		return provider.Message{}, err
 	}
 	m := stored.Message
-	m.Images = nil
+	// Inline images are the old format, still in every session written before
+	// the change.
+	m.Images = stored.Images
 	for _, ref := range stored.Refs {
 		img, err := os.ReadFile(filepath.Join(blobDir(path), ref))
 		if err != nil {

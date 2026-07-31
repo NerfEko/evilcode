@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -213,8 +214,10 @@ const MermaidTimeout = 60 * time.Second
 // runMermaid runs the renderer, killing its whole process group on timeout so
 // the headless browser does not outlive the request that started it.
 func runMermaid(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
+	// Bounded: the output is only ever an error message to show, and a renderer
+	// that decides to be noisy should not be able to spend memory on it.
+	buf := &boundedBuffer{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = buf, buf
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -231,6 +234,31 @@ func runMermaid(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	err := cmd.Wait()
 	close(done)
 	return buf.Bytes(), err
+}
+
+// boundedBuffer collects at most limit bytes and silently drops the rest.
+type boundedBuffer struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := b.limit - b.buf.Len(); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		b.buf.Write(p)
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Bytes()
 }
 
 // mermaidRendered carries a finished diagram from its goroutine into the render

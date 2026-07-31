@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 
+	"evilcode/internal/core"
 	"evilcode/internal/theme"
 )
 
@@ -111,7 +112,11 @@ func renderTokens(line []token, tint *color.RGBA) string {
 		if t.Bold {
 			style = style.Bold(true)
 		}
-		b.WriteString(style.Render(t.Text))
+		// Sanitized here, at the last point before styling: this text is
+		// repository content, and a file in a cloned repo carrying OSC 52 would
+		// otherwise write the user's clipboard the moment it is displayed. Only
+		// the styling applied on the next line is ours.
+		b.WriteString(style.Render(core.SanitizeTerminal(t.Text)))
 	}
 	return b.String()
 }

@@ -311,10 +311,6 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 			truncated = true
 			break
 		}
-		if len(lines) == 0 && isBinary([]byte(line)) {
-			return Result{}, fmt.Errorf("%s looks like a binary file (%s)",
-				f.rel(full), humanBytes(info.Size()))
-		}
 		lines = append(lines, line)
 		size += len(line) + 1
 		n++
@@ -322,9 +318,17 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 	if err := sc.Err(); err != nil {
 		return Result{}, fmt.Errorf("reading %s: %w", f.rel(full), err)
 	}
+	// Binary detection looks at the whole window rather than its first line:
+	// checking one line means a file whose NULs start further in reads as text.
+	if isBinary([]byte(strings.Join(lines, "\n"))) {
+		return Result{}, fmt.Errorf("%s looks like a binary file (%s)",
+			f.rel(full), humanBytes(info.Size()))
+	}
 
-	// Anchors describe what the model saw, which here is the window.
-	f.anchors.record(full, info, lines)
+	// Anchors describe what the model saw, and the model sees these lines
+	// numbered from the offset — recording them from 1 would make an anchor
+	// the model quotes back point at a different line.
+	f.anchors.recordAt(full, info, lines, start)
 
 	var b strings.Builder
 	if f.Anchors {

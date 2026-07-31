@@ -5,61 +5,69 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // H2.14: stateful shell calls snapshot the working directory at start and write
-// it back at the end. Run in parallel they all start from the same directory
-// and the last one to finish wins, so every `cd` but one is lost — silently,
-// since each call reports success.
-func TestParallelShellCallsDoNotLoseTheirDirectory(t *testing.T) {
-	root := t.TempDir()
-	for _, d := range []string{"one", "two", "three"} {
-		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
-			t.Fatal(err)
-		}
+// it back at the end. Run in parallel they overlap, so every `cd` but one is
+// lost and a call does its work in a directory another call has already moved
+// away from — silently, since each reports success.
+//
+// The property is mutual exclusion, and each call proves it about itself: it
+// claims a marker, holds it briefly, and reports if it ever sees another call's
+// marker alongside its own.
+func TestStatefulShellCallsDoNotOverlap(t *testing.T) {
+	dir := t.TempDir()
+	e := NewExec(dir)
+	e.Timeout = 30 * time.Second
+
+	call := func(id string) Call {
+		script := "touch " + id + ".claim; sleep 0.2; " +
+			"n=$(ls *.claim | wc -l); if [ \"$n\" != 1 ]; then echo OVERLAP; fi; " +
+			"rm -f " + id + ".claim"
+		raw, _ := json.Marshal(map[string]any{"cmd": script})
+		return Call{ID: id, Name: "bash", Args: raw}
 	}
 
-	e := NewExec(root)
-	set := e.Tools()
+	out := e.Tools().RunBatch(context.Background(),
+		[]Call{call("a"), call("b"), call("c"), call("d")})
 
-	call := func(cmd string) Call {
-		raw, _ := json.Marshal(map[string]any{"cmd": cmd})
-		return Call{ID: cmd, Name: "bash", Args: raw}
-	}
-
-	// Three calls, each stepping down and then reporting where it is. Whatever
-	// order they run in, each must see the directory it just moved to.
-	out := set.RunBatch(context.Background(), []Call{
-		call("cd one && pwd"),
-		call("cd .. && cd two && pwd"),
-		call("cd .. && cd three && pwd"),
-	})
 	for i, o := range out {
 		if o.Err != nil {
 			t.Fatalf("call %d failed: %v\n%s", i, o.Err, o.Result.Output)
 		}
+		if strings.Contains(o.Result.Output, "OVERLAP") {
+			t.Errorf("call %d ran while another was still going; a stateful shell "+
+				"cannot run in parallel with itself", i)
+		}
 	}
+}
 
-	// The surviving directory must be one a call actually ended in, not a
-	// blend: the failure is that a later call starts from a directory an
-	// earlier one had already left.
-	final := e.Cwd()
-	rel, err := filepath.Rel(root, final)
-	if err != nil {
+// And the directory a call moves to is the one the next call starts in, which
+// is the behaviour the serialization exists to protect.
+func TestTheWorkingDirectoryCarriesToTheNextCall(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	switch rel {
-	case "one", "two", "three":
-	default:
-		t.Errorf("the shell ended in %q, which no call moved to", rel)
+	e := NewExec(dir)
+	e.Timeout = 30 * time.Second
+	set := e.Tools()
+
+	run := func(cmd string) Result {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{"cmd": cmd})
+		out := set.RunOne(context.Background(), Call{ID: cmd, Name: "bash", Args: raw})
+		if out.Err != nil {
+			t.Fatalf("%s: %v\n%s", cmd, out.Err, out.Result.Output)
+		}
+		return out.Result
 	}
 
-	// And every call's own view must be self-consistent: it moved somewhere and
-	// pwd agreed.
-	for i, o := range out {
-		if o.Result.Output == "" {
-			t.Errorf("call %d printed nothing", i)
-		}
+	run("cd sub")
+	if got := strings.TrimSpace(run("pwd").Output); !strings.HasSuffix(got, "/sub") {
+		t.Errorf("the next call started in %q, not where the previous one moved to", got)
 	}
 }

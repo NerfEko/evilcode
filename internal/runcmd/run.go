@@ -17,6 +17,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/core"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
@@ -197,10 +198,31 @@ type printer struct {
 
 	exit        int
 	atLineStart bool
+
+	// tty reports whether stdout is a terminal. Provider output is sanitized
+	// when it is: a model can be talked into emitting OSC 52, which writes the
+	// user's clipboard, and `evilcode run` prints deltas straight through.
+	// Piped output is left byte-exact, because the consumer there is a program
+	// that asked for the model's text and is not a terminal to hijack.
+	tty bool
 }
 
 func newPrinter(quiet bool) *printer {
-	return &printer{quiet: quiet, exit: ExitOK, atLineStart: true}
+	return &printer{quiet: quiet, exit: ExitOK, atLineStart: true, tty: isTerminal(os.Stdout)}
+}
+
+// isTerminal reports whether f is a character device.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// text renders provider output for this destination.
+func (p *printer) text(s string) string {
+	if p.tty {
+		return core.SanitizeTerminal(s)
+	}
+	return s
 }
 
 // newline ends the model's line before anything else writes, so a tool row
@@ -218,7 +240,7 @@ func (p *printer) finish() { p.newline() }
 func (p *printer) print(e agent.Event) {
 	switch e.Kind {
 	case agent.EventTextDelta:
-		fmt.Print(e.Text)
+		fmt.Print(p.text(e.Text))
 		p.atLineStart = strings.HasSuffix(e.Text, "\n")
 
 	case agent.EventToolResult:
@@ -226,7 +248,9 @@ func (p *printer) print(e agent.Event) {
 			return
 		}
 		p.newline()
-		fmt.Fprintln(os.Stderr, toolLine(e))
+		// The tool row names a file and an intent, both of which came from the
+		// model or from the workspace.
+		fmt.Fprintln(os.Stderr, p.text(toolLine(e)))
 
 	case agent.EventMemoryRecall:
 		// Headless has no tile, but it must not inject silently: a scripted run
