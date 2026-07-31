@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/todo"
 	"evilcode/internal/tools"
@@ -805,6 +806,140 @@ func TestRefusalDetection(t *testing.T) {
 	for _, s := range notRefusals {
 		if looksLikeRefusal(s) {
 			t.Errorf("%q should not read as a refusal", s)
+		}
+	}
+}
+
+func TestMemoryHookNeverAppends(t *testing.T) {
+	// The hook's whole contract: it observes and returns false, so it can sit
+	// first in the chain without starving auto-poke behind it.
+	store, err := memory.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	calls := 0
+	h := &MemoryHook{
+		Manager: memory.NewManager(store, nil, nil, "s", true),
+		extract: func(context.Context, *memory.Manager) { calls++ },
+	}
+
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Conv.Append(
+		provider.Message{Role: provider.RoleUser, Content: "how do I build this?"},
+		provider.Message{Role: provider.RoleAssistant, Content: "run make."},
+	)
+
+	before := a.Conv.Len()
+	for i := 0; i < memory.ExtractEvery; i++ {
+		appended, err := h.PostTurn(context.Background(), a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if appended {
+			t.Fatal("the memory hook appended to the conversation")
+		}
+	}
+	if a.Conv.Len() != before {
+		t.Errorf("conversation grew from %d to %d", before, a.Conv.Len())
+	}
+	if calls != 1 {
+		t.Errorf("extraction ran %d times in %d turns, want once", calls, memory.ExtractEvery)
+	}
+}
+
+func TestMemoryHookSkipsItsOwnInjection(t *testing.T) {
+	// Feeding the `<memories>` tail back into extraction is how a bank starts
+	// remembering its own output.
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Conv.Append(
+		provider.Message{Role: provider.RoleUser, Content: "the real question"},
+		provider.Message{Role: provider.RoleUser, Content: "<memories>\n- (fact) something\n</memories>"},
+		provider.Message{Role: provider.RoleAssistant, Content: "the answer"},
+	)
+	got := turnText(a)
+	if strings.Contains(got, "<memories>") {
+		t.Errorf("extraction would re-read its own injection:\n%s", got)
+	}
+	if !strings.Contains(got, "the real question") {
+		t.Errorf("the user's actual message was dropped:\n%s", got)
+	}
+}
+
+func TestMemoryHookIsInertWhenDisabled(t *testing.T) {
+	store, _ := memory.Open(t.TempDir())
+	defer store.Close()
+	calls := 0
+	h := &MemoryHook{
+		Manager: memory.NewManager(store, nil, nil, "s", false),
+		extract: func(context.Context, *memory.Manager) { calls++ },
+	}
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Conv.Append(provider.Message{Role: provider.RoleUser, Content: "x"})
+	for i := 0; i < memory.ExtractEvery*2; i++ {
+		h.PostTurn(context.Background(), a)
+	}
+	if calls != 0 {
+		t.Errorf("disabled memory extracted %d times", calls)
+	}
+}
+
+func TestRecallSeamAppendsAndEmits(t *testing.T) {
+	// The seam is what gives headless run and the daemon recall without a
+	// second implementation (invariant 1).
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Recall = func(context.Context, string) (string, any) {
+		return "<memories>\n- (fact) noted\n</memories>", []string{"noted"}
+	}
+
+	events, err := collect(t, a, func() error { return a.Run(context.Background(), "hello") })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Order matters: the memories follow the user message, so the model reads
+	// the question first and the notes as context for it.
+	msgs := a.Conv.Messages()
+	var userAt, memAt int = -1, -1
+	for i, m := range msgs {
+		if m.Content == "hello" {
+			userAt = i
+		}
+		if strings.HasPrefix(m.Content, "<memories>") {
+			memAt = i
+		}
+	}
+	if userAt < 0 || memAt < 0 {
+		t.Fatalf("conversation = %v", msgs)
+	}
+	if memAt != userAt+1 {
+		t.Errorf("memories landed at %d, want right after the user message at %d", memAt, userAt)
+	}
+
+	var saw bool
+	for _, e := range events {
+		if e.Kind == EventMemoryRecall {
+			saw = true
+			if e.Display == nil {
+				t.Error("the recall event carried no display payload for the tile")
+			}
+		}
+	}
+	if !saw {
+		t.Error("no memory_recall event was emitted")
+	}
+}
+
+func TestRecallSeamSilentWhenEmpty(t *testing.T) {
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Recall = func(context.Context, string) (string, any) { return "", nil }
+	if _, err := collect(t, a, func() error { return a.Run(context.Background(), "hello") }); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range a.Conv.Messages() {
+		if strings.Contains(m.Content, "<memories>") {
+			t.Error("an empty recall still injected a message")
 		}
 	}
 }

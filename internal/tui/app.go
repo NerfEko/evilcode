@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/memory"
 	"evilcode/internal/session"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
@@ -174,6 +175,10 @@ type Model struct {
 	todos        *todo.Store
 	showTodoCard bool
 
+	// memory is the long-term memory bank (plan.md §19), nil when the feature
+	// is off.
+	memory *memory.Manager
+
 	// sideAnswer carries a finished `/btw` result from its goroutine into the
 	// render loop, so the side call never touches model state directly.
 	sideAnswer atomic.Pointer[sideAnswer]
@@ -271,6 +276,13 @@ func (m *Model) WithHistory(h *session.History) *Model {
 // WithTodos attaches the session's todo state and auto-poke hook.
 func (m *Model) WithTodos(store *todo.Store, poke *agent.PokeHook) *Model {
 	m.todos, m.poke = store, poke
+	return m
+}
+
+// WithMemory attaches the memory bank, which drives `/memory`, the activity
+// widget, and semantic search in the session picker.
+func (m *Model) WithMemory(mem *memory.Manager) *Model {
+	m.memory = mem
 	return m
 }
 
@@ -447,6 +459,15 @@ func (m *Model) applyEvent(e agent.Event) {
 
 	case agent.EventNotice:
 		m.notice = e.Text
+
+	case agent.EventMemoryRecall:
+		// Drawn as a block rather than a status flash: what memory put in front
+		// of the model is part of the turn's record, and a recall the user
+		// scrolls back to is one they can still notice was wrong.
+		if hits, ok := e.Display.([]memory.Hit); ok && len(hits) > 0 {
+			m.blocks = append(m.blocks, Block{Kind: BlockMemory, Memories: hits})
+			m.followIfPinned()
+		}
 
 	case agent.EventError:
 		m.finishStreaming()
@@ -1326,6 +1347,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "memory":
+		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
+
 	case "todos", "todo":
 		m.showTodoCard = !m.showTodoCard
 		return m, nil
@@ -2152,6 +2176,16 @@ func (m *Model) activeWidgets() []Widget {
 			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed})
 		}
 		add(m.renderer.BackgroundTasksWidget(tasks, int(time.Since(m.started)/SpinnerInterval)))
+	}
+	if m.memory != nil {
+		act := m.memory.Activity()
+		// Wall-clock text is frozen in deterministic mode, or the golden churns
+		// once a second (invariant 5).
+		elapsed := 0
+		if !Deterministic() && !act.Since.IsZero() {
+			elapsed = int(time.Since(act.Since).Seconds())
+		}
+		add(m.renderer.MemoryActivityWidget(act, elapsed))
 	}
 	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
 		add(m.renderer.TipsWidget(tip))

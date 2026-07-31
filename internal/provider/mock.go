@@ -193,6 +193,27 @@ var mockScenarios = map[string][][]Chunk{
 			done(420, 24)),
 	},
 
+	// Memory (§19): the first turn stores a preference, the second recalls it.
+	// Two turns because the 🧠 tile only appears once the bank has something in
+	// it — a probe that boots into an empty bank can only show the empty case.
+	"memory": {
+		{
+			{Text: "Noted."},
+			call("call_1", "remember", map[string]any{
+				"text": "the user prefers tabs over spaces in Go",
+				"kind": "preference",
+			}),
+			done(180, 20),
+		},
+		append(text("I'll remember that."), done(220, 8)),
+		{
+			{Text: "Let me check what I know."},
+			call("call_2", "recall", map[string]any{"query": "indentation preference"}),
+			done(260, 16),
+		},
+		append(text("You prefer tabs, so that is what I used."), done(340, 12)),
+	},
+
 	// A tool call the model buffers whole, with no preceding text — the case
 	// plan.md Part V warns about.
 	"tools-buffered": {

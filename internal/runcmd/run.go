@@ -17,6 +17,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/memory"
 	"evilcode/internal/session"
 	"evilcode/internal/tools"
 )
@@ -110,6 +111,22 @@ func Run(args []string) (int, error) {
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	a.NumCtx = overrides.ContextWindow
 	defer a.Close()
+
+	// Headless recalls but does not extract: a one-shot invocation has no turn
+	// count to reach the extraction interval, and firing a side-call on every
+	// `evilcode run` would tax scripted use for nothing (plan.md §19).
+	if bank, err := memory.Open(dataDir); err == nil {
+		defer bank.Close()
+		mem := memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
+		if !*noTools {
+			ts = append(ts, tools.NewMemory(mem)...)
+			a.Tools = ts
+		}
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			tail, hits := mem.Recall(ctx, in)
+			return tail, hits
+		}
+	}
 
 	// Ctrl+C cancels the turn rather than killing the process, so partial
 	// output and the session file both survive.

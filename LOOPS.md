@@ -715,3 +715,48 @@ its own clock and never settled. Invariant 5 says deterministic mode carries no
 wall-clock text; it now does not. Four consecutive clean runs after the fix.
 
 Phase 2 complete.
+
+## 2026-07-31 P3.1 — Semantic memory
+
+The bank, the recall pipeline, the three tools, and every surface that shows
+them. Store is JSONL with a linear cosine scan rather than sqlite-vec — see
+DEVIATIONS.md #5 — and the whole subsystem is built so that every failure in it
+is a missing feature rather than a broken turn: a dead embedder degrades to
+substring matching, a bank that will not open logs a line and leaves memory nil,
+and every Manager method is safe on a nil receiver because `/memory off` and an
+unconfigured bank produce exactly that.
+
+Passive recall hangs off a new `Agent.Recall` seam rather than living in the TUI,
+so headless `run` and the future daemon get it for free — the same reason
+invariant 1 exists. It emits an event; the TUI turns that into a 🧠 tile block
+rather than a status flash, because a recall the user can scroll back to is one
+they can still notice was wrong.
+
+Two things the tests caught that reading would not have. First, my own recall
+fixtures kept merging: vectors 0.99 apart are duplicates by the store's own
+0.95 rule, so half the ranking tests were silently exercising dedupe instead.
+The stub embedder now gives every distinct string its own basis direction.
+Second, the tile's rectangularity test failed at 79 cells against 80 — it was
+counting runes, and 🧠 is one rune and two columns. The box was correct; the
+test was measuring the wrong thing.
+
+Probe: `tui-memory` runs two turns, because a tile over an empty bank proves
+nothing. Turn one stores a preference, turn two recalls it. The captured frame
+shows the real thing — `🧠 recalled 1 memory · 46 tok` with the memory quoted
+under it — which is also how I confirmed the injected `<memories>` message does
+not disturb the rainbow prompt numbering.
+
+The MemoryActivity widget does not appear in that golden, and it is not a bug:
+the transcript is short, so its 7 rows plus the dock's 12-row look-ahead do not
+fit, and once it has failed a slot the §8.3 hysteresis hides it in place for 120
+frames rather than letting it jump in. A probe cannot outwait that. Its states
+are pinned by unit tests instead.
+
+Getting there cost a real fix to the rig. Goldens kept coming out holding other
+scenarios' transcripts, and the cause was not the scenario-leak I patched last
+loop: the rig has one tmux socket and one session name, and a *second* probe run
+— another `go test`, or me driving `probe.sh` by hand to diagnose — silently
+takes the pane away mid-scenario. Every step is a separate `probe.sh`
+invocation, so there is no window to lock; the fix is `PROBE_ID`, which gives
+each run its own socket and frame directory. The test harness passes its pid.
+Three consecutive green runs after that, where before it was failing most runs.

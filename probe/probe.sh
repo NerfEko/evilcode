@@ -14,15 +14,25 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$REPO/evilcode"
-FRAMES="$REPO/probe/frames"
+# Captured frames land here. It is overridable for the same reason the socket
+# is: two concurrent runs capture the same golden names, and the second write
+# would land between the first run's capture and its read.
+FRAMES="${PROBE_FRAMES:-$REPO/probe/frames}"
 
-SOCKET=evilprobe
+# PROBE_ID separates concurrent runs. Every step of a scenario is a separate
+# probe.sh invocation against one long-lived pane, so two runs sharing a socket
+# interleave: one run's `boot` tears down the other's session, and the keys and
+# captures that follow land in the wrong pane. That does not fail loudly — it
+# produces a golden containing another scenario's transcript, which is exactly
+# the bug this rig exists to catch. The test harness sets it to its own pid.
+PROBE_ID="${PROBE_ID:-manual}"
+SOCKET="evilprobe-$PROBE_ID"
 COLS=${PROBE_COLS:-140}
 ROWS=${PROBE_ROWS:-40}
 
 # The tmux server socket is a unix socket, and unix socket paths cap at 108
 # bytes. A long TMPDIR silently breaks tmux, so pin a short one.
-export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp/evilprobe-$UID}"
+export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp/evilprobe-$UID-$PROBE_ID}"
 mkdir -p "$TMUX_TMPDIR"
 
 # A throwaway HOME keeps the probe away from the real config and session store,

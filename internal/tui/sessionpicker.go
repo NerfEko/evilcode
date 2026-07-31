@@ -33,6 +33,10 @@ type SessionRow struct {
 
 	// Here flags a session started in this working directory.
 	Here bool
+
+	// Recalled is the remembered summary that matched, set when this row came
+	// from semantic search rather than from the literal filter.
+	Recalled string
 }
 
 // SessionPickerState is the picker's state.
@@ -46,6 +50,12 @@ type SessionPickerState struct {
 
 	// Confirm holds a pending confirmation prompt, or "" for none.
 	Confirm string
+
+	// Semantic holds session names matched by memory rather than by their text
+	// (plan.md §19, session RAG), keyed to the summary that matched. It is
+	// consulted only when the literal filter finds nothing, so typing a name
+	// still behaves like typing a name.
+	Semantic map[string]string
 }
 
 // Filtered returns the rows matching the filter.
@@ -58,6 +68,18 @@ func (s SessionPickerState) Filtered() []SessionRow {
 	for _, r := range s.Rows {
 		hay := strings.ToLower(r.Info.Name + " " + r.Info.Title)
 		if strings.Contains(hay, q) {
+			out = append(out, r)
+		}
+	}
+	if len(out) > 0 || len(s.Semantic) == 0 {
+		return out
+	}
+	// Nothing matched literally, so fall back to what memory remembers about
+	// each session. A search that finds the session you meant by describing it
+	// is the whole point of storing episode summaries.
+	for _, r := range s.Rows {
+		if why, ok := s.Semantic[r.Info.Name]; ok {
+			r.Recalled = why
 			out = append(out, r)
 		}
 	}
@@ -187,7 +209,11 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 
 	// The second row is the quiet detail: what this session actually was.
 	detail := fmt.Sprintf("%d messages", row.Info.Messages)
-	if row.Info.Title != "" {
+	if row.Recalled != "" {
+		// A row the literal filter never would have found needs to say why it
+		// is here, or it reads as the picker ignoring what was typed.
+		detail += " · 🧠 " + row.Recalled
+	} else if row.Info.Title != "" {
 		detail += " · " + row.Info.Title
 	}
 	second := "     " + dim.Render(truncateCells(detail, max(width-6, 10)))

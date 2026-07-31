@@ -57,6 +57,17 @@ tool records confidence, intent, and feedback-loop scores; histories are tool-ow
 the model cannot author its own evidence trail. Auto-poke pushes back at turn end when
 work is marked done without validation, with circuit breakers on every path.
 
+**Memory** — `/memory`, and the `remember` / `recall` / `reflect` tools
+
+Durable facts survive the session. Every user message is embedded and matched against
+the bank; anything close enough goes in as one `<memories>` note and shows in the
+transcript as a 🧠 tile listing exactly what was injected. Ambient extraction mines
+durable facts every eight turns through the `smol` role, and a session summary is
+stored on exit, which is what makes the session picker searchable by what a session was
+about rather than by its name. `/memory` reports, `/memory list` shows ids, `/memory
+forget <id>` drops one, `/memory off` stops all of it. A dead embedder degrades recall
+to substring matching rather than disabling it.
+
 **Headless** — `evilcode run "prompt"`
 
 Text on stdout, tool rows and notices on stderr, exit 130 on interrupt.
@@ -67,7 +78,7 @@ set (read/write/edit with hash anchors, glob/grep/bash, git helpers, `ask`) with
 bounded-concurrency batching, the agent loop with safe-point interleaving and retry
 classification, and JSONL sessions with crash detection.
 
-Not yet built: memory, the daemon and swarms, and graphics.
+Not yet built: the daemon and swarms, and graphics.
 
 ## Config reference
 

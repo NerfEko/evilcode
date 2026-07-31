@@ -1,0 +1,12 @@
+# Memory (§19). The first turn stores a preference; the second recalls it, which
+# is what puts the 🧠 tile and the memory-activity widget on screen. Two turns,
+# because a tile for an empty bank proves nothing.
+
+scenario memory
+boot tui
+keys "I like tabs"
+keys Enter
+capture memory-stored
+keys "fix the indentation"
+keys Enter
+capture memory-recalled

@@ -1,0 +1,17 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit
+ <repo> (main)
+
+ 1› I like tabs
+
+ Noted.
+
+   ✓ remember · 7 tok
+
+ I'll remember that.
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   Ctrl+Enter to queue

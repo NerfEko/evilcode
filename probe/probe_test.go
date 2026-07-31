@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -36,12 +37,25 @@ func runProbe(t *testing.T, root string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(root, "probe", "probe.sh"), args...)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "PROBE_SCENARIO=")
+	// Its own tmux socket and frame directory, so a second probe run — another
+	// `go test`, or an agent driving probe.sh by hand — cannot interleave with
+	// this one's pane. The failure that motivates this is silent: the golden
+	// comes out holding a different scenario's transcript.
+	cmd.Env = append(os.Environ(),
+		"PROBE_SCENARIO=",
+		"PROBE_ID="+strconv.Itoa(os.Getpid()),
+		"PROBE_FRAMES="+framesDir(root))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("probe.sh %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// framesDir is this test process's private capture directory. It stays under
+// probe/frames so `probe.sh png` still finds a frame after a failing run.
+func framesDir(root string) string {
+	return filepath.Join(root, "probe", "frames", "run-"+strconv.Itoa(os.Getpid()))
 }
 
 func TestScenarios(t *testing.T) {
@@ -61,6 +75,10 @@ func TestScenarios(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no scenario files found")
 	}
+
+	// Frames are diagnostic output for a failing run, so they survive it and are
+	// cleared on the next one rather than deleted at the end.
+	os.RemoveAll(framesDir(root))
 
 	for _, file := range files {
 		name := strings.TrimSuffix(filepath.Base(file), ".txt")
@@ -168,7 +186,7 @@ func checkGolden(t *testing.T, root, name string) {
 	}
 	runProbe(t, root, "frame", name)
 
-	framePath := filepath.Join(root, "probe", "frames", name+".txt")
+	framePath := filepath.Join(framesDir(root), name+".txt")
 	got, err := os.ReadFile(framePath)
 	if err != nil {
 		t.Fatalf("reading captured frame: %v", err)

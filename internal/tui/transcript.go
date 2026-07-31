@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/memory"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
 )
@@ -22,6 +23,7 @@ const (
 	BlockNotice
 	BlockReasoning
 	BlockTodoDelta
+	BlockMemory
 )
 
 // Block is one renderable transcript entry.
@@ -49,6 +51,9 @@ type Block struct {
 
 	// TodoDelta is the change set shown under a todo tool call (§12.5).
 	TodoDelta todo.Delta
+
+	// Memories is what passive recall injected, shown as the 🧠 tile (§9.5).
+	Memories []memory.Hit
 
 	// Streaming marks the tail block, which re-renders every frame.
 	Streaming bool
@@ -140,6 +145,8 @@ func (r *Renderer) render(b *Block) []string {
 		return r.renderReasoning(b)
 	case BlockTodoDelta:
 		return r.RenderTodoDelta(b.TodoDelta)
+	case BlockMemory:
+		return r.RenderMemoryTile(b.Memories)
 	default:
 		return r.renderAssistant(b)
 	}

@@ -1,0 +1,30 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit
+ <repo> (main)
+
+ 2› I like tabs
+
+ Noted.
+
+   ✓ remember · 7 tok
+
+ I'll remember that.
+
+ 1› fix the indentation
+                                                                                                          ╭────────────────────────────────╮
+ ╭────────────────────────────────────────────╮                                                           │ 💡 Ctrl+R searches your prompt │
+ │ 🧠 recalled 1 memory · 46 tok              │                                                           │ history                        │
+ │  · the user prefers tabs over spaces in Go │                                                           ╰────────────────────────────────╯
+ ╰────────────────────────────────────────────╯
+
+ Let me check what I know.
+
+   ✓ recall indentation preference · 13 tok
+
+ You prefer tabs, so that is what I used.
+ 💡 Ctrl+R searches your prompt history
+ 3>
+   Ctrl+Enter to queue

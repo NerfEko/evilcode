@@ -14,6 +14,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/mcp"
+	"evilcode/internal/memory"
 	"evilcode/internal/session"
 	"evilcode/internal/todo"
 	"evilcode/internal/tools"
@@ -102,7 +103,29 @@ func Run(args []string) error {
 
 	a := agent.New(store.Name, prov, modelName, nil, conv)
 	poke := agent.NewPokeHook(todos, cfg.Features.AutoPoke)
-	a.Hooks = poke
+
+	// A memory bank that fails to open is a missing feature, not a failed
+	// start: the whole subsystem is an enhancement, and refusing to boot
+	// because a JSONL file is unreadable would be the wrong trade (§19).
+	var mem *memory.Manager
+	if bank, err := memory.Open(dataDir); err != nil {
+		fmt.Fprintln(os.Stderr, "evilcode: memory unavailable:", err)
+	} else {
+		defer bank.Close()
+		mem = memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
+		// Memory first in the chain: it never appends, so it cannot starve
+		// auto-poke, and putting it last would leave an auto-poked turn
+		// unobserved.
+		a.Hooks = agent.Chain{agent.NewMemoryHook(mem), poke}
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			tail, hits := mem.Recall(ctx, in)
+			return tail, hits
+		}
+	}
+
+	// Memory first in the chain: it never appends, so it must not sit behind a
+	// hook that does, or an auto-poked turn is never observed.
+	a.Hooks = agent.Chain{agent.NewMemoryHook(mem), poke}
 
 	prompts, err := session.OpenHistory(dataDir)
 	if err != nil {
@@ -136,7 +159,8 @@ func Run(args []string) error {
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
 		WithSessions(dataDir, cwd, store).
-		WithBackground(execTools.Bg)
+		WithBackground(execTools.Bg).
+		WithMemory(mem)
 	if prior > 0 {
 		m.RebuildFrom(conv.Messages())
 	}
@@ -148,6 +172,9 @@ func Run(args []string) error {
 	if len(promptSkills) > 0 {
 		ts = append(ts, tools.NewSkillTool(skills))
 	}
+	if mem != nil {
+		ts = append(ts, tools.NewMemory(mem)...)
+	}
 	ts = append(ts, mcpClient.Tools()...)
 	a.Tools = ts
 
@@ -157,6 +184,9 @@ func Run(args []string) error {
 	if err := tui.RunModel(m); err != nil {
 		return err
 	}
+	// After the TUI is down, so a slow summary shows as a pause at the prompt
+	// rather than a frozen frame.
+	m.ConsolidateMemory()
 	// The session picker exits with a target rather than swapping state in
 	// place: the agent, todo store, history, and breakers are each bound to one
 	// session, and re-entering is a much smaller surface than rebuilding them.

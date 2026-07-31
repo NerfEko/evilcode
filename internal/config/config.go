@@ -140,7 +140,7 @@ func Default() *Config {
 			Overscroll:      "overscroll",
 			ThinkingDisplay: "current",
 		},
-		Features: Features{AutoPoke: true},
+		Features: Features{AutoPoke: true, Memory: true},
 	}
 	// Without a key, cloud is unreachable; fall back so a bare install still
 	// works against a local daemon.

@@ -27,6 +27,15 @@ type Agent struct {
 	Conv     *Conversation
 	Hooks    Hooks
 
+	// Recall is the passive-memory seam (plan.md §19). It runs once per user
+	// message and returns the tail message to append, plus a display payload
+	// for the 🧠 tile. Living on the agent rather than in the TUI is what gives
+	// headless `run` and the daemon the same memory without a second copy.
+	//
+	// It must not block for long and must not fail the turn: a nil hook, a slow
+	// embedder, and an empty result are all the same thing to the loop.
+	Recall func(ctx context.Context, userInput string) (tail string, display any)
+
 	// NumCtx requests a context window from providers that accept one.
 	NumCtx int
 
@@ -182,8 +191,28 @@ func (a *Agent) DrainInterrupts(urgentOnly bool) []provider.Message {
 func (a *Agent) Run(ctx context.Context, userInput string) error {
 	if strings.TrimSpace(userInput) != "" {
 		a.Conv.Append(provider.Message{Role: provider.RoleUser, Content: userInput})
+		a.recall(ctx, userInput)
 	}
 	return a.Loop(ctx)
+}
+
+// recall injects remembered context after the user message.
+//
+// The memories go in as a user-role message rather than a system one: they are
+// notes, not instructions, and a model that reads them as instructions will
+// follow a stale memory over what the user just said.
+func (a *Agent) recall(ctx context.Context, userInput string) {
+	if a.Recall == nil {
+		return
+	}
+	tail, display := a.Recall(ctx, userInput)
+	if tail == "" {
+		return
+	}
+	a.Conv.Append(provider.Message{Role: provider.RoleUser, Content: tail})
+	ev := a.newEvent(EventMemoryRecall)
+	ev.Display = display
+	a.emit(ev)
 }
 
 // Loop is the agent loop proper (plan.md §15).

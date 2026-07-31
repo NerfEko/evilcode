@@ -105,3 +105,23 @@ spec's 24 to the requested ~40 using pre-Unicode-13 single codepoints throughout
 `node "$CLAUDE_PLUGIN_ROOT/scripts/codex-companion.mjs" review --json --base HEAD~1`
 (plugin root `~/.claude/plugins/cache/openai-codex/codex/1.0.5`). Optionally
 `/codex:setup --enable-review-gate` to require a fresh review before stop.
+
+## 5. Memory is a JSONL file with a brute-force scan, not sqlite-vec
+
+**Spec:** §19 pins a sqlite-vec database at `~/.local/share/evilcode/memory.db`
+with a vec0 table doing 768-dim cosine search.
+
+**Built:** an append-only JSONL bank at `~/.local/share/evilcode/memory.jsonl`,
+loaded into memory at open, searched by a linear cosine scan.
+
+**Why:** sqlite-vec is a C extension. Using it means cgo and a compiled `.so` the
+user installs before evilcode will start — a hard dependency, and a
+cross-compilation problem, for a bank that holds a few thousand short strings.
+The scan it replaces is not a compromise at this scale: 5k memories × 768 floats
+is single-digit milliseconds, it runs off the hot path, and passive recall is
+already bounded by a 5s embed timeout that dwarfs it. The file format also
+matches the session store, so one idiom covers both.
+
+**When this would need revisiting:** a bank in the hundreds of thousands, or
+multiple processes writing concurrently — the daemon in Phase 4 serializes
+through one process, so that is not yet the case.

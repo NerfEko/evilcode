@@ -14,6 +14,7 @@
 │   /plan              Plan before implementing                                                                                            │
 │   /todos             Toggle the todo card                                                                                                │
 │   /poke              Auto-poke on/off/status                                                                                             │
+│   /memory            Long-term memory on/off/status                                                                                      │
 │                                                                                                                                          │
 │ Sessions                                                                                                                                 │
 │   /resume            Resume a previous session                                                                                           │
@@ -34,5 +35,4 @@
 │   /fix               Nudge a stalled model back on track                                                                                 │
 │   /btw               Ask a side question without touching the conversation                                                               │
 │   /cancel            Cancel the current turn                                                                                             │
-│   /quit              Exit evilcode                                                                                                       │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘

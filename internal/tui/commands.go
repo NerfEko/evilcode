@@ -34,6 +34,11 @@ var Commands = []Command{
 	{Name: "todos", Help: "Toggle the todo card"},
 	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
 	{Name: "poke", Help: "Auto-poke on/off/status"},
+	{Name: "memory", Help: "Long-term memory on/off/status",
+		Long: "  /memory          show what memory knows\n" +
+			"  /memory on|off   stop or resume recalling and remembering\n" +
+			"  /memory list     show the most recent memories\n" +
+			"  /memory forget <id>  drop one"},
 
 	{Name: "clear", Help: "Clear the transcript"},
 	{Name: "cls", Help: "Clear the transcript", Hidden: true},
@@ -136,7 +141,7 @@ type HelpSection struct {
 var HelpSections = []HelpSection{
 	{"Getting around", []string{"help", "keys", "context", "info", "version"}},
 	{"Models", []string{"model", "models"}},
-	{"Working", []string{"plan", "todos", "poke"}},
+	{"Working", []string{"plan", "todos", "poke", "memory"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "terminal-setup", "screenshot",

@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
+	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
 	"evilcode/internal/todo"
@@ -39,12 +41,14 @@ func (m *Model) handleSessionKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 			if r := []rune(m.sessions.Filter); len(r) > 0 {
 				m.sessions.Filter = string(r[:len(r)-1])
 				m.sessions.Selected = 0
+				m.recallSessions()
 			}
 			return m, nil
 		}
 		if txt := msg.Key().Text; txt != "" {
 			m.sessions.Filter += txt
 			m.sessions.Selected = 0
+			m.recallSessions()
 		}
 		return m, nil
 	}
@@ -235,4 +239,38 @@ func (m *Model) RebuildFrom(msgs []provider.Message) {
 
 func oneLine(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+}
+
+// SemanticSearchMinLen is how much has to be typed before session RAG runs. A
+// two-character filter describes nothing, and embedding it would spend a
+// round-trip to rank every session equally badly.
+const SemanticSearchMinLen = 4
+
+// recallSessions fills the picker's semantic matches from the memory bank.
+//
+// It runs only when the literal filter has already come up empty, which keeps
+// it off the keystroke path for every search that was going to work anyway.
+func (m *Model) recallSessions() {
+	m.sessions.Semantic = nil
+	q := strings.TrimSpace(m.sessions.Filter)
+	if m.memory == nil || !m.memory.Enabled() || len(q) < SemanticSearchMinLen {
+		return
+	}
+	if len(m.sessions.Filtered()) > 0 {
+		return
+	}
+
+	// Synchronous, but bounded by the manager's embed timeout and only reached
+	// after a search that found nothing — the alternative is results that
+	// arrive after the user has already typed the next character.
+	hits := m.memory.SearchSessions(context.Background(), q, 8)
+	if len(hits) == 0 {
+		return
+	}
+	m.sessions.Semantic = make(map[string]string, len(hits))
+	for _, h := range hits {
+		if _, seen := m.sessions.Semantic[h.Session]; !seen {
+			m.sessions.Semantic[h.Session] = memory.Truncate(h.Text, 60)
+		}
+	}
 }

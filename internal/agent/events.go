@@ -17,6 +17,7 @@ const (
 	EventToolResult     EventKind = "tool_result"
 	EventTokenUsage     EventKind = "token_usage"
 	EventNotice         EventKind = "notice"
+	EventMemoryRecall   EventKind = "memory_recall"
 	EventTurnEnd        EventKind = "turn_end"
 	EventError          EventKind = "error"
 )
