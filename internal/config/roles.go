@@ -70,6 +70,39 @@ func (c *Config) LoadRepoOverrides(repoRoot string) error {
 	return nil
 }
 
+// Clone returns a copy safe to apply repo overrides to.
+//
+// The daemon holds one config for every session it hosts, and overrides used to
+// be applied by mutating it: one repository's pinned model became every
+// session's pinned model, and two builds racing rewrote it under each other.
+//
+// Deep where overrides write. Slices are copied because LoadRepoOverrides
+// appends to Models, and the role pointers are shared because it replaces them
+// rather than writing through them.
+func (c *Config) Clone() *Config {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.Providers = append([]ProviderConfig(nil), c.Providers...)
+	out.Models = append([]ModelConfig(nil), c.Models...)
+	out.MCP = append([]MCPServer(nil), c.MCP...)
+	out.Dictate = append([]string(nil), c.Dictate...)
+	if c.Keybindings != nil {
+		out.Keybindings = make(map[string]string, len(c.Keybindings))
+		for k, v := range c.Keybindings {
+			out.Keybindings[k] = v
+		}
+	}
+	if c.LSP != nil {
+		out.LSP = make(map[string][]string, len(c.LSP))
+		for k, v := range c.LSP {
+			out.LSP[k] = append([]string(nil), v...)
+		}
+	}
+	return &out
+}
+
 // Router resolves a role to a working provider, trying the role's fallback
 // chain in order.
 type Router struct {

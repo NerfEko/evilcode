@@ -2337,3 +2337,28 @@ Also reported, not acted on:
   with `EVILCODE_DETERMINISTIC=1` can append to one log. That is what the flag
   is for — goldens need the same session name every run — and it is documented
   as such rather than treated as a bug here.
+
+## 2026-07-31 H2.10 — One repository's settings became everyone's
+
+`wiring.Build` applied repo overrides by calling `LoadRepoOverrides` on the
+config it was handed. In the daemon that config is one object shared by every
+session, so a session built in a repo that pins a model pinned it for every
+other session too — including ones in unrelated directories — and two builds
+running together wrote to it at once.
+
+```
+the shared config's default model became "pinned-by-the-repo" after building a
+session in a repo that pins "pinned-by-the-repo"; every other session now uses it too
+```
+
+`Config.Clone` copies what overrides write: the slices, because `Models` is
+appended to, and the maps. The role pointers are shared deliberately —
+`LoadRepoOverrides` replaces them rather than writing through them, so copying
+them would be copying something nothing mutates.
+
+Two tests, because half a fix here is invisible: the shared config must be
+unchanged, *and* the built session must actually get the repo's pin. A clone
+that is never applied passes the first test perfectly.
+
+Verified: fails before (the shared config takes the repo's model), passes after,
+`go test ./... -race` green.

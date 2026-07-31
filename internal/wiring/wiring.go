@@ -90,6 +90,16 @@ func (s *Session) Close() {
 	s.closers = nil
 }
 
+// repoConfig returns a per-build copy of cfg with the repository's overrides
+// applied, leaving the caller's config untouched.
+func repoConfig(cfg *config.Config, root string) (*config.Config, error) {
+	local := cfg.Clone()
+	if err := local.LoadRepoOverrides(root); err != nil {
+		return nil, err
+	}
+	return local, nil
+}
+
 // Build assembles a session. On error nothing is left open.
 func Build(cfg *config.Config, opts Options) (*Session, error) {
 	prov, modelName, err := cfg.Resolve(opts.Model)
@@ -131,7 +141,11 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	out.closers = append(out.closers, func() { store.Close() })
 
 	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
-	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+	// Onto a copy: cfg belongs to the daemon and is shared by every session it
+	// hosts. Applying a repository's overrides to it pinned one repo's model
+	// for all of them, and raced two builds against each other.
+	cfg, err = repoConfig(cfg, pc.Root)
+	if err != nil {
 		return fail(err)
 	}
 

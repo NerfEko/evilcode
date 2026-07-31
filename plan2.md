@@ -206,7 +206,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H2.9** `internal/agent/agent.go:97,266` — `Attach` mutates `pendingImages` under
   `a.mu`; `Run` swaps it without. Safe today only because the TUI calls Attach before
   starting the run goroutine. Fix: take the lock around the swap.  ⟨fable⟩
-- [ ] **H2.10** `internal/wiring/wiring.go:115` — repo overrides are applied by mutating a
+- [x] **H2.10** `internal/wiring/wiring.go:115` — repo overrides are applied by mutating a
   **shared** config object, so one repo's settings leak into other daemon sessions and race
   concurrent builds. Fix: deep-copy per build, apply overrides to the copy only.  ⟨codex⟩
 - [ ] **H2.11** `internal/lsp/client.go:574` `Manager.For` — the lock is dropped across
