@@ -2534,3 +2534,37 @@ loop, so both moved under a mutex.
 
 Verified: three concurrent renders all reach the transcript; `go test ./...
 -race` green.
+
+## 2026-07-31 H2.19 — Verifying phase H2
+
+The phase's three named checks:
+
+- **Two attached clients interrupting each other cancel their own turns.**
+  Reserved on two sessions, interrupted one, asserted the other's context is
+  untouched. The interesting half is the negative: before H2.1 the field was
+  written from four paths unsynchronized, so "whose turn did that cancel" had no
+  reliable answer at all.
+- **A swarm at the worker cap stays at the cap under concurrent `/summon`.**
+  Twenty concurrent spawns against a cap of four, checked against both the
+  admission counter and a scan of live sessions — the two disagreeing would be
+  its own bug.
+- **`-race` is green across `./...`, daemon tests included.** It is.
+
+Nineteen tasks, and the phase divides cleanly into two kinds. Most were
+check-then-act: reading a count, a name, a flag, and acting on the answer after
+it could have changed. `beginTurn`, `reserve`, `claimName`, `opening`,
+`starting` are all the same edit — decide and commit under one lock.
+
+The other kind is the one I did not expect to be a theme: **a fix that
+reclassifies someone else's bug.** Adding `ErrBusy` turned a silent double-run
+into a silent refusal in three separate callers, and each needed its own repair
+— `submit` interjecting, `/plan` queueing, the worker retry no longer racing its
+own release. The guard was right every time; what was wrong was every caller
+that ignored an error because the error had been impossible.
+
+Two tasks left the phase without a reproduction I would defend: H2.6's ordering
+window, which an instant mock cannot expose, and the deterministic-mode session
+name, which is intended behaviour. Both are written up where they happened
+rather than smoothed over.
+
+Tagged `harden-2`.

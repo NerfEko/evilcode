@@ -239,7 +239,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   result slot; a lost result leaves `m.diagrams[source] = ""`, and that sentinel blocks any
   retry for the rest of the session. Fix: buffered completion queue, drain every result.
   ⟨both⟩
-- [ ] **H2.19** Verify H2: two attached clients interrupting each other cancel their own
+- [x] **H2.19** Verify H2: two attached clients interrupting each other cancel their own
   turns; a swarm at the worker cap stays at the cap under concurrent `/summon`; `-race` is
   green across `./...` including the daemon tests. Tag `harden-2`.
 
