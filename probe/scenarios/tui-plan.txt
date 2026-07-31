@@ -1,0 +1,9 @@
+# The plan card (§12.1): a ```plan fence becomes a violet card with its title
+# in the border, and a nested ```bash block inside it must NOT terminate the
+# card.
+
+scenario plan
+boot tui
+keys "/plan wire the auth flow"
+keys Enter
+capture plan-card

@@ -1,0 +1,24 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo> (main)
+
+ 1› wire the auth flow
+
+ Tracking the work.
+
+   ✓ todo · 23 tok
+
+   ↳ 4 added  (1/4)
+     + Read the OAuth callback handler
+     + Wire the refresh path
+     + Add the retry gate
+     + Write the integration test
+
+ Tracked. Working through the refresh path next.Done.Done.Done.
+
+
+ ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
+ 2>
+   Ctrl+Enter to queue

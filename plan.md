@@ -995,10 +995,10 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 
 ## Phase 2 — The soul: plans, todos, discipline, polish, fun
 
-- [ ] Todo model + persistence + history merging + spike detection (§12.2). Table-driven tests for merge/spike edge cases.
-- [ ] `todo` tool (§17) + gates (§12.3) incl. the hard ownership gate + digest texts. Tests: deferred accumulation, immediate <60 fire, digest wording selection.
-- [ ] Auto-poke hook + full decision tree + breakers + hidden-poke rendering (§12.4, §12.6). Test: each branch with a scripted todo state.
-- [ ] `/plan` command + prompt injection + plan card renderer with nested/unterminated fence rules (§12.1). Probe scenario: mock provider streams a chunked plan fence — the card grows live.
+- [x] Todo model + persistence + history merging + spike detection (§12.2). Table-driven tests for merge/spike edge cases.
+- [x] `todo` tool (§17) + gates (§12.3) incl. the hard ownership gate + digest texts. Tests: deferred accumulation, immediate <60 fire, digest wording selection.
+- [x] Auto-poke hook + full decision tree + breakers + hidden-poke rendering (§12.4, §12.6). Test: each branch with a scripted todo state.
+- [x] `/plan` command + prompt injection + plan card renderer with nested/unterminated fence rules (§12.1). Probe scenario: mock provider streams a chunked plan fence — the card grows live.
 - [ ] Todo UI surfaces 1–3 + 5: inline card, assessment delta, Form A/B tool delta, pinned band (§12.5).
 - [ ] **Hash-anchored `edit` mode** + hashed `read` output + stale-anchor rejection (§17). Tests: anchor apply, stale reject, classic fallback.
 - [ ] **`ask` tool** + inline option picker rendering (§17, §5.3 chrome).

@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/theme"
+	"evilcode/internal/todo"
 )
 
 // BlockKind tags a transcript entry.
@@ -20,6 +21,7 @@ const (
 	BlockError
 	BlockNotice
 	BlockReasoning
+	BlockTodoDelta
 )
 
 // Block is one renderable transcript entry.
@@ -44,6 +46,9 @@ type Block struct {
 
 	// Diff is a unified diff rendered inline (§9.3).
 	Diff string
+
+	// TodoDelta is the change set shown under a todo tool call (§12.5).
+	TodoDelta todo.Delta
 
 	// Streaming marks the tail block, which re-renders every frame.
 	Streaming bool
@@ -120,6 +125,8 @@ func (r *Renderer) render(b *Block) []string {
 		return r.renderNotice(b)
 	case BlockReasoning:
 		return r.renderReasoning(b)
+	case BlockTodoDelta:
+		return r.RenderTodoDelta(b.TodoDelta)
 	default:
 		return r.renderAssistant(b)
 	}
@@ -167,8 +174,34 @@ func (r *Renderer) renderUser(b *Block) []string {
 // renderAssistant renders prose through glamour, extracting fenced code so it
 // can carry its own chrome (§9.1, §9.2).
 func (r *Renderer) renderAssistant(b *Block) []string {
+	// A plan fence becomes a card rather than a code block, and the card grows
+	// while it streams (plan.md §12.1).
+	if plans := FindPlanSegments(b.Text); len(plans) > 0 {
+		return r.renderWithPlanCards(b, plans)
+	}
+	return r.renderProse(b, b.Text)
+}
+
+// renderWithPlanCards splices plan cards into the surrounding prose.
+func (r *Renderer) renderWithPlanCards(b *Block, plans []PlanSegment) []string {
 	var out []string
-	for _, seg := range SplitSegments(b.Text) {
+	cursor := 0
+	for _, p := range plans {
+		if before := b.Text[cursor:p.Start]; strings.TrimSpace(before) != "" {
+			out = append(out, r.renderProse(b, before)...)
+		}
+		out = append(out, r.RenderPlanCard(p)...)
+		cursor = p.End
+	}
+	if after := b.Text[cursor:]; strings.TrimSpace(after) != "" {
+		out = append(out, r.renderProse(b, after)...)
+	}
+	return out
+}
+
+func (r *Renderer) renderProse(b *Block, text string) []string {
+	var out []string
+	for _, seg := range SplitSegments(text) {
 		if seg.Code {
 			out = append(out, r.renderCodeBlock(seg)...)
 			continue

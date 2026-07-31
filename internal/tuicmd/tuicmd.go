@@ -13,6 +13,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/session"
+	"evilcode/internal/todo"
 	"evilcode/internal/tools"
 	"evilcode/internal/tui"
 )
@@ -66,13 +67,26 @@ func Run(args []string) error {
 		conv.Append(msgs...)
 	}
 
-	ts := append(tools.NewFS(cwd).Tools(), tools.NewExec(cwd).Tools()...)
+	todos, err := todo.NewStore(dataDir, store.Name)
+	if err != nil {
+		return err
+	}
 
-	a := agent.New(store.Name, prov, modelName, ts, conv)
+	a := agent.New(store.Name, prov, modelName, nil, conv)
+	poke := agent.NewPokeHook(todos, cfg.Features.AutoPoke)
+	a.Hooks = poke
+
+	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd)).
+		WithTodos(todos, poke)
+
+	ts := append(tools.NewFS(cwd).Tools(), tools.NewExec(cwd).Tools()...)
+	ts = append(ts, tools.NewTodo(todos, nil))
+	a.Tools = ts
+
 	a.NumCtx = cfg.ModelOverrides(*model).ContextWindow
 	defer a.Close()
 
-	return tui.Run(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd))
+	return tui.RunModel(m)
 }
 
 func headerState(cfg *config.Config, sessionName, model, providerName, cwd string) tui.HeaderState {

@@ -371,3 +371,44 @@ Phase 1 complete; tagged `phase-1`.
 
 Note for Phase 2: ripgrep is still not installed on this machine, so the `grep` tool
 reports that and its happy path remains unexercised. Everything else is covered.
+
+## 2026-07-30 P2.1–P2.4 — the todo discipline system
+
+Done: `internal/todo` (model, gates, poke tree, deltas), the `todo` tool, the
+`PokeHook` post-turn seam, `/plan` with its card renderer, and todo UI surfaces 1–3.
+
+Histories are tool-owned and append-only, and a model-supplied history is discarded
+outright — the trail is only evidence if the agent cannot author it. Each write
+contributes at most one observation per score, and an unchanged repeat collapses, so a
+stalled score cannot look like progress.
+
+Low scores defer rather than nag, with exactly one exception: the *first* plan write
+below 60 fires immediately, because a whole turn of wrong work cannot be undone at turn
+end. One gate blocks rather than defers — completing a group needs end-to-end ownership
+at 96 — and a rejected write leaves the stored list untouched.
+
+**A real infinite loop, found by looking at the screen.** The first probe of the todo
+card showed `Done.` sixty times and `Stopped after 60 tool rounds`. The incomplete-todos
+branch resets the gate counter per spec (open todos mean the model is still iterating),
+but that is only true *if the list moves*. A model that answers the nudge without
+touching its todos loops until the step cap catches it — the exact failure §12.6 exists
+to prevent, in the one branch that had no breaker. Added a progress fingerprint: three
+nudges that change nothing disarm with an explanation. Sixty pokes became three.
+
+**A second bug, also visual.** The delta rows vanished on the second probe run. The
+delta was being passed to the UI through a side channel written on the tool goroutine and
+read on the render goroutine — a race. It now rides the event as `Result.Display`, so it
+cannot race, and `-race` is green.
+
+**A probe-rig isolation failure with real consequences.** Chasing the above showed the
+probe writing to the user's *real* `~/.local/share/evilcode/`. `probe.sh` pinned a
+throwaway `HOME`, but `XDG_DATA_HOME` is an absolute path commonly exported by a login
+shell and takes precedence over `HOME` in the XDG lookup — so the isolation was silently
+defeated. The pane now pins all four XDG dirs under the fake home, and `reset_fixtures`
+clears accumulated state so a probe run is repeatable. The stray real directory was
+removed.
+
+Verified: 44 todo tests, 20 plan/todo-card tests, 4 poke-hook tests in the agent package.
+`go test -race` green. PNGs looked at for the plan card and the todo card — the
+`75→100%` arrow renders, and the nested ```bash block sits inside the card's borders
+rather than terminating it. 16 goldens green.

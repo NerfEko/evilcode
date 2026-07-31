@@ -221,6 +221,39 @@ var mockScenarios = map[string][][]Chunk{
 	// A plan fence chunked mid-marker.
 	"plan": {planChunks},
 
+	// A todo write, for the inline card, the delta rows, and the arrows that
+	// distinguish an evidence-driven rise from a bulk end-stamp (§12.5).
+	"todos": {
+		{
+			{Text: "Tracking the work."},
+			call("call_1", "todo", map[string]any{
+				"items": []map[string]any{
+					{"id": "1", "content": "Read the OAuth callback handler", "status": "completed",
+						"group": "auth flow", "confidence": 75, "completion_confidence": 100},
+					{"id": "2", "content": "Wire the refresh path", "status": "in_progress",
+						"group": "auth flow", "confidence": 82},
+					{"id": "3", "content": "Add the retry gate", "status": "pending",
+						"group": "auth flow", "confidence": 60, "blocked_by": []string{"2"}},
+					{"id": "4", "content": "Write the integration test", "status": "pending",
+						"group": "auth flow"},
+				},
+				"plan": map[string]any{
+					"user_intention": "Ship the plan-level intent gate so low-confidence " +
+						"plans get re-examined before work starts",
+					"understands_user_intent": 87,
+				},
+				"goals": []map[string]any{{
+					"group":                "auth flow",
+					"feedback_loop":        "go test ./internal/auth/...",
+					"closed_feedback_loop": 92,
+					"end_to_end_ownership": 88,
+				}},
+			}),
+			done(300, 40),
+		},
+		append(text("Tracked. Working through the refresh path next."), done(500, 10)),
+	},
+
 	// An edit that produces a diff for the inline diff renderer (§9.3).
 	"diff": {
 		{

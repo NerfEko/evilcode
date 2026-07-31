@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"evilcode/internal/provider"
+	"evilcode/internal/todo"
 	"evilcode/internal/tools"
 )
 
@@ -683,6 +684,127 @@ func TestAgentDoesNotImportBubbletea(t *testing.T) {
 		if strings.Contains(imp, "bubbletea") || strings.Contains(imp, "lipgloss") ||
 			strings.Contains(imp, "bubbles") || strings.Contains(imp, "glamour") {
 			t.Errorf("internal/agent imports %q — the core must stay frontend-agnostic", imp)
+		}
+	}
+}
+
+func TestPokeHookDrivesTheTurnEndTree(t *testing.T) {
+	// An early stop with incomplete todos must be poked back into work — the
+	// headline behavior of plan.md §12.4.
+	store, err := todo.NewStore(t.TempDir(), "dracula")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Apply(todo.Write{Items: []todo.Item{
+		{ID: "a", Content: "wire the auth flow", Status: todo.StatusPending},
+		{ID: "b", Content: "add the retry gate", Status: todo.StatusPending},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	hook := NewPokeHook(store, true)
+	a.Hooks = hook
+
+	evs, err := collect(t, a, func() error { return a.Run(context.Background(), "do the work") })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var poked bool
+	for _, e := range evs {
+		if e.Kind == EventNotice && strings.Contains(e.Text, "incomplete todos") {
+			poked = true
+		}
+	}
+	if !poked {
+		t.Error("the harness should have poked about the incomplete todos")
+	}
+
+	// The continuation must be stored as user-role so the model reads it as a
+	// normal message, while still being recognizable as harness output.
+	var found bool
+	for _, m := range a.Conv.Messages() {
+		if m.Role == provider.RoleUser && todo.IsAutomated(m.Content) {
+			found = true
+			if !strings.Contains(m.Content, "Do not reply conversationally") {
+				t.Error("continuations must tell the model not to answer them")
+			}
+		}
+	}
+	if !found {
+		t.Error("no automated continuation was appended")
+	}
+}
+
+func TestPokeHookDisarmsWhenComplete(t *testing.T) {
+	store, _ := todo.NewStore(t.TempDir(), "dracula")
+	done := uint8(100)
+	store.Apply(todo.Write{Items: []todo.Item{
+		{ID: "a", Content: "done", Status: todo.StatusCompleted, CompletionConfidence: &done},
+	}})
+
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Hooks = NewPokeHook(store, true)
+
+	evs, err := collect(t, a, func() error { return a.Run(context.Background(), "go") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rites bool
+	for _, e := range evs {
+		if e.Kind == EventNotice && strings.Contains(e.Text, "All rites complete") {
+			rites = true
+		}
+	}
+	if !rites {
+		t.Error("a fully validated list should end the cycle with the completion notice")
+	}
+}
+
+func TestPokeHookDisabledDoesNothing(t *testing.T) {
+	store, _ := todo.NewStore(t.TempDir(), "dracula")
+	store.Apply(todo.Write{Items: []todo.Item{
+		{ID: "a", Content: "open", Status: todo.StatusPending},
+	}})
+
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	a.Hooks = NewPokeHook(store, false)
+
+	before := a.Conv.Len()
+	if _, err := collect(t, a, func() error { return a.Run(context.Background(), "go") }); err != nil {
+		t.Fatal(err)
+	}
+	// user + assistant only; nothing appended by the hook.
+	if got := a.Conv.Len(); got != before+2 {
+		t.Errorf("conversation grew to %d; a disabled hook must not append", got)
+	}
+}
+
+func TestRefusalDetection(t *testing.T) {
+	// Detection is deliberately conservative: a false positive disarms a
+	// working session, which is worse than missing one refusal. It matches on
+	// stock refusal openings only, and does not try to parse intent.
+	refusals := []string{
+		"I can't help with that.",
+		"I cannot assist with that request.",
+		"I'm not able to help with that, sorry.",
+	}
+	for _, s := range refusals {
+		if !looksLikeRefusal(s) {
+			t.Errorf("%q should read as a refusal", s)
+		}
+	}
+
+	notRefusals := []string{
+		"Here is the fix.",
+		"I cannot reproduce the bug, but the test passes.",
+		"The function refuses invalid input, which is correct.",
+		"",
+	}
+	for _, s := range notRefusals {
+		if looksLikeRefusal(s) {
+			t.Errorf("%q should not read as a refusal", s)
 		}
 	}
 }

@@ -36,6 +36,11 @@ type Result struct {
 	// Intent is a short human-readable summary for the tool row, when the tool
 	// can describe itself better than its arguments do.
 	Intent string
+
+	// Display carries a tool-specific payload for the UI to render. It travels
+	// with the result through the event channel rather than via a side channel,
+	// which is what keeps it free of races with the render loop.
+	Display any
 }
 
 // Tool is one callable capability.

@@ -470,5 +470,6 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 	e.Diff = res.Diff
 	e.DiffStat = res.DiffStat
 	e.Intent = res.Intent
+	e.Display = res.Display
 	a.emit(e)
 }

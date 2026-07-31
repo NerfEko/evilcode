@@ -74,6 +74,10 @@ type Event struct {
 	DiffStat *tools.DiffStat `json:"diff_stat,omitempty"`
 	Intent   string          `json:"intent,omitempty"`
 
+	// Display is a tool-specific render payload, carried on the event so the
+	// UI never has to read it from a side channel.
+	Display any `json:"-"`
+
 	// Err is the in-process error. ErrText carries it across a socket, where a
 	// Go error cannot travel.
 	Err     error  `json:"-"`

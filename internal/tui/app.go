@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/theme"
+	"evilcode/internal/todo"
 )
 
 // Deterministic reports whether the frozen test mode is on: fixed session
@@ -81,6 +83,16 @@ type Model struct {
 	// sawEscapeHint keeps the trailing-backslash tip to once per session.
 	sawEscapeHint bool
 
+	// commandArg holds the argument of the command being run.
+	commandArg string
+
+	// poke is the auto-poke hook, when the session has one.
+	poke *agent.PokeHook
+
+	// todos is the session's todo state, for the inline card.
+	todos        *todo.Store
+	showTodoCard bool
+
 	quitting     bool
 	confirmQuit  bool
 	scrollbarOn  bool
@@ -98,6 +110,12 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		started:      time.Now(),
 		streamingIdx: -1,
 	}
+}
+
+// WithTodos attaches the session's todo state and auto-poke hook.
+func (m *Model) WithTodos(store *todo.Store, poke *agent.PokeHook) *Model {
+	m.todos, m.poke = store, poke
+	return m
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -210,6 +228,17 @@ func (m *Model) applyEvent(e agent.Event) {
 		if e.IsError() {
 			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrText})
 		}
+		// A todo write re-arms the poke cycle and shows what changed. The
+		// delta rides the event rather than a side channel, so it cannot race
+		// the render loop.
+		if e.Call.Name == "todo" && !e.IsError() {
+			if m.poke != nil {
+				m.poke.Rearm()
+			}
+			if d, ok := e.Display.(todo.Delta); ok && !d.Empty() {
+				m.blocks = append(m.blocks, Block{Kind: BlockTodoDelta, TodoDelta: d})
+			}
+		}
 		m.followIfPinned()
 
 	case agent.EventTokenUsage:
@@ -288,6 +317,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "enter":
+			// A typed command with arguments runs as typed; otherwise the
+			// highlighted suggestion is taken.
+			name, arg := splitCommand(m.editor.Text)
+			if arg != "" {
+				return m.runCommandWithArg(name, arg)
+			}
 			if len(suggestions) > 0 {
 				sel := clamp(m.palette.Selected, 0, len(suggestions)-1)
 				return m.runCommand(suggestions[sel].Name)
@@ -592,6 +627,18 @@ func (m *Model) loadModels() []ModelEntry {
 // runCommand executes a slash command. Unknown commands fall through to a
 // notice rather than being sent to the model, which would waste a turn.
 func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
+	return m.runCommandWithArg(name, "")
+}
+
+// splitCommand separates `/name rest` into its parts.
+func splitCommand(input string) (name, arg string) {
+	trimmed := strings.TrimPrefix(strings.TrimSpace(input), "/")
+	name, arg, _ = strings.Cut(trimmed, " ")
+	return name, strings.TrimSpace(arg)
+}
+
+func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
+	m.commandArg = arg
 	m.editor.Clear()
 	m.palette.Selected = 0
 
@@ -615,6 +662,48 @@ func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
 
 	case "model", "models":
 		m.openPicker()
+		return m, nil
+
+	case "plan":
+		// /plan is a one-shot synthetic user turn, not a mode: no flag, no
+		// permission gate. The plan→execution handoff is conversational
+		// (plan.md §12.1).
+		goal := strings.TrimSpace(m.commandArg)
+		if goal == "" {
+			goal = BarePlanGoal
+		}
+		if m.processing {
+			m.notice = "👉 Interrupting and planning..."
+			m.interrupt(false)
+		} else {
+			m.notice = "🧭 Planning " + truncateCells(goal, 40) + "... (plan-only; no edits)"
+		}
+		m.submitHidden(fmt.Sprintf(PlanPrompt, goal))
+		return m, nil
+
+	case "poke":
+		if m.poke == nil {
+			m.notice = "auto-poke is not configured for this session"
+			return m, nil
+		}
+		switch strings.TrimSpace(m.commandArg) {
+		case "off":
+			m.poke.SetEnabled(false)
+			m.notice = "Auto-poke OFF"
+		case "on":
+			m.poke.SetEnabled(true)
+			m.notice = "Auto-poke ON"
+		default:
+			if m.poke.Enabled() {
+				m.notice = "Auto-poke is ON · /poke off to stop"
+			} else {
+				m.notice = "Auto-poke is OFF · /poke on to enable"
+			}
+		}
+		return m, nil
+
+	case "todos", "todo":
+		m.showTodoCard = !m.showTodoCard
 		return m, nil
 
 	case "terminal-setup":
@@ -763,6 +852,20 @@ func (m *Model) submit(text string) {
 	}()
 }
 
+// submitHidden starts a turn whose prompt is harness-authored, so it drives the
+// model without appearing as something the user typed.
+func (m *Model) submitHidden(text string) {
+	m.editor.Clear()
+	m.scroll.FollowBottom()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelTurn = cancel
+	go func() {
+		defer cancel()
+		_ = m.agent.Run(ctx, text)
+	}()
+}
+
 // renumberPrompts recomputes each user block's distance from the newest, which
 // is what the rainbow ramp is indexed by.
 func (m *Model) renumberPrompts() {
@@ -799,6 +902,18 @@ func (m *Model) transcriptLines() []string {
 		if len(lines) > 0 {
 			out = append(out, "")
 		}
+	}
+
+	// The inline todo card is a single card pinned to the transcript tail, so
+	// re-toggling moves it to the bottom rather than leaving copies behind
+	// (plan.md §12.5).
+	if m.showTodoCard && m.todos != nil {
+		out = append(out, m.renderer.RenderTodoCard(TodoCardState{
+			Items: m.todos.Items(),
+			Plan:  m.todos.Plan(),
+			Goals: m.todos.Goals(),
+		})...)
+		out = append(out, "")
 	}
 	return out
 }
@@ -1006,9 +1121,13 @@ func toolTarget(raw json.RawMessage) string {
 	return ""
 }
 
-// Run starts the TUI.
+// Run starts the TUI over a bare agent.
 func Run(a *agent.Agent, h HeaderState) error {
-	m := NewModel(a, h)
+	return RunModel(NewModel(a, h))
+}
+
+// RunModel starts the TUI over a model the caller has configured.
+func RunModel(m *Model) error {
 	_, err := tea.NewProgram(m).Run()
 	return err
 }

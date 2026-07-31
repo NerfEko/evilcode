@@ -27,6 +27,11 @@ mkdir -p "$TMUX_TMPDIR"
 
 # A throwaway HOME keeps the probe away from the real config and session store,
 # so a probe run can never scribble on the user's actual state.
+#
+# HOME alone is not enough: XDG_DATA_HOME and friends are absolute paths that
+# are commonly exported in a login shell, and they take precedence over HOME in
+# the XDG lookup. Leaving them set silently defeats the whole isolation, so they
+# are pinned under the fake home rather than merely inherited.
 FAKEHOME="${PROBE_HOME:-$TMUX_TMPDIR/home}"
 
 tm() { tmux -L "$SOCKET" "$@"; }
@@ -52,10 +57,14 @@ require_session() {
     }
 }
 
-# reset_fixtures restores files the mock scenarios edit, so a probe run is
-# repeatable rather than succeeding only the first time.
+# reset_fixtures restores everything a scenario mutates, so a probe run is
+# repeatable rather than succeeding only the first time. Both halves matter:
+# the git-tracked files a scenario edits, and the throwaway HOME where sessions,
+# prompt history, and todo state accumulate. Stale todo state in particular
+# makes a write produce no delta, so the rows it should draw silently vanish.
 reset_fixtures() {
     [[ -d "$REPO/testdata" ]] && git -C "$REPO" checkout -- testdata 2>/dev/null || true
+    rm -rf "$FAKEHOME/.local/share/evilcode"
 }
 
 cmd_boot() {
@@ -71,7 +80,12 @@ cmd_boot() {
     [[ $# -gt 0 ]] && app=("$BIN" "$@")
 
     tm new-session -d -s evil -x "$COLS" -y "$ROWS" \
-        "env HOME='$FAKEHOME' TERM=xterm-256color COLORTERM=truecolor \
+        "env HOME='$FAKEHOME' \
+             XDG_DATA_HOME='$FAKEHOME/.local/share' \
+             XDG_CONFIG_HOME='$FAKEHOME/.config' \
+             XDG_CACHE_HOME='$FAKEHOME/.cache' \
+             XDG_STATE_HOME='$FAKEHOME/.local/state' \
+             TERM=xterm-256color COLORTERM=truecolor \
              EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
              EVILCODE_SCENARIO='${PROBE_SCENARIO:-chat}' ${app[*]}"
     settle

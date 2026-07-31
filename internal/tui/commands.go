@@ -28,6 +28,13 @@ var Commands = []Command{
 			"  /model qwen3-coder:480b-cloud@ollama-cloud"},
 	{Name: "models", Help: "List available models"},
 
+	{Name: "plan", Help: "Plan before implementing",
+		Long: "Injects a planning turn: the model researches and returns a plan card,\n" +
+			"then stops. Approval is conversational — it starts work when you say so."},
+	{Name: "todos", Help: "Toggle the todo card"},
+	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
+	{Name: "poke", Help: "Auto-poke on/off/status"},
+
 	{Name: "clear", Help: "Clear the transcript"},
 	{Name: "cls", Help: "Clear the transcript", Hidden: true},
 

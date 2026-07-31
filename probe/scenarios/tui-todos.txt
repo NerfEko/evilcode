@@ -1,0 +1,12 @@
+# The todo discipline system (§12.5): the what-changed delta under the tool
+# call, and the inline card with its 75→100% anti-gaming arrow.
+
+scenario todos
+boot tui
+keys "wire the auth flow"
+keys Enter
+capture todos-delta
+
+keys "/todos"
+keys Enter
+capture todos-card
