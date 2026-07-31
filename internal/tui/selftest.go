@@ -209,7 +209,7 @@ func (r SmoothnessReport) String() string {
 // caused by scrolling is not counted — only motion the reader did not ask for.
 // Excluding expected motion is the whole difficulty: counting every position
 // change would report every scroll as a defect.
-func (m *Model) observeSmoothness(rows []string) {
+func (m *Model) observeSmoothness(rows []string, origin int) {
 	if m.anchorHashes == nil {
 		m.anchorHashes = map[string]int{}
 	}
@@ -221,7 +221,11 @@ func (m *Model) observeSmoothness(rows []string) {
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		current[key] = i + m.scroll.Offset
+		// Absolute transcript line, not viewport row. Keying on the viewport
+		// counts ordinary streaming as motion: content arriving at the bottom
+		// shifts every row up, which the reader asked for. Excluding expected
+		// motion is the entire difficulty of this metric.
+		current[key] = i + origin
 	}
 
 	moved, pushed := 0, 0

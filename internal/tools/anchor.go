@@ -122,7 +122,22 @@ func ApplyAnchors(path string, lines []string, patches []AnchorPatch, st readSta
 	seen := map[int]bool{}
 
 	for _, p := range patches {
-		anchor := strings.ToLower(strings.TrimSpace(p.Anchor))
+		raw := strings.TrimSpace(p.Anchor)
+		anchor := strings.ToLower(raw)
+
+		// A model that passes the line's *text* instead of its anchor code gets
+		// a specific error rather than a confusing "not found". Echoing the
+		// lowercased form here also made it look as though the tool had mangled
+		// the input, which sent one model chasing a case-sensitivity bug that
+		// did not exist.
+		if !looksLikeAnchor(anchor) {
+			return nil, fmt.Errorf(
+				"%q is not an anchor. An anchor is the %d-character code read prints "+
+					"before each line, as in `a3f2|417| func main() {` — pass %q, not the "+
+					"line's text",
+				truncateForError(raw), AnchorLen, "a3f2")
+		}
+
 		nums, ok := st.Anchors[anchor]
 		if !ok {
 			return nil, &ErrStaleAnchor{Path: path,
@@ -186,6 +201,28 @@ func ApplyAnchors(path string, lines []string, patches []AnchorPatch, st readSta
 		}
 	}
 	return out, nil
+}
+
+// looksLikeAnchor reports whether a string is plausibly an anchor code.
+func looksLikeAnchor(s string) bool {
+	if len(s) != AnchorLen {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// truncateForError keeps an error message readable when a model passes a whole
+// line where an anchor belongs.
+func truncateForError(s string) string {
+	if len(s) <= 40 {
+		return s
+	}
+	return s[:39] + "…"
 }
 
 // AnnotateLines renders `read` output with anchors:

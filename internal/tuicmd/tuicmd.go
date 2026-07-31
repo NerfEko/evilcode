@@ -121,7 +121,11 @@ func Run(args []string) error {
 		mcpStatus = append(mcpStatus, tui.MCPStatus{Name: s.Name, Tools: s.Tools})
 	}
 
-	overrides := cfg.ModelOverrides(*model)
+	// Look overrides up by the *resolved* model, not the flag. Passing the
+	// flag means a session relying on default_model silently gets no
+	// per-model settings at all, which is how anchor_edits appeared to be
+	// broken when it was simply never switched on.
+	overrides := cfg.ModelOverrides(modelName)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
 		WithConfine(cfg.Features.ConfineToWorkspace)
 	execTools := tools.NewExec(cwd)

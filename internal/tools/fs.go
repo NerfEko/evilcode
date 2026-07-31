@@ -288,10 +288,12 @@ func (f *FS) editTool() Tool {
 	return Tool{
 		Name: "edit",
 		Desc: "Change a file. Two forms:\n" +
-			"  anchored — patches: [{anchor, op: replace|insert_after|delete, lines}], using the\n" +
-			"    anchors read printed beside each line. Cheapest and least error-prone: you name\n" +
-			"    a line instead of retyping its context.\n" +
-			"  exact — old/new strings. The old string must appear exactly once unless all is true.\n" +
+			"  anchored — patches: [{anchor, op: replace|insert_after|delete, lines}].\n" +
+			"    The anchor is the short code read prints BEFORE each line, not the line\n" +
+			"    itself: in `a3f2|417| func main() {` the anchor is a3f2. This is the\n" +
+			"    cheapest form — you name a line instead of retyping its context.\n" +
+			"  exact — old/new strings. The old string must appear exactly once unless all\n" +
+			"    is true, and must match the file byte for byte including indentation.\n" +
 			"Anchors are only valid for the version you read; if the file changed, re-read it.",
 		Schema: json.RawMessage(`{
   "type": "object",

@@ -449,3 +449,26 @@ func TestRouterSideCall(t *testing.T) {
 		t.Error("side call returned nothing")
 	}
 }
+
+func TestOverridesApplyToTheResolvedModel(t *testing.T) {
+	// The bug this guards: looking overrides up by the -m flag means a session
+	// relying on default_model gets none of them, silently.
+	t.Setenv(EnvOllamaKey, "")
+	cfg := &Config{
+		DefaultModel: "big:cloud@p",
+		Providers:    []ProviderConfig{{Name: "p", Kind: KindMock}},
+		Models:       []ModelConfig{{Name: "big:cloud", AnchorEdits: true, ContextWindow: 262144}},
+	}
+
+	_, modelName, err := cfg.Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ModelOverrides(modelName); !got.AnchorEdits || got.ContextWindow != 262144 {
+		t.Errorf("overrides for the resolved model = %+v, want them applied", got)
+	}
+	// The empty flag is what used to be passed, and finds nothing.
+	if got := cfg.ModelOverrides(""); got.AnchorEdits {
+		t.Error("an empty ref should not match an override; that is the bug")
+	}
+}

@@ -257,3 +257,63 @@ func texts(msgs []PendingMessage) []string {
 	}
 	return out
 }
+
+func TestSmoothnessIgnoresExpectedMotion(t *testing.T) {
+	// The whole difficulty of this metric is excluding motion the reader asked
+	// for. Rows are keyed by content at their absolute transcript line, so a
+	// view that scrolls reports nothing.
+	var m Model
+	rows := []string{"alpha", "beta", "gamma"}
+
+	// Frame one at origin 0, frame two with the same content scrolled by five.
+	m.observeSmoothness(rows, 0)
+	m.observeSmoothness(rows, 5)
+
+	if got := m.smoothness.OffAnchor; got != 0 {
+		t.Errorf("off-anchor = %d; scrolling is not jumping", got)
+	}
+}
+
+func TestSmoothnessCatchesARowBeingPushed(t *testing.T) {
+	var m Model
+	m.observeSmoothness([]string{"alpha", "beta"}, 0)
+	// "beta" moved down a line without the view scrolling: something was
+	// inserted above it.
+	m.observeSmoothness([]string{"alpha", "inserted", "beta"}, 0)
+
+	if m.smoothness.DownwardPush == 0 {
+		t.Error("a row shoved down by an insertion should be counted")
+	}
+	if m.smoothness.Clean() {
+		t.Error("the report should not read as clean")
+	}
+}
+
+func TestSmoothnessCountsAReflowOnce(t *testing.T) {
+	// A frame where most rows move is one layout decision, not many.
+	var m Model
+	m.observeSmoothness([]string{"a", "b", "c", "d"}, 0)
+	m.observeSmoothness([]string{"x", "y", "a", "b", "c", "d"}, 0)
+
+	if m.smoothness.Reflows != 1 {
+		t.Errorf("reflows = %d, want 1", m.smoothness.Reflows)
+	}
+	if m.smoothness.OffAnchor != 0 {
+		t.Errorf("off-anchor = %d; a mass reflow should not also be counted per row",
+			m.smoothness.OffAnchor)
+	}
+}
+
+func TestSmoothnessReportReadsCleanWhenNothingMoved(t *testing.T) {
+	var m Model
+	rows := []string{"alpha", "beta"}
+	for i := 0; i < 5; i++ {
+		m.observeSmoothness(rows, 0)
+	}
+	if !m.smoothness.Clean() {
+		t.Errorf("report = %q, want clean", m.smoothness.String())
+	}
+	if !strings.Contains(m.smoothness.String(), "nothing jumped") {
+		t.Errorf("report = %q", m.smoothness.String())
+	}
+}

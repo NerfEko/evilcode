@@ -924,3 +924,42 @@ func TestMissingSkillDirIsFine(t *testing.T) {
 		t.Errorf("skills = %+v", set.Index())
 	}
 }
+
+func TestAnchorRejectsLineTextWithAUsefulError(t *testing.T) {
+	// A real model passed the line's text where the anchor code belongs, and
+	// the old "not found" error sent it chasing a case-sensitivity bug that did
+	// not exist. The error now says what an anchor actually is.
+	f := tempFS(t, map[string]string{"a.go": "package main\n\nfunc main() {}\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+	run(t, set, "read", map[string]any{"path": "a.go"})
+
+	_, err := run(t, set, "edit", map[string]any{
+		"path": "a.go",
+		"patches": []map[string]any{
+			{"anchor": "func main() {}", "op": "replace", "lines": []string{"x"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("passing line text as an anchor should be refused")
+	}
+	if !strings.Contains(err.Error(), "is not an anchor") {
+		t.Errorf("err = %q, want it to explain what an anchor is", err)
+	}
+	if !strings.Contains(err.Error(), "a3f2") {
+		t.Errorf("err = %q, want a concrete example", err)
+	}
+}
+
+func TestLooksLikeAnchor(t *testing.T) {
+	for _, ok := range []string{"a3f2", "0000", "ffff", "1b2c"} {
+		if !looksLikeAnchor(ok) {
+			t.Errorf("%q should look like an anchor", ok)
+		}
+	}
+	for _, bad := range []string{"", "a3f", "a3f22", "g3f2", "func main"} {
+		if looksLikeAnchor(bad) {
+			t.Errorf("%q should not look like an anchor", bad)
+		}
+	}
+}

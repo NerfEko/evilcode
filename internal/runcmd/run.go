@@ -91,7 +91,11 @@ func Run(args []string) (int, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return ExitError, err
 	}
-	overrides := cfg.ModelOverrides(*model)
+	// Look overrides up by the *resolved* model, not the flag. Passing the
+	// flag means a session relying on default_model silently gets no
+	// per-model settings at all, which is how anchor_edits appeared to be
+	// broken when it was simply never switched on.
+	overrides := cfg.ModelOverrides(modelName)
 
 	var ts tools.Set
 	if !*noTools {

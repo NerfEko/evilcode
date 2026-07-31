@@ -1928,8 +1928,19 @@ func (m *Model) View() tea.View {
 	rows = m.overlayPalette(rows, inset)
 	rows = m.overlayHistory(rows, inset)
 
+	rows = m.debugOverlay(rows, res.Transcript)
+
+	// The anchor recorder runs on the finished frame, so what it measures is
+	// exactly what the reader saw (plan.md §13).
+	// Only the transcript is measured. The composer and status line move down
+	// as a packed layout grows, which is the layout working, not the screen
+	// jumping.
+	m.observeSmoothness(rows[:min(res.Transcript, len(rows))],
+		max(len(content)-res.Transcript-m.scroll.Offset, 0))
+
 	frame := strings.Join(rows, "\n")
 	m.lastFrame = frame
+	m.autoCapture(frame)
 
 	v := tea.NewView(frame)
 	// These are view properties in Bubble Tea v2, not program options.
