@@ -3741,3 +3741,52 @@ confirming no existing behavior regressed.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green across
 every package.
+
+## 2026-07-31 H5.19 — An enhancement and a prerequisite were the same line
+
+`Build`'s fallback path — `todos, _ = todo.NewStore(dataDir, todoName)`,
+reached whenever the caller doesn't already hold a `*todo.Store` — discarded
+the error unconditionally. H5.13 made that error a lot more likely to be real
+(a corrupt or unreadable state file now surfaces instead of silently reading
+as empty), which made this swallow worse than it looked: a daemon session or
+a swarm worker would build successfully with no todo tool at all, auto-poke
+would read empty state forever, and nothing would say why.
+
+The task named one line, but the fix has to know which of two very different
+things that line represents. `opts.TodoNamespace` empty means a solo
+session's private store — the same shape as the memory bank a few lines
+below, an enhancement the build already tolerates losing (the comment right
+there says so). `opts.TodoNamespace` set means a swarm's shared plan
+(plan.md §20): every session in that swarm is meant to see one list, and
+building anyway hands it a private, empty one instead — coordination that
+silently stopped coordinating.
+
+Fix: check `terr` from `todo.NewStore`. A named namespace fails the whole
+build (`out.Close()`, return the wrapped error) rather than paper over a
+prerequisite. An unnamed one logs to stderr — `fmt.Fprintln(os.Stderr,
+"evilcode: todo store unavailable:", terr)`, matching the exact wording
+`tuicmd.go` already uses for the sibling memory-bank case — and continues
+with `Todos` left nil, same as memory does.
+
+This needed `fail`, the cleanup closure H5.18 had just deleted as unused
+(nothing was open yet at the point it used to guard). It's back in exactly
+one shape now — reachable from a real failure this time, not dead weight —
+but since only one call site needs it, it's inlined as `out.Close(); return
+nil, err` rather than reintroducing a named closure for a single use.
+
+Reproduce: `internal/wiring/todo_failure_test.go`. `blockTodoStore` writes a
+plain file where `todo.NewStore` needs to `MkdirAll` a directory, which fails
+with ENOTDIR regardless of the runtime's uid — deterministic where a
+permissions-based trigger would not be root-safe.
+`TestBuildFailsWhenAnExplicitTodoNamespaceCannotOpen` builds with
+`TodoNamespace: "swarm"` against a blocked store and asserts an error comes
+back. `TestBuildContinuesWithoutTodosWhenNoNamespaceIsConfigured` builds with
+no namespace, asserts the build still succeeds, `Todos` is nil, and something
+landed on stderr (captured via a redirected `os.Stderr` pipe). Confirmed both
+fail against the pre-fix code (stashed `wiring.go`, reran, restored): the
+first got no error at all, the second's stderr capture came back empty.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green across
+every package, including `internal/daemon`, whose two `wiring.Build` callers
+both pass an explicit `TodoNamespace` and are exactly the case this fix makes
+stricter.

@@ -423,7 +423,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   overrides load, so a repo-pinned `default_model` never takes effect on the main run.
   §16 specifies per-repo pinning. Fix: load and apply overrides to the per-build config
   before resolving.  ⟨codex⟩
-- [ ] **H5.19** `internal/wiring/wiring.go:160` — `todo.NewStore`'s error is swallowed
+- [x] **H5.19** `internal/wiring/wiring.go:160` — `todo.NewStore`'s error is swallowed
   (`if todos, terr := ...; terr == nil`), so a daemon or headless session silently has no
   todo tool and auto-poke reads empty state. Fix: log it at minimum; fail the build if the
   namespace was explicitly configured.  ⟨fable⟩

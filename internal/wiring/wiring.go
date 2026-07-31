@@ -11,6 +11,7 @@ package wiring
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
@@ -192,7 +193,18 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 	todos := opts.Todos
 	if todos == nil {
-		todos, _ = todo.NewStore(dataDir, todoName)
+		var terr error
+		if todos, terr = todo.NewStore(dataDir, todoName); terr != nil {
+			if opts.TodoNamespace != "" {
+				// A named namespace is a swarm's shared plan: building the session
+				// anyway would give it silent, private todo state instead of the
+				// coordination it was configured to have (plan.md §20).
+				out.Close()
+				return nil, fmt.Errorf("todo store %q: %w", todoName, terr)
+			}
+			fmt.Fprintln(os.Stderr, "evilcode: todo store unavailable:", terr)
+			todos = nil
+		}
 	}
 	if todos != nil {
 		out.Todos = todos
