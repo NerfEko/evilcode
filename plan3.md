@@ -266,47 +266,123 @@ Two notes on the report's wording, neither of which changes the diagnosis:
 - "A little higher up" is not a fixed offset. The settled region's boundary moves with the
   content, so §2.3 defines it by what the rows *are*, not by how far up they sit.
 
-### §2.3 The policy after this plan
+### §2.3 The settled region
 
-`Dock.Layout` takes the `Owner` array and a block-kind lookup, and computes a **dockable
-mask** per row before it places anything:
+`Dock.Layout` takes the `Owner` array and a block-kind lookup and computes, before it
+places anything, the last row it is allowed to touch:
 
 ```
-dockable[i] = Owner[i] == -1                       chrome: gaps, header
-           || kind(Owner[i]) != BlockAssistant     anything but model prose
-           && !insideLiveReasoning(Owner[i])       see §2.4
+settledEnd = the first row owned by the live tail
+             — the newest block if it is Streaming, else the end of content —
+             minus SettleMargin
 ```
+
+Rows at or below `settledEnd` are off-limits for placement. Above it, a row is dockable if:
+
+```
+dockable[i] = i < settledEnd
+           && (Owner[i] == -1 || kind(Owner[i]) != BlockAssistant)
+```
+
+`Owner[i] == -1` covers chrome — the header, the inter-block gaps — which is content
+nothing will rewrite. Blank slack and scroll padding sit below `settledEnd` by
+construction, so they stop being candidates without needing a rule of their own.
+
+`SettleMargin` is a small guard band, a handful of rows, so a widget is not placed
+immediately above a tail that is about to grow into it. Leave it a named constant with a
+comment: the right value depends on how fast a model streams and how tall the terminal is,
+and it will want tuning against a real session rather than against a test.
 
 Placement rules:
 
 - A run of consecutive dockable rows tall enough for the widget is a slot. Column is the
-  right margin as today; **free width is no longer consulted for a slot on dockable
-  rows** — the widget paints over them.
-- `fits` keeps checking `occupied`, so two widgets still never overlap each other.
-- A widget with an anchor whose rows are still dockable **holds its slot**, unconditionally.
-- A widget whose anchored rows are no longer dockable re-homes on the **next** frame, not
-  after 120. Hysteresis was compensating for a slot definition that churned every frame;
-  a mask driven by block kind does not churn, so the compensation goes.
-- A widget that finds no dockable slot at all pins to the **bottom-most dockable run**
-  and stays there rather than vanishing. If there is genuinely no dockable row on screen —
-  a full screen of nothing but model prose — it is hidden, and that is the one case
-  requirement 4 cannot have. Log it in `DEVIATIONS.md` if it proves common in practice.
-- The `contentHeight < d.lastHeight` wholesale anchor wipe is deleted. Anchors are
-  revalidated against the mask every frame anyway, which is what that wipe was
-  approximating badly.
+  right margin as today.
+- `fits` keeps **both** its checks — `occupied` and `free[i] >= width+WidgetGap`. Rule 4.
+  Settled placement stops the free-width test from failing spuriously; it does not make it
+  unnecessary, and a settled row can still be a full-width line of finished prose.
+- A widget whose anchor is still inside the settled region and still fits **holds its
+  slot**. Since settled rows do not change, this becomes the overwhelmingly common case.
+- No slot → no widget. There is no fallback placement.
+- `reliableWidth`'s look-ahead may become dead once placement is settled-only: it exists
+  to predict a slot that will not stay clear, and a settled slot stays clear by
+  definition. Delete it only if F2.2's reproduction confirms nothing regresses — it is
+  harmless to keep and cheap to remove later.
 
-### §2.4 Thinking blocks and internal scroll
+### §2.4 Anchors that do not drift
 
-A `BlockReasoning` that is `Streaming` and taller than `ThinkingLines` scrolls its own
-content. Its rows are dockable — requirement 2 says so — but a widget must not appear to
-move while the block's *own* content moves under it.
+`anchor.ContentTop` is an absolute transcript line, so anything that changes the number of
+lines *above* a widget silently changes what its anchor points at. Two things do that
+routinely: a reasoning trace collapsing when the answer starts, and a live trace scrolling
+its own content inside the fixed `ThinkingLines` frame (`transcript.go:495`,
+`DefaultThinkingLines = 6`).
 
-The anchor therefore stores, for a widget homed on a reasoning block, the **block index**
-rather than the absolute content line, plus an offset from the block's first row. The
-widget's screen row is recomputed each frame as `firstRowOf(block) + offset - scrollTop`.
-The block's first row is stable while its content churns, so the widget is still.
+The wholesale anchor wipe at `dock.go:194` is the current defense, and it is worse than
+the problem — one collapsing trace re-homes the widget.
 
-For every other kind, the anchor stays an absolute content line, exactly as today.
+Replace both with one mechanism: the anchor stores a **block index plus an offset from
+that block's first row**, for every kind rather than only for reasoning. `Owner` gives
+`firstRowOf(block)` directly, and the screen row is recomputed each frame as
+`firstRowOf(block) + offset - scrollTop`. Lines added or removed above the block do not
+move it, a block's internal churn does not move it, and the `contentHeight < lastHeight`
+wipe is deleted rather than repaired.
+
+### §2.5 Which widget gets the slot
+
+There is one slot and up to seven candidates (`app.go:2536` `activeWidgets`). Today
+priority is static `WidgetKind` order and the list is sorted by it (`app.go:2589`), so
+with a single slot the top-ranked candidate would win permanently. `ModelInfoWidget` is
+added unconditionally (`app.go:2555`) and outranks BackgroundTasks, SwarmStatus and Tips —
+those three would never appear again, and `m.swarmDocked` would be permanently false,
+feeding a permanent falsehood to `m.swarm.ObserveDock` (`app.go:2308`).
+
+So the slot rotates, and importance preempts the rotation. Each candidate carries a score;
+the highest score holds the slot.
+
+```
+score = urgency + airtime  (+ incumbent bonus, if it already holds the slot)
+```
+
+**`urgency`** is what the widget's state deserves right now. Only one kind needs a bespoke
+ramp:
+
+| widget | urgency |
+|---|---|
+| ContextUsage | 0 below ~60% of `contextMax()`, ramping steeply toward the maximum as it approaches full |
+| everything else | a small floor — ModelInfo and Tips lowest, since they are the "nothing is happening" widgets |
+
+**Change is generic, not per-widget.** Rather than teaching each widget to announce that
+its todos changed or its background task finished, hash the widget's rendered `Lines`.
+When the hash changes, that kind's urgency takes a boost that decays over a few seconds.
+One mechanism covers "a todo was completed", "memory recalled something", "a background
+task finished", and every widget added later, without any of them knowing about it.
+
+**`airtime`** is the rotation pressure: it accrues while a kind is *not* holding the slot
+and resets when it takes it. It is **capped well below the urgency a genuine alert
+produces**, which is the whole design — a context meter at 95% must pin the slot, not be
+rotated away by a tip that has been waiting its turn.
+
+**Stability, because rotation is itself a flicker source and flicker is the bug being
+fixed:**
+
+- The incumbent gets a bonus, so a challenger must beat it by a margin rather than by a
+  point.
+- A widget that takes the slot holds it for a minimum dwell, and only an urgency above a
+  high-water mark may preempt that dwell.
+- Score is evaluated on a slow tick, not every frame.
+
+Every threshold, cap and duration above is a **named constant with a comment**, not a
+literal. The right values are a matter of feel at a real terminal in a real session, and
+the first set will be wrong. Leave the knobs where they can be found.
+
+**Deterministic mode.** `airtime` and the change boost are wall-clock driven, so under
+`Deterministic()` both are frozen at zero and selection falls back to `urgency` alone,
+which is derived from state and reproducible. Without this every golden churns —
+invariant 5, the same trap `MemoryActivityWidget` already sidesteps at `app.go:2569`.
+
+**Where it lives.** The score is computed in `activeWidgets`, which already holds every
+piece of state it needs, and rides on the `Widget` struct as one new field. `Dock.Layout`
+picks the maximum and places it. The dock stays a placement engine rather than becoming a
+policy engine — it has enough jobs.
 
 ## §3 Quick view
 
@@ -621,40 +697,60 @@ both need a reproduction before a line changes.
   Do not fix the guard: a guard that correctly suppresses a field that should never have
   been set is still shipping a wasted computation. Reproduce: a test asserting a rendered
   bash row contains the command exactly once.  ⟨fix⟩ ⟨new.md#10⟩
-- [ ] **F2.2** `internal/tui/dock.go:184` `Layout`, `:271` `fits`, `:283` `findSlot` —
-  widgets dock into blank columns, so streaming prose covers them, hides them for
-  `RehomeFrames`, and they read as flashing. Implement §2.3: `Layout` takes `Owner` and a
-  kind lookup, computes the dockable mask, and places on dockable rows **over** their
-  content instead of beside it. `fits` keeps its `occupied` check and loses its `free`
-  check for masked rows. `findSlot` scans dockable runs. Delete `reliableWidth`
-  (`dock.go:166`) if the mask makes it dead — the look-ahead existed to predict a
-  churning slot definition, and the mask does not churn. Reproduce: a test that streams
-  a widening assistant block under a placed widget and asserts the widget's `Placement`
-  is unchanged across every frame.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.3** `internal/tui/dock.go:194` `Layout` — `contentHeight < d.lastHeight` wipes
-  **every** anchor, and a reasoning trace collapsing from nine lines to one triggers it on
-  an ordinary turn. Delete the wipe; anchors are revalidated against the F2.2 mask every
-  frame, which is what it was approximating. Reproduce: place a widget, collapse a
-  reasoning block above it, assert the widget did not move. Note this is the "flash" half
-  of item 5 and F2.2 is the "disappear" half — they will not both be fixed until both
-  ship, so do not stop at one because the PNG improved.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.4** `internal/tui/dock.go:112` `anchor` — a widget homed on a live
-  `BlockReasoning` rides content that scrolls inside a fixed `ThinkingLines` frame
-  (`transcript.go:495`, `DefaultThinkingLines = 6`), so it drifts while the block's own
-  text moves. Implement §2.4: for reasoning-block homes, store block index plus offset and
-  recompute the screen row from the block's first row each frame. Every other kind keeps
-  the absolute content line. Reproduce: stream a 30-line reasoning trace with a widget
-  anchored beside it and assert the widget's row is constant.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.5** `internal/tui/dock.go:24` `RehomeFrames` — with the mask in place, 120
-  frames of hysteresis is compensation for a problem that no longer exists, and it is what
-  makes a genuinely-displaced widget take two seconds to reappear. Re-home on the next
-  frame. Keep the constant only if F2.2's reproduction shows real churn without it; if it
-  goes, delete `anchor.BadFrames` and `anchor.everPlaced` with it rather than leaving
-  dead fields.  ⟨fix⟩ ⟨new.md#5⟩
-- [ ] **F2.6** Verify F2: drive a turn with streaming prose, a tool batch, and a
-  collapsing reasoning trace, capture PNGs across it, and **look at them** — no widget may
-  move, blink, or land beside model prose in any frame. Run a bash tool call and confirm
-  the command appears once. `go test ./...` green. Tag `feat-2`.
+- [ ] **F2.2** `internal/tui/dock.go:283` `findSlot`, `:184` `Layout` — **the root cause.**
+  `findSlot` returns the topmost run with enough free width, and during a model answer the
+  upper viewport is full-width prose, so the first run that passes is the tail: the newest
+  tool rows, the live thinking bubble, and the blank slack and scroll padding that
+  `app.go:2212`/`:2221` put below the content. `FreeWidth` reads those blanks as maximally
+  free, so the widget is placed exactly where the next line will arrive. `reliableWidth`
+  (`dock.go:166`) does not save it — it looks ahead in *space* over rows that are blank
+  because the content has not arrived yet, and it is weakest at the bottom edge where
+  `end` clamps to `len(free)`. Implement §2.3: compute `settledEnd` from `Owner` and
+  refuse to place at or below it. **`fits` keeps both checks** — `occupied` and the
+  free-width test — the no-overlay behavior is wanted and stays. Reproduce: stream an
+  assistant block into a transcript with a placed widget and assert the widget's
+  `Placement` is identical on every frame.  ⟨fix⟩ ⟨new.md#5⟩
+- [ ] **F2.3** `internal/tui/dock.go:184` `Layout` — `Layout` places as many widgets as
+  fit, and `activeWidgets` (`app.go:2536`) offers up to seven. Cap it at **one**, with
+  zero a legitimate outcome: no fallback placement, no pinning a box somewhere bad just to
+  have one. `occupied` loses its cross-widget job and may go with it; delete it rather
+  than leaving it as decoration. Check what `m.swarmDocked` (`app.go:2638`) meant when
+  several widgets could dock and whether `m.swarm.ObserveDock` (`app.go:2308`) still gets
+  a true statement — F2.5 is what keeps it from being permanently false.  ⟨fix⟩
+  ⟨new.md#5⟩
+- [ ] **F2.4** `internal/tui/dock.go:112` `anchor`, `:194` `Layout` — `ContentTop` is an
+  absolute transcript line, so a reasoning trace collapsing from nine lines to one moves
+  everything anchored below it, and the current defense is to wipe **every** anchor when
+  `contentHeight < d.lastHeight`. Implement §2.4: store block index plus an offset from
+  that block's first row, for every kind, and recompute the screen row from `Owner` each
+  frame. Delete the wipe rather than repairing it. Reproduce twice — collapse a reasoning
+  block above a placed widget, and stream a 30-line trace beside one; the widget's row is
+  constant in both.  ⟨fix⟩ ⟨new.md#5⟩
+- [ ] **F2.5** `internal/tui/app.go:2536` `activeWidgets`, `dock.go:184` `Layout` — with
+  one slot and static `WidgetKind` priority (`app.go:2589`), the unconditional
+  `ModelInfoWidget` (`app.go:2555`) wins forever and Tips, BackgroundTasks and SwarmStatus
+  never appear again. Implement §2.5: a `Salience` field on `Widget`, scored in
+  `activeWidgets` as `urgency + airtime` with an incumbent bonus and a minimum dwell;
+  `Layout` places the maximum. ContextUsage is the one bespoke urgency ramp — near-full
+  context must pin the slot and outrank any amount of accrued airtime. Change detection is
+  a hash of the widget's rendered `Lines` with a decaying boost, so no widget has to
+  report its own news. Every threshold a named constant with a comment; they are feel
+  values and the first set will be wrong. Freeze airtime and the change boost under
+  `Deterministic()` or every golden churns (invariant 5). Test: a context meter crossing
+  its threshold takes the slot from an incumbent and holds it; with nothing urgent, every
+  candidate gets the slot within a bounded number of ticks.  ⟨build⟩ ⟨new.md#5⟩
+- [ ] **F2.6** `internal/tui/dock.go:24` `RehomeFrames` — 120 frames of hide-in-place
+  hysteresis was compensating for slots that churned every frame. Settled placement does
+  not churn, so the compensation is either dead or is what makes a genuinely displaced
+  widget take two seconds to return. Re-home on the next frame; keep the constant only if
+  F2.2's reproduction shows real churn without it. If it goes, delete `anchor.BadFrames`
+  and `anchor.everPlaced` with it rather than leaving dead fields.  ⟨fix⟩ ⟨new.md#5⟩
+- [ ] **F2.7** Verify F2: drive a turn with streaming prose, a tool batch, and a
+  collapsing reasoning trace; capture PNGs across it and **look at them** — never more
+  than one widget, never beside model prose, never moving or blinking, and never in the
+  churning tail. Let a session run long enough to see the slot change hands, and drive
+  context usage to near-full to confirm the meter takes the slot and keeps it. Run a bash
+  tool call and confirm the command appears once. `go test ./...` green. Tag `feat-2`.
 
 ## Phase F3 — Click to look
 
@@ -786,7 +882,7 @@ looking at a PNG.
 | 2 | remove the black hole | F6.2 |
 | 3 | `/review` `/bugfix` `/describe` | F4.1 |
 | 4 | `/btw` `/stats` | F4.2 (`/btw` already exists) |
-| 5 | widgets stop flashing | F1.2, F2.2, F2.3, F2.4, F2.5 |
+| 5 | widgets stop flashing | F1.2, F2.2, F2.3, F2.4, F2.5, F2.6 |
 | 6 | re-fetch jcode source | F1.1 |
 | 7 | `evilcode update` | F5.1, F5.2 |
 | 8 | `.md` links open in `glow` | F3.3 |
@@ -811,6 +907,11 @@ source that is wrong in a small way is worth knowing about:
   reuses `RenderSidePanel` and touches none of `/diff`'s state. Building a second panel
   renderer to honor the word "separate" would be reading the report more literally than
   it was meant.
+- **Item 5 — widgets have no left side.** The follow-up describes them filling empty space
+  on the left; `Col` is always `totalWidth - w.Width()` (`dock.go:214`), the right margin,
+  and `anchor.Side` is never read for placement. `DEVIATIONS.md` already records left-side
+  widgets as unreachable. The space they chase is the ragged right edge, and the diagnosis
+  is unaffected.
 
 ## Dismissed findings
 
@@ -825,8 +926,12 @@ reason, never deleted.
 Every box above is `[x]`. `go build ./... && go vet ./... && go test ./...` is green, and
 each of `feat-1` … `feat-6` tags a commit that was green when it was made.
 
-Widgets do not move, blink, or vanish across a turn that streams prose, runs a tool batch,
-and collapses a reasoning trace — and none of them sits beside a line of model text.
+At most one widget is on screen at a time, sometimes none, and the one that is there never
+moves, blinks, or vanishes across a turn that streams prose, runs a tool batch, and
+collapses a reasoning trace. It sits on settled rows — never in the churning tail, never
+beside a line of model text, never overlapping anything. The slot changes hands over a
+long session, and a context meter approaching full takes it and keeps it.
+
 Clicking a read, a write, or a bash row opens a quick view; Esc closes it and the `/diff`
 panel is exactly as it was. A bash row names its command once. A `.md` path is underlined
 only when the file is really there, and clicking it opens `glow` in a new terminal without

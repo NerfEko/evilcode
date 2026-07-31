@@ -2734,3 +2734,32 @@ time.
 
 Verified: the switch loop tears down in order and an error stops it; one
 `session.Resume` per path now; `go test ./... -race` green.
+
+## 2026-07-31 H3.8/H3.9 — One connection, forty relays
+
+**Every attach started a relay and stopped none.** The goroutine is blocked
+reading a subscription channel the connection has already unsubscribed from, so
+it cannot even receive — it just sits there until the whole connection closes.
+
+```
+40 re-attaches on one connection left 40 extra goroutines; each attach starts a
+relay and none of them stop
+```
+
+Forty attaches, forty goroutines. Not approximately: exactly one per attach,
+which is what makes it a leak rather than a load pattern.
+
+The cancel is per *subscription* rather than per connection, which is the whole
+point — the connection outlives the attachment, so anything keyed to the
+connection cannot end an attachment.
+
+**A writer failure left everything else running.** An encode error returned from
+the writer goroutine and nothing else noticed: the reader kept accepting frames,
+the relay kept forwarding events, and every producer kept queueing into a
+connection nobody was draining, until the queues wedged. The writer now drops
+the connection, which fails the reader's next `Scan` and unwinds the rest
+normally. Guarded by a `sync.Once`, since the deferred teardown closes the same
+connection.
+
+Verified: forty re-attaches leave no goroutines behind, ten opened-and-closed
+connections return to baseline; `go test ./... -race` green.

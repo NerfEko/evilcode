@@ -681,13 +681,32 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		sess *Session
 		sub  chan ServerMsg
 		done = make(chan struct{})
+
+		// relayStop ends the current attachment's relay. Per subscription, not
+		// per connection: every attach used to start a relay and stop none, so
+		// a client switching sessions left one goroutine per switch blocked on
+		// a channel it had already been unsubscribed from.
+		relayStop chan struct{}
 	)
+	stopRelay := func() {
+		if relayStop != nil {
+			close(relayStop)
+			relayStop = nil
+		}
+	}
 	defer func() {
+		stopRelay()
 		close(done)
 		if sess != nil && sub != nil {
 			sess.unsubscribe(sub)
 		}
 	}()
+
+	// A writer failure takes the connection down with it. Returning from the
+	// writer alone left the reader, the relay and every event producer running
+	// against a connection nobody was draining, until their queues wedged.
+	var closeOnce sync.Once
+	drop := func() { closeOnce.Do(func() { conn.Close() }) }
 
 	// One writer goroutine owns the connection, so a broadcast and a reply can
 	// never interleave halfway through a JSON frame.
@@ -697,6 +716,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			select {
 			case msg := <-out:
 				if err := enc.Encode(msg); err != nil {
+					drop()
 					return
 				}
 			case <-done:
@@ -732,6 +752,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 				continue
 			}
+			stopRelay()
 			if sess != nil && sub != nil {
 				sess.unsubscribe(sub)
 			}
@@ -751,16 +772,19 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			for i := range replay {
 				send(ServerMsg{Kind: MsgEvent, Event: &replay[i]})
 			}
-			go func(sess *Session, sub chan ServerMsg) {
+			relayStop = make(chan struct{})
+			go func(sub chan ServerMsg, stop chan struct{}) {
 				for {
 					select {
 					case msg := <-sub:
 						send(msg)
+					case <-stop:
+						return
 					case <-done:
 						return
 					}
 				}
-			}(sess, sub)
+			}(sub, relayStop)
 
 		case MsgInput:
 			if sess == nil {

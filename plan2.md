@@ -277,10 +277,10 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   called a second time purely to get the messages, and the returned `*Store` is discarded
   unclosed: a leaked fd and a redundant full-file parse per resume. Fix: reuse the messages
   from the first call, already in scope.  ⟨both⟩
-- [ ] **H3.8** `internal/daemon/server.go:592` — each re-attach on a connection starts a new
+- [x] **H3.8** `internal/daemon/server.go:592` — each re-attach on a connection starts a new
   event relay without cancelling the previous one; the old goroutine blocks until the whole
   connection closes. Fix: per-subscription cancel, fire it on switch and detach.  ⟨both⟩
-- [ ] **H3.9** `internal/daemon/server.go:537` — a writer-side encode failure exits only the
+- [x] **H3.9** `internal/daemon/server.go:537` — a writer-side encode failure exits only the
   writer goroutine; the reader, the connection, and the event producers stay live until
   queues wedge. Fix: close the connection and cancel its context on any writer failure.
   ⟨codex⟩
