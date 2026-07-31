@@ -205,9 +205,13 @@ type RenameResult struct {
 // Rename renames a symbol across the workspace, atomically.
 //
 // Atomic in the sense that matters: every file is read and rewritten in memory
-// first, and nothing touches disk until all of them have succeeded. A rename
-// that writes three files and then fails on the fourth leaves a workspace that
-// does not compile and that nobody can easily undo (plan.md §17).
+// first (phase one), then staged as synced temp files with each source
+// reverified unchanged (phase two), and only then renamed into place (phase
+// three) — see commitRename. A rename that touches several files and then
+// fails partway leaves either every original untouched (a staging failure) or
+// every already-renamed file put back (a commit failure), rather than a
+// workspace that does not compile and that nobody can easily undo (plan.md
+// §17).
 func (c *Client) Rename(ctx context.Context, path string, line, char int, newName string) (*RenameResult, error) {
 	if strings.TrimSpace(newName) == "" {
 		return nil, fmt.Errorf("rename needs a new name")
@@ -261,20 +265,89 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 		res.Files[file] = len(edits)
 	}
 
-	// Phase two: write. Every body is already computed, so the only way to fail
-	// here is the filesystem itself.
-	for file, body := range res.After {
-		info, err := os.Stat(file)
-		mode := os.FileMode(0o644)
-		if err == nil {
-			mode = info.Mode().Perm()
-		}
-		if err := os.WriteFile(file, []byte(body), mode); err != nil {
-			return nil, fmt.Errorf("rename failed writing %s: %w", file, err)
-		}
-		c.Forget(file)
+	if err := commitRename(res, c.Forget); err != nil {
+		return nil, err
 	}
 	return res, nil
+}
+
+// commitRename replaces every source in res.Before with the matching body in
+// res.After.
+//
+// Phase two stages each replacement as a synced temp file beside its
+// destination, first re-reading the source to confirm it still matches what
+// phase one saw — something else may have written it in between, and this is
+// the last chance to notice before overwriting it unseen. A failure anywhere
+// in staging leaves every original file untouched, because nothing real has
+// been touched yet.
+//
+// Phase three renames every staged temp into place. Each rename is
+// same-directory and effectively instant, which is the smallest failure
+// window a multi-file replacement can have — but if one still fails, every
+// file already renamed is put back to what phase one read, and the remaining
+// staged temps are discarded, rather than leaving the workspace half-renamed.
+func commitRename(res *RenameResult, forget func(string)) error {
+	staged := make(map[string]string, len(res.After)) // dest path -> temp path
+	rollbackStaging := func() {
+		for _, tmp := range staged {
+			os.Remove(tmp)
+		}
+	}
+	for file, body := range res.After {
+		cur, err := os.ReadFile(file)
+		if err != nil {
+			rollbackStaging()
+			return fmt.Errorf("rename touches %s, which could not be re-read before committing: %w", file, err)
+		}
+		if string(cur) != res.Before[file] {
+			rollbackStaging()
+			return fmt.Errorf("%s changed on disk since the rename was computed; refusing to overwrite it", file)
+		}
+		mode := os.FileMode(0o644)
+		if info, err := os.Stat(file); err == nil {
+			mode = info.Mode().Perm()
+		}
+		tmp, err := os.CreateTemp(filepath.Dir(file), "."+filepath.Base(file)+".*")
+		if err != nil {
+			rollbackStaging()
+			return fmt.Errorf("rename could not stage %s: %w", file, err)
+		}
+		name := tmp.Name()
+		_, writeErr := tmp.Write([]byte(body))
+		if writeErr == nil {
+			writeErr = tmp.Sync()
+		}
+		if closeErr := tmp.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr == nil {
+			writeErr = os.Chmod(name, mode)
+		}
+		if writeErr != nil {
+			os.Remove(name)
+			rollbackStaging()
+			return fmt.Errorf("rename could not stage %s: %w", file, writeErr)
+		}
+		staged[file] = name
+	}
+
+	committed := make(map[string]bool, len(staged))
+	for file, tmp := range staged {
+		if err := os.Rename(tmp, file); err != nil {
+			for done := range committed {
+				os.WriteFile(done, []byte(res.Before[done]), 0o644)
+			}
+			for other, otherTmp := range staged {
+				if !committed[other] && other != file {
+					os.Remove(otherTmp)
+				}
+			}
+			return fmt.Errorf("rename failed committing %s: %w", file, err)
+		}
+		committed[file] = true
+		forget(file)
+	}
+	return nil
 }
 
 // utf16ToByte converts a protocol character offset into a byte index into line.

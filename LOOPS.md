@@ -3650,3 +3650,50 @@ cases fail against the pre-fix `model.go` (stashed, re-ran, restored); the
 
 Verified: `go build ./... && go vet ./... && go test ./...` green across
 every package.
+
+## 2026-07-31 H5.17 — Atomic in the doc comment only
+
+`Rename`'s doc comment claimed the whole operation was atomic: read and
+recompute every file in memory first, don't touch disk until all of them
+succeed. Phase one held up that claim. Phase two didn't: it looped over
+`res.After` (a Go map, so in randomized order) and called `os.WriteFile`
+directly on each destination. A failure on file 3 of 5 left 1 and 2 already
+overwritten, 4 and 5 untouched, and nothing that knew how to put 1 and 2 back
+— exactly the half-renamed, non-compiling workspace the comment said
+couldn't happen.
+
+Fix: extracted the write phase into `commitRename(res *RenameResult, forget
+func(string)) error`, in three parts. Staging first re-reads each source and
+compares it against `res.Before` — if something else wrote the file since
+phase one read it, the whole rename is refused rather than overwriting an
+edit it never saw. Then it writes the new body to a synced temp file beside
+the destination (same shape as `tools.writeAtomic`, but this package doesn't
+import `internal/tools` and the multi-file transaction here needed staging
+tracked across the batch anyway, so it's a second small copy rather than an
+export). A failure at this stage removes every temp file already staged and
+returns — no real file has been touched. Only once every file is staged does
+the commit loop rename each temp into place; each rename is same-directory
+and about as close to atomic as a write ever gets, so the only failure window
+left is a bad rename mid-batch, and even then the commit loop writes every
+already-renamed file back to its `res.Before` content before returning.
+
+Reproduce: `internal/lsp/commit_rename_test.go`, three tests against
+`commitRename` directly rather than the full `Rename` (which needs a live LSP
+subprocess this package has no test harness for).
+`TestCommitRenameLeavesEverythingUntouchedWhenAStagingFailsMidway` makes one
+of two destinations a directory instead of a file, so staging it fails
+reliably regardless of iteration order, and asserts the other, healthy file
+is untouched — repeated 20 times since map order is randomized and the old
+bug only shows up when the healthy file happens to be visited first.
+`TestCommitRenameRefusesASourceChangedSincePhaseOne` feeds a `Before` that
+doesn't match what's actually on disk and asserts the write is refused and
+the real (concurrently edited) content survives. Confirmed both fail against
+the old direct-`os.WriteFile` logic (swapped `commitRename`'s body back
+temporarily, reran, restored): the staging test corrupted the healthy file in
+19 of 20 runs, and the source-changed test silently overwrote the concurrent
+edit every time.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green, including
+the existing `TestRenameRefusesPathsOutsideTheWorkspace` and
+`TestRenameAcceptsAWorkspaceReachedThroughASymlink`, unaffected since phase
+one's confinement check is unchanged.

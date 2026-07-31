@@ -414,7 +414,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [x] **H5.16** `internal/todo/model.go:282` — validation permits blank and duplicate IDs,
   invalid and self-referential dependencies, and confidence above 100, which produces
   ambiguous updates and bypasses the §12.3 gates. Fix: reject all of them.  ⟨codex⟩
-- [ ] **H5.17** `internal/lsp/ops.go:258` — multi-file rename is compute-first (correct) but
+- [x] **H5.17** `internal/lsp/ops.go:258` — multi-file rename is compute-first (correct) but
   the write phase is sequential and in place, so a mid-way failure leaves the workspace
   partially renamed despite being described as atomic. Fix: stage and sync every
   replacement, verify sources are unchanged, commit with rollback.  ⟨both⟩
