@@ -11,7 +11,6 @@
    ✓ ask · 7 tok
 
  Exponential it is.
-
  💡 Ctrl+R searches your prompt history
  2>
    Ctrl+Enter to queue

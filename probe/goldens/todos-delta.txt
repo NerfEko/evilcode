@@ -9,15 +9,13 @@
  Tracking the work.
                                                                                                         ╭──────────────────────────────────╮
    ✓ todo · 23 tok                                                                                      │ Todos 1/4 ●●○○ · 100%            │
-                                                                                                        │   ● Wire the refresh path        │
-   ↳ 4 added  (1/4)                                                                                     │   ⊳ Add the retry gate (blocked) │
-     + Read the OAuth callback handler                                                                  │   ○ Write the integration        │
-     + Wire the refresh path                                                                            │   +1 done                        │
-     + Add the retry gate                                                                               ╰──────────────────────────────────╯
-     + Write the integration test
+   ↳ 4 added  (1/4)                                                                                     │   ● Wire the refresh path        │
+     + Read the OAuth callback handler                                                                  │   ⊳ Add the retry gate (blocked) │
+     + Wire the refresh path                                                                            │   ○ Write the integration        │
+     + Add the retry gate                                                                               │   +1 done                        │
+     + Write the integration test                                                                       ╰──────────────────────────────────╯
 
  Tracked. Working through the refresh path next.Done.Done.Done.
-
 
  ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
  2>

@@ -21,7 +21,6 @@
  └─ (+1 -1 total)
 
  That was the clamp bug.
-
  💡 Ctrl+R searches your prompt history
  2>
    Ctrl+Enter to queue

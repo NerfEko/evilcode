@@ -381,3 +381,172 @@ func TestFuzzyScorePrefersAdjacency(t *testing.T) {
 		t.Errorf("adjacent match scored %d, scattered scored %d — adjacency must win", tight, scattered)
 	}
 }
+
+func TestCheckpointAndRewindPoints(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := Open(dir, "bat")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "first task"})
+	st.WriteMessage(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	st.WriteCheckpoint("after-first")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "second task"})
+	st.Close()
+
+	cps, err := Checkpoints(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cps) != 1 || cps[0].Name != "after-first" {
+		t.Fatalf("checkpoints = %+v", cps)
+	}
+
+	points, err := RewindPoints(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("rewind points = %+v, want 2", points)
+	}
+	if points[0].Index != 1 || points[1].Index != 2 {
+		t.Errorf("points should be numbered from 1: %+v", points)
+	}
+}
+
+func TestRewindPointsSkipHarnessMessages(t *testing.T) {
+	// An automated continuation is not a point a person would think of
+	// rewinding to.
+	dir := t.TempDir()
+	st, _ := Open(dir, "bat")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "real prompt"})
+	st.WriteMessage(provider.Message{
+		Role: provider.RoleUser, Content: "[automated todo completion gate] keep going",
+	})
+	st.Close()
+
+	points, _ := RewindPoints(st.Path)
+	if len(points) != 1 || points[0].Prompt != "real prompt" {
+		t.Errorf("points = %+v, want only the real prompt", points)
+	}
+}
+
+func TestRewindTruncatesAndBacksUp(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := Open(dir, "bat")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "one"})
+	st.WriteMessage(provider.Message{Role: provider.RoleAssistant, Content: "a"})
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "two"})
+	st.WriteMessage(provider.Message{Role: provider.RoleAssistant, Content: "b"})
+	st.Close()
+
+	points, _ := RewindPoints(st.Path)
+	if len(points) != 2 {
+		t.Fatalf("points = %+v", points)
+	}
+
+	kept, err := Rewind(dir, "bat", points[1].Entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range kept {
+		if m.Content == "two" || m.Content == "b" {
+			t.Errorf("rewind kept a message it should have pruned: %q", m.Content)
+		}
+	}
+	// A mistaken rewind must be recoverable.
+	if _, err := os.Stat(st.Path + ".bak"); err != nil {
+		t.Error("rewind should leave a backup")
+	}
+}
+
+func TestCollapseSummaryDescribesWhatWasLost(t *testing.T) {
+	got := CollapseSummary([]provider.Message{
+		{Role: provider.RoleUser, Content: "do the thing"},
+		{Role: provider.RoleTool, Content: "output"},
+		{Role: provider.RoleAssistant, Content: "I changed three files."},
+	})
+	for _, want := range []string{"1 prompt", "1 tool call", "I changed three files", "still changed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary is missing %q:\n%s", want, got)
+		}
+	}
+	if got := CollapseSummary(nil); got != "" {
+		t.Errorf("an empty prune should produce no summary, got %q", got)
+	}
+}
+
+func TestSaveMarksTheSession(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := Open(dir, "bat")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "x"})
+	st.Close()
+
+	if err := Save(dir, "bat", true); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := Describe(dir, "bat")
+	if !info.Saved {
+		t.Error("session should be pinned")
+	}
+
+	Save(dir, "bat", false)
+	info, _ = Describe(dir, "bat")
+	if info.Saved {
+		t.Error("session should be unpinned")
+	}
+}
+
+func TestRenameRefusesCollisionsAndBadNames(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"bat", "wolf"} {
+		st, _ := Open(dir, n)
+		st.Close()
+	}
+	if err := Rename(dir, "bat", "wolf"); err == nil {
+		t.Error("renaming onto an existing session must be refused")
+	}
+	// The name becomes a filename, so it has to stay safe.
+	for _, bad := range []string{"", "a/b", "with space"} {
+		if err := Rename(dir, "bat", bad); err == nil {
+			t.Errorf("rename to %q should be refused", bad)
+		}
+	}
+	if err := Rename(dir, "bat", "raven"); err != nil {
+		t.Errorf("a valid rename failed: %v", err)
+	}
+}
+
+func TestDeriveTitlePrefersWhatTheAgentUnderstood(t *testing.T) {
+	// The list should be labeled by what the agent understood you wanted,
+	// which is more useful than the first thing you happened to type.
+	if got := DeriveTitle("auth flow", "ship the gate", "read the handler", "hi"); got != "auth flow" {
+		t.Errorf("got %q, want the active group", got)
+	}
+	if got := DeriveTitle("", "ship the gate", "read the handler", "hi"); got != "ship the gate" {
+		t.Errorf("got %q, want the stated intention", got)
+	}
+	if got := DeriveTitle("", "", "read the handler", "hi"); got != "read the handler" {
+		t.Errorf("got %q, want the first todo", got)
+	}
+	if got := DeriveTitle("", "", "", "hi"); got != "hi" {
+		t.Errorf("got %q, want the prompt fallback", got)
+	}
+	if got := DeriveTitle("", "", "", ""); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestTransferCarriesASummary(t *testing.T) {
+	dir := t.TempDir()
+	old, _ := Open(dir, "bat")
+	old.Close()
+
+	if err := Transfer(dir, "bat", "raven", "we wired the auth flow"); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := Messages(filepath.Join(Dir(dir), "raven.jsonl"))
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "we wired the auth flow") {
+		t.Errorf("transferred messages = %+v", msgs)
+	}
+	if err := Transfer(dir, "bat", "raven", "again"); err == nil {
+		t.Error("transferring onto an existing session must be refused")
+	}
+}

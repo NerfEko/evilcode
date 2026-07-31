@@ -12,8 +12,8 @@
  1› fix the auth token refresh
 
  Done.
-
  💡 Ctrl+R searches your prompt history
+ ⌨ Ctrl+R → search prompt history
  3> fix the auth token refresh
    Ctrl+Enter to queue
  (history search) auth█  ↑↓ select · ↵ insert · Esc cancel

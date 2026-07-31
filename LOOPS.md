@@ -632,3 +632,26 @@ says and the one rule that makes the optimization safe.
 Verified: 20 keymap/reasoning tests, including that rare-chord hints stop after four
 uses, reappear after 45 days, survive a restart, and that near-miss hints are capped per
 chord and per interval.
+
+## 2026-07-31 P2.22 — session picker, checkpoints, rewind
+
+Done: the full-screen picker of §5.4, plus `/save`, `/rename`, `/fork`, `/transfer`,
+`/checkpoint`, and collapse-and-report `/rewind`.
+
+Rewind keeps a `.bak` of the session file and hands the model a one-paragraph summary of
+what was pruned — how many prompts and tool calls, and where the assistant had got to.
+Silently losing that stretch would leave the model confidently wrong about state it can
+no longer see. Files already changed stay changed and durable state survives, which is
+the distinction §18 draws: rewinding prunes exploratory *context*, not work.
+
+Rewind points skip harness-authored continuations. "[automated todo completion gate]" is
+not a point anyone thinks of returning to.
+
+Resuming from the picker exits with a target and re-enters rather than swapping state in
+place. The agent, todo store, prompt history, and poke breakers are each bound to one
+session; re-entering is a far smaller surface than rebuilding all of them consistently.
+
+Sessions now record the directory they started in, so the picker can flag `▸ here`.
+
+Verified: 9 new session tests. PNG looked at — search bar, 40/60 split, `◀ current` and
+`▸ here` badges, and the crash reason in the preview pane.

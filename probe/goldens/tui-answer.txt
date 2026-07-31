@@ -8,7 +8,6 @@
 
  Yes — that function parses the config and returns the defaults when the file is absent. It never returns a nil map, so callers can index it
  safely.
-
  💡 Ctrl+R searches your prompt history
  2>
    Ctrl+Enter to queue

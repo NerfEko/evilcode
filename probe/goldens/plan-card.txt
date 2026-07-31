@@ -19,7 +19,6 @@
  │ The test above, plus one manual cold start.                                                      │
  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-
  🧭 Planning wire the auth flow... (plan-only; no edits)
  1>
    Ctrl+Enter to queue

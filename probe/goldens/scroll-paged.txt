@@ -34,7 +34,7 @@
  Line 28 of a deliberately long answer.
  Line 29 of a deliberately long answer.
  Line 30 of a deliberately long answer.
- Line 31 of a deliberately long answer.
  💡 Ctrl+R searches your prompt history
+ ⌨ PgUp → page up
  2>
    Ctrl+Enter to queue

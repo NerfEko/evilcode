@@ -1242,6 +1242,67 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.scroll.FollowBottom()
 		return m, nil
 
+	case "resume", "graveyard", "sessions":
+		m.openSessions()
+		return m, nil
+
+	case "save", "unsave":
+		if m.store == nil {
+			m.notice = "no session to pin"
+			return m, nil
+		}
+		if err := session.Save(m.dataDir, m.store.Name, name == "save"); err != nil {
+			m.notice = err.Error()
+		} else if name == "save" {
+			m.notice = "📌 Saved " + m.store.Name
+		} else {
+			m.notice = "Unpinned " + m.store.Name
+		}
+		return m, nil
+
+	case "rename":
+		if m.store == nil || arg == "" {
+			m.notice = "usage: /rename <new-name>"
+			return m, nil
+		}
+		if err := session.Rename(m.dataDir, m.store.Name, arg); err != nil {
+			m.notice = err.Error()
+			return m, nil
+		}
+		m.notice = "Renamed to " + arg + " · resume it to continue there"
+		return m, nil
+
+	case "fork":
+		if m.store == nil || arg == "" {
+			m.notice = "usage: /fork <new-name>"
+			return m, nil
+		}
+		if err := session.Fork(m.dataDir, m.store.Name, arg); err != nil {
+			m.notice = err.Error()
+		} else {
+			m.notice = "Forked to " + arg
+		}
+		return m, nil
+
+	case "checkpoint":
+		if m.store == nil {
+			m.notice = "no session to checkpoint"
+			return m, nil
+		}
+		label := arg
+		if label == "" {
+			label = fmt.Sprintf("checkpoint-%d", m.promptCount)
+		}
+		if err := m.store.WriteCheckpoint(label); err != nil {
+			m.notice = err.Error()
+		} else {
+			m.notice = "Checkpoint " + label
+		}
+		return m, nil
+
+	case "rewind":
+		return m.runRewind(arg)
+
 	case "version":
 		m.notice = "evilcode " + m.header.Version
 		return m, nil
