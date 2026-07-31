@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -240,6 +241,13 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 		After:  map[string]string{},
 	}
 	for file, edits := range changes {
+		// The paths come from the language server, which is a subprocess
+		// answering with whatever it likes. A rename that edits files outside
+		// the workspace is not a rename, and nothing downstream would notice —
+		// the write phase is trusted precisely because phase one succeeded.
+		if err := c.insideRoot(file); err != nil {
+			return nil, err
+		}
 		data, err := os.ReadFile(file)
 		if err != nil {
 			return nil, fmt.Errorf("rename touches %s, which could not be read: %w", file, err)
@@ -300,6 +308,32 @@ func utf16ToByte(line string, char int) (int, error) {
 		return len(line), nil
 	}
 	return 0, fmt.Errorf("character offset %d is past the end of the line", char)
+}
+
+// insideRoot refuses a server-supplied path that leaves the workspace.
+//
+// Resolved on both sides before comparing, so a workspace reached through a
+// symlink does not reject its own files — the same reasoning as the filesystem
+// tools' confinement, and the same trap if it is skipped.
+func (c *Client) insideRoot(path string) error {
+	root := c.Root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	full := path
+	if !filepath.IsAbs(full) {
+		full = filepath.Join(root, full)
+	}
+	if resolved, err := filepath.EvalSymlinks(full); err == nil {
+		full = resolved
+	}
+	rel, err := filepath.Rel(root, filepath.Clean(full))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf(
+			"the language server asked to edit %s, which is outside the workspace %s",
+			path, c.Root)
+	}
+	return nil
 }
 
 // ApplyEdits applies a file's edits to its text.

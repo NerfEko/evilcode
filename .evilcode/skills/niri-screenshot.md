@@ -1,0 +1,1 @@
+/home/eko/.agents/skills/niri-screenshot//SKILL.md

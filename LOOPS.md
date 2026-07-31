@@ -3004,3 +3004,44 @@ daemon's leftovers, rather than whenever a dial happened to fail.
 Verified: three squatted-directory shapes refused and a proper one accepted; a
 second daemon refuses to start and the first stays reachable; `go test ./...
 -race` green.
+
+## 2026-07-31 H4.6/H4.7 — Deciding a path is safe, and then using a different one
+
+**Confinement checked one path and opened another.** `resolve` walks the
+symlinks to decide a path is inside the workspace; the caller then opens the
+path as given. Two operations, and what changes in between is not checked.
+
+The first test I wrote for this passed against the broken code, which is worth
+recording because it looked convincing. It put a symlink in the workspace and
+tried to read through it — and `resolve` refuses that, correctly, because the
+link is there when it looks. What it does not refuse is a link that appears
+*after* it looks.
+
+The race needs no goroutines to demonstrate, because the ordering is the bug.
+The test stages it: validate `sub/secret.txt`, which is genuinely inside the
+workspace and genuinely accepted; replace `sub` with a link pointing out; then
+open. The plain open reads the attacker's file — the test asserts that, so it
+fails if the window ever stops being real — and the confined open refuses.
+
+```
+confine_test.go:57: the plain open followed the swapped symlink out of the workspace
+confine_test.go:63: the confined open followed a symlink swapped in after validation  ← without the fix
+```
+
+`openat2` with `RESOLVE_BENEATH` makes the kernel do the resolution and the
+refusal in one syscall. `golang.org/x/sys` was already an indirect dependency,
+so this is a promotion rather than a new one. Kernels before 5.6 have no such
+syscall and fall back to the old open — worse, but not silently: the fallback is
+one branch with a comment saying what it costs.
+
+Writes go through a temp file and a rename, so there is no single descriptor to
+bound. `checkBeneath` opens the destination's *parent* beneath the root instead,
+which is the same guarantee for the component that actually gets redirected.
+
+**The language server's paths were applied as given.** A rename edits whatever
+files the server names, and a server is a subprocess that answers with whatever
+it likes. Phase one reads them, phase two writes them, and the write phase is
+trusted precisely because phase one succeeded. Each path is now checked against
+the client root — resolved on both sides, so a workspace reached through a
+symlink does not reject its own files, which is the trap the filesystem tools
+already fell into once.

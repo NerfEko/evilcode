@@ -1,0 +1,1 @@
+/home/eko/.agents/skills/find-skills//SKILL.md

@@ -172,7 +172,7 @@ Tasks carry a loop tag, as in `plan3.md`:
 | J6 | compaction that does not throw away the present | depends on J5's embedder |
 | J7 | sessions that survive and can be found | |
 | J8 | swarm notices worth reading | |
-| J9 | skills that scale past a dozen | |
+| J9 | skills that are found at all | 17 skills on this machine load as 0; J9.1–J9.3 depend on nothing and can be pulled to the front of the plan |
 | J10 | overnight that reports what it did | last: it is the least-used path |
 
 J1 first because it is the highest ratio of quality to effort in the plan and it needs
@@ -857,25 +857,55 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J9 — Skills that scale
 
-- [ ] **J9.1** `internal/tools/skill.go:50` `LoadSkills` — a skill is a single file and
-      cannot ship the script it describes. Support `skills/<name>/SKILL.md` with YAML front
-      matter, directory as working material; keep the flat form. §9.1. ⟨build⟩
-      ⟨jcode: crates/jcode-base/src/skill.rs:416-523⟩
-- [ ] **J9.2** `internal/tools/skill.go:178` `NewSkillTool` — a skill cannot narrow what the
-      model may do. Front-matter `allowed-tools:` restricts the tool set after load. §9.2.
-      ⟨build⟩ ⟨jcode: crates/jcode-base/src/skill.rs:14-33,478-503⟩
-- [ ] **J9.3** `internal/tools/skill.go:114` `SkillSet.Index` — the whole index sits in the
-      prompt and stops scaling past ~30 skills. Embed skills alongside memories (needs J5);
-      a strong match injects the summary. Config-gated, **off by default**, with the
-      prompt-cache trade written into `DEVIATIONS.md`. §9.3. ⟨build⟩
-      ⟨jcode: crates/jcode-base/src/memory.rs:777-806 (`synthetic_skill_entries`),
-      crates/jcode-memory-types/src/lib.rs:779-820 (`skill_retrieval_bonus`)⟩
-- [ ] **J9.4** `internal/tools/skill.go:50` `LoadSkills` — authoring a skill needs a
-      restart. `/skills reload`, and re-read a body whose mtime moved. §9.4. ⟨build⟩
+**J9.1–J9.3 are one bug in three parts.** This machine has 17 skills in `~/.agents/skills`
+and evilcode loads zero of them. Do not start J9.4 until `/skills` lists all 17 with real
+descriptions — the later tasks are refinements of a feature that currently does not reach
+its input.
+
+- [ ] **J9.1** `internal/tools/skill.go:34` `SkillDirs` — the search path is
+      `.evilcode/skills` and `<configDir>/skills` only, so `~/.agents/skills` (17 skills on
+      this machine) and `~/.claude/skills` are invisible. Search, nearest first:
+      `<repo>/.evilcode/skills`, `<repo>/.agents/skills`, `<configDir>/skills`,
+      `~/.agents/skills`, `~/.claude/skills`. Nearest wins on a name clash; `/skills` names
+      the source directory per skill. §9.1. ⟨fix⟩
+      ⟨jcode: crates/jcode-base/src/skill.rs:222-295 (`load`, `load_global`,
+      `load_project_overlay`, `merge_overlay`)⟩
+      — evilcode already does exactly this for `AGENTS.md`/`CLAUDE.md` in
+      `internal/agent/context.go`; match that shape.
+- [ ] **J9.2** `internal/tools/skill.go:50` `LoadSkills` — indexes top-level `*.md`, so
+      every `<name>/SKILL.md` is skipped; all 17 skills on this machine are that layout, and
+      eight ship sibling directories they reference. Load `<name>/SKILL.md` named for its
+      directory, expose the directory path in the `skill` tool result, keep the flat
+      `<name>.md` form working (`.evilcode/skills/selfdev.md` must not break). §9.2.
+      ⟨fix⟩ ⟨jcode: crates/jcode-base/src/skill.rs:416-476⟩
+- [ ] **J9.3** `internal/tools/skill.go:83` `skillSummary` — finds the description by
+      `CutPrefix(line, "description:")`, which returns `>` for a YAML folded block and drops
+      every continuation line. `~/.agents/skills/agent-architect/SKILL.md` is exactly this
+      and yields an empty index entry. Parse the front-matter block as YAML; handle inline,
+      `>` folded and `|` literal. §9.3. ⟨fix⟩
+      ⟨jcode: crates/jcode-base/src/skill.rs:505-523 (`parse_frontmatter`, via serde_yaml)⟩
+- [ ] **J9.4** `internal/tools/skill.go:178` `NewSkillTool` — a skill cannot narrow what the
+      model may do, and `~/.agents/skills/agent-browser/SKILL.md` already declares
+      `allowed-tools` that evilcode ignores. Restrict the tool set for turns after load.
+      §9.4. ⟨build⟩ ⟨jcode: crates/jcode-base/src/skill.rs:14-33,478-503⟩
+- [ ] **J9.5** `internal/tools/skill.go:114` `SkillSet.Index` — the whole index sits in the
+      prompt; J9.1 takes it from 2 entries to 19 and it stops being free somewhere past 30.
+      Embed skills alongside memories (needs J5); a strong match injects the summary.
+      Config-gated, **off by default**, prompt-cache trade written into `DEVIATIONS.md`.
+      §9.5. ⟨build⟩ ⟨jcode: crates/jcode-base/src/memory.rs:777-806
+      (`synthetic_skill_entries`), crates/jcode-memory-types/src/lib.rs:779-820
+      (`skill_retrieval_bonus`)⟩
+- [ ] **J9.6** `internal/tools/skill.go:50` `LoadSkills` — authoring a skill needs a
+      restart, which is what makes skills annoying to write. `/skills reload`, and re-read a
+      body whose mtime moved. §9.6. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/skill.rs:547-580⟩
-- [ ] Verify J9: a directory skill with a script the model runs; a skill that forbids
-      `write` and a turn that respects it; edit a skill mid-session and reload; with J9.3 on,
-      a matching prompt surfaces the skill unasked. Tag `jcode-9`.
+- [ ] Verify J9: `/skills` lists all 17 from `~/.agents/skills` plus the 2 in
+      `.evilcode/skills`, each with a real one-line description and its source directory;
+      `agent-architect` specifically shows its folded description, not `>`; load
+      `niri-screenshot` and confirm the body and its directory arrive; a repo skill shadows
+      a global one of the same name; a skill that forbids `write` is respected; edit a skill
+      mid-session and reload; with J9.5 on, a matching prompt surfaces one unasked.
+      Tag `jcode-9`.
 
 ## Phase J10 — Overnight that reports
 
@@ -986,8 +1016,9 @@ it a week ago.
 A swarm notice says what the other agent was doing and shows the diff; two writers on one
 file both hear about it; a four-hour-old read no longer fires; a dead worker is visible.
 
-A skill is a directory that can ship its own scripts, can narrow the tool set, and reloads
-without a restart.
+`/skills` lists every skill on the machine — the 17 in `~/.agents/skills` included — each
+with the description its own front matter states, from a directory it can ship scripts
+beside; a skill can narrow the tool set, and reloads without a restart.
 
 An overnight run leaves an HTML report naming what it changed, what validated it, and which
 limit stopped it.

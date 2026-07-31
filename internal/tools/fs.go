@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -225,7 +226,7 @@ func (f *FS) readTool() Tool {
 				return f.readWindow(full, info, a, cap)
 			}
 
-			data, err := os.ReadFile(full)
+			data, err := f.readConfined(full)
 			if err != nil {
 				return Result{}, err
 			}
@@ -275,7 +276,7 @@ func (f *FS) readTool() Tool {
 // pieces rather than becoming unreadable — refusing outright would make `read`
 // useless on exactly the files where paging matters.
 func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Result, error) {
-	file, err := os.Open(full)
+	file, err := f.openConfined(full)
 	if err != nil {
 		return Result{}, err
 	}
@@ -361,6 +362,34 @@ func humanBytes(n int64) string {
 	}
 }
 
+// openConfined opens a file for reading, atomically bounded to the workspace
+// when confinement is on.
+//
+// resolve() has already validated the path, but validating and opening are two
+// operations: a directory component swapped for a symlink in between escapes.
+// With confinement off there is nothing to bound, and the plain open is the
+// whole story.
+func (f *FS) openConfined(full string) (*os.File, error) {
+	if !f.Confine {
+		return os.Open(full)
+	}
+	root := f.Root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	return openBeneath(root, resolveExisting(full), os.O_RDONLY, 0)
+}
+
+// readConfined reads a whole file through the confined open.
+func (f *FS) readConfined(full string) ([]byte, error) {
+	file, err := f.openConfined(full)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
+}
+
 // writeAtomic replaces a file's contents in one visible step.
 //
 // `os.WriteFile` truncates the destination and then writes into it, so for the
@@ -374,6 +403,23 @@ func humanBytes(n int64) string {
 // atomic within a filesystem, and the mode is copied from the destination
 // because the replacement is the same file as far as anyone using it is
 // concerned.
+func (f *FS) writeConfined(full string, data []byte) error {
+	if !f.Confine {
+		return writeAtomic(full, data)
+	}
+	// The temp file and the rename both have to be bounded, not just the final
+	// open: a swapped directory component redirects where the replacement
+	// lands just as effectively as it redirects a read.
+	root := f.Root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if err := checkBeneath(root, resolveExisting(full)); err != nil {
+		return err
+	}
+	return writeAtomic(full, data)
+}
+
 func writeAtomic(path string, data []byte) error {
 	mode := os.FileMode(0o644)
 	if info, err := os.Stat(path); err == nil {
@@ -437,13 +483,13 @@ func (f *FS) writeTool() Tool {
 			defer f.lockPath(full)()
 
 			before := ""
-			if old, err := os.ReadFile(full); err == nil {
+			if old, err := f.readConfined(full); err == nil {
 				before = string(old)
 			}
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return Result{}, err
 			}
-			if err := writeAtomic(full, []byte(a.Content)); err != nil {
+			if err := f.writeConfined(full, []byte(a.Content)); err != nil {
 				return Result{}, err
 			}
 			// The model has not seen the new contents, so its anchors for this
@@ -524,7 +570,7 @@ func (f *FS) editTool() Tool {
 			}
 			defer f.lockPath(full)()
 
-			data, err := os.ReadFile(full)
+			data, err := f.readConfined(full)
 			if err != nil {
 				return Result{}, err
 			}
@@ -559,7 +605,7 @@ func (f *FS) editTool() Tool {
 			} else {
 				after = strings.Replace(before, a.Old, a.New, 1)
 			}
-			if err := writeAtomic(full, []byte(after)); err != nil {
+			if err := f.writeConfined(full, []byte(after)); err != nil {
 				return Result{}, err
 			}
 			f.anchors.forget(full)
@@ -611,7 +657,7 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 	if after == before {
 		return Result{}, fmt.Errorf("the patches produced no change to %s", name)
 	}
-	if err := writeAtomic(full, []byte(after)); err != nil {
+	if err := f.writeConfined(full, []byte(after)); err != nil {
 		return Result{}, err
 	}
 	f.anchors.forget(full)

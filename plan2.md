@@ -333,11 +333,11 @@ different claim from "model output is trusted", and the first does not imply the
   starting together can both fail the liveness dial, and the second's `os.Remove` unlinks
   the first's freshly bound socket, leaving daemon one running and unreachable. Fix: bind
   first, remove-and-retry only on `EADDRINUSE` after the dial check.  ⟨fable⟩
-- [ ] **H4.6** `internal/tools/fs.go:89` — confinement resolves symlinks to validate and
+- [x] **H4.6** `internal/tools/fs.go:89` — confinement resolves symlinks to validate and
   then opens the **original** path, leaving a swap race that escapes the workspace. Fix:
   descriptor-relative constrained open (`openat2` with `RESOLVE_BENEATH`), operate on that
   fd.  ⟨codex⟩
-- [ ] **H4.7** `internal/lsp/ops.go:242` — rename applies server-supplied paths without
+- [x] **H4.7** `internal/lsp/ops.go:242` — rename applies server-supplied paths without
   confirming they stay inside the workspace. Fix: canonicalize each, reject any whose
   `filepath.Rel` escapes the client root.  ⟨codex⟩
 - [ ] **H4.8** Verify H4: an OSC 52 payload in a repo file and in a mock provider response
