@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
 // Ollama speaks the native Ollama API. Ollama Cloud is just a remote Ollama
@@ -20,6 +21,12 @@ type Ollama struct {
 	BaseURL string
 	APIKey  string
 	HTTP    *http.Client
+
+	// callSeq synthesizes tool_call IDs (Ollama issues none). It is scoped to
+	// the provider instance, not one request, so IDs stay unique across every
+	// turn of a session — a session resumed against an OpenAI-kind provider
+	// depends on tool_call_id being unique, not just present.
+	callSeq atomic.Int64
 }
 
 // NewOllama builds a client. An empty base URL means a local daemon.
@@ -166,20 +173,21 @@ func (o *Ollama) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) 
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
-		streamOllamaNDJSON(ctx, resp.Body, ch)
+		streamOllamaNDJSON(ctx, resp.Body, ch, &o.callSeq)
 	}()
 	return ch, nil
 }
 
 // streamOllamaNDJSON decodes one NDJSON response body onto ch. Split out from
-// ChatStream so parsing is testable without a server.
-func streamOllamaNDJSON(ctx context.Context, r io.Reader, ch chan<- Chunk) {
+// ChatStream so parsing is testable without a server. callSeq synthesizes
+// tool_call IDs; callers share one counter across a session's requests (see
+// Ollama.callSeq) so IDs stay unique across turns, not just within one.
+func streamOllamaNDJSON(ctx context.Context, r io.Reader, ch chan<- Chunk, callSeq *atomic.Int64) {
 	sc := bufio.NewScanner(r)
 	// Model output lines can be long; the default 64KB limit is not enough for
 	// a tool call carrying a whole file.
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
-	var callSeq int
 	send := func(c Chunk) bool {
 		select {
 		case ch <- c:
@@ -212,10 +220,10 @@ func streamOllamaNDJSON(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		chunk.Text = resp.Message.Content
 		chunk.Reasoning = resp.Message.Thinking
 		for _, tc := range resp.Message.ToolCalls {
-			callSeq++
+			id := callSeq.Add(1)
 			chunk.ToolCalls = append(chunk.ToolCalls, ToolCall{
 				// Ollama does not issue call IDs, so synthesize stable ones.
-				ID:   fmt.Sprintf("call_%d", callSeq),
+				ID:   fmt.Sprintf("call_%d", id),
 				Name: tc.Function.Name,
 				Args: tc.Function.Arguments,
 			})

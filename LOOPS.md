@@ -3326,3 +3326,31 @@ Fix: set `Name: m.ToolName` alongside the other fields in `toOAIMessages`
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test ./...`
 green.
+
+## 2026-07-31 H5.7 — Ollama tool-call IDs reset every request, not every session
+
+`streamOllamaNDJSON` synthesized tool-call IDs from a `callSeq` local to the
+function, reset to zero on every call. Since `ChatStream` invokes it fresh per
+HTTP round trip, every turn's first tool call was `call_1` again. Harmless to
+Ollama, which never looks the ID up, but a session persisted with duplicate
+`tool_call_id`s across turns breaks correlation if later resumed against an
+OpenAI-kind provider.
+
+Reproduce: `TestOllamaToolCallIDsAreUniqueAcrossTurns` in `provider_test.go` —
+a real `*Ollama` against an `httptest` server, calling `ChatStream` twice
+(two turns) each returning one tool call. Failed before the fix: `turn 1:
+tool_call_id "call_1" reused from an earlier turn`.
+
+Root cause confirmed in `streamOllamaNDJSON` (`ollama.go:182`, the emit site),
+matching the report. `wiring.Build` constructs the provider once per session
+(`internal/wiring/wiring.go:105`) and reuses it for every turn, so a counter
+scoped to the `*Ollama` instance — not the request — lives exactly as long as
+the session does.
+
+Fix: moved the counter onto the struct as `callSeq atomic.Int64`, threaded a
+`*atomic.Int64` into `streamOllamaNDJSON` instead of a local `int`, and had
+`ChatStream` pass `&o.callSeq`. Atomic because nothing else in this codebase
+assumes single-goroutine access to a provider instance.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test
+./...` green; `go test ./internal/provider/ -race -run TestOllama` clean.

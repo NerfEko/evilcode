@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -31,7 +32,8 @@ func collectOllama(t *testing.T, body string) (string, string, []ToolCall, *Usag
 	ch := make(chan Chunk)
 	go func() {
 		defer close(ch)
-		streamOllamaNDJSON(context.Background(), strings.NewReader(body), ch)
+		var seq atomic.Int64
+		streamOllamaNDJSON(context.Background(), strings.NewReader(body), ch, &seq)
 	}()
 	return drain(ch)
 }
@@ -130,6 +132,40 @@ func TestOllamaSynthesizedIDsAreUnique(t *testing.T) {
 			t.Fatalf("duplicate call ID %q — results would pair to the wrong call", c.ID)
 		}
 		seen[c.ID] = true
+	}
+}
+
+func TestOllamaToolCallIDsAreUniqueAcrossTurns(t *testing.T) {
+	// Regression for H5.7: the synthesized ID counter must not reset on every
+	// ChatStream call, or a resumed multi-turn session ends up with the same
+	// tool_call_id in two different turns — harmless to Ollama, but it breaks
+	// correlation if the session is later resumed against an OpenAI-kind
+	// provider that relies on tool_call_id uniqueness.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"message":{"tool_calls":[{"function":{"name":"read","arguments":{}}}]},"done":true}` + "\n"))
+	}))
+	defer srv.Close()
+
+	o := NewOllama("ollama", srv.URL, "")
+	req := Req{Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}}}
+
+	seen := map[string]bool{}
+	for turn := 0; turn < 2; turn++ {
+		ch, err := o.ChatStream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("turn %d: %v", turn, err)
+		}
+		_, _, calls, _, err := drain(ch)
+		if err != nil {
+			t.Fatalf("turn %d: %v", turn, err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("turn %d: calls = %d, want 1", turn, len(calls))
+		}
+		if seen[calls[0].ID] {
+			t.Fatalf("turn %d: tool_call_id %q reused from an earlier turn", turn, calls[0].ID)
+		}
+		seen[calls[0].ID] = true
 	}
 }
 
@@ -464,7 +500,8 @@ func TestStreamRespectsCancellation(t *testing.T) {
 	ch := make(chan Chunk)
 	go func() {
 		defer close(ch)
-		streamOllamaNDJSON(ctx, strings.NewReader(body.String()), ch)
+		var seq atomic.Int64
+		streamOllamaNDJSON(ctx, strings.NewReader(body.String()), ch, &seq)
 	}()
 
 	<-ch // take one chunk, then walk away

@@ -375,7 +375,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [x] **H5.6** `internal/provider/openai.go:150` `toOAIMessages` — tool-result messages
   never set `Name` from `m.ToolName`; some OpenAI-compatible gateways require it on
   `role:"tool"`. One line.  ⟨fable⟩
-- [ ] **H5.7** `internal/provider/ollama.go:230` — synthesized tool-call IDs restart at
+- [x] **H5.7** `internal/provider/ollama.go:230` — synthesized tool-call IDs restart at
   `call_1` every request, so a multi-turn session persists duplicate `tool_call_id`s.
   Harmless to Ollama, breaks a session resumed against an OpenAI-kind provider. Fix:
   per-conversation or monotonic prefix.  ⟨fable⟩
