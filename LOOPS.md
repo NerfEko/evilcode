@@ -4011,3 +4011,20 @@ the jcode look actually".
 
 ⟨prep⟩ — no test. Verified: jcode checkout present at the recorded path, `origin` matches
 what was written into `lazy.md`.
+
+## 2026-07-31 F1.2 — transcriptLines returns Rows with Owner provenance
+
+Done: `transcriptLines` now returns a `Rows{Lines, Owner}` (§1.2). `Owner[i]` is the
+`m.blocks` index that rendered `Lines[i]`, or `-1` for chrome (header, inter-block gaps,
+welcome art, todo card). `contentHeight`, `stack`, and the three `View` call sites use
+`.Lines`. The per-block cache is untouched — provenance is recorded around it via `addChrome`
+/ `addOwned` helpers. Asserted `len(Lines)==len(Owner)` at the single construction point.
+
+Reproduction: this is ⟨fix⟩ but the field being asserted (`Rows.Owner`) did not exist before,
+so a fail-then-pass pair against the old `[]string` return cannot be constructed (the test
+references a type that did not exist — §0.2 step 2 third outcome). Verified instead by
+`TestTranscriptLinesOwnerProvenance` and `TestTranscriptLinesWelcomeOwnerIsChrome`:
+asserts the invariant, in-range values, non-decreasing order, contiguity, the chrome gap
+between different-subject blocks, and the no-gap pack between consecutive tool blocks.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green.

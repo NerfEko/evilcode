@@ -2131,6 +2131,14 @@ func drainPendingForEdit(pending []PendingMessage) []PendingMessage {
 // submitHidden starts a turn whose prompt is harness-authored, so it drives the
 // model without appearing as something the user typed.
 func (m *Model) submitHidden(text string) {
+	if m.processing || (m.agent != nil && m.agent.Running()) {
+		// Hidden turns have no user watching their error path. Queue them behind
+		// the active turn instead of starting a second Agent.Run and silently
+		// losing the prompt to ErrBusy.
+		m.queuedHidden = text
+		m.interrupt(false)
+		return
+	}
 	m.hiddenPrompt = text
 	m.editor.Clear()
 	m.scroll.FollowBottom()
@@ -2166,17 +2174,40 @@ func (m *Model) transcriptHeight() int {
 }
 
 func (m *Model) contentHeight() int {
-	return len(m.transcriptLines())
+	return len(m.transcriptLines().Lines)
 }
 
-// transcriptLines renders every block to lines.
-func (m *Model) transcriptLines() []string {
-	var out []string
+// transcriptLines renders every block to lines plus the provenance of each line
+// (§1.2). Owner[i] is the index into m.blocks that rendered Lines[i], or -1 for
+// chrome (the header, inter-block gaps, welcome art, todo card). The
+// per-block render cache is untouched: provenance is recorded around the cache,
+// not inside it, so a cache hit still costs nothing.
+func (m *Model) transcriptLines() Rows {
 	if len(m.blocks) == 0 {
-		return m.renderer.RenderWelcome(0, m.idleArt())
+		welcome := m.renderer.RenderWelcome(0, m.idleArt())
+		owner := make([]int, len(welcome))
+		for i := range owner {
+			owner[i] = -1
+		}
+		return Rows{Lines: welcome, Owner: owner}
 	}
-	out = append(out, m.renderer.RenderHeader(m.header)...)
-	out = append(out, "")
+	var out []string
+	var owner []int
+	addChrome := func(lines []string) {
+		out = append(out, lines...)
+		for range lines {
+			owner = append(owner, -1)
+		}
+	}
+	addOwned := func(idx int, lines []string) {
+		out = append(out, lines...)
+		for range lines {
+			owner = append(owner, idx)
+		}
+	}
+
+	addChrome(m.renderer.RenderHeader(m.header))
+	addChrome([]string{""})
 	animT, animating := m.entryAnim.Progress(time.Now())
 
 	// The renderer needs the current mode, and changing it invalidates every
@@ -2195,14 +2226,14 @@ func (m *Model) transcriptLines() []string {
 		if animating && i == m.entryAnim.Block {
 			lines = m.renderer.animateEntry(lines, animT)
 		}
-		out = append(out, lines...)
+		addOwned(i, lines)
 
 		// Blank lines separate *ideas*, not every block. A batch of tool calls
 		// is one idea, so consecutive tool rows stay packed; a gap between each
 		// one triples the height of a five-call batch and reads as five
 		// unrelated events.
 		if len(lines) > 0 && needsGapAfter(m.blocks, i) {
-			out = append(out, "")
+			addChrome([]string{""})
 		}
 	}
 
@@ -2210,14 +2241,20 @@ func (m *Model) transcriptLines() []string {
 	// re-toggling moves it to the bottom rather than leaving copies behind
 	// (plan.md §12.5).
 	if m.showTodoCard && m.todos != nil {
-		out = append(out, m.renderer.RenderTodoCard(TodoCardState{
+		addChrome(m.renderer.RenderTodoCard(TodoCardState{
 			Items: m.todos.Items(),
 			Plan:  m.todos.Plan(),
 			Goals: m.todos.Goals(),
-		})...)
-		out = append(out, "")
+		}))
+		addChrome([]string{""})
 	}
-	return out
+
+	// The one invariant every consumer depends on: a mismatch here misplaces
+	// every widget and every click.
+	if len(out) != len(owner) {
+		panic(fmt.Sprintf("transcriptLines: len(Lines)=%d != len(Owner)=%d", len(out), len(owner)))
+	}
+	return Rows{Lines: out, Owner: owner}
 }
 
 // applyWrapWidth sets the renderer's wrap width, reserving a column for the
@@ -2234,7 +2271,7 @@ func (m *Model) applyWrapWidth() {
 
 // stack builds the vertical layout request.
 func (m *Model) stack() Stack {
-	s := Stack{Available: m.height, ContentHeight: len(m.transcriptLines())}
+	s := Stack{Available: m.height, ContentHeight: len(m.transcriptLines().Lines)}
 	s.Heights[SlotStatus] = 1
 	if m.notice != "" {
 		s.Heights[SlotNotice] = 1
@@ -2300,7 +2337,7 @@ func (m *Model) View() tea.View {
 	}
 
 	res := m.stack().Resolve()
-	content := m.transcriptLines()
+	content := m.transcriptLines().Lines
 
 	// A shrink becomes slack rather than a downward haul: when a thinking trace
 	// collapses, the gap it leaves is kept below the text and spent by whatever
@@ -2340,7 +2377,21 @@ func (m *Model) View() tea.View {
 	// The scrollbar decision is hysteretic because it feeds back into layout:
 	// a visible bar narrows the wrap width, which changes the content height,
 	// which can change the decision (plan.md §3.6).
-	m.scrollbarOn = ScrollbarVisible(m.scrollbarOn, len(content), len(content), res.Transcript)
+	// Measure the alternate wrap width too. Passing the current height for both
+	// layouts made the helper's hysteresis meaningless and left the bar stuck on
+	// or off after a line wrapped across its reserved column.
+	withoutBar, withBar := len(content), len(content)
+	width := m.renderer.Width
+	if m.scrollbarOn {
+		m.renderer.SetWidth(width + 1)
+		withoutBar = len(m.transcriptLines().Lines)
+		m.renderer.SetWidth(width)
+	} else {
+		m.renderer.SetWidth(max(width-1, 1))
+		withBar = len(m.transcriptLines().Lines)
+		m.renderer.SetWidth(width)
+	}
+	m.scrollbarOn = ScrollbarVisible(m.scrollbarOn, withBar, withoutBar, res.Transcript)
 
 	// Widgets dock here — before the scrollbar, the side panel and the centering
 	// inset are painted into these rows. Docking last meant measuring rows that

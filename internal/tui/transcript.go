@@ -82,6 +82,16 @@ type Block struct {
 	cacheKey   string
 }
 
+// Rows is a rendered transcript plus the provenance of every line. Owner[i] is
+// the index into Model.blocks of the block that rendered Lines[i], or -1 for
+// chrome: the header, the inter-block gaps, the welcome art, the pinned todo
+// card. The dock and the mouse handler both need to know which block a screen
+// row belongs to (§1.1), and nothing else does.
+type Rows struct {
+	Lines []string
+	Owner []int
+}
+
 // Renderer turns blocks into styled lines.
 type Renderer struct {
 	Palette  *theme.Palette
