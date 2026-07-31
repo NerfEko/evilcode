@@ -405,7 +405,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   tolerate only an unterminated **final** record; return a line-numbered error (or
   quarantine) for anything else. Todo's loader additionally swallows filesystem errors and
   treats corrupt state as empty.  ⟨codex⟩
-- [ ] **H5.14** `internal/memory/store.go:206` — add, merge, and forget mutate in-memory
+- [x] **H5.14** `internal/memory/store.go:206` — add, merge, and forget mutate in-memory
   records before appending their durable events, so a write failure leaves live state
   disagreeing with replay. Fix: persist first, commit to memory on success.  ⟨codex⟩
 - [ ] **H5.15** `internal/memory/pipeline.go:323` — extraction drains its transcript batch

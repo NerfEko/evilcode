@@ -233,14 +233,20 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 		if len(vec) > 0 {
 			merged.Vec = vec
 		}
+		if err := s.append(merged); err != nil {
+			return Record{}, false, err
+		}
 		s.records[i] = merged
-		return merged, true, s.append(merged)
+		return merged, true, nil
 	}
 
 	r := Record{ID: s.nextID, Text: text, Kind: kind, Session: session, TS: ts, Vec: vec}
+	if err := s.append(r); err != nil {
+		return Record{}, false, err
+	}
 	s.nextID++
 	s.records = append(s.records, r)
-	return r, false, s.append(r)
+	return r, false, nil
 }
 
 // findDuplicate returns the index of a near-identical memory, or -1.
@@ -271,8 +277,11 @@ func (s *Store) Forget(id int64) (bool, error) {
 			continue
 		}
 		r.Deleted = true
+		if err := s.append(r); err != nil {
+			return false, err
+		}
 		s.records[i] = r
-		return true, s.append(r)
+		return true, nil
 	}
 	return false, nil
 }

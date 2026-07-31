@@ -3530,3 +3530,35 @@ Verified: all listed tests pass; `go build ./... && go vet ./... && go test
 ./...` green across every package, including the existing callers of
 `session.Read`/`session.Messages` in `checkpoint.go` and `sessioncmd.go`,
 which already propagated these functions' errors and needed no changes.
+
+## 2026-07-31 H5.14 — Persist first, mutate second
+
+`Add` and `Forget` in `internal/memory/store.go` both mutated `s.records`
+(and, for a new fact, `s.nextID`) before calling `s.append` to write the
+durable event. A failed append — disk full, a closed file, anything — left
+the in-memory bank holding a fact, a merge, or a tombstone that the JSONL log
+never recorded. The store kept serving it for the rest of the process; a
+restart, which replays only the log, would never see it. Live state and
+replay state disagreed, and nothing surfaced that until the discrepancy was
+noticed some other way.
+
+Fix: reordered all three paths (new record, merge, tombstone) to call
+`s.append` first and only touch `s.records`/`s.nextID` if it succeeds. The ID
+for a new record is still drawn from `s.nextID` before the append attempt (so
+the appended record carries the ID it's meant to), but the counter itself
+isn't advanced until the append is confirmed — a failed `Add` no longer burns
+an ID it never used.
+
+Reproduce: `TestAddDoesNotMutateMemoryWhenAppendFails`,
+`TestAddMergeDoesNotMutateMemoryWhenAppendFails`, and
+`TestForgetDoesNotMutateMemoryWhenAppendFails` in
+`internal/memory/memory_test.go` — each closes the store's underlying file to
+force the next append to fail, then asserts the in-memory bank is unchanged.
+Confirmed all three failed against the pre-fix code (stashed `store.go`,
+re-ran, restored): the plain `Add` case silently grew the bank and consumed
+an ID, the merge case overwrote the stored text, and the forget case
+panicked outright — `Forget` had already set `Deleted=true` in memory before
+the append failed, so `All()` (which filters deleted records) returned an
+empty slice and `s.All()[0]` went out of range.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green.

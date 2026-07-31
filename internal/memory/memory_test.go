@@ -123,6 +123,64 @@ func TestAddMergesNearDuplicates(t *testing.T) {
 	}
 }
 
+// H5.14: Add and Forget must not mutate in-memory state ahead of the durable
+// append. A failed append used to leave live state serving a fact a restart
+// would never replay.
+func TestAddDoesNotMutateMemoryWhenAppendFails(t *testing.T) {
+	s := openTemp(t)
+	if _, _, err := s.Add("first", KindFact, "a", vec(1, 0), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Len()
+	beforeNextID := s.nextID
+
+	s.file.Close() // every subsequent append now fails on flush
+
+	if _, _, err := s.Add("second", KindFact, "a", vec(0, 1), time.Now()); err == nil {
+		t.Fatal("expected the append to fail against a closed file")
+	}
+	if s.Len() != before {
+		t.Errorf("failed add must not grow the in-memory bank: had %d, now %d", before, s.Len())
+	}
+	if s.nextID != beforeNextID {
+		t.Errorf("failed add must not consume an ID: had %d, now %d", beforeNextID, s.nextID)
+	}
+}
+
+func TestAddMergeDoesNotMutateMemoryWhenAppendFails(t *testing.T) {
+	s := openTemp(t)
+	first, _, err := s.Add("the user prefers tabs", KindPreference, "a", vec(1, 0), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.file.Close()
+
+	if _, _, err := s.Add("the user prefers tabs over spaces", KindPreference, "b", vec(2, 0), time.Now()); err == nil {
+		t.Fatal("expected the append to fail against a closed file")
+	}
+	if got := s.All()[0].Text; got != first.Text {
+		t.Errorf("failed merge must not overwrite the stored text: got %q, want %q", got, first.Text)
+	}
+}
+
+func TestForgetDoesNotMutateMemoryWhenAppendFails(t *testing.T) {
+	s := openTemp(t)
+	rec, _, err := s.Add("first", KindFact, "a", vec(1, 0), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.file.Close()
+
+	if _, err := s.Forget(rec.ID); err == nil {
+		t.Fatal("expected the append to fail against a closed file")
+	}
+	if s.All()[0].Deleted {
+		t.Error("a failed tombstone append must not mark the record deleted in memory")
+	}
+}
+
 func TestIdenticalTextMergesWithoutEmbeddings(t *testing.T) {
 	// `remember` must stay idempotent when the embedder is down, or a model
 	// that re-states a fact each turn fills the bank with copies.
