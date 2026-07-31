@@ -888,3 +888,61 @@ not one client's. And `/summon` with a `{file, changed}` schema came back
 "changed":true}`, validated rather than parsed.
 
 Tagged `phase-4`.
+
+## 2026-07-31 P4 — Daemon and swarms
+
+The daemon, the socket protocol, the ring, `attach`, and `run --remote` were
+already standing; this loop was the coordination on top — the file-conflict
+registry, agent messaging, `spawn_worker`/`/summon` with schema-validated
+results, the SwarmStatus widget and its strip, and the breakers under all of it.
+
+The registry reads the event stream rather than instrumenting the tools. The
+events already say which file was touched and whether it changed, so
+`internal/tools` never learns what a swarm is — the same separation that keeps
+the agent core free of the TUI.
+
+Four real bugs, none of which a unit test would have found on its own:
+
+The conflict was queued on the writing session, so it waited for the *writer's*
+safe point and was injected into the wrong conversation. It belongs to the
+reader; it is queued there now.
+
+Closing an agent raced its own event channel. The daemon makes that ordinary
+rather than exotic: shutting down closes every session while spawned workers are
+still mid-turn, and `-race` caught `close` landing against a live `send`. Events
+is now never closed — consumers select on `Done()` — which is the only shape
+that is actually safe when senders outlive the closer.
+
+A worker registered *who spawned it* after starting it. A mock worker finishes
+in microseconds, so the turn ended before the spawner was known and the result
+was dropped. Everything the report path needs is now in place before the
+goroutine starts.
+
+The schema retry interjected into a worker whose `Run` had already returned, so
+a worker that answered in prose was never retried and never reported — the
+spawner waited forever for a message that could not come. It only retries a
+worker that can still answer, and otherwise reports the failure plainly.
+
+Two more found by looking at output rather than by testing: a failed tool row on
+a remote session printed the word `<nil>`, because `Err` is an interface and
+does not survive the socket while `ErrText` does. And `testdata/clamp.go` had
+been committed in its post-edit state *again*, so the `diff` scenario's `edit`
+could never find its old string and the `tui-diff` golden had quietly been
+recording an error row instead of a diff. That is the second time; the probe
+resets testdata from git before every run, which is what makes an uncommitted
+fix look like it had no effect.
+
+The probe now runs a real daemon outside tmux with a client pane per `attach`.
+`swarm-two-clients` shows one conversation in two panes under two client names,
+which is the whole reason the daemon exists. `swarm-conflict` shows the full
+chain: a session reads a file, `/summon` starts a worker, the worker edits it,
+and `⚠ dracula-2 modified testdata/clamp.go which you read at turn 1` arrives at
+the reader's next safe point. Turn numbering is 1-based because the first
+capture read "turn 0", which looks like a bug rather than like the first turn.
+
+Giving two sessions in one daemon different scripts needed a comma-separated
+`EVILCODE_SCENARIO` rotation in the mock provider: one daemon builds one
+provider per session from one config, so without it a worker can only ever
+replay whatever its parent is replaying.
+
+Phase 4 complete.
