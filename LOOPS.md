@@ -1308,3 +1308,45 @@ prompt for a session with no list. Empty-`Preview` versus nil distinguishes
 
 Also fixed: the box returned a top border with no sides and no bottom when there
 were no sessions at all.
+
+## 2026-07-31 — Compaction (plan item 4)
+
+The feature was auto-compaction. The bug underneath it was worse: `/compact`
+never persisted. `Conversation.Compact` assigned the message slice directly,
+bypassing `Append` and the session sink, so the summary was never written and the
+pre-compaction messages stayed in the file. Resuming a compacted session replayed
+the entire uncompacted history and threw the summary away. `/rewind` had done it
+correctly for months via `session.Rewind`; compaction just never got the same
+treatment.
+
+So `session.Compact` now mirrors `Rewind` — backup, temp file, atomic rename —
+keeping the meta history, because losing the model and cwd would make a compacted
+session unresumable rather than merely shorter. The test that matters writes three
+messages, compacts, and reads them back off disk through `Resume`.
+
+Order matters inside `Compactor.Compact`: storage first, memory second. Dropping
+the in-memory history while nothing reached disk would lose the session outright,
+so a failed persist leaves the conversation exactly as it was. Memory then takes
+what storage returned rather than guessing, or the two drift the first time the
+format changes.
+
+`Conversation.Compact` is deleted rather than fixed. A method that silently
+desynchronises the file from memory should not survive the fix that found it.
+
+The whole engine moved into `internal/agent`, because it was a `*tui.Model`
+method — a daemon session, an overnight run and every spawned worker had no way
+to compact at all. It takes a `Summarizer` func rather than a router so the
+package still knows nothing about config (invariant 1).
+
+Auto-compaction fires on an 85% threshold before dispatching rather than on the
+provider's overflow error, which needs per-provider string matching and only
+arrives once the tokens are spent — DEVIATIONS #13. Capped at three per session:
+a summary that is itself over the threshold would otherwise compact forever
+without ever sending a request, which presents as a hang rather than a loop.
+
+Also fixed while here: `/compact` blocked the render loop with a synchronous
+60-second call, so the "📦 Compacting…" notice it set was never painted — the
+same function overwrote it before Bubbletea got control back. And `/context` was
+registered in the command table with no case in the dispatch switch, so it
+printed "not implemented yet". `m.ctxUsed` is cleared on compaction now, which
+otherwise left the meter showing the pre-compaction size.

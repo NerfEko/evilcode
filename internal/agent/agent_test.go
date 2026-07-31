@@ -602,7 +602,7 @@ func TestCompactBumpsEpoch(t *testing.T) {
 	c.Append(provider.Message{Role: provider.RoleAssistant, Content: "b"})
 	before := c.Epoch()
 
-	c.Compact("we discussed a and b")
+	c.Reset([]provider.Message{CompactMessage("we discussed a and b")})
 	if c.Epoch() != before+1 {
 		t.Errorf("epoch = %d, want %d", c.Epoch(), before+1)
 	}

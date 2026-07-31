@@ -54,6 +54,7 @@ const (
 	MetaCheckpoint = "checkpoint"
 	MetaCleanExit  = "clean_exit"
 	MetaTitle      = "title"
+	MetaCompact    = "compact"
 	MetaSaved      = "saved"
 	MetaUnsaved    = "unsaved"
 )
@@ -183,6 +184,11 @@ type Info struct {
 	// Saved marks a pinned session (📌 in the picker).
 	Saved bool
 
+	// Compactions counts how many times this session has been compacted, which
+	// drives the picker's 📦 glyph (§5.4) and the status line's history warning
+	// at three or more (§8.2).
+	Compactions int
+
 	// Cwd is where the session was started, so the picker can flag the ones
 	// belonging to the directory you are in now.
 	Cwd string
@@ -249,6 +255,8 @@ func Describe(dataDir, name string) (Info, error) {
 				info.Crashed = false
 			case MetaTitle:
 				info.Title = m.Note
+			case MetaCompact:
+				info.Compactions++
 			case MetaStart:
 				if m.Cwd != "" {
 					info.Cwd = m.Cwd

@@ -74,6 +74,13 @@ type Agent struct {
 	interrupts []Interrupt
 	running    bool
 
+	// Compactor collapses the conversation when it approaches the window. Nil
+	// disables it, which is what a session with no summariser gets.
+	Compactor *Compactor
+
+	// lastCtx is the newest request's context size, for the threshold.
+	lastCtx int
+
 	// prompt is what started the current turn, held so TurnStart can report it
 	// after recall has appended to the conversation behind it.
 	prompt string
@@ -289,6 +296,38 @@ func (a *Agent) recall(ctx context.Context, userInput string) {
 	a.emit(ev)
 }
 
+// autoCompact summarises the conversation when it is close to filling the
+// window, so the next request has room to answer in.
+//
+// Bounded by MaxAutoCompactions (invariant 6): a summary that is itself over the
+// threshold would otherwise compact forever without ever sending a request,
+// which presents as a hang rather than as a loop.
+func (a *Agent) autoCompact(ctx context.Context) {
+	if !a.Compactor.ShouldCompact(a.ctxUsed(), a.NumCtx) {
+		return
+	}
+	if _, err := a.Compactor.Compact(ctx, a.Conv); err != nil {
+		a.Notice(LevelWarning, "Could not compact: %v", err)
+		return
+	}
+	a.Notice(LevelInfo, "✓ Context compacted. Retrying...")
+}
+
+// ctxUsed is the size of the last request, which is what the threshold is
+// measured against.
+func (a *Agent) ctxUsed() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastCtx
+}
+
+// noteContext records the newest request's size for the compaction threshold.
+func (a *Agent) noteContext(n int) {
+	a.mu.Lock()
+	a.lastCtx = n
+	a.mu.Unlock()
+}
+
 // Loop is the agent loop proper (plan.md §15).
 func (a *Agent) Loop(ctx context.Context) error {
 	a.mu.Lock()
@@ -308,6 +347,12 @@ func (a *Agent) Loop(ctx context.Context) error {
 	// It is the prompt Run was given, not the last message on the conversation:
 	// recall appends a `<memories>` tail after the user's turn, and taking the
 	// last message drew that tail as the user's prompt — numbered band and all.
+	// Compact before dispatching rather than after failing: the provider's
+	// context-length error arrives only once tokens are already spent, and
+	// classifying it needs per-provider parsing that the threshold makes
+	// unnecessary in almost every case (plan.md §9.9).
+	a.autoCompact(ctx)
+
 	start := a.newEvent(EventTurnStart)
 	start.Text = a.takePrompt()
 	a.emit(start)
@@ -485,6 +530,7 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, error) {
 				CtxMax:  chunk.Usage.ContextMax,
 				GenMS:   int(time.Since(started).Milliseconds()),
 			}
+			a.noteContext(e.Usage.CtxUsed)
 			a.emit(e)
 		}
 	}

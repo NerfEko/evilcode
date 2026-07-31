@@ -10,9 +10,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"evilcode/internal/agent"
 	"evilcode/internal/ansirender"
 	"evilcode/internal/config"
-	"evilcode/internal/provider"
 )
 
 // runCompact summarizes the conversation and starts a fresh context from it.
@@ -22,60 +22,64 @@ import (
 // The summary is produced by the `smol` role, because paying the main model to
 // summarize its own history is exactly the ambient work role routing exists to
 // prevent (plan.md §16).
+// compactDone carries a finished compaction back into the render loop.
+type compactDone struct {
+	summary string
+	before  int
+	err     error
+}
+
+// runCompact summarises the conversation and replaces it with the summary.
+//
+// It runs off the render loop. It used to do a synchronous 60-second side call
+// from the update handler, which froze the UI for the duration — so the
+// "📦 Compacting…" notice it set was never painted, because the same function
+// overwrote it before Bubbletea got control back.
 func (m *Model) runCompact() (tea.Model, tea.Cmd) {
+	if m.compactor == nil || !m.compactor.Enabled() {
+		m.notice = "compaction is not configured for this session"
+		return m, nil
+	}
 	if m.agent.Conv.Len() == 0 {
 		m.notice = "nothing to compact"
 		return m, nil
 	}
+
 	before := m.agent.Conv.Len()
-
-	var transcript strings.Builder
-	for _, msg := range m.agent.Conv.Messages() {
-		if msg.Role == provider.RoleSystem {
-			continue
-		}
-		text := strings.TrimSpace(msg.Content)
-		if text == "" {
-			continue
-		}
-		if len(text) > 2000 {
-			text = text[:2000] + "…"
-		}
-		fmt.Fprintf(&transcript, "%s: %s\n\n", msg.Role, text)
-	}
-
 	m.notice = "📦 Compacting…"
 
-	cfg, err := config.Load()
-	if err != nil {
-		m.notice = "could not compact: " + err.Error()
-		return m, nil
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), CompactTimeout)
+		defer cancel()
+		summary, err := m.compactor.Compact(ctx, m.agent.Conv)
+		return compactDone{summary: summary, before: before, err: err}
+	}
+}
+
+// CompactTimeout bounds the summarising side-call.
+const CompactTimeout = 60 * time.Second
+
+// applyCompaction folds a finished compaction into the transcript.
+func (m *Model) applyCompaction(done compactDone) {
+	m.notice = ""
+	if done.err != nil {
+		m.blocks = append(m.blocks, Block{Kind: BlockError,
+			Text: "could not compact: " + done.err.Error()})
+		m.scroll.FollowBottom()
+		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	summary, err := cfg.Router().SideCall(ctx, config.RoleSmol,
-		"Summarize this coding session for a fresh context window. Keep decisions made, "+
-			"files changed, what is still outstanding, and anything the next turn would "+
-			"otherwise have to rediscover. Drop pleasantries and dead ends. Be dense.",
-		transcript.String())
-	if err != nil {
-		m.notice = "could not compact: " + err.Error()
-		return m, nil
-	}
-
-	m.agent.Conv.Compact(summary)
 	m.blocks = nil
 	m.promptCount = 0
+	// The meter reflected the pre-compaction size until the next turn reported
+	// usage, which made a compaction look like it had done nothing.
+	m.ctxUsed = 0
 	m.blocks = append(m.blocks, Block{
 		Kind: BlockNotice,
 		Text: fmt.Sprintf("📦 Compacted %d messages into a summary (context epoch %d)\n\n%s",
-			before, m.agent.Conv.Epoch(), summary),
+			done.before, m.agent.Conv.Epoch(), done.summary),
 	})
 	m.scroll.FollowBottom()
-	m.notice = ""
-	return m, nil
 }
 
 // runSideQuestion answers a question in the side panel without touching the
@@ -357,4 +361,47 @@ func (m *Model) debugOverlay(rows []string, transcriptRows int) []string {
 	}
 	mark(len(rows)-1, "◣ composer")
 	return rows
+}
+
+// WithCompactor attaches the compaction engine.
+func (m *Model) WithCompactor(c *agent.Compactor) *Model {
+	m.compactor = c
+	return m
+}
+
+// contextCommand implements `/context`.
+//
+// It was registered in the command table and had no case in the dispatch switch,
+// so typing it printed "not implemented yet".
+func (m *Model) contextCommand() tea.Cmd {
+	used, window := m.ctxUsed, m.contextMax()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Context %s of %s", humanTokens(used), roundTokens(window))
+	if used > 0 && window > 0 {
+		fmt.Fprintf(&b, " · %d%%", used*100/window)
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%d messages · epoch %d\n", m.agent.Conv.Len(), m.agent.Conv.Epoch())
+
+	if n := m.compactor.Count(); n > 0 {
+		fmt.Fprintf(&b, "compacted %d %s this session\n", n, timeNoun(n))
+	}
+	if m.compactor.Enabled() {
+		fmt.Fprintf(&b, "\nAuto-compacts past %d%% · /compact to do it now",
+			int(agent.CompactThreshold*100))
+	} else {
+		b.WriteString("\nCompaction is not configured")
+	}
+
+	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: strings.TrimRight(b.String(), "\n")})
+	m.scroll.FollowBottom()
+	return nil
+}
+
+func timeNoun(n int) string {
+	if n == 1 {
+		return "time"
+	}
+	return "times"
 }

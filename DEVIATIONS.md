@@ -296,3 +296,26 @@ verbatim, and the test asserting that still runs.
 **When this would need revisiting:** if evilcode is ever distributed rather than
 personal, the default should probably go back to a palette that owes nothing to
 the local desktop.
+
+## 13. Auto-compaction triggers on a threshold, not on the provider's overflow error
+
+**Spec:** §9.9 lists "Context overflow: auto-compact → `✓ Context compacted.
+Retrying...` (emergency variant labeled)" — i.e. compaction as error recovery.
+
+**Built:** compaction happens *before* dispatching, once the last request's
+context passes 85% of the window. The `✓ Context compacted. Retrying...` notice
+is emitted as specced.
+
+**Why:** the provider's context-length error only arrives after the tokens are
+already spent, and recognising it means per-provider string matching in both
+`ollama.go` and `openai.go` — a brittle surface that changes whenever a vendor
+rewords a message. A pre-flight threshold prevents nearly every overflow without
+parsing anything, and costs one comparison per turn.
+
+**Not built:** the "emergency variant" for an overflow that gets through anyway —
+a window smaller than the threshold assumed, say. That still surfaces as an
+ordinary error.
+
+**When this would need revisiting:** if overflows show up in practice despite the
+threshold, the error path is worth adding underneath it rather than instead
+of it.

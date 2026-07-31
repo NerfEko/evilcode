@@ -131,6 +131,19 @@ func Run(args []string) error {
 	// hook that does, or an auto-poked turn is never observed.
 	a.Hooks = agent.Chain{agent.NewMemoryHook(mem), poke}
 
+	// Compaction persists through the session store rather than only in memory:
+	// assigning the message slice was what made a compacted session come back
+	// uncompacted on resume.
+	compactor := &agent.Compactor{
+		Summarize: func(ctx context.Context, system, user string) (string, error) {
+			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
+		},
+		Persist: func(summary string) ([]provider.Message, error) {
+			return session.Compact(dataDir, store.Name, summary)
+		},
+	}
+	a.Compactor = compactor
+
 	prompts, err := session.OpenHistory(dataDir)
 	if err != nil {
 		return err
@@ -185,7 +198,8 @@ func Run(args []string) error {
 		WithBackground(execTools.Bg).
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
 		WithMemory(mem).
-		WithAdvisor(advisor, lsps)
+		WithAdvisor(advisor, lsps).
+		WithCompactor(compactor)
 	if prior > 0 {
 		m.RebuildFrom(conv.Messages())
 	}

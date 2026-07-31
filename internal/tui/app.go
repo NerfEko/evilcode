@@ -105,6 +105,9 @@ type Model struct {
 	// caller re-execs into it after the program exits.
 	resumeTarget string
 
+	// compactor summarises and replaces the conversation when it gets long.
+	compactor *agent.Compactor
+
 	// sessionTitle is the last title written, so an unchanged one is not
 	// re-appended to the log every turn.
 	sessionTitle string
@@ -392,6 +395,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
+		return m, nil
+
+	case compactDone:
+		m.applyCompaction(msg)
 		return m, nil
 
 	case rebuildResult:
@@ -1553,6 +1560,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "overnight":
 		return m, m.overnightCommand(strings.TrimSpace(m.commandArg))
+
+	case "context":
+		return m, m.contextCommand()
 
 	case "productivity":
 		return m, m.productivityCommand()

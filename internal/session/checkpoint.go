@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"evilcode/internal/provider"
 )
@@ -225,4 +226,64 @@ func DeriveTitle(activeGroup, userIntention, firstTodo, firstPrompt string) stri
 		}
 	}
 	return ""
+}
+
+// CompactedPrefix marks the synthetic message a compaction leaves behind, so a
+// replayed session is visibly a summary rather than something the user typed.
+const CompactedPrefix = "[conversation compacted]\n\n"
+
+// Compact rewrites a session down to a single summary message.
+//
+// This exists because `Conversation.Compact` only ever changed memory: it
+// assigned the message slice directly, bypassing Append and the session sink,
+// so the summary was never written and the pre-compaction messages stayed in the
+// file. Resuming a compacted session replayed the whole uncompacted history and
+// silently threw the summary away.
+//
+// Same atomic shape as Rewind — backup, temp file, rename — so an interrupted
+// compaction leaves the previous log intact rather than a half-written one.
+func Compact(dataDir, name, summary string) ([]provider.Message, error) {
+	path := filepath.Join(Dir(dataDir), name+".jsonl")
+	entries, err := Read(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if data, err := os.ReadFile(path); err == nil {
+		_ = os.WriteFile(path+".bak", data, 0o644)
+	}
+
+	var b strings.Builder
+	write := func(e Entry) {
+		if line, err := json.Marshal(e); err == nil {
+			b.Write(line)
+			b.WriteByte('\n')
+		}
+	}
+
+	// Keep the meta history: it carries the model, the cwd and the token totals,
+	// and losing it would make a compacted session unresumable rather than
+	// merely shorter.
+	for _, e := range entries {
+		if e.Type == TypeMeta {
+			write(e)
+		}
+	}
+
+	msg := provider.Message{Role: provider.RoleUser, Content: CompactedPrefix + summary}
+	if data, err := json.Marshal(msg); err == nil {
+		write(Entry{TS: time.Now(), Type: TypeUser, Data: data})
+	}
+	if data, err := json.Marshal(Meta{Kind: MetaCompact}); err == nil {
+		write(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
+	}
+	return Messages(path)
 }

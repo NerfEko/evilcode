@@ -111,16 +111,12 @@ func (c *Conversation) Reset(msgs []provider.Message) {
 	c.epoch++
 }
 
-// Compact replaces the history with a summary. This is the only sanctioned
-// rewrite; it bumps the epoch so index-keyed caches invalidate.
-func (c *Conversation) Compact(summary string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.messages = []provider.Message{{
-		Role:    provider.RoleUser,
-		Content: "[conversation compacted]\n\n" + summary,
-	}}
-	c.epoch++
+// CompactedPrefix marks the synthetic message a compaction leaves behind.
+const CompactedPrefix = "[conversation compacted]\n\n"
+
+// CompactMessage is what a compacted history collapses to.
+func CompactMessage(summary string) provider.Message {
+	return provider.Message{Role: provider.RoleUser, Content: CompactedPrefix + summary}
 }
 
 // SystemPrompt returns the stable system prompt.

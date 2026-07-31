@@ -138,6 +138,18 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	a.NumCtx = overrides.ContextWindow
+
+	// Compaction reaches headless and the daemon too. It was a *tui.Model
+	// method, so a long daemon session, an overnight run and every spawned
+	// worker had no way to compact at all.
+	a.Compactor = &agent.Compactor{
+		Summarize: func(ctx context.Context, system, user string) (string, error) {
+			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
+		},
+		Persist: func(summary string) ([]provider.Message, error) {
+			return session.Compact(dataDir, store.Name, summary)
+		},
+	}
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)
 
