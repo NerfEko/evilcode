@@ -302,13 +302,20 @@ func (sess *Session) pump() {
 // Reading the stream rather than instrumenting the tools is what keeps this out
 // of `internal/tools`, which knows nothing about swarms and should not start
 // to: the events already say which file was touched and whether it changed.
+// In production only pump calls this, so the turn counter would be safe
+// unguarded — but it is cheap to guard and a field that is only accidentally
+// single-threaded is a field that stops being safe the first time something
+// else touches it.
 func (sess *Session) observe(e agent.Event) {
 	if sess.srv == nil || sess.srv.Files == nil {
 		return
 	}
+	sess.mu.Lock()
 	if sess.turn == 0 {
 		sess.turn = 1
 	}
+	turn := sess.turn
+	sess.mu.Unlock()
 	switch e.Kind {
 	case agent.EventToolResult:
 		if e.Call == nil || e.IsError() {
@@ -322,16 +329,18 @@ func (sess *Session) observe(e agent.Event) {
 			// Queued on the *readers*, not on the writer. Keeping them here was
 			// the bug: the writer then filtered out every conflict as belonging
 			// to someone else and dropped it, so nobody was ever told.
-			sess.srv.queueConflicts(sess.srv.Files.Write(sess.Name, path, sess.turn))
+			sess.srv.queueConflicts(sess.srv.Files.Write(sess.Name, path, turn))
 			return
 		}
-		sess.srv.Files.Read(sess.Name, path, sess.turn)
+		sess.srv.Files.Read(sess.Name, path, turn)
 
 	case agent.EventTurnEnd:
 		// Safe point D: everything the turn asked for has come back, so a
 		// notice now lands between turns rather than mid-thought (§6.3).
 		sess.deliverConflicts()
+		sess.mu.Lock()
 		sess.turn++
+		sess.mu.Unlock()
 		if sess.Worker {
 			// A worker's turn ending is the worker finishing. Its result goes
 			// back to whoever summoned it as a message, so the spawner never

@@ -132,12 +132,30 @@ func MermaidAvailable() bool {
 	return err == nil
 }
 
-// RenderMermaidSource is the fallback when mmdc is absent: the diagram source,
-// styled as code, with a line saying what would render it.
+// RenderMermaidSource is the fallback when a diagram cannot be drawn: the
+// source, styled as code, with a line saying what would render it.
+//
+// The line names the actual obstacle. There are two, and they need different
+// answers — install mmdc, or use a terminal that shows images — so a single
+// message blaming mmdc sends someone who already has it to reinstall it.
 func (r *Renderer) RenderMermaidSource(source string) []string {
 	out := r.renderCodeBlock(Segment{Code: true, Lang: "mermaid", Text: source})
-	return append(out, r.style(theme.RoleDim).
-		Render("↻ mermaid (render requires "+MermaidCommand+")"))
+	return append(out, r.style(theme.RoleDim).Render(MermaidHint(r.Graphics, r.ImagesOn)))
+}
+
+// MermaidHint explains why a diagram is showing as source.
+func MermaidHint(proto graphics.Protocol, imagesOn bool) string {
+	switch {
+	case !MermaidAvailable():
+		return "↻ mermaid (render requires " + MermaidCommand + ")"
+	case proto == graphics.ProtoNone:
+		return "↻ mermaid (this terminal shows no images — kitty, ghostty, " +
+			"WezTerm, or foot with img2sixel do)"
+	case !imagesOn:
+		return "↻ mermaid (images are off — Alt+Shift+I)"
+	default:
+		return "↻ mermaid (rendering…)"
+	}
 }
 
 // RenderMermaid turns diagram source into a PNG via mmdc.

@@ -943,3 +943,40 @@ func TestRecallSeamSilentWhenEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestConversationPersistsEveryAppend(t *testing.T) {
+	// §18 makes the JSONL file the source of truth — "resume = replay". Nothing
+	// wrote messages to it for four phases, so every `-resume` replayed an empty
+	// conversation and said nothing was wrong.
+	conv := NewConversation("system")
+	var written []provider.Message
+	conv.Persist(func(m provider.Message) { written = append(written, m) })
+
+	conv.Append(provider.Message{Role: provider.RoleUser, Content: "one"})
+	conv.Append(
+		provider.Message{Role: provider.RoleAssistant, Content: "two"},
+		provider.Message{Role: provider.RoleUser, Content: "three"},
+	)
+
+	if len(written) != 3 {
+		t.Fatalf("persisted %d messages, want 3", len(written))
+	}
+	if written[0].Content != "one" || written[2].Content != "three" {
+		t.Errorf("persisted out of order: %v", written)
+	}
+}
+
+func TestConversationDoesNotPersistBeforeTheSinkIsSet(t *testing.T) {
+	// The replay itself must not be written back: a resumed session appends
+	// what it just read, and persisting that doubles the file every resume.
+	conv := NewConversation("system")
+	conv.Append(provider.Message{Role: provider.RoleUser, Content: "replayed"})
+
+	var written []provider.Message
+	conv.Persist(func(m provider.Message) { written = append(written, m) })
+	conv.Append(provider.Message{Role: provider.RoleUser, Content: "new"})
+
+	if len(written) != 1 || written[0].Content != "new" {
+		t.Errorf("persisted %v, want only the message appended after the sink", written)
+	}
+}

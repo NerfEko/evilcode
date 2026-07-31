@@ -23,6 +23,13 @@ type Conversation struct {
 	system   string
 	messages []provider.Message
 	epoch    int
+
+	// onAppend persists each message as it lands. It is here rather than in
+	// each frontend because §18 makes the JSONL file the source of truth —
+	// "resume = replay" — and a frontend that forgets to write is a session
+	// that silently resumes empty. Every message goes through Append, so this
+	// is the one place that cannot be forgotten.
+	onAppend func(provider.Message)
 }
 
 // NewConversation starts a conversation with a fixed system prompt.
@@ -30,11 +37,30 @@ func NewConversation(system string) *Conversation {
 	return &Conversation{system: system}
 }
 
+// Persist registers a sink for every appended message.
+//
+// Replay is deliberately not persisted: a resumed session appends the messages
+// it just read, and writing them again would double the file on every resume.
+func (c *Conversation) Persist(sink func(provider.Message)) {
+	c.mu.Lock()
+	c.onAppend = sink
+	c.mu.Unlock()
+}
+
 // Append adds messages to the tail.
 func (c *Conversation) Append(msgs ...provider.Message) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.messages = append(c.messages, msgs...)
+	sink := c.onAppend
+	c.mu.Unlock()
+
+	// Outside the lock: the sink writes to a file, and holding the
+	// conversation lock across a disk write would stall every reader.
+	if sink != nil {
+		for _, m := range msgs {
+			sink(m)
+		}
+	}
 }
 
 // Messages returns the full list to send, system prompt first. The slice is a

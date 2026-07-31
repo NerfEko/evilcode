@@ -18,6 +18,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/memory"
+	"evilcode/internal/provider"
 	"evilcode/internal/session"
 	"evilcode/internal/tools"
 )
@@ -113,6 +114,10 @@ func Run(args []string) (int, error) {
 		// Headless has nobody to ask, so `ask` is deliberately absent rather
 		// than present and always failing.
 	}
+
+	// Every message reaches the JSONL file as it lands, which is what makes
+	// `-resume` replay anything at all (§18).
+	conv.Persist(func(m provider.Message) { store.WriteMessage(m) })
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	a.NumCtx = overrides.ContextWindow

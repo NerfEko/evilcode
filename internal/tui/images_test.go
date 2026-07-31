@@ -109,16 +109,39 @@ func TestToggleImagesClearsWhatIsOnScreen(t *testing.T) {
 	}
 }
 
-func TestMermaidSourceFallbackNamesTheRenderer(t *testing.T) {
-	// Without mmdc the source is shown styled rather than an error: the diagram
-	// text is still the most useful thing on offer.
+func TestMermaidSourceFallbackShowsTheSource(t *testing.T) {
+	// When a diagram cannot be drawn the source is shown styled rather than an
+	// error: the diagram text is still the most useful thing on offer.
 	r := testRenderer(80)
 	joined := strings.Join(plainLines(r.RenderMermaidSource("graph TD;\n A-->B;")), "\n")
 	if !strings.Contains(joined, "A-->B") {
 		t.Errorf("the source was not shown:\n%s", joined)
 	}
-	if !strings.Contains(joined, MermaidCommand) {
-		t.Errorf("the fallback does not say what would render it:\n%s", joined)
+	if !strings.Contains(joined, "↻ mermaid") {
+		t.Errorf("the fallback does not explain itself:\n%s", joined)
+	}
+}
+
+func TestMermaidHintNamesTheActualObstacle(t *testing.T) {
+	// Two different problems need two different answers — install mmdc, or use
+	// a terminal that shows images. One message blaming mmdc sends someone who
+	// already has it to reinstall it.
+	//
+	// Asserted against the function rather than the rendered frame, because the
+	// frame's answer depends on whether this machine happens to have mmdc.
+	if got := MermaidHint(graphics.ProtoNone, true); !strings.Contains(got, "terminal") {
+		if MermaidAvailable() {
+			t.Errorf("hint = %q, want it to blame the terminal", got)
+		}
+	}
+	if got := MermaidHint(graphics.ProtoKitty, false); MermaidAvailable() &&
+		!strings.Contains(got, "Alt+Shift+I") {
+		t.Errorf("hint = %q, want it to name the toggle", got)
+	}
+	if !MermaidAvailable() {
+		if got := MermaidHint(graphics.ProtoKitty, true); !strings.Contains(got, MermaidCommand) {
+			t.Errorf("hint = %q, want it to name the missing renderer", got)
+		}
 	}
 }
 

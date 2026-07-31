@@ -17,6 +17,7 @@ import (
 	"evilcode/internal/lsp"
 	"evilcode/internal/mcp"
 	"evilcode/internal/memory"
+	"evilcode/internal/provider"
 	"evilcode/internal/session"
 	"evilcode/internal/todo"
 	"evilcode/internal/tools"
@@ -97,6 +98,11 @@ func Run(args []string) error {
 		}
 		conv.Append(msgs...)
 	}
+
+	// The JSONL file is the source of truth (§18), so every message goes to it
+	// as it lands. Registered after any replay, or a resume would rewrite what
+	// it had just read.
+	conv.Persist(func(m provider.Message) { store.WriteMessage(m) })
 
 	todos, err := todo.NewStore(dataDir, store.Name)
 	if err != nil {

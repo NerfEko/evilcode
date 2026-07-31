@@ -197,6 +197,10 @@ type Model struct {
 	diagramInbox atomic.Pointer[mermaidRendered]
 	nextImageID  int
 
+	// hiddenPrompt is the text of an injected turn that must not be drawn as a
+	// user block, matched once when its turn starts.
+	hiddenPrompt string
+
 	// reloadTo is the session to resume after a `/reload`, or "".
 	reloadTo string
 
@@ -439,7 +443,13 @@ func (m *Model) applyEvent(e agent.Event) {
 		// attached client renders answers to questions it never sees. The check
 		// is against the last block rather than a flag, because the client that
 		// typed it has already drawn it.
-		if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
+		// A hidden prompt is one this client injected on purpose — /plan,
+		// auto-poke, overnight — and its full instruction text has no business
+		// in the transcript. Without this check the attach path, which exists
+		// so a client renders prompts it did not type, drew every one of them.
+		if e.Text != "" && e.Text == m.hiddenPrompt {
+			m.hiddenPrompt = ""
+		} else if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
 			m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: e.Text})
 			m.promptCount++
 			m.renumberPrompts()
@@ -1852,6 +1862,7 @@ func drainPendingForEdit(pending []PendingMessage) []PendingMessage {
 // submitHidden starts a turn whose prompt is harness-authored, so it drives the
 // model without appearing as something the user typed.
 func (m *Model) submitHidden(text string) {
+	m.hiddenPrompt = text
 	m.editor.Clear()
 	m.scroll.FollowBottom()
 
