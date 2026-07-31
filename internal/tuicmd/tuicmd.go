@@ -80,8 +80,14 @@ func Run(args []string) error {
 	poke := agent.NewPokeHook(todos, cfg.Features.AutoPoke)
 	a.Hooks = poke
 
+	prompts, err := session.OpenHistory(dataDir)
+	if err != nil {
+		return err
+	}
+
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd)).
-		WithTodos(todos, poke)
+		WithTodos(todos, poke).
+		WithHistory(prompts)
 
 	overrides := cfg.ModelOverrides(*model)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits)

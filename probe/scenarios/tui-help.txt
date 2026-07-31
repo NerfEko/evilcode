@@ -1,0 +1,8 @@
+# The full-screen help overlay (§5.5). Sections are hand-curated, and anything
+# they miss is computed and shown under "More commands", so a newly registered
+# command can never be invisible.
+
+boot tui
+keys "/help"
+keys Enter
+capture help-overlay

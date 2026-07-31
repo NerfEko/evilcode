@@ -441,3 +441,34 @@ Verified: 12 anchor tests, 5 role/repo-override tests, plus the existing suites.
 PNG looked at: the ask picker mid-question, with the knight-rider bar running while the
 tool blocks. Answered it under the probe and confirmed the choice reaches the model.
 20 goldens green.
+
+## 2026-07-31 P2.10–P2.14 — soft interrupts, history search, help overlay
+
+Done: `docs/soft-interrupt.md`, the Ctrl+R reverse search, Ctrl+Up retrieval of staged
+messages, Esc's poke-disarm semantics, and the full-screen help overlay.
+
+`docs/soft-interrupt.md` writes down why an interleave is not a new API request: it is a
+user message appended at a safe point so the next loop iteration carries it with the
+cache prefix intact. Cancelling and re-requesting would be simpler and wrong in three
+ways — it discards the turn, discards the cache, and treats every aside as a retraction.
+
+Ctrl+R is readline's reverse-i-search including the part that makes it usable: the
+selected match previews live into the composer, and cancelling restores the exact draft
+from before. Selection clamps rather than wrapping — a history search that jumps to the
+newest entry when you hold Up is disorienting.
+
+Esc and Ctrl+C now differ where it matters. Esc means stop, so it disarms auto-poke;
+Ctrl+C means skip this, so it does not. A harness that re-poked immediately after being
+told to stop would be ignoring the instruction.
+
+The help overlay's sections are hand-curated for readability, which risks drift, so the
+uncovered remainder is computed and shown under "More commands". A test asserts every
+visible command appears somewhere in the rendered overlay.
+
+Two shared-code cleanups: the palette and the search now use one `spliceOverlay`, so
+zero-height overlay placement has a single implementation; and box widths are measured in
+cells rather than bytes, which a test caught — the footer's `·` separators are multibyte
+and left the box ragged by three columns.
+
+Verified: 18 new tests. 24 goldens green. PNG looked at for the help overlay and the
+history search with its live composer preview.

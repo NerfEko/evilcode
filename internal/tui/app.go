@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/session"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
 	"evilcode/internal/tools"
@@ -93,8 +94,17 @@ type Model struct {
 	// commandArg holds the argument of the command being run.
 	commandArg string
 
+	// helpOpen and helpScroll drive the full-screen help overlay (§5.5).
+	helpOpen   bool
+	helpScroll int
+
 	// pendingAsk is the slot the ask tool parks its question in.
 	pendingAsk tools.PendingAsk
+
+	// history is the Ctrl+R reverse search, and prompts is the recall source
+	// merged across sessions (plan.md §5.2).
+	history HistorySearch
+	prompts *session.History
 
 	// poke is the auto-poke hook, when the session has one.
 	poke *agent.PokeHook
@@ -136,6 +146,12 @@ func (m *Model) Asker() tools.Asker {
 			return nil, ctx.Err()
 		}
 	})
+}
+
+// WithHistory attaches the cross-session prompt history.
+func (m *Model) WithHistory(h *session.History) *Model {
+	m.prompts = h
+	return m
 }
 
 // WithTodos attaches the session's todo state and auto-poke hook.
@@ -334,6 +350,26 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleAskKey(key)
 	}
 
+	if m.history.Active {
+		return m.handleHistoryKey(key, msg)
+	}
+
+	if m.helpOpen {
+		switch key {
+		case "esc", "q", "ctrl+c", "enter":
+			m.helpOpen = false
+		case "up", "k":
+			m.helpScroll = max(m.helpScroll-1, 0)
+		case "down", "j":
+			m.helpScroll++
+		case "pgup":
+			m.helpScroll = max(m.helpScroll-PageLines, 0)
+		case "pgdown", " ", "space":
+			m.helpScroll += PageLines
+		}
+		return m, nil
+	}
+
 	// The picker owns the keyboard while it is open.
 	if m.pickerOpen {
 		return m.handlePickerKey(key)
@@ -484,6 +520,34 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "ctrl+r":
+		m.history.Open(m.editor.Text, m.editor.Cursor)
+		return m, nil
+
+	case "ctrl+up", "alt+up":
+		// Pending messages come back for editing before prompt history does:
+		// something you just staged is more likely what you meant to reach
+		// than something from last week (plan.md §6.4).
+		if m.editor.Text == "" && len(m.pending) > 0 {
+			var texts []string
+			for _, p := range drainPendingForEdit(m.pending) {
+				texts = append(texts, p.Text)
+			}
+			n := len(m.pending)
+			m.pending = nil
+			m.editor.Text = strings.Join(texts, "\n\n")
+			m.editor.Cursor = len([]rune(m.editor.Text))
+			m.notice = fmt.Sprintf("Retrieved %d pending message(s) for editing", n)
+			return m, nil
+		}
+		if m.editor.Text == "" && m.prompts != nil {
+			if all := m.prompts.All(); len(all) > 0 {
+				m.editor.Text = all[len(all)-1]
+				m.editor.Cursor = len([]rune(m.editor.Text))
+			}
+		}
+		return m, nil
+
 	case "backspace":
 		m.editor.Backspace()
 		m.syncShellMode()
@@ -554,6 +618,64 @@ func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 // syncShellMode tracks the `!` prefix that switches the composer to a shell.
 func (m *Model) syncShellMode() {
 	m.shellMode = strings.HasPrefix(m.editor.Text, "!")
+}
+
+// handleHistoryKey drives the Ctrl+R reverse search.
+func (m *Model) handleHistoryKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "ctrl+g", "ctrl+c":
+		// Cancelling restores exactly the draft that was there before.
+		draft, cursor := m.history.Close()
+		m.editor.Text, m.editor.Cursor = draft, cursor
+		return m, nil
+
+	case "enter":
+		m.history.Close()
+		return m, nil
+
+	case "up", "ctrl+r":
+		m.history.Move(1)
+		m.previewHistory()
+		return m, nil
+
+	case "down":
+		m.history.Move(-1)
+		m.previewHistory()
+		return m, nil
+
+	case "backspace":
+		if r := []rune(m.history.Query); len(r) > 0 {
+			m.history.Query = string(r[:len(r)-1])
+			m.refreshHistory()
+		}
+		return m, nil
+	}
+
+	if txt := msg.Key().Text; txt != "" {
+		m.history.Query += txt
+		m.refreshHistory()
+	}
+	return m, nil
+}
+
+// refreshHistory re-runs the search and previews the top match.
+func (m *Model) refreshHistory() {
+	m.history.Selected = 0
+	if m.prompts == nil || m.history.Query == "" {
+		m.history.Matches = nil
+		return
+	}
+	m.history.Matches = m.prompts.Search(m.history.Query, 50)
+	m.previewHistory()
+}
+
+// previewHistory writes the selected match into the composer, which is what
+// makes the search usable without a separate preview pane.
+func (m *Model) previewHistory() {
+	if got := m.history.Current(); got != "" {
+		m.editor.Text = got
+		m.editor.Cursor = len([]rune(got))
+	}
 }
 
 // handleAskKey drives the ask tool's option picker.
@@ -799,8 +921,23 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "help", "?", "commands", "keys", "hotkeys":
-		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: helpText()})
-		m.scroll.FollowBottom()
+		if arg != "" {
+			if c, ok := FindCommand(strings.TrimPrefix(arg, "/")); ok {
+				detail := c.Long
+				if detail == "" {
+					detail = c.Help
+				}
+				m.blocks = append(m.blocks, Block{
+					Kind: BlockNotice, Text: "/" + c.Name + "\n\n" + detail,
+				})
+			} else {
+				m.notice = "no command named /" + strings.TrimPrefix(arg, "/")
+			}
+			m.scroll.FollowBottom()
+			return m, nil
+		}
+		m.helpOpen = true
+		m.helpScroll = 0
 		return m, nil
 
 	default:
@@ -867,16 +1004,22 @@ func (m *Model) escape() {
 	}
 }
 
+// interrupt cancels the turn. disarmPoke distinguishes the two keys that get
+// here: Esc means "stop", so the harness must not immediately re-poke, while
+// Ctrl+C means "skip this" and leaves the cycle armed (plan.md §6.7).
 func (m *Model) interrupt(disarmPoke bool) {
 	if m.cancelTurn != nil {
 		m.cancelTurn()
 	}
+	// Staged interleaves were aimed at the turn being cancelled.
 	m.pending = nil
-	if disarmPoke {
+
+	if disarmPoke && m.poke != nil && m.poke.Enabled() {
+		m.poke.Disarm()
 		m.notice = "Interrupting... Auto-poke OFF"
-	} else {
-		m.notice = "Interrupting..."
+		return
 	}
+	m.notice = "Interrupting..."
 }
 
 // send applies the §6.3 send model.
@@ -918,6 +1061,9 @@ func (m *Model) submit(text string) {
 	})
 	m.promptCount++
 	m.renumberPrompts()
+	if m.prompts != nil {
+		_ = m.prompts.Add(text)
+	}
 	m.editor.Clear()
 	m.shellMode = false
 	m.scroll.FollowBottom()
@@ -929,6 +1075,22 @@ func (m *Model) submit(text string) {
 		defer cancel()
 		_ = m.agent.Run(ctx, text)
 	}()
+}
+
+// drainPendingForEdit orders staged messages for retrieval: soft-interrupts
+// first, then interleaves, then queued, so the text comes back in the order it
+// would have reached the model (plan.md §6.4).
+func drainPendingForEdit(pending []PendingMessage) []PendingMessage {
+	order := []PendingKind{PendingSent, PendingInterleave, PendingQueued}
+	var out []PendingMessage
+	for _, kind := range order {
+		for _, p := range pending {
+			if p.Kind == kind {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // submitHidden starts a turn whose prompt is harness-authored, so it drives the
@@ -1057,6 +1219,13 @@ func (m *Model) View() tea.View {
 	// content height, which can change the decision.
 	m.applyWrapWidth()
 
+	if m.helpOpen {
+		v := tea.NewView(strings.Join(
+			m.renderer.RenderHelp(m.helpScroll, m.width, m.height), "\n"))
+		v.AltScreen = true
+		return v
+	}
+
 	res := m.stack().Resolve()
 	content := m.transcriptLines()
 
@@ -1119,6 +1288,7 @@ func (m *Model) View() tea.View {
 	// (plan.md invariant 3). It runs before the inset so the overlay shares the
 	// same gutter as every other row.
 	rows = m.overlayPalette(rows)
+	rows = m.overlayHistory(rows)
 
 	// The left inset is applied here rather than per-widget, so every row
 	// shares one gutter (plan.md §3.4).
@@ -1140,13 +1310,15 @@ func (m *Model) View() tea.View {
 	return v
 }
 
-// overlayPalette splices the command list over existing rows, covering them
-// rather than displacing them.
-//
-// Placement prefers the rows directly below the composer. When the frame ends
-// before that — which it does whenever the layout is packed — the list flips
-// above the composer and covers the transcript tail instead. Either way the
-// row count is unchanged.
+// overlayHistory splices the reverse search over the finished frame. It is
+// drawn after the palette so it wins when both could apply (plan.md §5.2).
+func (m *Model) overlayHistory(rows []string) []string {
+	overlay := m.renderer.RenderHistorySearch(&m.history)
+	return spliceOverlay(rows, overlay, m.height,
+		len(m.renderer.RenderComposer(m.composerState())))
+}
+
+// overlayPalette splices the command list over the finished frame.
 func (m *Model) overlayPalette(rows []string) []string {
 	if !m.paletteOpen() {
 		return rows
@@ -1156,26 +1328,33 @@ func (m *Model) overlayPalette(rows []string) []string {
 	state := m.palette
 	state.Query = strings.TrimPrefix(m.editor.Text, "/")
 	overlay := m.renderer.RenderPalette(state, VisibleCommands())
+	return spliceOverlay(rows, overlay, m.height,
+		len(m.renderer.RenderComposer(m.composerState())))
+}
+
+// spliceOverlay draws overlay rows over existing ones, covering them rather
+// than displacing them — which is what lets an overlay reserve zero layout
+// height and never move the transcript (plan.md invariant 3).
+//
+// Placement prefers the rows directly below the composer. When the frame ends
+// before that — which it does whenever the layout is packed — the overlay flips
+// above the composer and covers the transcript tail instead.
+func spliceOverlay(rows, overlay []string, screenHeight, composerRows int) []string {
 	if len(overlay) == 0 {
 		return rows
 	}
 
-	// The composer's last row is the anchor.
-	composerRows := len(m.renderer.RenderComposer(m.composerState()))
 	composerEnd := len(rows)
 	composerStart := max(composerEnd-composerRows, 0)
 
-	below := m.height - composerEnd
 	var at int
-	if below >= len(overlay) {
-		// Room underneath: grow the frame into the empty rows the terminal
-		// already shows.
+	if screenHeight-composerEnd >= len(overlay) {
+		// Room underneath: grow into rows the terminal already shows blank.
 		at = composerEnd
 		for len(rows) < at+len(overlay) {
 			rows = append(rows, "")
 		}
 	} else {
-		// Flip above the composer, covering the transcript tail.
 		at = max(composerStart-len(overlay), 0)
 	}
 
@@ -1187,7 +1366,7 @@ func (m *Model) overlayPalette(rows []string) []string {
 		for len(rows) <= idx {
 			rows = append(rows, "")
 		}
-		// Explicitly clear the covered cells; a shorter overlay row must not
+		// Assignment rather than overlay-onto: a shorter overlay row must not
 		// leave the tail of whatever was underneath visible.
 		rows[idx] = line
 	}

@@ -88,3 +88,56 @@ func CommandNames() []string {
 	sort.Strings(out)
 	return out
 }
+
+// HelpSection is one hand-curated group in the help overlay.
+type HelpSection struct {
+	Title string
+	Names []string
+}
+
+// HelpSections orders commands for reading rather than alphabetically. It is
+// hand-curated, which risks drift — so RenderHelp computes the leftovers and
+// shows them under "More commands". A newly registered command can therefore
+// never be invisible (plan.md §5.5).
+var HelpSections = []HelpSection{
+	{"Getting around", []string{"help", "keys", "context", "info", "version"}},
+	{"Models", []string{"model", "models"}},
+	{"Working", []string{"plan", "todos", "poke"}},
+	{"Sessions", []string{"resume", "sessions", "rename", "clear"}},
+	{"System", []string{"config", "terminal-setup", "screenshot", "cancel", "quit"}},
+}
+
+// UncoveredCommands returns visible commands no section lists.
+func UncoveredCommands() []Command {
+	covered := map[string]bool{}
+	for _, sec := range HelpSections {
+		for _, n := range sec.Names {
+			covered[n] = true
+		}
+	}
+	var out []Command
+	for _, c := range VisibleCommands() {
+		if !covered[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// HelpKeys is the keymap shown in the overlay.
+var HelpKeys = [][2]string{
+	{"Enter", "submit; interleave into a running turn; queue in queue mode"},
+	{"Ctrl+Enter", "the opposite of the current send mode"},
+	{"Shift+Enter / Alt+Enter", "newline (or end a line with a backslash)"},
+	{"Esc", "close overlays, interrupt (disarms auto-poke), then clear input"},
+	{"Ctrl+C", "interrupt without disarming; twice when idle to quit"},
+	{"Ctrl+T", "toggle queue mode"},
+	{"Ctrl+R", "search prompt history"},
+	{"Ctrl+Up", "retrieve staged messages for editing"},
+	{"Ctrl+G", "toggle a scroll bookmark"},
+	{"Ctrl+U / K / W", "kill to start / to end / previous word"},
+	{"Ctrl+A / E", "start / end of line"},
+	{"Ctrl+Z / S", "undo input / stash and restore a draft"},
+	{"PgUp / PgDn", "scroll a page"},
+	{"! prefix", "run the line as a shell command"},
+}

@@ -1,0 +1,21 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo> (main)
+
+ 2› fix the auth redirect loop
+
+ Yes — that function parses the config and returns the defaults when the file is absent. It never returns a nil map, so callers can index it
+ safely.
+
+ 1› fix the auth token refresh
+
+ Done.
+
+ 💡 Ctrl+R searches your prompt history
+ 3> fix the auth token refresh
+   Ctrl+Enter to queue
+ (history search) auth█  ↑↓ select · ↵ insert · Esc cancel
+   ▸ fix the auth token refresh
+     fix the auth redirect loop

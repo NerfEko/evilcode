@@ -1004,11 +1004,11 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] **`ask` tool** + inline option picker rendering (§17, §5.3 chrome).
 - [x] **Git tools** `git_overview/git_file_diff/git_hunk` (§17).
 - [x] **Role-based model routing** `[roles]` + smol side-call plumbing + per-repo pinning (§16).
-- [ ] Send model: SendAction, queue mode, interleave staging + pending rows + Ctrl+Up retrieval (§6.3, §6.4). Write `docs/soft-interrupt.md`.
-- [ ] Ctrl+R history search overlay (§5.2).
-- [ ] Esc layered cancel with poke-disarm semantics (§6.7).
+- [x] Send model: SendAction, queue mode, interleave staging + pending rows + Ctrl+Up retrieval (§6.3, §6.4). Write `docs/soft-interrupt.md`.
+- [x] Ctrl+R history search overlay (§5.2).
+- [x] Esc layered cancel with poke-disarm semantics (§6.7).
 - [ ] Full keymap + configurable bindings + hotkey feedback/near-miss (§11, §6.8).
-- [ ] Command registry completion: `/help` overlay + anti-drift + `/help <cmd>`, argument completion, remaining P2 commands (§5.5, §13).
+- [x] Command registry completion: `/help` overlay + anti-drift + `/help <cmd>`, argument completion, remaining P2 commands (§5.5, §13).
 - [ ] Widget dock engine + anchoring/hysteresis (§8.3); widgets: Todos, ContextUsage, ModelInfo, GitStatus, BackgroundTasks, Tips (§8.4, §8.5, §8.9).
 - [ ] Right fact stack (§8.6). Elastic overscroll (§4.4). Typing scroll lock (§4.5).
 - [ ] Centered mode: 96-col cap, centering by literal left-padding (not per-line Center alignment — keeps copy/column math sane), per-role exemptions (tool/system/code-block rows stay left), left-side widget margin only exists here, cursor offset math, images split slack both sides, part of the render cache key, `/alignment` persist.

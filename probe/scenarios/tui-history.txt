@@ -1,0 +1,11 @@
+# Ctrl+R reverse search (§5.2). The selected match previews live into the
+# composer, and cancelling restores the draft that was there before.
+
+boot tui
+keys "fix the auth redirect loop"
+keys Enter
+keys "fix the auth token refresh"
+keys Enter
+keys C-r
+keys "auth"
+capture history-search
