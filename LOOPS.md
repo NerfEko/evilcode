@@ -2506,3 +2506,31 @@ possible.
 Verified: both commands refuse mid-turn and change nothing; a `/plan` issued
 during a turn is queued and starts when that turn ends; `go test ./... -race`
 green.
+
+## 2026-07-31 H2.18 — A lost render is permanent
+
+Concurrent mermaid renders shared one `atomic.Pointer`. A second result
+overwrote a first that had not been drained yet, and the lost one is not merely
+late: `renderDiagrams` marks a source with `""` before starting it, so that
+sentinel — "already started, do not start again" — stays in the map forever. The
+diagram never appears and can never be retried for the life of the session.
+
+With the queue shortened to one slot, which is what the pointer effectively was:
+
+```
+the render of "graph B" was lost; its source is still marked started, so it can
+never be retried
+the render of "graph C" was lost; ...
+```
+
+A buffered channel now, drained one per frame by the render loop. If it ever
+does fill, the overflow path *unmarks* the source instead of dropping it
+silently, so the next repaint starts it again — the sentinel that made this
+permanent is the thing that has to be cleaned up on any path that loses a
+result.
+
+The map and the queue are both touched by render goroutines and by the render
+loop, so both moved under a mutex.
+
+Verified: three concurrent renders all reach the transcript; `go test ./...
+-race` green.

@@ -235,7 +235,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H2.17** `internal/tui/app.go:1531` `/plan` — cancels the active turn and launches a
   hidden run immediately, without awaiting the cancelled turn's end. Fix: queue the prompt,
   start on the matching `TurnEnd`.  ⟨codex⟩
-- [ ] **H2.18** `internal/tui/images.go:225` — concurrent mermaid renders share one atomic
+- [x] **H2.18** `internal/tui/images.go:225` — concurrent mermaid renders share one atomic
   result slot; a lost result leaves `m.diagrams[source] = ""`, and that sentinel blocks any
   retry for the rest of the session. Fix: buffered completion queue, drain every result.
   ⟨both⟩

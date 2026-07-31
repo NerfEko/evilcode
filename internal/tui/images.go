@@ -224,16 +224,48 @@ func (m *Model) renderDiagrams(text string) {
 		source, dir := seg.Text, m.diagramDir
 		go func() {
 			path, err := RenderMermaid(dir, source)
-			m.diagramInbox.Store(&mermaidRendered{Source: source, Path: path, Err: err})
+			m.finishDiagram(&mermaidRendered{Source: source, Path: path, Err: err})
 		}()
+	}
+}
+
+// finishDiagram hands a completed render to the render loop.
+//
+// Buffered and non-blocking: a render goroutine must not wedge on a UI that has
+// stopped draining, and the queue is sized well past any plausible number of
+// diagrams in one reply.
+func (m *Model) finishDiagram(done *mermaidRendered) {
+	m.diagramMu.Lock()
+	if m.diagramInbox == nil {
+		m.diagramInbox = make(chan *mermaidRendered, 64)
+	}
+	inbox := m.diagramInbox
+	m.diagramMu.Unlock()
+
+	select {
+	case inbox <- done:
+	default:
+		// Full. Unmark the source so the next repaint can start it again,
+		// rather than leaving it marked as started forever.
+		m.diagramMu.Lock()
+		delete(m.diagrams, done.Source)
+		m.diagramMu.Unlock()
 	}
 }
 
 // drainDiagrams moves a finished render into the transcript. It runs on the
 // render goroutine, which is the only one allowed to touch blocks.
 func (m *Model) drainDiagrams() {
-	done := m.diagramInbox.Swap(nil)
-	if done == nil {
+	m.diagramMu.Lock()
+	inbox := m.diagramInbox
+	m.diagramMu.Unlock()
+	if inbox == nil {
+		return
+	}
+	var done *mermaidRendered
+	select {
+	case done = <-inbox:
+	default:
 		return
 	}
 	if done.Err != nil {

@@ -10,9 +10,11 @@ uses this tool every day, at `1d487ee` (2026-07-31). That is a different kind of
 than either predecessor. `plan.md` built from a spec that was known-good. `plan2.md` fixed
 bugs from two models that had read the code and might be wrong about it. This plan
 implements a **user report**: the symptoms are certain — he watched them happen — and the
-causes, the scope, and the shape of the fix are entirely unstated. Item 5 says "widgets
-flash in and out". That is true. It does not say which of the four mechanisms in
-`dock.go` is doing it, and the answer turns out to be three of them.
+causes, the scope, and the shape of the fix are usually unstated — and where they are
+stated, they are worth more than a reading of the code, because they come from watching it.
+Item 5 says "widgets flash in and out". The follow-up says *why*: they spawn at the bottom
+of the screen, where text is still streaming and thinking bubbles are still scrolling.
+That is the root cause, and §2.2 is written around it.
 
 So this plan carries the diagnosis the report does not. Every task below names the file,
 the symbol, and the mechanism, because that work has been done once here rather than

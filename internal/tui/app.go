@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -214,9 +215,18 @@ type Model struct {
 
 	// diagrams maps mermaid source to its rendered PNG, so an unchanged
 	// diagram is never re-rendered — mmdc starts a headless browser.
-	diagrams     map[string]string
-	diagramDir   string
-	diagramInbox atomic.Pointer[mermaidRendered]
+	diagrams   map[string]string
+	diagramDir string
+	// diagramMu guards the inbox and the diagrams map, both touched by render
+	// goroutines and by the render loop.
+	diagramMu sync.Mutex
+
+	// diagramInbox is a buffered queue, not a slot. It was an atomic pointer,
+	// so a second render finishing before the first was drained overwrote it —
+	// and the lost render's source stays mapped to "" forever, which is the
+	// sentinel meaning "already started". The diagram then never appears and
+	// never retries.
+	diagramInbox chan *mermaidRendered
 	nextImageID  int
 
 	// streamStart, streamChars and estimatedOut drive the live rate. Providers
