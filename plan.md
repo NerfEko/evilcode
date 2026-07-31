@@ -999,11 +999,11 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] `todo` tool (§17) + gates (§12.3) incl. the hard ownership gate + digest texts. Tests: deferred accumulation, immediate <60 fire, digest wording selection.
 - [x] Auto-poke hook + full decision tree + breakers + hidden-poke rendering (§12.4, §12.6). Test: each branch with a scripted todo state.
 - [x] `/plan` command + prompt injection + plan card renderer with nested/unterminated fence rules (§12.1). Probe scenario: mock provider streams a chunked plan fence — the card grows live.
-- [ ] Todo UI surfaces 1–3 + 5: inline card, assessment delta, Form A/B tool delta, pinned band (§12.5).
-- [ ] **Hash-anchored `edit` mode** + hashed `read` output + stale-anchor rejection (§17). Tests: anchor apply, stale reject, classic fallback.
-- [ ] **`ask` tool** + inline option picker rendering (§17, §5.3 chrome).
-- [ ] **Git tools** `git_overview/git_file_diff/git_hunk` (§17).
-- [ ] **Role-based model routing** `[roles]` + smol side-call plumbing + per-repo pinning (§16).
+- [x] Todo UI surfaces 1–3 + 5: inline card, assessment delta, Form A/B tool delta, pinned band (§12.5).
+- [x] **Hash-anchored `edit` mode** + hashed `read` output + stale-anchor rejection (§17). Tests: anchor apply, stale reject, classic fallback.
+- [x] **`ask` tool** + inline option picker rendering (§17, §5.3 chrome).
+- [x] **Git tools** `git_overview/git_file_diff/git_hunk` (§17).
+- [x] **Role-based model routing** `[roles]` + smol side-call plumbing + per-repo pinning (§16).
 - [ ] Send model: SendAction, queue mode, interleave staging + pending rows + Ctrl+Up retrieval (§6.3, §6.4). Write `docs/soft-interrupt.md`.
 - [ ] Ctrl+R history search overlay (§5.2).
 - [ ] Esc layered cancel with poke-disarm semantics (§6.7).

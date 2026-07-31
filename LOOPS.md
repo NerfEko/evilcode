@@ -412,3 +412,32 @@ Verified: 44 todo tests, 20 plan/todo-card tests, 4 poke-hook tests in the agent
 `go test -race` green. PNGs looked at for the plan card and the todo card — the
 `75→100%` arrow renders, and the nested ```bash block sits inside the card's borders
 rather than terminating it. 16 goldens green.
+
+## 2026-07-31 P2.5–P2.9 — anchors, ask, git tools, role routing
+
+Done: hash-anchored editing, the `ask` tool with its inline picker, the three read-only
+git helpers, and `[roles]` routing with per-repo pinning.
+
+**Anchored edits** (§17). `read` prefixes each line with a 4-hex content hash
+(`a3f2|417| func main() {`) and records the file's mtime, size, and anchor map. `edit`
+accepts `{anchor, op, lines}` patches alongside the exact-string form. Everything
+resolves before anything mutates, so a partly invalid patch set changes nothing. Three
+refusals, all loud: the file changed since it was read, the anchor is not in the version
+read, or the anchor matches two identical lines. Fuzzy-matching any of those would
+corrupt a file to save a retry, which is a bad trade.
+
+**Role routing** (§16). A repo may pin `[roles]` and `default_model` via `.evilcode.toml`,
+but the merge is deliberately narrow: a repo cannot add providers. Checking out a
+repository must not be able to redirect the user's API keys somewhere new, and a test
+asserts an injected `[[provider]]` block is ignored.
+
+**ask** (§17) reuses the model picker's chrome rather than inventing a second visual
+language for "choose one of these". A pending question owns the keyboard and the
+composer becomes an answer box. Esc is an answer — the tool reports that nothing was
+chosen rather than hanging. Headless omits the tool entirely rather than shipping one
+that always fails.
+
+Verified: 12 anchor tests, 5 role/repo-override tests, plus the existing suites.
+PNG looked at: the ask picker mid-question, with the knight-rider bar running while the
+tool blocks. Answered it under the probe and confirmed the choice reaches the model.
+20 goldens green.

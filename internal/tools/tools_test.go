@@ -596,3 +596,218 @@ func TestMatchGlob(t *testing.T) {
 		}
 	}
 }
+
+func TestAnchoredReadOutput(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.go": "package main\n\nfunc main() {}\n"})
+	f.WithAnchors(true)
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each line carries `anchor|number| content`.
+	for _, line := range strings.Split(strings.TrimRight(res.Output, "\n"), "\n") {
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) != 3 {
+			t.Fatalf("line %q is not anchored", line)
+		}
+		if len(parts[0]) != AnchorLen {
+			t.Errorf("anchor %q is %d chars, want %d", parts[0], len(parts[0]), AnchorLen)
+		}
+	}
+	// Without anchors the classic numbering is used, so a model that cannot
+	// handle anchors is unaffected.
+	plain := tempFS(t, map[string]string{"a.go": "package main\n"})
+	res, _ = run(t, plain.Tools(), "read", map[string]any{"path": "a.go"})
+	if strings.Contains(res.Output, "|") {
+		t.Errorf("anchors leaked into classic output: %q", res.Output)
+	}
+}
+
+func TestAnchoredEditReplace(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.go": "package main\n\nfunc main() {}\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+
+	if _, err := run(t, set, "read", map[string]any{"path": "a.go"}); err != nil {
+		t.Fatal(err)
+	}
+	anchor := LineAnchor("func main() {}")
+
+	res, err := run(t, set, "edit", map[string]any{
+		"path": "a.go",
+		"patches": []map[string]any{{
+			"anchor": anchor, "op": "replace",
+			"lines": []string{"func main() {", "\tprintln(\"hi\")", "}"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(f.Root, "a.go"))
+	want := "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n"
+	if string(got) != want {
+		t.Errorf("file =\n%q\nwant\n%q", got, want)
+	}
+	if res.DiffStat == nil || res.DiffStat.Added != 3 || res.DiffStat.Removed != 1 {
+		t.Errorf("DiffStat = %+v, want +3 -1", res.DiffStat)
+	}
+}
+
+func TestAnchoredEditInsertAndDelete(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "one\ntwo\nthree\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+	run(t, set, "read", map[string]any{"path": "a.txt"})
+
+	if _, err := run(t, set, "edit", map[string]any{
+		"path": "a.txt",
+		"patches": []map[string]any{
+			{"anchor": LineAnchor("one"), "op": "insert_after", "lines": []string{"one-and-a-half"}},
+			{"anchor": LineAnchor("three"), "op": "delete"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if string(got) != "one\none-and-a-half\ntwo\n" {
+		t.Errorf("file = %q", got)
+	}
+}
+
+func TestStaleAnchorRefusedAfterExternalChange(t *testing.T) {
+	// The corruption case: the file moved under the model between read and
+	// edit. Applying a best-effort patch here is strictly worse than the retry
+	// anchors were meant to save.
+	f := tempFS(t, map[string]string{"a.txt": "one\ntwo\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+	run(t, set, "read", map[string]any{"path": "a.txt"})
+	anchor := LineAnchor("two")
+
+	// Something else rewrites the file.
+	time.Sleep(10 * time.Millisecond)
+	os.WriteFile(filepath.Join(f.Root, "a.txt"), []byte("completely\ndifferent\ncontent\n"), 0o644)
+
+	_, err := run(t, set, "edit", map[string]any{
+		"path":    "a.txt",
+		"patches": []map[string]any{{"anchor": anchor, "op": "delete"}},
+	})
+	if err == nil {
+		t.Fatal("a stale anchor must be refused")
+	}
+	if !strings.Contains(err.Error(), "Re-read") {
+		t.Errorf("err = %q, want it to say to re-read", err)
+	}
+	// Nothing may have been written.
+	got, _ := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if string(got) != "completely\ndifferent\ncontent\n" {
+		t.Errorf("the refused edit modified the file: %q", got)
+	}
+}
+
+func TestAnchorWithoutReadRefused(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "one\n"})
+	f.WithAnchors(true)
+	_, err := run(t, f.Tools(), "edit", map[string]any{
+		"path":    "a.txt",
+		"patches": []map[string]any{{"anchor": "abcd", "op": "delete"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not read this file") {
+		t.Errorf("err = %v, want a refusal naming the missing read", err)
+	}
+}
+
+func TestUnknownAnchorRefused(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "one\ntwo\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+	run(t, set, "read", map[string]any{"path": "a.txt"})
+
+	_, err := run(t, set, "edit", map[string]any{
+		"path":    "a.txt",
+		"patches": []map[string]any{{"anchor": "ffff", "op": "delete"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in the version you read") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestAmbiguousAnchorRefused(t *testing.T) {
+	// Two identical lines share an anchor. Guessing which one was meant is how
+	// an anchored edit silently changes the wrong line.
+	f := tempFS(t, map[string]string{"a.txt": "same\nother\nsame\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+	run(t, set, "read", map[string]any{"path": "a.txt"})
+
+	_, err := run(t, set, "edit", map[string]any{
+		"path":    "a.txt",
+		"patches": []map[string]any{{"anchor": LineAnchor("same"), "op": "delete"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "identical lines") {
+		t.Errorf("err = %v, want an ambiguity refusal", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if string(got) != "same\nother\nsame\n" {
+		t.Errorf("the refused edit modified the file: %q", got)
+	}
+}
+
+func TestPartlyInvalidPatchSetChangesNothing(t *testing.T) {
+	// Resolution happens fully before mutation, so a set with one bad patch
+	// leaves the file untouched rather than half-applied.
+	f := tempFS(t, map[string]string{"a.txt": "one\ntwo\nthree\n"})
+	f.WithAnchors(true)
+	set := f.Tools()
+	run(t, set, "read", map[string]any{"path": "a.txt"})
+
+	_, err := run(t, set, "edit", map[string]any{
+		"path": "a.txt",
+		"patches": []map[string]any{
+			{"anchor": LineAnchor("one"), "op": "delete"},
+			{"anchor": "ffff", "op": "delete"},
+		},
+	})
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	got, _ := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if string(got) != "one\ntwo\nthree\n" {
+		t.Errorf("file was partly modified: %q", got)
+	}
+}
+
+func TestClassicEditStillWorksWithAnchorsOn(t *testing.T) {
+	// Anchors are additive; the exact-string form must keep working for models
+	// that do not use them.
+	f := tempFS(t, map[string]string{"a.txt": "hello\n"})
+	f.WithAnchors(true)
+	if _, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "hello", "new": "goodbye",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if string(got) != "goodbye\n" {
+		t.Errorf("file = %q", got)
+	}
+}
+
+func TestEditWithNeitherFormRefused(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "x\n"})
+	_, err := run(t, f.Tools(), "edit", map[string]any{"path": "a.txt"})
+	if err == nil || !strings.Contains(err.Error(), "either patches") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestLineAnchorIsWhitespaceSensitive(t *testing.T) {
+	// Two lines differing only in indentation are different lines to an edit,
+	// so they must not share an anchor.
+	if LineAnchor("func main() {") == LineAnchor("\tfunc main() {") {
+		t.Error("indentation must affect the anchor")
+	}
+	if LineAnchor("a") != LineAnchor("a") {
+		t.Error("anchors must be stable")
+	}
+}

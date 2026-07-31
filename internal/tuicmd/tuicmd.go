@@ -57,7 +57,11 @@ func Run(args []string) error {
 	}
 	defer store.Close()
 
+	// A repo may pin its roles and default model.
 	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		return err
+	}
 	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
 	if prior > 0 {
 		_, msgs, err := session.Resume(dataDir, *resume)
@@ -79,11 +83,16 @@ func Run(args []string) error {
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd)).
 		WithTodos(todos, poke)
 
-	ts := append(tools.NewFS(cwd).Tools(), tools.NewExec(cwd).Tools()...)
+	overrides := cfg.ModelOverrides(*model)
+	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits)
+
+	ts := append(fsTools.Tools(), tools.NewExec(cwd).Tools()...)
+	ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 	ts = append(ts, tools.NewTodo(todos, nil))
+	ts = append(ts, tools.NewAsk(m.Asker()))
 	a.Tools = ts
 
-	a.NumCtx = cfg.ModelOverrides(*model).ContextWindow
+	a.NumCtx = overrides.ContextWindow
 	defer a.Close()
 
 	return tui.RunModel(m)

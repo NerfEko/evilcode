@@ -21,6 +21,13 @@ type FS struct {
 
 	// MaxReadBytes caps a single file read before truncation.
 	MaxReadBytes int
+
+	// Anchors enables hash-anchored reads and edits (plan.md §17). Some models
+	// handle anchors well and some do not, so it is per-model configuration
+	// rather than a global switch.
+	Anchors bool
+
+	anchors *anchorStore
 }
 
 // NewFS builds the filesystem tool group rooted at dir.
@@ -32,7 +39,13 @@ func NewFS(root string) *FS {
 	if err == nil {
 		root = abs
 	}
-	return &FS{Root: root, MaxReadBytes: MaxResultBytes}
+	return &FS{Root: root, MaxReadBytes: MaxResultBytes, anchors: newAnchorStore()}
+}
+
+// WithAnchors turns hash-anchored editing on.
+func (f *FS) WithAnchors(on bool) *FS {
+	f.Anchors = on
+	return f
 }
 
 // resolve turns a tool-supplied path into an absolute path inside Root, or
@@ -158,9 +171,17 @@ func (f *FS) readTool() Tool {
 				end = start + a.Limit
 			}
 
+			// Record what the model is about to see, so a later anchored edit
+			// can tell whether it is acting on this version.
+			f.anchors.record(full, info, lines)
+
 			var b strings.Builder
-			for i := start; i < end; i++ {
-				fmt.Fprintf(&b, "%d\t%s\n", i+1, lines[i])
+			if f.Anchors {
+				b.WriteString(AnnotateLines(lines[start:end], start+1))
+			} else {
+				for i := start; i < end; i++ {
+					fmt.Fprintf(&b, "%d\t%s\n", i+1, lines[i])
+				}
 			}
 			if end < len(lines) {
 				fmt.Fprintf(&b, "\n[%d more lines; re-read with offset=%d]\n", len(lines)-end, end+1)
@@ -211,6 +232,9 @@ func (f *FS) writeTool() Tool {
 			if err := os.WriteFile(full, []byte(a.Content), 0o644); err != nil {
 				return Result{}, err
 			}
+			// The model has not seen the new contents, so its anchors for this
+			// file are meaningless now.
+			f.anchors.forget(full)
 
 			name := f.rel(full)
 			diff, stat := makeDiff(name, before, a.Content)
@@ -233,30 +257,50 @@ type editArgs struct {
 	Old  string `json:"old"`
 	New  string `json:"new"`
 	All  bool   `json:"all,omitempty"`
+
+	// Patches is the hash-anchored form. It points at lines by the anchors
+	// `read` printed, so the model names a line instead of retyping its
+	// surrounding context (plan.md §17).
+	Patches []AnchorPatch `json:"patches,omitempty"`
 }
 
 func (f *FS) editTool() Tool {
 	return Tool{
 		Name: "edit",
-		Desc: "Replace an exact string in a file. The old string must appear exactly once " +
-			"unless all is true. Include enough surrounding context to make it unique.",
+		Desc: "Change a file. Two forms:\n" +
+			"  anchored — patches: [{anchor, op: replace|insert_after|delete, lines}], using the\n" +
+			"    anchors read printed beside each line. Cheapest and least error-prone: you name\n" +
+			"    a line instead of retyping its context.\n" +
+			"  exact — old/new strings. The old string must appear exactly once unless all is true.\n" +
+			"Anchors are only valid for the version you read; if the file changed, re-read it.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "path": {"type": "string", "description": "File path, relative to the workspace root"},
     "old":  {"type": "string", "description": "Exact text to replace, including indentation"},
     "new":  {"type": "string", "description": "Replacement text"},
-    "all":  {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one"}
+    "all":  {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one"},
+    "patches": {
+      "type": "array",
+      "description": "Anchored edits, using the anchors read printed beside each line",
+      "items": {
+        "type": "object",
+        "properties": {
+          "anchor": {"type": "string", "description": "The line anchor from read output"},
+          "op":     {"type": "string", "enum": ["replace", "insert_after", "delete"]},
+          "lines":  {"type": "array", "items": {"type": "string"},
+                     "description": "Replacement or inserted lines; omit for delete"}
+        },
+        "required": ["anchor", "op"]
+      }
+    }
   },
-  "required": ["path", "old", "new"]
+  "required": ["path"]
 }`),
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			var a editArgs
 			if err := unmarshalArgs(raw, &a); err != nil {
 				return Result{}, err
-			}
-			if a.Old == a.New {
-				return Result{}, fmt.Errorf("old and new are identical; nothing to do")
 			}
 			full, err := f.resolve(a.Path)
 			if err != nil {
@@ -267,6 +311,17 @@ func (f *FS) editTool() Tool {
 				return Result{}, err
 			}
 			before := string(data)
+
+			if len(a.Patches) > 0 {
+				return f.applyAnchoredEdit(full, before, a.Patches)
+			}
+			if a.Old == "" && a.New == "" {
+				return Result{}, fmt.Errorf(
+					"edit needs either patches (anchored) or old/new (exact strings)")
+			}
+			if a.Old == a.New {
+				return Result{}, fmt.Errorf("old and new are identical; nothing to do")
+			}
 
 			count := strings.Count(before, a.Old)
 			switch {
@@ -289,6 +344,7 @@ func (f *FS) editTool() Tool {
 			if err := os.WriteFile(full, []byte(after), 0o644); err != nil {
 				return Result{}, err
 			}
+			f.anchors.forget(full)
 
 			name := f.rel(full)
 			diff, stat := makeDiff(name, before, after)
@@ -300,6 +356,55 @@ func (f *FS) editTool() Tool {
 			}, nil
 		},
 	}
+}
+
+// applyAnchoredEdit resolves anchor patches against the version the model read,
+// refusing loudly rather than fuzzily matching. Silently best-effort applying a
+// patch to a file that moved underneath corrupts it, which is strictly worse
+// than the retry the anchors were meant to save (plan.md Part V).
+func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Result, error) {
+	name := f.rel(full)
+
+	st, ok := f.anchors.lookup(full)
+	if !ok {
+		return Result{}, &ErrStaleAnchor{Path: name,
+			Reason: "you have not read this file in this session, so its anchors are unknown"}
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return Result{}, err
+	}
+	if !info.ModTime().Equal(st.ModTime) || info.Size() != st.Size {
+		f.anchors.forget(full)
+		return Result{}, &ErrStaleAnchor{Path: name,
+			Reason: "the file changed since you read it"}
+	}
+
+	lines := strings.Split(strings.TrimSuffix(before, "\n"), "\n")
+	patched, err := ApplyAnchors(name, lines, patches, st)
+	if err != nil {
+		return Result{}, err
+	}
+
+	after := strings.Join(patched, "\n")
+	if strings.HasSuffix(before, "\n") {
+		after += "\n"
+	}
+	if after == before {
+		return Result{}, fmt.Errorf("the patches produced no change to %s", name)
+	}
+	if err := os.WriteFile(full, []byte(after), 0o644); err != nil {
+		return Result{}, err
+	}
+	f.anchors.forget(full)
+
+	diff, stat := makeDiff(name, before, after)
+	return Result{
+		Output:   fmt.Sprintf("edited %s (+%d -%d)", name, stat.Added, stat.Removed),
+		Diff:     diff,
+		DiffStat: &stat,
+		Intent:   fmt.Sprintf("editing %s", name),
+	}, nil
 }
 
 type globArgs struct {

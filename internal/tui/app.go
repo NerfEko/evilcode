@@ -14,6 +14,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
+	"evilcode/internal/tools"
 )
 
 // Deterministic reports whether the frozen test mode is on: fixed session
@@ -72,6 +73,12 @@ type Model struct {
 	// opening it must never move the transcript (plan.md invariant 3).
 	palette PaletteState
 
+	// ask holds a pending `ask` tool question. While one is open the composer
+	// is an answer box, and the slash palette suppresses itself (§5.1).
+	ask       *tools.AskRequest
+	askCursor int
+	askChosen map[int]bool
+
 	// picker is the inline model picker. Unlike the palette it *does* reserve
 	// layout height, because it is a surface you interact with (plan.md §5.3).
 	picker     PickerState
@@ -85,6 +92,9 @@ type Model struct {
 
 	// commandArg holds the argument of the command being run.
 	commandArg string
+
+	// pendingAsk is the slot the ask tool parks its question in.
+	pendingAsk tools.PendingAsk
 
 	// poke is the auto-poke hook, when the session has one.
 	poke *agent.PokeHook
@@ -110,6 +120,22 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		started:      time.Now(),
 		streamingIdx: -1,
 	}
+}
+
+// Asker returns the presenter the `ask` tool uses. The question is handed to
+// the render loop and answered from the keyboard, so the tool blocks on the
+// user rather than on a timer.
+func (m *Model) Asker() tools.Asker {
+	return tools.AskFunc(func(ctx context.Context, req *tools.AskRequest) ([]string, error) {
+		m.pendingAsk.Set(req)
+		select {
+		case labels := <-req.Reply:
+			return labels, nil
+		case <-ctx.Done():
+			m.pendingAsk.Answer(nil)
+			return nil, ctx.Err()
+		}
+	})
 }
 
 // WithTodos attaches the session's todo state and auto-poke hook.
@@ -147,6 +173,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if m.processing {
 			m.status.Elapsed = time.Since(m.turnAt)
+		}
+		// A pending question is picked up here rather than pushed, so the tool
+		// goroutine never touches model state.
+		if m.ask == nil {
+			if req := m.pendingAsk.Get(); req != nil {
+				m.ask, m.askCursor = req, 0
+				m.askChosen = map[int]bool{}
+			}
 		}
 		return m, m.tick()
 
@@ -293,6 +327,12 @@ func (m *Model) flushPending() {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+
+	// A pending question owns the keyboard: the composer is an answer box
+	// until it is resolved (plan.md §17).
+	if m.ask != nil {
+		return m.handleAskKey(key)
+	}
 
 	// The picker owns the keyboard while it is open.
 	if m.pickerOpen {
@@ -514,6 +554,45 @@ func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 // syncShellMode tracks the `!` prefix that switches the composer to a shell.
 func (m *Model) syncShellMode() {
 	m.shellMode = strings.HasPrefix(m.editor.Text, "!")
+}
+
+// handleAskKey drives the ask tool's option picker.
+func (m *Model) handleAskKey(key string) (tea.Model, tea.Cmd) {
+	n := len(m.ask.Options)
+	switch key {
+	case "up", "ctrl+k":
+		m.askCursor = MovePaletteSelection(m.askCursor, -1, n)
+		return m, nil
+	case "down", "ctrl+j":
+		m.askCursor = MovePaletteSelection(m.askCursor, 1, n)
+		return m, nil
+	case " ", "space":
+		if m.ask.Multi {
+			m.askChosen[m.askCursor] = !m.askChosen[m.askCursor]
+		}
+		return m, nil
+	case "enter":
+		var labels []string
+		if m.ask.Multi && len(m.askChosen) > 0 {
+			for i, opt := range m.ask.Options {
+				if m.askChosen[i] {
+					labels = append(labels, opt.Label)
+				}
+			}
+		} else {
+			labels = []string{m.ask.Options[clamp(m.askCursor, 0, n-1)].Label}
+		}
+		m.pendingAsk.Answer(labels)
+		m.ask = nil
+		return m, nil
+	case "esc", "ctrl+c":
+		// Declining is an answer: the tool reports that nothing was chosen
+		// rather than hanging.
+		m.pendingAsk.Answer(nil)
+		m.ask = nil
+		return m, nil
+	}
+	return m, nil
 }
 
 // handlePickerKey drives the inline model picker.
@@ -939,8 +1018,12 @@ func (m *Model) stack() Stack {
 	}
 	s.Heights[SlotQueued] = min(len(m.pending), MaxPendingRows)
 
+	if m.ask != nil {
+		s.Heights[SlotPicker] = len(m.renderer.RenderAsk(m.ask, m.askCursor, m.askChosen))
+		s.Heights[SlotPickerGap] = 1
+	}
 	if m.pickerOpen {
-		s.Heights[SlotPicker] = len(m.renderer.RenderPicker(m.picker))
+		s.Heights[SlotPicker] += len(m.renderer.RenderPicker(m.picker))
 		s.Heights[SlotPickerGap] = 1
 	}
 
@@ -1020,6 +1103,10 @@ func (m *Model) View() tea.View {
 		rows = append(rows, m.renderer.style(theme.RoleSystem).Render(m.notice))
 	}
 
+	if m.ask != nil {
+		rows = append(rows, m.renderer.RenderAsk(m.ask, m.askCursor, m.askChosen)...)
+		rows = append(rows, "")
+	}
 	if m.pickerOpen {
 		rows = append(rows, m.renderer.RenderPicker(m.picker)...)
 		rows = append(rows, "")

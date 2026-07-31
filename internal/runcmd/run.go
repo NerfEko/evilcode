@@ -88,13 +88,22 @@ func Run(args []string) (int, error) {
 		conv.Append(msgs...)
 	}
 
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		return ExitError, err
+	}
+	overrides := cfg.ModelOverrides(*model)
+
 	var ts tools.Set
 	if !*noTools {
-		ts = append(tools.NewFS(cwd).Tools(), tools.NewExec(cwd).Tools()...)
+		ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).Tools(),
+			tools.NewExec(cwd).Tools()...)
+		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+		// Headless has nobody to ask, so `ask` is deliberately absent rather
+		// than present and always failing.
 	}
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
-	a.NumCtx = cfg.ModelOverrides(*model).ContextWindow
+	a.NumCtx = overrides.ContextWindow
 	defer a.Close()
 
 	// Ctrl+C cancels the turn rather than killing the process, so partial

@@ -7,6 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/theme"
+	"evilcode/internal/tools"
 )
 
 // Picker chrome (plan.md §5.3). Unlike the slash palette, the picker *does*
@@ -339,4 +340,64 @@ func (r *Renderer) BoxTitled(title string, content []string, borderColor string)
 	}
 	out = append(out, border.Render("╰"+strings.Repeat("─", inner+2)+"╯"))
 	return out
+}
+
+// RenderAsk draws the `ask` tool's option picker. It reuses the model picker's
+// chrome (§5.3) deliberately: the two are the same interaction, and a second
+// visual language for "choose one of these" would be noise.
+func (r *Renderer) RenderAsk(req *tools.AskRequest, cursor int, chosen map[int]bool) []string {
+	question := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
+	dim := r.style(theme.RoleDim)
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(200, 200, 220))))
+	selected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ffffff")).
+		Background(lipgloss.Color(pickerSelectedBg)).Bold(true)
+
+	var body []string
+	for _, line := range wrapPlain(req.Question, max(r.Width-8, 20)) {
+		body = append(body, question.Render(line))
+	}
+	body = append(body, "")
+
+	for i, opt := range req.Options {
+		marker := " "
+		if i == cursor {
+			marker = "▸"
+		}
+		text := opt.Label
+		if req.Multi {
+			box := "○"
+			if chosen[i] {
+				box = "●"
+			}
+			text = box + " " + text
+		}
+
+		row := " " + selectedIf(i == cursor, marker, selected, dim) + " "
+		if i == cursor {
+			row += selected.Render(text)
+		} else {
+			row += label.Render(text)
+		}
+		if opt.Description != "" {
+			row += dim.Render("  " + truncateCells(opt.Description, max(r.Width-len(text)-12, 10)))
+		}
+		body = append(body, row)
+	}
+
+	hint := "↑↓ choose · ↵ answer · Esc skip"
+	if req.Multi {
+		hint = "↑↓ move · Space toggle · ↵ answer · Esc skip"
+	}
+	body = append(body, "", dim.Render(hint))
+
+	return r.roundedBox(body)
+}
+
+func selectedIf(on bool, text string, yes, no lipgloss.Style) string {
+	if on {
+		return yes.Render(text)
+	}
+	return no.Render(text)
 }

@@ -1,0 +1,22 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo> (main)
+
+ 1› add a retry gate
+
+ One decision first.
+
+ ●·· ask ··● · 0s · ⌥B bg
+ ╭──────────────────────────────────────────────────────────────────────╮
+ │ Should the retry gate back off exponentially or on a fixed interval? │
+ │                                                                      │
+ │  ▸ Exponential backoff  Recommended; matches the rest of the client  │
+ │    Fixed interval  Simpler, but retries a dead endpoint hard         │
+ │                                                                      │
+ │ ↑↓ choose · ↵ answer · Esc skip                                      │
+ ╰──────────────────────────────────────────────────────────────────────╯
+
+ 2…
+   Ctrl+Enter to queue

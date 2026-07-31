@@ -1,0 +1,12 @@
+# The ask tool's inline option picker (§17), which reuses the model picker's
+# chrome deliberately — the two are the same interaction.
+
+scenario ask
+boot tui
+keys "add a retry gate"
+keys Enter
+capture ask-open
+
+keys Down
+keys Enter
+capture ask-answered

@@ -268,6 +268,22 @@ var mockScenarios = map[string][][]Chunk{
 		append(text("That was the clamp bug."), done(380, 6)),
 	},
 
+	// The ask tool's inline option picker (§17, §5.3 chrome).
+	"ask": {
+		{
+			{Text: "One decision first."},
+			call("call_1", "ask", map[string]any{
+				"question": "Should the retry gate back off exponentially or on a fixed interval?",
+				"options": []map[string]any{
+					{"label": "Exponential backoff", "description": "Recommended; matches the rest of the client"},
+					{"label": "Fixed interval", "description": "Simpler, but retries a dead endpoint hard"},
+				},
+			}),
+			done(220, 30),
+		},
+		append(text("Exponential it is."), done(400, 6)),
+	},
+
 	// A failure mid-stream, for the error row and retry paths (§9.8, §9.9).
 	"error": {
 		{
