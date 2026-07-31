@@ -180,6 +180,14 @@ type Model struct {
 	// is off.
 	memory *memory.Manager
 
+	// swarm is the other agents in the daemon, nil outside one (plan.md §20).
+	swarm  *SwarmState
+	summon SummonFunc
+
+	// swarmDocked records whether the status widget found a slot last frame,
+	// which is what the strip stands down against.
+	swarmDocked bool
+
 	// sideAnswer carries a finished `/btw` result from its goroutine into the
 	// render loop, so the side call never touches model state directly.
 	sideAnswer atomic.Pointer[sideAnswer]
@@ -298,7 +306,13 @@ func (m *Model) tick() tea.Cmd {
 // waitForEvent bridges the agent's channel into bubbletea's message loop.
 func (m *Model) waitForEvent() tea.Cmd {
 	return func() tea.Msg {
-		e, ok := <-m.agent.Events()
+		var e agent.Event
+		ok := true
+		select {
+		case e = <-m.agent.Events():
+		case <-m.agent.Done():
+			ok = false
+		}
 		if !ok {
 			return eventsClosedMsg{}
 		}
@@ -1351,6 +1365,12 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "memory":
 		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
 
+	case "summon":
+		return m, m.summonCommand(strings.TrimSpace(m.commandArg))
+
+	case "agents", "swarm":
+		return m, m.agentsCommand()
+
 	case "todos", "todo":
 		m.showTodoCard = !m.showTodoCard
 		return m, nil
@@ -1910,6 +1930,18 @@ func (m *Model) View() tea.View {
 	m.status.Queued = len(m.pending)
 	rows = append(rows, m.renderer.RenderStatus(m.status))
 
+	// The swarm strip is the fallback for when the dock widget cannot find a
+	// slot. Whether the widget is up is only known after docking, so the strip
+	// reads last frame's answer through the hysteresis — which is the point:
+	// deciding from the current frame would make the two flicker against each
+	// other every time a wide line slid under the widget.
+	if m.swarm != nil {
+		if strip := m.renderer.RenderSwarmStrip(m.swarm,
+			time.Since(m.started)); strip != "" && m.swarm.StripVisible() {
+			rows = append(rows, strip)
+		}
+	}
+
 	if m.notice != "" {
 		rows = append(rows, m.renderer.style(theme.RoleSystem).Render(m.notice))
 	}
@@ -1951,6 +1983,13 @@ func (m *Model) View() tea.View {
 	// Widgets dock into the blank space beside the transcript, so they cost no
 	// layout height at all — they live where the text is not (plan.md §8.3).
 	rows = m.dockWidgets(rows, res.Transcript, len(content))
+
+	// Now that docking has run, the strip knows whether the widget got a slot.
+	// Feeding it here — after the fact, through the hysteresis — is what stops
+	// the two from flickering against each other as lines slide underneath.
+	if m.swarm != nil {
+		m.swarm.ObserveDock(m.swarmDocked, time.Now())
+	}
 
 	// Overlays are spliced over the finished frame rather than added to it, so
 	// opening one reserves no layout height and the transcript never moves
@@ -2188,6 +2227,12 @@ func (m *Model) activeWidgets() []Widget {
 		}
 		add(m.renderer.MemoryActivityWidget(act, elapsed))
 	}
+	if m.swarm != nil {
+		add(m.renderer.SwarmStatusWidget(m.swarm, time.Since(m.started)))
+	}
+	if m.swarm != nil {
+		add(m.renderer.SwarmStatusWidget(m.swarm, time.Since(m.started)))
+	}
 	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
 		add(m.renderer.TipsWidget(tip))
 	}
@@ -2235,7 +2280,11 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []s
 		byKind[w.Kind] = w
 	}
 
+	m.swarmDocked = false
 	for _, p := range placements {
+		if p.Kind == WidgetSwarmStatus {
+			m.swarmDocked = true
+		}
 		paintWidget(rows, m.renderer.RenderWidget(byKind[p.Kind]),
 			p.Row, p.Col, min(transcriptRows, len(rows)), m.width)
 	}

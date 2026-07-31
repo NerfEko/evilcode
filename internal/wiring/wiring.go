@@ -17,6 +17,7 @@ import (
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
+	"evilcode/internal/todo"
 	"evilcode/internal/tools"
 )
 
@@ -38,6 +39,12 @@ type Options struct {
 	// single turn never reaches the interval, and arming it would spend a
 	// side-call per invocation for nothing (plan.md §19).
 	Extract bool
+
+	// TodoNamespace is the todo store every session in a swarm shares. Left
+	// empty a session gets its own, which is what a solo run wants; set to one
+	// name across a daemon it becomes the shared plan of §20, where a group a
+	// worker closes is the same group its spawner is watching.
+	TodoNamespace string
 }
 
 // Session is everything a caller has to hold onto and close.
@@ -46,6 +53,9 @@ type Session struct {
 	Store  *session.Store
 	Memory *memory.Manager
 	Config *config.Config
+
+	// Todos is the session's plan state.
+	Todos *todo.Store
 
 	// Model is the resolved model name, which is not always the requested one.
 	Model string
@@ -127,6 +137,20 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	a.NumCtx = overrides.ContextWindow
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)
+
+	// The todo store is shared across a swarm when a namespace is named, so
+	// "the auth flow" means one group to every agent rather than N private
+	// lists that happen to share a word (plan.md §20).
+	todoName := opts.TodoNamespace
+	if todoName == "" {
+		todoName = store.Name
+	}
+	if todos, terr := todo.NewStore(dataDir, todoName); terr == nil {
+		out.Todos = todos
+		if !opts.NoTools {
+			a.Tools = append(a.Tools, tools.NewTodo(todos, nil))
+		}
+	}
 
 	// A memory bank that will not open disables memory rather than failing the
 	// build: it is an enhancement, not a prerequisite (plan.md §19).

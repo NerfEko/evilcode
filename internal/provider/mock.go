@@ -288,6 +288,25 @@ var mockScenarios = map[string][][]Chunk{
 	},
 
 	// An edit that produces a diff for the inline diff renderer (§9.3).
+	// The reader half of the swarm conflict pair: it reads exactly the file the
+	// `diff` scenario edits, so running the two against one daemon produces a
+	// real ⚠ notice rather than a simulated one (plan.md §20).
+	"conflict-read": {
+		{
+			{Text: "Let me look at the clamp."},
+			call("call_1", "read", map[string]any{"path": "testdata/clamp.go"}),
+			done(200, 14),
+		},
+		append(text("Read it. The bound looks suspicious."), done(320, 10)),
+	},
+
+	// The follow-up turn, run after another agent has written the file. It says
+	// nothing itself — the point is the conflict notice that arrives ahead of
+	// it.
+	"conflict-after": {
+		append(text("Right — I will re-read it before touching anything."), done(360, 12)),
+	},
+
 	"diff": {
 		{
 			{Text: "Fixing the off-by-one."},

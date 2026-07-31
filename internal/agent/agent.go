@@ -56,7 +56,19 @@ type Agent struct {
 	sleep func(context.Context, time.Duration) error
 
 	events chan Event
-	seq    int
+
+	// done is closed by Close. The events channel itself is never closed: a
+	// turn unwinding on its own goroutine can still be emitting, and closing
+	// the channel out from under it is a data race no amount of flag-checking
+	// fixes. Consumers select on Done instead.
+	//
+	// Created lazily so an Agent built as a struct literal — which tests do —
+	// still works rather than closing a nil channel.
+	doneOnce  sync.Once
+	done      chan struct{}
+	closeOnce sync.Once
+
+	seq int
 
 	mu         sync.Mutex
 	interrupts []Interrupt
@@ -114,14 +126,42 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // closed, never at the end of a turn — a session outlives its turns.
 func (a *Agent) Events() <-chan Event { return a.events }
 
+// Done is closed when the agent is closed. Every consumer of Events must select
+// on it, because Events itself is never closed.
+func (a *Agent) Done() <-chan struct{} { return a.doneChan() }
+
+// doneChan returns the close signal, creating it on first use.
+func (a *Agent) doneChan() chan struct{} {
+	a.doneOnce.Do(func() {
+		if a.done == nil {
+			a.done = make(chan struct{})
+		}
+	})
+	return a.done
+}
+
 // Close releases the event channel. After Close the agent must not be run.
-func (a *Agent) Close() { close(a.events) }
+//
+// Closing is flagged before the channel is closed so a turn still unwinding
+// stops emitting rather than panicking. The daemon makes this ordinary rather
+// than exotic: shutting it down closes every session while spawned workers are
+// still mid-turn, and "send on closed channel" is not an acceptable way for a
+// process to exit.
+func (a *Agent) Close() {
+	ch := a.doneChan()
+	a.closeOnce.Do(func() { close(ch) })
+}
 
 func (a *Agent) emit(e Event) {
 	if e.Err != nil && e.ErrText == "" {
 		e.ErrText = e.Err.Error()
 	}
-	a.events <- e
+	select {
+	case a.events <- e:
+	case <-a.doneChan():
+		// Closed, with nobody left reading. Dropping the event is correct;
+		// blocking here would wedge a shutting-down daemon forever.
+	}
 }
 
 // Notice emits an out-of-band message for the UI.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
@@ -76,8 +77,17 @@ func Run(args []string) error {
 	a.SetRunning(snap.Running)
 	defer a.Close()
 
-	m := tui.NewModel(a, header(cfg, snap, path))
+	// The swarm is whatever else the daemon is holding. `list` is polled rather
+	// than pushed because the roster changes on the scale of seconds, and a
+	// push channel would mean a second stream to keep ordered against the
+	// event one.
+	swarm := &tui.SwarmState{}
+	m := tui.NewModel(a, header(cfg, snap, path)).
+		WithSwarm(swarm, func(task string) (string, error) {
+			return summon(path, task)
+		})
 	m.RebuildFrom(conv.Messages())
+	go pollRoster(path, snap.Session, swarm)
 
 	// The receive loop owns the event stream. It stops on EOF, which is what a
 	// daemon shutdown looks like from here.
@@ -110,6 +120,71 @@ func Run(args []string) error {
 	}()
 
 	return tui.RunModel(m)
+}
+
+// summon opens its own connection to spawn a worker.
+//
+// A second connection rather than the attached one: the attached connection is
+// mid-stream with events, and interleaving a request/response exchange into it
+// would mean the reply could arrive behind a hundred deltas.
+func summon(path, task string) (string, error) {
+	c, err := daemon.DialPath(path)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+
+	if err := c.Send(daemon.ClientMsg{Kind: daemon.MsgSpawn, Task: task}); err != nil {
+		return "", err
+	}
+	for {
+		msg, err := c.Recv()
+		if err != nil {
+			return "", err
+		}
+		switch msg.Kind {
+		case daemon.MsgSessions:
+			if len(msg.Sessions) == 0 {
+				return "", fmt.Errorf("the daemon started no worker")
+			}
+			return msg.Sessions[0].Name, nil
+		case daemon.MsgError:
+			return "", fmt.Errorf("%s", msg.Err)
+		}
+	}
+}
+
+// RosterInterval is how often the swarm roster is refreshed. Seconds, not
+// milliseconds: the roster changes when an agent starts or stops, and polling
+// faster would spend a round trip per frame to redraw the same list.
+const RosterInterval = 2 * time.Second
+
+// pollRoster keeps the swarm widget current.
+func pollRoster(path, self string, swarm *tui.SwarmState) {
+	for {
+		time.Sleep(RosterInterval)
+		c, err := daemon.DialPath(path)
+		if err != nil {
+			return
+		}
+		sessions, err := c.List()
+		c.Close()
+		if err != nil {
+			return
+		}
+
+		agents := make([]tui.SwarmAgent, 0, len(sessions))
+		for _, s := range sessions {
+			if s.Name == self {
+				continue
+			}
+			agents = append(agents, tui.SwarmAgent{
+				Name: s.Name, Task: s.Task, Worker: s.Worker,
+				Running: s.Running, Since: time.Since(s.Started),
+			})
+		}
+		swarm.Publish(agents)
+	}
 }
 
 // header names both ends. Seeing which session is on the server and which

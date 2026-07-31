@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,18 @@ type Server struct {
 	// Model is the default model reference for sessions this server creates.
 	Model string
 
+	// Files is the swarm's shared view of who touched what (plan.md §20).
+	Files *Registry
+
+	// CompactNotices folds a burst of conflicts into one line. A worker
+	// rewriting twenty files otherwise buries the coordination it is meant to
+	// provide under twenty near-identical warnings.
+	CompactNotices bool
+
+	// swarm is the coordination state: who spawned whom, result schemas, and
+	// the per-session inbox (plan.md §20).
+	swarm *swarmState
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 	listener net.Listener
@@ -43,8 +56,30 @@ type Session struct {
 
 	built *wiring.Session
 	ring  *Ring
+	srv   *Server
 
-	mu   sync.Mutex
+	// turn counts completed turns, which is what a conflict notice cites when
+	// it says how stale a reader's copy is.
+	turn int
+
+	// retried marks a worker that has already been asked once to fix its output
+	// against the schema. Asking forever is the loop §12.6 exists to prevent.
+	retried bool
+
+	// done is closed when a worker's task ends. The spawn breaker counts what
+	// is not yet closed, which is why it exists at all: a worker's turn starts
+	// on a goroutine, so Running() is false for the first instants after Spawn.
+	done       chan struct{}
+	closedDone bool
+
+	mu sync.Mutex
+
+	// pending holds conflicts waiting for this session's next safe point. It
+	// lives on the reader, not the writer: a conflict queued on the writer
+	// would wait for the writer's safe point and reach the wrong conversation.
+	// Written by whichever session did the writing, so it is under mu.
+	pending []Conflict
+
 	subs map[chan ServerMsg]struct{}
 
 	cancel context.CancelFunc
@@ -57,6 +92,8 @@ func NewServer(cfg *config.Config, cwd, model string) *Server {
 		Cwd:      cwd,
 		Model:    model,
 		Path:     SocketPath(),
+		Files:    NewRegistry(),
+		swarm:    newSwarmState(),
 		sessions: map[string]*Session{},
 	}
 }
@@ -193,6 +230,7 @@ func (s *Server) Open(name string) (*Session, error) {
 	// holding the server lock across that would stall `list` for every client.
 	built, err := wiring.Build(s.Cfg, wiring.Options{
 		Model: s.Model, Resume: name, Cwd: s.Cwd, Extract: true,
+		TodoNamespace: SwarmTodoNamespace,
 	})
 	if err != nil {
 		return nil, err
@@ -204,6 +242,7 @@ func (s *Server) Open(name string) (*Session, error) {
 		Started: time.Now(),
 		built:   built,
 		ring:    NewRing(),
+		srv:     s,
 		subs:    map[chan ServerMsg]struct{}{},
 	}
 
@@ -219,6 +258,10 @@ func (s *Server) Open(name string) (*Session, error) {
 	s.sessions[sess.Name] = sess
 	s.mu.Unlock()
 
+	// Coordination tools exist only inside the daemon, where there is something
+	// to coordinate with.
+	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
+
 	go sess.pump()
 	return sess, nil
 }
@@ -227,10 +270,126 @@ func (s *Server) Open(name string) (*Session, error) {
 // is the only reader of the agent's channel, which is what lets N clients
 // watch one session.
 func (sess *Session) pump() {
-	for e := range sess.built.Agent.Events() {
+	events := sess.built.Agent.Events()
+	for {
+		var e agent.Event
+		select {
+		case e = <-events:
+		case <-sess.built.Agent.Done():
+			return
+		}
+		sess.observe(e)
 		sess.ring.Add(e)
 		sess.broadcast(ServerMsg{Kind: MsgEvent, Event: &e})
 	}
+}
+
+// observe feeds the shared file registry from the event stream.
+//
+// Reading the stream rather than instrumenting the tools is what keeps this out
+// of `internal/tools`, which knows nothing about swarms and should not start
+// to: the events already say which file was touched and whether it changed.
+func (sess *Session) observe(e agent.Event) {
+	if sess.srv == nil || sess.srv.Files == nil {
+		return
+	}
+	switch e.Kind {
+	case agent.EventToolResult:
+		if e.Call == nil || e.IsError() {
+			return
+		}
+		path := ToolPath(e.Call.Name, e.Call.Args)
+		if path == "" {
+			return
+		}
+		if WritesFiles(e.Call.Name) {
+			// Queued on the *readers*, not on the writer. Keeping them here was
+			// the bug: the writer then filtered out every conflict as belonging
+			// to someone else and dropped it, so nobody was ever told.
+			sess.srv.queueConflicts(sess.srv.Files.Write(sess.Name, path, sess.turn))
+			return
+		}
+		sess.srv.Files.Read(sess.Name, path, sess.turn)
+
+	case agent.EventTurnEnd:
+		// Safe point D: everything the turn asked for has come back, so a
+		// notice now lands between turns rather than mid-thought (§6.3).
+		sess.deliverConflicts()
+		sess.turn++
+		if sess.Worker {
+			// A worker's turn ending is the worker finishing. Its result goes
+			// back to whoever summoned it as a message, so the spawner never
+			// had to block on it.
+			sess.srv.reportWorkerResult(sess)
+			sess.markFinished()
+		}
+	}
+}
+
+// finished reports whether a worker has completed.
+func (sess *Session) finished() bool {
+	if sess.done == nil {
+		return true
+	}
+	select {
+	case <-sess.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// markFinished closes the done channel exactly once.
+func (sess *Session) markFinished() {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.done != nil && !sess.closedDone {
+		sess.closedDone = true
+		close(sess.done)
+	}
+}
+
+// queueConflicts routes each conflict to the session that needs to hear it.
+func (s *Server) queueConflicts(conflicts []Conflict) {
+	for _, c := range conflicts {
+		s.mu.Lock()
+		target := s.sessions[c.Session]
+		s.mu.Unlock()
+		if target == nil {
+			continue
+		}
+		target.mu.Lock()
+		target.pending = append(target.pending, c)
+		target.mu.Unlock()
+	}
+}
+
+// deliverConflicts injects the notices this session has earned.
+func (sess *Session) deliverConflicts() {
+	sess.mu.Lock()
+	pending := sess.pending
+	sess.pending = nil
+	sess.mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	fresh := sess.srv.Files.Pending(sess.Name, pending)
+	if len(fresh) == 0 {
+		return
+	}
+
+	var lines []string
+	if sess.srv.CompactNotices {
+		lines = []string{CompactNotice(fresh)}
+	} else {
+		for _, c := range fresh {
+			lines = append(lines, c.Notice())
+		}
+	}
+	sess.built.Agent.Interject(agent.Interrupt{
+		Source: agent.SourceSystem,
+		Text:   strings.Join(lines, "\n"),
+	})
 }
 
 func (sess *Session) broadcast(msg ServerMsg) {
@@ -422,15 +581,23 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			sess.Interrupt(msg.Text, msg.Urgent)
 
 		case MsgSpawn:
-			worker, err := s.Spawn(msg.Task, msg.Files, msg.Schema)
+			// Attributed to the attached session, not spawned free-floating:
+			// that is what makes the worker's result come back here when it
+			// finishes rather than vanishing into the daemon.
+			spawner := msg.Session
+			if sess != nil {
+				spawner = sess.Name
+			}
+			name, err := s.SpawnFor(spawner, msg.Task, msg.Files, msg.Schema)
 			if err != nil {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 				continue
 			}
-			send(ServerMsg{Kind: MsgSessions, Sessions: []SessionInfo{{
-				Name: worker.Name, Model: worker.Model, Worker: true,
-				Task: worker.Task, Started: worker.Started, Running: true,
-			}}})
+			send(ServerMsg{Kind: MsgSessions, Sessions: s.Sessions()})
+			if spawner != "" {
+				s.deliver(spawner, fmt.Sprintf(
+					"👉 Worker %s started on: %s", name, msg.Task))
+			}
 
 		case MsgDetach:
 			if sess != nil && sub != nil {

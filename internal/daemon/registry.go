@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -194,13 +195,9 @@ func CompactNotice(conflicts []Conflict) string {
 
 	others := map[string]bool{}
 	paths := make([]string, 0, len(conflicts))
-	oldest := conflicts[0].ReadTurn
 	for _, c := range conflicts {
 		others[c.Other] = true
 		paths = append(paths, filepath.Base(c.Path))
-		if c.ReadTurn < oldest {
-			oldest = c.ReadTurn
-		}
 	}
 
 	names := make([]string, 0, len(others))
@@ -218,4 +215,36 @@ func CompactNotice(conflicts []Conflict) string {
 	return fmt.Sprintf("⚠ %s modified %d files you read (%s). "+
 		"Re-read them before editing — what you have is stale.",
 		strings.Join(names, " and "), len(paths), list)
+}
+
+// WritesFiles reports whether a tool changes what it names.
+//
+// The list is explicit rather than inferred from the result carrying a diff:
+// a write that produced no textual change is still a write, and a reader that
+// is not told about it is working from a file that moved.
+func WritesFiles(tool string) bool {
+	switch tool {
+	case "write", "edit":
+		return true
+	}
+	return false
+}
+
+// ToolPath pulls the file a call names, or "" when it names none.
+func ToolPath(tool string, args json.RawMessage) string {
+	switch tool {
+	case "read", "write", "edit":
+	default:
+		// grep, glob, bash and the rest touch files too, but not in a way that
+		// can be attributed to one path — claiming otherwise would produce
+		// conflict notices about files nobody edited.
+		return ""
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(args, &a) != nil {
+		return ""
+	}
+	return strings.TrimSpace(a.Path)
 }

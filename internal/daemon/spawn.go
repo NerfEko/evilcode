@@ -28,7 +28,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 		return nil, fmt.Errorf("the daemon is shutting down")
 	}
 
-	built, err := wiring.Build(s.Cfg, wiring.Options{Model: s.Model, Cwd: s.Cwd})
+	built, err := wiring.Build(s.Cfg, wiring.Options{Model: s.Model, Cwd: s.Cwd, TodoNamespace: SwarmTodoNamespace})
 	if err != nil {
 		return nil, err
 	}
@@ -41,8 +41,15 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 		Started: time.Now(),
 		built:   built,
 		ring:    NewRing(),
+		srv:     s,
+		done:    make(chan struct{}),
 		subs:    map[chan ServerMsg]struct{}{},
 	}
+
+	// A worker can message and spawn like any other session. Bounded, though:
+	// MaxLiveWorkers and MaxWorkersPerSession are what stop a worker that
+	// decides delegation is going well from recursing (§12.6).
+	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
 
 	s.mu.Lock()
 	s.sessions[sess.Name] = sess
@@ -55,6 +62,10 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 	go func() {
 		defer cancel()
 		_ = sess.built.Agent.Run(ctx, WorkerPrompt(task, files, schema))
+		// A worker that errors out never emits a turn end, so the breaker's
+		// count would never come back down. Closing here too makes "the Run
+		// returned" the definition of finished.
+		sess.markFinished()
 	}()
 	return sess, nil
 }
