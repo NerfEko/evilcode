@@ -3080,3 +3080,31 @@ target, intent and diff to carry sequences through untouched. Both were caught
 by making the test fail on purpose rather than by reading the code again.
 
 Tagged `harden-4`.
+
+## 2026-08-01 H5.1 — The conflict that never cleared
+
+`Registry.Write` built each `Conflict` with `Path: r.display(path)` — the
+root-relative form, when a root is set — and `Pending` keyed the `delivered`
+map on `session + "\x00" + c.Path + "\x00" + other`. `Read`'s clearing loop,
+though, matches `session + "\x00" + normalize(path) + "\x00"` — the
+normalized absolute path. With a root set the two never agree, so a delivered
+conflict is never cleared and a re-read never re-arms notification: the swarm
+coordination feature degrades to fire-once-per-file-pair.
+
+The existing `TestRereadingClearsTheConflict` did not catch it because it
+builds a bare `NewRegistry()` with no root, so `display` returns the path
+verbatim and the display and canonical forms coincide. The bug only shows up
+through `newRegistryAt(root)`, the path the daemon actually uses.
+
+Reproduce: a registry over a tempdir root, read+write+pending, then read again
+and write again — the second write must be reported. It returned zero before
+the fix.
+
+Fix: identity and display are separate concerns. `Conflict` gained an
+unexported `canonical` (the normalized absolute path, set by `Write`),
+`Pending` keys on it (falling back to `Path` for hand-built conflicts that
+never reach the clearing loop), and `Read`'s loop already normalized — so the
+two now agree. Display paths stay for people; canonical paths for the map.
+
+Verified: new test plus the existing registry suite green; `go build ./... &&
+go vet ./...` clean.

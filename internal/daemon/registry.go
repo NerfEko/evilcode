@@ -27,7 +27,18 @@ type Conflict struct {
 	// Other is who did the writing.
 	Other string
 
+	// Path is the display path — root-relative when a root is set, so a
+	// notice reads as `internal/tui/app.go` rather than a sixty-character
+	// absolute path. It is the form a person sees, not the identity key: two
+	// agents that name the same file differently (relative vs absolute) must
+	// still clear the same delivered entry on re-read.
 	Path string
+
+	// canonical is the normalized absolute path, used as the delivered-key
+	// identity so Read's clearing loop — which also normalizes — matches what
+	// Write stored. Display paths are for people; canonical paths are for the
+	// map. Set by Write; empty for hand-built conflicts (tests, compaction).
+	canonical string
 
 	// ReadTurn is the turn the notified agent read the file on, which is the
 	// detail that makes the notice actionable rather than alarming: it says how
@@ -155,6 +166,7 @@ func (r *Registry) Write(session, path string, turn int) []Conflict {
 		}
 		out = append(out, Conflict{
 			Session: reader, Other: session, Path: r.display(path), ReadTurn: readTurn,
+			canonical: path,
 		})
 	}
 	// Stable order so the same write always produces the same notices, which is
@@ -182,7 +194,16 @@ func (r *Registry) Pending(session string, conflicts []Conflict) []Conflict {
 		if c.Session != session {
 			continue
 		}
-		key := session + "\x00" + c.Path + "\x00" + c.Other
+		// Identity is the canonical path, not the display path: Read clears a
+		// delivered entry by matching the normalized absolute path, and the
+		// display path can be root-relative while the clearing key is absolute.
+		// Keying on the display path leaves stale entries that a re-read never
+		// clears, so a conflict fires once and never re-arms.
+		ident := c.canonical
+		if ident == "" {
+			ident = c.Path
+		}
+		key := session + "\x00" + ident + "\x00" + c.Other
 		if r.delivered[key] {
 			continue
 		}

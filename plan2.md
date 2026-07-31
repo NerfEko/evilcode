@@ -348,7 +348,7 @@ different claim from "model output is trusted", and the first does not imply the
 
 Lower cost per firing, and the phase where a feature that never worked gets decided.
 
-- [ ] **H5.1** `internal/daemon/registry.go:129` — `Write` stores the **display**
+- [x] **H5.1** `internal/daemon/registry.go:129` — `Write` stores the **display**
   (root-relative) path as the conflict key, but `Read`'s clearing loop matches on the
   **normalized absolute** path. The prefixes never match, so a delivered conflict is never
   cleared and re-reading a file never re-arms notification: the coordination feature
