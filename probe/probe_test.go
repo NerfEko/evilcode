@@ -1,0 +1,143 @@
+//go:build probe
+
+// Package probe runs the scenario files in probe/scenarios against a live
+// evilcode under tmux and diffs the captured plain-text frames against
+// probe/goldens (plan.md §14).
+//
+// It is behind the `probe` build tag because it needs tmux and a built binary,
+// which a plain `go test ./...` should not require:
+//
+//	go build -o evilcode ./
+//	go test -tags probe ./probe/...
+//	UPDATE_GOLDENS=1 go test -tags probe ./probe/...
+package probe
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Dir(wd)
+}
+
+// runProbe shells out to probe.sh, which owns all tmux interaction. Driving the
+// same script the agent drives by hand keeps one code path, not two.
+func runProbe(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(root, "probe", "probe.sh"), args...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe.sh %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+func TestScenarios(t *testing.T) {
+	root := repoRoot(t)
+
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed; probe scenarios need it")
+	}
+	if _, err := os.Stat(filepath.Join(root, "evilcode")); err != nil {
+		t.Skip("no ./evilcode binary; run: go build -o evilcode ./")
+	}
+
+	files, err := filepath.Glob(filepath.Join(root, "probe", "scenarios", "*.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no scenario files found")
+	}
+
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), ".txt")
+		t.Run(name, func(t *testing.T) {
+			runScenario(t, root, file)
+		})
+	}
+}
+
+func runScenario(t *testing.T, root, file string) {
+	t.Helper()
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Always tear the session down, including on a failed assertion, so one
+	// broken scenario cannot wedge the next.
+	t.Cleanup(func() { runProbe(t, root, "kill") })
+
+	for lineNo, line := range strings.Split(string(src), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		verb, rest, _ := strings.Cut(line, " ")
+		rest = strings.TrimSpace(rest)
+
+		switch verb {
+		case "boot":
+			runProbe(t, root, append([]string{"boot"}, strings.Fields(rest)...)...)
+		case "keys":
+			runProbe(t, root, append([]string{"keys"}, strings.Fields(rest)...)...)
+		case "kill":
+			runProbe(t, root, "kill")
+		case "capture":
+			checkGolden(t, root, rest)
+		default:
+			t.Fatalf("%s:%d: unknown verb %q", filepath.Base(file), lineNo+1, verb)
+		}
+	}
+}
+
+func checkGolden(t *testing.T, root, name string) {
+	t.Helper()
+	if name == "" {
+		t.Fatal("capture needs a golden name")
+	}
+	runProbe(t, root, "frame", name)
+
+	framePath := filepath.Join(root, "probe", "frames", name+".txt")
+	got, err := os.ReadFile(framePath)
+	if err != nil {
+		t.Fatalf("reading captured frame: %v", err)
+	}
+	// tmux pads every pane row out to the full height; trailing blank rows carry
+	// no information and would make goldens churn on any pane-size change.
+	gotText := strings.TrimRight(string(got), "\n \t")
+
+	goldenPath := filepath.Join(root, "probe", "goldens", name+".txt")
+	if os.Getenv("UPDATE_GOLDENS") == "1" {
+		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(goldenPath, []byte(gotText+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated golden %s", name)
+		return
+	}
+
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("no golden for %q (%v)\nrun: UPDATE_GOLDENS=1 go test -tags probe ./probe/...\ncaptured:\n%s",
+			name, err, gotText)
+	}
+	wantText := strings.TrimRight(string(want), "\n \t")
+	if gotText != wantText {
+		t.Errorf("frame %q does not match its golden\n--- want ---\n%s\n--- got ---\n%s\n\n"+
+			"if the change is intended:\n  UPDATE_GOLDENS=1 go test -tags probe ./probe/...",
+			name, wantText, gotText)
+	}
+}

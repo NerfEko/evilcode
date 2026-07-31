@@ -964,11 +964,11 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 
 - [x] `git init`; `go mod init evilcode`; skeleton dirs; `.gitignore` (binary, probe/frames/, shots/).
 - [x] Seed process files: `plan.md` (this file), `LOOPS.md` (first entry), `README.md` (skeleton per §0.2.8), `DEVIATIONS.md`. Commit.
-- [ ] Verify the codex review skill is callable (smoke review on the seed commit, background); record the exact invocation in `LOOPS.md`.
-- [ ] `internal/ansirender` per §14. Unit tests: SGR parse cases (truecolor, 256-cube, reverse video, bold).
-- [ ] `probe/probe.sh` + `evilcode probe` subcommand per §14.
-- [ ] Golden-test harness (build tag `probe`) + `UPDATE_GOLDENS=1` flow + `probe/README.md` (≤30 lines).
-- [ ] Verify: a hello-world bubbletea program boots under probe; frame → PNG; golden passes; regeneration works.
+- [x] Verify the codex review skill is callable (smoke review on the seed commit, background); record the exact invocation in `LOOPS.md`.
+- [x] `internal/ansirender` per §14. Unit tests: SGR parse cases (truecolor, 256-cube, reverse video, bold).
+- [x] `probe/probe.sh` + `evilcode probe` subcommand per §14.
+- [x] Golden-test harness (build tag `probe`) + `UPDATE_GOLDENS=1` flow + `probe/README.md` (≤30 lines).
+- [x] Verify: a hello-world bubbletea program boots under probe; frame → PNG; golden passes; regeneration works.
 
 ## Phase 1 — Drivable core
 

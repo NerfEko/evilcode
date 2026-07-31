@@ -27,9 +27,10 @@ Requires Go 1.26+. Runtime deps: `tmux` and `rg` (ripgrep) for the probe rig and
 
 Phase 0 — bootstrap and the probe rig.
 
-- `internal/ansirender`: ANSI → PNG renderer (SGR 0/1/2/3/7/22/27, 30–37, 90–97, 40–47,
-  100–107, 38;5;n / 48;5;n, 38;2;r;g;b / 48;2;r;g;b, 39/49).
-- `evilcode probe` subcommand: `render` (ANSI file → PNG), `hello` (bubbletea smoke app).
+- `internal/ansirender`: ANSI → PNG renderer (SGR 0/1/2/3/7/22/23/27, 30–37, 90–97,
+  40–47, 100–107, 38;5;n / 48;5;n, 38;2;r;g;b / 48;2;r;g;b, 39/49), wide-glyph aware.
+- `evilcode probe`: `render` (ANSI → PNG), `text` (ANSI → plain), `fonts` (glyph
+  coverage diagnostic), `hello` (bubbletea smoke app).
 - `probe/probe.sh`: tmux driver — `boot / keys / frame / png / kill`.
 - Golden-frame tests behind the `probe` build tag.
 
@@ -47,6 +48,8 @@ Environment variables in use today:
 | `EVILCODE_DETERMINISTIC=1` | fixed session name, frozen animations, no wall-clock text |
 | `EVILCODE_PROVIDER=mock` | use the canned deterministic provider |
 | `EVILCODE_GLYPH_SAFE_MODE=on\|off` | override for terminals whose glyph atlas chokes on animation |
+| `EVILCODE_PROBE_FONT` | probe PNG primary font: four colon-separated paths (regular:bold:italic:bolditalic) |
+| `EVILCODE_PROBE_FONTS` | probe PNG fallback fonts, colon-separated; point at a monochrome emoji font for emoji artwork |
 
 ## Keymap
 

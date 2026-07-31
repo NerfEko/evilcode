@@ -1,0 +1,10 @@
+Welcome to evilcode 🦇
+
+ 1› probe rig smoke test
+user purple · ai green
+┌─ go
+│ func main() {}
+└─
+  dim italic · keys:1 · width:140 · frozen
+
+q to quit

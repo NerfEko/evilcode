@@ -1,0 +1,11 @@
+# Phase 0 rig smoke test: the minimal bubbletea app boots and repaints on input.
+#
+# Steps: boot [args] | keys <tmux keys> | capture <golden name> | kill
+
+boot probe hello
+capture hello-initial
+
+# A keypress the app counts, proving input reaches the program and the frame
+# repaints rather than going stale.
+keys a
+capture hello-keypress
