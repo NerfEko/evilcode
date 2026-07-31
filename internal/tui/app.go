@@ -170,6 +170,12 @@ type Model struct {
 	panelOpen  bool
 	panelRatio int
 
+	// quickView is the transient click-to-look overlay (§3.2). Non-nil means it
+	// is showing; Esc clears it and the persistent /diff panel underneath is
+	// untouched. It is rendered in preference to m.panel and opens the pane
+	// regardless of m.panelOpen/m.diffMode, but it never writes any of them.
+	quickView *PanelContent
+
 	// sessions is the full-screen picker, and dataDir is where session state
 	// lives so the picker can act on it.
 	sessions     SessionPickerState
@@ -1999,6 +2005,11 @@ func terminalSetupText() string {
 // escape is the layered cancel of plan.md §6.7.
 func (m *Model) escape() {
 	switch {
+	case m.quickView != nil:
+		// Closing something you are looking at is what Esc means in every other
+		// overlay here, and a user who opened a quick view mid-turn meant "close
+		// this", not "kill the turn" (§3.3). First rung, above interrupt.
+		m.quickView = nil
 	case m.processing:
 		// Esc means stop, which is why it also disarms auto-poke — unlike
 		// Ctrl+C, which means "skip this".
@@ -2618,11 +2629,19 @@ func sameSubject(a, b BlockKind) bool {
 	return toolish(a) && toolish(b)
 }
 
+// sidePaneOpen reports whether the side pane is showing anything — the
+// persistent /diff panel, or the transient quick view on top of it. Both layout
+// splits and attachSidePanel route through here so a quick view opens the pane
+// without touching m.panelOpen (§3.2).
+func (m *Model) sidePaneOpen() bool {
+	return m.panelOpen || m.quickView != nil
+}
+
 // chatWidth is the width left for the chat column once the side pane is carved
 // off (plan.md §3.1).
 func (m *Model) chatWidth() int {
 	chat, _ := Horizontal{
-		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.panelOpen,
+		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.sidePaneOpen(),
 	}.Split()
 	return chat
 }
@@ -2630,7 +2649,7 @@ func (m *Model) chatWidth() int {
 // attachSidePanel paints the pane to the right of the transcript rows.
 func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 	chat, side := Horizontal{
-		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.panelOpen,
+		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.sidePaneOpen(),
 	}.Split()
 	if side == 0 {
 		return rows
@@ -2644,7 +2663,13 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 	if m.height > height {
 		height = m.height
 	}
-	panel := m.renderer.RenderSidePanel(m.panel, m.diffMode, side, height, false)
+	// The quick view sits on top of the persistent panel: when it is open, it
+	// is what the pane draws, and the /diff state underneath is untouched (§3.2).
+	content, mode := m.panel, m.diffMode
+	if m.quickView != nil {
+		content, mode = *m.quickView, DiffInline
+	}
+	panel := m.renderer.RenderSidePanel(content, mode, side, height, m.quickView != nil)
 
 	// Grow the frame so every panel row has something to attach to. Blank chat
 	// rows below the composer are empty screen either way; without them the

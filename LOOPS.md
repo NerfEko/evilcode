@@ -4028,3 +4028,20 @@ asserts the invariant, in-range values, non-decreasing order, contiguity, the ch
 between different-subject blocks, and the no-gap pack between consecutive tool blocks.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green.
+
+## 2026-07-31 F1.3 — quick-view transient state + Esc first rung
+
+Done: added `quickView *PanelContent` to the model (§3.2). `attachSidePanel` renders
+`*m.quickView` in preference to `m.panel` when set, and a new `sidePaneOpen()` helper
+(used by both layout splits and attachSidePanel) opens the pane regardless of
+`m.panelOpen`/`m.diffMode`. `escape()` gets a first rung above interrupt: quick view open
+→ close it. `m.panel`, `m.panelOpen`, `m.diffMode` are never written by any quick-view path.
+Nothing opens it yet (F3 does).
+
+⟨build⟩ — test opens a quick view over a pinned /diff panel, confirms sidePaneOpen and
+untouched /diff state, then Esc closes it and asserts panel/panelOpen/diffMode are
+bit-identical (via panelEqual, since PanelContent holds a slice). A second test covers
+opening with no /diff panel and closing returns to closed; a third that Esc still
+interrupts a turn when no quick view is up.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green.
