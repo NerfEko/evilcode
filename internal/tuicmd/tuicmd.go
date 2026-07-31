@@ -180,6 +180,7 @@ func Run(args []string) error {
 		WithTodos(todos, poke).
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
+		WithDisplay(cfg.Display).
 		WithSessions(dataDir, cwd, store).
 		WithBackground(execTools.Bg).
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).

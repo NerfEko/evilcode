@@ -73,6 +73,19 @@ type Agent struct {
 	mu         sync.Mutex
 	interrupts []Interrupt
 	running    bool
+
+	// prompt is what started the current turn, held so TurnStart can report it
+	// after recall has appended to the conversation behind it.
+	prompt string
+}
+
+// takePrompt returns and clears the turn's originating prompt.
+func (a *Agent) takePrompt() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p := a.prompt
+	a.prompt = ""
+	return p
 }
 
 // Interrupt is a message injected into a live turn at a safe point (§6.3).
@@ -248,6 +261,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 		return a.Forward(ctx, userInput)
 	}
 	if strings.TrimSpace(userInput) != "" {
+		a.mu.Lock()
+		a.prompt = userInput
+		a.mu.Unlock()
 		a.Conv.Append(provider.Message{Role: provider.RoleUser, Content: userInput})
 		a.recall(ctx, userInput)
 	}
@@ -288,10 +304,12 @@ func (a *Agent) Loop(ctx context.Context) error {
 	// already drew it — it typed it — but a client that attached mid-session
 	// has no other way to learn what was asked: the conversation only reaches
 	// it in a snapshot, and the snapshot is taken once (plan.md §20).
+	//
+	// It is the prompt Run was given, not the last message on the conversation:
+	// recall appends a `<memories>` tail after the user's turn, and taking the
+	// last message drew that tail as the user's prompt — numbered band and all.
 	start := a.newEvent(EventTurnStart)
-	if last, ok := a.Conv.Last(); ok && last.Role == provider.RoleUser {
-		start.Text = last.Content
-	}
+	start.Text = a.takePrompt()
 	a.emit(start)
 
 	for step := 0; ; step++ {
@@ -428,6 +446,7 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, error) {
 		NumCtx:   a.NumCtx,
 	}
 
+	started := time.Now()
 	ch, err := a.Provider.ChatStream(ctx, req)
 	if err != nil {
 		return provider.Message{}, err
@@ -464,6 +483,7 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, error) {
 				Out:     chunk.Usage.CompletionTokens,
 				CtxUsed: chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens,
 				CtxMax:  chunk.Usage.ContextMax,
+				GenMS:   int(time.Since(started).Milliseconds()),
 			}
 			a.emit(e)
 		}

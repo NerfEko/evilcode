@@ -11,14 +11,14 @@
    ✓ read testdata/clamp.go · 151 tok
 
  It clamps with > where it wants >=. Summoning help.
-
-   👉 Summoned dracula-2
-   fix the clamp
-
+                                             ╭──────────────────────╮
+   👉 Summoned dracula-2                     │ Context 330/200.0k   │
+   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+                                             ╰──────────────────────╯
    Its result will arrive as a message.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 330/200k ctx · dracula
 
 
 
@@ -54,4 +54,4 @@
  It clamps with > where it wants >=. Summoning help.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 330/200k ctx · dracula

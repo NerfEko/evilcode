@@ -35,8 +35,15 @@ type Block struct {
 	// Text is the message body, or the notice/error message.
 	Text string
 
-	// Number is the prompt number for a user block, 1-based.
+	// Number is the prompt's ordinal, 1-based and stable: prompt 1 stays
+	// prompt 1 forever. It is what the band prints.
 	Number int
+
+	// Decay is the distance from the newest prompt, which is what §7.7's
+	// rainbow ramp is indexed by. Separate from Number because the two mean
+	// different things — conflating them numbered the newest prompt 1 and
+	// counted *backwards* into the history.
+	Decay int
 
 	// Tool row fields (plan.md §9.5).
 	ToolName   string
@@ -90,6 +97,10 @@ type Renderer struct {
 	// DiffMode decides whether diffs render inline or in the side panel.
 	DiffMode DiffMode
 
+	// ThinkingLines caps how tall a live thinking trace grows before it scrolls
+	// inside its own space. Zero means DefaultThinkingLines.
+	ThinkingLines int
+
 	// Graphics and ImagesOn decide whether an image block reserves rows for a
 	// picture or falls back to a one-line placeholder.
 	Graphics graphics.Protocol
@@ -138,7 +149,7 @@ func (r *Renderer) Lines(b *Block) []string {
 }
 
 func (b *Block) cacheContentKey() string {
-	return fmt.Sprintf("%d|%d|%v|%s|%s", b.Kind, b.Number, b.Collapsed, b.Text, b.Diff)
+	return fmt.Sprintf("%d|%d|%d|%v|%s|%s", b.Kind, b.Number, b.Decay, b.Collapsed, b.Text, b.Diff)
 }
 
 func (r *Renderer) render(b *Block) []string {
@@ -175,14 +186,17 @@ func (r *Renderer) renderUser(b *Block) []string {
 	bg := lipgloss.Color(r.Palette.Hex(theme.RoleUserBg))
 
 	numStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(b.Number)))).
+		Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(b.Decay)))).
 		Background(bg).Bold(true)
 	arrowStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUser))).Background(bg)
 	textStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUserText))).Background(bg)
 
-	label := fmt.Sprint(b.Number + 1)
+	// Floored at 1. Prompts are 1-based, so a zero here means a construction
+	// path forgot to set Number — and a band reading "0›" in front of the user
+	// is worse than quietly showing the first prompt as the first prompt.
+	label := fmt.Sprint(max(b.Number, 1))
 	prefix := label + "› "
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 
@@ -439,14 +453,41 @@ func (r *Renderer) renderNotice(b *Block) []string {
 }
 
 // renderReasoning draws streamed thinking as dim italic (§9.7).
+// DefaultThinkingLines is how many rows a live trace may occupy before it
+// scrolls within its own space (display.thinking_lines).
+//
+// A trace is the one block that grows without bound while you watch it, and a
+// model that thinks for thirty seconds otherwise pushes the entire conversation
+// off the screen to say something it will then summarize in a sentence.
+const DefaultThinkingLines = 6
+
+// renderReasoning draws a thinking trace (plan.md §9.7).
+//
+// A live trace shows its tail rather than its head: the interesting part of
+// thinking is where it has got to, not where it began.
 func (r *Renderer) renderReasoning(b *Block) []string {
 	style := rgbStyle(0x64, 0x64, 0x64).Italic(true)
 	if b.Collapsed {
 		lines := len(strings.Split(strings.TrimRight(b.Text, "\n"), "\n"))
 		return []string{"  " + style.Render(fmt.Sprintf("▸ thought (%d lines)", lines))}
 	}
+
+	// TrimRight, or a trace ending in a newline spends one of its few rows on
+	// an empty line.
+	wrapped := wrapPlain(strings.TrimRight(b.Text, "\n"), max(r.Width-2, 8))
+	window := r.ThinkingLines
+	if window <= 0 {
+		window = DefaultThinkingLines
+	}
+
 	var out []string
-	for _, line := range wrapPlain(b.Text, max(r.Width-2, 8)) {
+	if hidden := len(wrapped) - window; hidden > 0 {
+		// Say how much scrolled past rather than silently dropping it, or a
+		// truncated trace reads as a model that thought very little.
+		out = append(out, "  "+style.Render(fmt.Sprintf("⋯ %d earlier lines", hidden)))
+		wrapped = wrapped[len(wrapped)-window:]
+	}
+	for _, line := range wrapped {
 		out = append(out, "  "+style.Render(line))
 	}
 	return out
@@ -613,4 +654,13 @@ func (t ThinkingMode) Next() ThinkingMode {
 	default:
 		return ThinkingOff
 	}
+}
+
+// Valid reports whether a mode came from a recognized config value.
+func (t ThinkingMode) Valid() bool {
+	switch t {
+	case ThinkingOff, ThinkingFull, ThinkingCurrent:
+		return true
+	}
+	return false
 }

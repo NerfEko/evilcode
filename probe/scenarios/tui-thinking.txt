@@ -1,0 +1,8 @@
+# Thinking traces (§9.7). The trace must collapse the moment the answer starts —
+# it used to stay open under the whole reply and only fold at turn end.
+
+scenario thinking-long
+boot tui
+keys "explain the config"
+keys Enter
+capture thinking-collapsed

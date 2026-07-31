@@ -1,40 +1,38 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ● mock
  skills: /commit /selfdev
  <repo> (main)
-                                                                                                                                           ╷
- 3› I like tabs                                                                                                                            │
-                                                                                                                                           │
- Noted.                                                                                                                                    │
-                                                                                                                                           │
-   ✓ remember · 7 tok                                                                                                                      │
-                                                                                                                                           │
- I'll remember that.                                                                                                                       │
-                                                                                                                                           │
- 2› fix the indentation                                                                                                                    │
-                                                                                                                                           │
- ╭────────────────────────────────────────────╮                                                                                            │
- │ 🧠 recalled 1 memory · 46 tok              │                                                                                            │
- │  · the user prefers tabs over spaces in Go │                                                                                            │
- ╰────────────────────────────────────────────╯                                                                                            │
-                                                                                                                                           │
- 1› <memories>                                                                                                                             │
-    Things you remember about this user and their work. Use them if relevant; do not mention them otherwise.                               │
-    - (preference) the user prefers tabs over spaces in Go                                                                                 │
-    </memories>                                                                                                                            │
-                                                                                                                                           │
- Let me check what I know.                                                                                                                 │
-                                                                                                                                           │
-   ✓ recall indentation preference · 13 tok                                                                                                │
-                                                                                                                                           │
- You prefer tabs, so that is what I used.                                                                                                  │
-                                                                                                                                           │
- • reindented the block                                                                                                                    │
- • left the rest alone                                                                                                                     │
- • no reflow of the file                                                                                                                   │
- • gofmt is still clean                                                                                                                    │
-                                                                                                                                           │
- Say the word to normalize                                                                                                                 │
- the whole file separately.                                                                                                                ╵
+
+ 1› I like tabs
+
+ Noted.
+
+   ✓ remember · 7 tok
+
+ I'll remember that.
+
+ 2› fix the indentation
+                                                                                                                    ╭──────────────────────╮
+ ╭────────────────────────────────────────────╮                                                                     │ Context 432/200.0k   │
+ │ 🧠 recalled 1 memory · 46 tok              │                                                                     │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+ │  · the user prefers tabs over spaces in Go │                                                                     ╰──────────────────────╯
+ ╰────────────────────────────────────────────╯
+
+ Let me check what I know.
+
+   ✓ recall indentation preference · 13 tok
+
+ You prefer tabs, so that is what I used.
+
+ • reindented the block
+ • left the rest alone
+ • no reflow of the file
+ • gofmt is still clean
+
+ Say the word to normalize
+ the whole file separately.
  💡 Ctrl+R searches your prompt history
- 4>
-   Ctrl+Enter to queue
+ 3>
+   mock-large · 432/200k ctx · dracula

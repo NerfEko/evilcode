@@ -84,7 +84,19 @@ type Display struct {
 	IdleAnimation   bool   `toml:"idle_animation"`
 	Overscroll      string `toml:"overscroll"` // off | on | overscroll
 	ThinkingDisplay string `toml:"thinking_display"`
-	ShowToolDetails bool   `toml:"show_tool_call_details"`
+
+	// ThinkingLines caps a live thinking trace's height before it scrolls in
+	// place. Zero uses the built-in default.
+	ThinkingLines int `toml:"thinking_lines"`
+
+	// KeepThinking leaves a finished trace expanded instead of collapsing it
+	// to `▸ thought (N lines)` when the answer starts.
+	KeepThinking bool `toml:"keep_thinking"`
+
+	// InlineDiffs shows a diff under an edit in the transcript. On by default;
+	// off is for anyone who would rather read the summary and open the file.
+	InlineDiffs     bool `toml:"inline_diffs"`
+	ShowToolDetails bool `toml:"show_tool_call_details"`
 }
 
 // Features gates optional behavior.
@@ -108,6 +120,11 @@ type MCPServer struct {
 	Args    []string `toml:"args"`
 	Env     []string `toml:"env"`
 }
+
+// DefaultThinkingLines mirrors tui.DefaultThinkingLines. Duplicated rather than
+// imported because config must not depend on the UI — the daemon and headless
+// both load config and neither draws anything.
+const DefaultThinkingLines = 6
 
 // Config is the whole configuration.
 type Config struct {
@@ -149,6 +166,8 @@ func Default() *Config {
 			IdleAnimation:   true,
 			Overscroll:      "overscroll",
 			ThinkingDisplay: "current",
+			ThinkingLines:   DefaultThinkingLines,
+			InlineDiffs:     true,
 		},
 		Features: Features{AutoPoke: true, Memory: true},
 	}

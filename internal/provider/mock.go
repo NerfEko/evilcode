@@ -218,6 +218,48 @@ var mockScenarios = map[string][][]Chunk{
 			done(210, 28)),
 	},
 
+	// A long thinking trace followed by an answer, which is the case that
+	// showed two bugs at once: the trace stayed expanded under the whole reply,
+	// and it grew without bound while it did.
+	"thinking-long": {
+		{
+			{Reasoning: "Let me work through this carefully.\n"},
+			{Reasoning: "First, the config is parsed in Load.\n"},
+			{Reasoning: "Then defaults are filled in by Default.\n"},
+			{Reasoning: "The decode happens straight into the defaults.\n"},
+			{Reasoning: "That means an absent key keeps its default.\n"},
+			{Reasoning: "Which matters for booleans that default to true.\n"},
+			{Reasoning: "A merge-from-zero would silently clear those.\n"},
+			{Reasoning: "So the current shape is deliberate.\n"},
+			{Reasoning: "Now for the answer.\n"},
+			{Text: "Defaults are filled in first and TOML decodes over them, "},
+			{Text: "so an absent key keeps its default — including booleans "},
+			{Text: "that default to true, which a merge from zero would clear."},
+			done(400, 60),
+		},
+	},
+
+	// Thinking that never reaches an answer, so a capture lands while the trace
+	// is still live and still growing — which is the only way to see the cap.
+	"thinking-only": {
+		{
+			{Reasoning: "Let me work through this carefully.\n"},
+			{Reasoning: "First, the config is parsed in Load.\n"},
+			{Reasoning: "Then defaults are filled in by Default.\n"},
+			{Reasoning: "The decode happens straight into the defaults.\n"},
+			{Reasoning: "That means an absent key keeps its default.\n"},
+			{Reasoning: "Which matters for booleans that default to true.\n"},
+			{Reasoning: "A merge-from-zero would silently clear those.\n"},
+			{Reasoning: "So the current shape is deliberate.\n"},
+			{Reasoning: "Still thinking about the edge cases.\n"},
+			{Reasoning: "And the interaction with repo overrides.\n"},
+			// A single space of text: the trace is the point, but a turn that
+			// says literally nothing is a malformed scenario.
+			{Text: " "},
+			done(300, 40),
+		},
+	},
+
 	// Reasoning traces ahead of the answer (§9.7).
 	"thinking": {
 		{
@@ -361,6 +403,35 @@ var mockScenarios = map[string][][]Chunk{
 		append(text("Here is the loop:\n\n```mermaid\ngraph TD\n  A[plan.md] --> B[implement]\n"+
 			"  B --> C{tests pass?}\n  C -->|yes| D[look at the PNG]\n  C -->|no| B\n"+
 			"  D --> E[commit]\n```\n\nThat is the whole discipline."), done(300, 60)),
+	},
+
+	// A diff taller than the side panel, which is where a panel that cannot
+	// scroll shows the top and silently drops everything below it.
+	"diff-long": {
+		{
+			{Text: "Renumbering all of them."},
+			call("call_1", "write", map[string]any{
+				"path": "testdata/big.go",
+				"content": "package testdata\n\n" +
+					"func alpha(a int) int    { return a * 1 }\n" +
+					"func bravo(a int) int    { return a * 2 }\n" +
+					"func charlie(a int) int  { return a * 3 }\n" +
+					"func delta(a int) int    { return a * 4 }\n" +
+					"func echo(a int) int     { return a * 5 }\n" +
+					"func foxtrot(a int) int  { return a * 6 }\n" +
+					"func golf(a int) int     { return a * 7 }\n" +
+					"func hotel(a int) int    { return a * 8 }\n" +
+					"func india(a int) int    { return a * 9 }\n" +
+					"func juliet(a int) int   { return a * 10 }\n" +
+					"func kilo(a int) int     { return a * 11 }\n" +
+					"func lima(a int) int     { return a * 12 }\n" +
+					"func mike(a int) int     { return a * 13 }\n" +
+					"func november(a int) int { return a * 14 }\n" +
+					"func oscar(a int) int    { return a * 15 }\n",
+			}),
+			done(240, 40),
+		},
+		append(text("All fifteen now multiply."), done(400, 8)),
 	},
 
 	"diff": {

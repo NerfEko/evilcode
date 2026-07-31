@@ -14,4 +14,4 @@
  Kicked off; I will report when it lands.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 308/200k ctx · dracula

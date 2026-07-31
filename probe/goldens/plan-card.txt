@@ -6,10 +6,10 @@
  <repo> (main)
 
  Here is the plan.
- ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮     ╭────────────────────────────────╮
- │ Goal                                                                                             │     │ 💡 Ctrl+R searches your prompt │
- │ Make the refresh path survive a cold start.                                                      │     │ history                        │
- │                                                                                                  │     ╰────────────────────────────────╯
+ ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮               ╭──────────────────────╮
+ │ Goal                                                                                             │               │ Context 436/200.0k   │
+ │ Make the refresh path survive a cold start.                                                      │               │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+ │                                                                                                  │               ╰──────────────────────╯
  │ Approach                                                                                         │
  │ 1. Read the callback handler                                                                     │
  │ 2. Add the retry gate                                                                            │
@@ -22,4 +22,4 @@
 
  🧭 Planning wire the auth flow... (plan-only; no edits)
  1>
-   Ctrl+Enter to queue
+   mock-large · 436/200k ctx · dracula

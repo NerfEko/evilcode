@@ -1110,3 +1110,60 @@ failure after a regeneration raced my manual probe sessions. Regenerated alone,
 it shows a real diff with tint and a DiffStat.
 
 Every task in plan.md is checked. Phase 5 tagged.
+
+## 2026-07-31 — Six bugs from real use
+
+All six were reported from daily driving, which is the point: none of them had a
+failing test, and four were invisible to the probe because the goldens had baked
+the wrong behaviour in as correct.
+
+**Thinking stayed open under the whole reply.** `finishStreaming` collapsed the
+trace, but only tool-start and turn-end called it — a plain thinking→answer turn
+never did. The answer starting is the end of the thinking that led to it, so the
+first text delta now closes it. Confirmed live: a real reasoning model thought 32
+lines and folded them the instant it began answering.
+
+**Traces grew without bound.** A model that thinks for thirty seconds pushed the
+conversation off the screen. A live trace now shows its tail in a configurable
+window (`display.thinking_lines`, default 6) with `⋯ N earlier lines` above it —
+the tail, because where thinking has got to is the interesting part. Two more
+settings landed with it: `keep_thinking` and `inline_diffs`. Finding those also
+turned up that `thinking_display` was parsed, defaulted, documented, and then
+never read by anything.
+
+**Prompt numbers were backwards.** §9.6 says the *colour* decays with distance
+from the newest; the code set `Number` to that distance and used it for both, so
+the first prompt carried the highest number and every prompt was renumbered each
+turn. Number and Decay are separate fields now. The same capture showed
+`<memories>` drawn as a numbered user prompt: `TurnStart` took `Conv.Last()`,
+which after passive recall is the injected tail rather than what was asked. It
+carries the prompt Run was given instead.
+
+**Token counts and tps were wrong three ways.** Usage was *assigned* per event,
+so a turn with three tool rounds reported only the last round. Context was
+`In+Out` summed, which double-counts — prompt tokens already carry the whole
+conversation. And tps divided by wall-clock since turn start, counting tool
+execution as generation. Spend accumulates, context takes the newest request's
+size, and the agent now reports per-request generation time.
+
+That fixed the arithmetic but not the display, which a live run showed still
+reading `0.0 tps · ↑0 ↓0` for the entire response: providers report usage only
+in the final chunk. There is now a four-chars-to-a-token live estimate that the
+exact count replaces when it lands, and the prompt side is omitted rather than
+shown as a false zero. Live: `85.0 tps · ↓22`, correcting to the provider's
+numbers at the end.
+
+**`/diff` showed nothing on the second half.** The side panel was attached only
+for `len(rows)` — the height of the *chat column* — so a short conversation next
+to a long file cut the panel at the composer and dropped everything below it,
+divider included. The panel gets the terminal now.
+
+**The composer footer said something untrue.** "Ctrl+Enter to queue" at rest,
+where there is no turn to queue behind. That row is the one piece of screen
+always visible, so it carries live state instead: model, context fill, session.
+The queue binding still shows while a turn is actually running.
+
+`testdata/big.go` was added for the tall-panel scenario and committed pre-edit
+immediately — the probe restores testdata from git before every run, so an
+untracked fixture stays rewritten and every later run sees no diff at all. That
+trap has now been walked into three times and caught by habit once.

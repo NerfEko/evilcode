@@ -1,0 +1,40 @@
+ evilcode · v0.1.0                                                    │ testdata/big.go
+ session: Dracula 🧛                                                  │ ┌─ diff
+ /model to switch · local:mock · mock-large                           │ │  package testdata
+ ● ollama-local  ○ ollama-cloud  ● mock                               │ │
+ skills: /commit /selfdev                                             │ │ -// big is a probe fixture for the side panel: a file long enough
+ <repo> (main)                       │ │ -// does not fit the panel, which is where a panel that cannot scr
+                                                                      │ │ -// first half and silently drops the rest.
+ 1› renumber them                                                     │ │ -//
+                                                                      │ │ -// Committed in the state BEFORE the scenario's write, for the sa
+ Renumbering all of them.                                             │ │ ... 25 more changes ...
+                                                                      │ │ +func india(a int) int    { return a * 9 }
+   ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ +func juliet(a int) int   { return a * 10 }
+                                                                      │ │ +func kilo(a int) int     { return a * 11 }
+ All fifteen now multiply.                                            │ │ +func lima(a int) int     { return a * 12 }
+ 💡 Ctrl+R searches your prompt history                               │ │ +func mike(a int) int     { return a * 13 }
+ Diff mode: pinned                                                    │ │ +func november(a int) int { return a * 14 }
+ 2>                                                                   │ │ +func oscar(a int) int    { return a * 15 }
+   mock-large · 408/200k ctx · dracula                                │ └─ (+15 -22 total)
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │

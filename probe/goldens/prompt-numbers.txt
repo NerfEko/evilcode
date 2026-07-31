@@ -5,18 +5,18 @@
  skills: /commit /selfdev
  <repo> (main)
 
- 1› fix the auth redirect loop
+ 1› first prompt
 
  Yes — that function parses the config and returns the defaults when the file is absent. It never returns a nil map, so callers can index it
  safely.
 
- 2› fix the auth token refresh
+ 2› second prompt
+
+ Done.
+
+ 3› third prompt
 
  Done.
  💡 Ctrl+R searches your prompt history
- ⌨ Ctrl+R → search prompt history
- 3> fix the auth token refresh
+ 4>
    mock-large · 122/200k ctx · dracula
- (history search) auth█  ↑↓ select · ↵ insert · Esc cancel
-   ▸ fix the auth token refresh
-     fix the auth redirect loop

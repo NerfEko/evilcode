@@ -8,10 +8,10 @@
  1› fix the clamp
 
  Fixing the off-by-one.
-
-   ✓ edit testdata/clamp.go · 8 tok (+1 -1)
- ┌─ diff
- │  // makes every scenario's edit fail with "old string not found", and the
+                                                                                                                    ╭──────────────────────╮
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                                                                         │ Context 386/200.0k   │
+ ┌─ diff                                                                                                            │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+ │  // makes every scenario's edit fail with "old string not found", and the                                        ╰──────────────────────╯
  │  // goldens then bake in the failure — which is exactly what happened once.                      ╭──────────────────────────────────────╮
  │  func clamp(offset, max int) int {                                                               │ ⚡ mock-large                        │
  │ -    if offset > max {                                                                           │ 1 sessions · dracula                 │
@@ -24,4 +24,4 @@
  That was the clamp bug.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 386/200k ctx · dracula

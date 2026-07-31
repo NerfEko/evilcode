@@ -4,20 +4,20 @@
  ● ollama-local  ○ ollama-cloud  ● mock
  <repo>
 
- 2› look at the clamp
+ 1› look at the clamp
 
  Let me look at the clamp.
 
    ✓ read testdata/clamp.go · 151 tok
 
  It clamps with > where it wants >=. Summoning help.
-
-   👉 Summoned dracula-2
-   fix the clamp
-
+                                             ╭──────────────────────╮
+   👉 Summoned dracula-2                     │ Context 428/200.0k   │
+   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+                                             ╰──────────────────────╯
    Its result will arrive as a message.
 
- 1› anything else?
+ 2› anything else?
 
  Understood — I will re-read it before editing.
 
@@ -25,7 +25,7 @@
    Re-read it before you edit it — what you have is stale.
  💡 Ctrl+R searches your prompt history
  3>
-   Ctrl+Enter to queue
+   mock-large · 428/200k ctx · dracula
 
 
 
@@ -45,7 +45,7 @@
  ● ollama-local  ○ ollama-cloud  ● mock
  <repo>
 
- 2› look at the clamp
+ 1› look at the clamp
 
  Let me look at the clamp.
 
@@ -53,7 +53,7 @@
 
  It clamps with > where it wants >=. Summoning help.
 
- 1› anything else?
+ 2› anything else?
 
  Understood — I will re-read it before editing.
 
@@ -61,4 +61,4 @@
    Re-read it before you edit it — what you have is stale.
  💡 Ctrl+R searches your prompt history
  3>
-   Ctrl+Enter to queue
+   mock-large · 428/200k ctx · dracula

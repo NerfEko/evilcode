@@ -211,10 +211,10 @@ func (m *Model) rebuildFromMessages(msgs []provider.Message) {
 				m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: msg.Content})
 				continue
 			}
+			m.promptCount++
 			m.blocks = append(m.blocks, Block{
 				Kind: BlockUser, Text: msg.Content, Number: m.promptCount,
 			})
-			m.promptCount++
 
 		case provider.RoleAssistant:
 			if strings.TrimSpace(msg.Content) != "" {

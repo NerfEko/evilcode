@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -70,11 +71,20 @@ type ComposerState struct {
 	// Cursor is the rune offset of the caret within Text.
 	Cursor int
 
-	// PromptNumber is the number the next prompt will carry.
+	// PromptNumber is how many prompts have been sent; the composer shows the
+	// next one, so it prints PromptNumber+1.
 	PromptNumber int
 
 	Processing bool
 	QueueMode  bool
+
+	// Model, CtxUsed, CtxMax and Session feed the idle hint. At rest the row
+	// is the only always-visible place to put live state, and it was spending
+	// itself on a keybinding that does not apply when nothing is running.
+	Model      string
+	CtxUsed    int
+	CtxMax     int
+	Session    string
 	ShellMode  bool
 	SkillMode  bool
 	NewSession bool
@@ -136,8 +146,52 @@ func (r *Renderer) hintLine(s ComposerState) string {
 	case s.Processing:
 		return dim.Render("  Ctrl+Enter to queue")
 	default:
-		return dim.Render("  Ctrl+Enter to queue")
+		// Nothing is running, so there is nothing to queue behind — saying so
+		// was both clutter and untrue. This row is the one piece of screen that
+		// is always visible, so it carries what is always worth knowing.
+		return dim.Render("  " + idleHint(s))
 	}
+}
+
+// roundTokens renders a context window, which is always a round number and
+// reads badly with a decimal: "200k", not "200.0k".
+func roundTokens(n int) string {
+	switch {
+	case n >= 1_000_000 && n%1_000_000 == 0:
+		return fmt.Sprintf("%dM", n/1_000_000)
+	case n >= 1000 && n%1000 == 0:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return humanTokens(n)
+	}
+}
+
+// idleHint is the resting composer line: what model, how full the context is,
+// and which session. Each part is omitted when it is not known yet rather than
+// rendered as a zero.
+func idleHint(s ComposerState) string {
+	var parts []string
+	if s.Model != "" {
+		parts = append(parts, s.Model)
+	}
+	if s.CtxUsed > 0 && s.CtxMax > 0 {
+		ctx := fmt.Sprintf("%s/%s ctx", humanTokens(s.CtxUsed), roundTokens(s.CtxMax))
+		// The percentage only earns its space once it is worth watching. At 0%
+		// it is noise beside the two numbers that already say the same thing.
+		if pct := s.CtxUsed * 100 / s.CtxMax; pct >= 1 {
+			ctx += fmt.Sprintf(" · %d%%", pct)
+		}
+		parts = append(parts, ctx)
+	}
+	if s.Session != "" {
+		parts = append(parts, s.Session)
+	}
+	if len(parts) == 0 {
+		// A fresh session with nothing resolved yet still needs the row to say
+		// something, and this is the one binding a new reader most needs.
+		return "Enter to send · Ctrl+J for a newline"
+	}
+	return strings.Join(parts, " · ")
 }
 
 // RenderComposer draws the input rows plus the hint line (plan.md §6.1).

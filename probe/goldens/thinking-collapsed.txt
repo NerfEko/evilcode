@@ -1,0 +1,16 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit /selfdev
+ <repo> (main)
+
+ 1› explain the config
+
+   ▸ thought (9 lines)
+
+ Defaults are filled in first and TOML decodes over them, so an absent key keeps its default — including booleans that default to true,
+ which a merge from zero would clear.
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   mock-large · 460/200k ctx · dracula

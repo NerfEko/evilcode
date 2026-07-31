@@ -37,4 +37,4 @@
 
  👉 3 incomplete todos. We poked it for you. /poke off to stop.
  2>
-   Ctrl+Enter to queue
+   mock-large · 122/200k ctx · dracula

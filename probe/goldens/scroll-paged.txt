@@ -37,4 +37,4 @@
  💡 Ctrl+R searches your prompt history
  ⌨ PgUp → page up
  2>
-   Ctrl+Enter to queue
+   mock-large · 700/200k ctx · dracula

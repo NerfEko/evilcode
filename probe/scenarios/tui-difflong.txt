@@ -1,0 +1,14 @@
+# A diff taller than the chat column beside it (§9.4). The panel gets the whole
+# terminal; it used to be attached only for as many rows as the chat happened to
+# be tall, so everything below the composer was silently dropped.
+
+scenario diff-long
+boot tui
+keys "renumber them"
+keys Enter
+keys "/diff"
+keys Enter
+capture panel-tall-pinned
+keys "/diff"
+keys Enter
+capture panel-tall-file

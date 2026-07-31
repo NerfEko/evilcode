@@ -48,6 +48,14 @@ type Usage struct {
 	CtxUsed  int  `json:"ctx_used"`
 	CtxMax   int  `json:"ctx_max"`
 	CacheHit bool `json:"cache_hit"`
+
+	// GenMS is how long this request spent generating, in milliseconds.
+	//
+	// Reported per request because a turn is not one request: a turn with three
+	// tool rounds makes four, and the gaps between them are tool execution.
+	// Dividing tokens by wall-clock-since-turn-start counts that tool time as
+	// generation and reports a rate far below the real one.
+	GenMS int `json:"gen_ms,omitempty"`
 }
 
 // Event is the single contract between the agent core and every frontend: the

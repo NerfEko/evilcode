@@ -1,0 +1,13 @@
+# Prompt numbering (§9.6). Numbers are ordinals that count up and stay put; the
+# rainbow ramp is indexed separately by distance from the newest. They used to
+# be the same value, so the first prompt carried the highest number.
+
+scenario chat
+boot tui
+keys "first prompt"
+keys Enter
+keys "second prompt"
+keys Enter
+keys "third prompt"
+keys Enter
+capture prompt-numbers

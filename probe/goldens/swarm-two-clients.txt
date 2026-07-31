@@ -24,7 +24,7 @@
    ◖ add a test for the parser ◗
  💡 Ctrl+R searches your prompt history
  1>
-   Ctrl+Enter to queue
+   mock-large · dracula
 
 
 
@@ -65,4 +65,4 @@
    ◖ add a test for the parser ◗
  💡 Ctrl+R searches your prompt history
  1>
-   Ctrl+Enter to queue
+   mock-large · dracula

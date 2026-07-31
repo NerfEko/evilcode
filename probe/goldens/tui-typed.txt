@@ -24,4 +24,4 @@
    ◖ add a test for the parser ◗
  💡 Ctrl+R searches your prompt history
  1> what does the config package do
-   Ctrl+Enter to queue
+   mock-large · dracula

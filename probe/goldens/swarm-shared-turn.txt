@@ -13,7 +13,7 @@
  It clamps with > where it wants >=. Summoning help.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 330/200k ctx · dracula
 
 
 
@@ -54,4 +54,4 @@
  It clamps with > where it wants >=. Summoning help.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 330/200k ctx · dracula

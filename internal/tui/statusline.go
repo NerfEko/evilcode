@@ -131,8 +131,14 @@ func (r *Renderer) statusBody(s StatusState) string {
 		return r.style(theme.RoleAI).Render(spinner) + dim.Render(" thinking… "+secs)
 
 	case PhaseStreaming:
-		body := fmt.Sprintf(" streaming… %s · %.1f tps · ↑%s ↓%s",
-			secs, s.TokensPerSecond, humanTokens(s.TokensIn), humanTokens(s.TokensOut))
+		// The prompt count is omitted until the provider reports it: it arrives
+		// with the final chunk, and "↑0" for the whole of a streaming response
+		// reads as a broken counter rather than as an unknown one.
+		counts := fmt.Sprintf("↓%s", humanTokens(s.TokensOut))
+		if s.TokensIn > 0 {
+			counts = fmt.Sprintf("↑%s %s", humanTokens(s.TokensIn), counts)
+		}
+		body := fmt.Sprintf(" streaming… %s · %.1f tps · %s", secs, s.TokensPerSecond, counts)
 		if s.CacheMiss {
 			// The whole line goes amber: a cache miss is a cost event, and a
 			// subtle marker would be missed.

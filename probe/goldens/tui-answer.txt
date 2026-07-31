@@ -11,4 +11,4 @@
  safely.
  💡 Ctrl+R searches your prompt history
  2>
-   Ctrl+Enter to queue
+   mock-large · 238/200k ctx · dracula

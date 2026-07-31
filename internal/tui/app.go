@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/config"
 	"evilcode/internal/graphics"
 	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
@@ -196,6 +197,25 @@ type Model struct {
 	diagramDir   string
 	diagramInbox atomic.Pointer[mermaidRendered]
 	nextImageID  int
+
+	// streamStart, streamChars and estimatedOut drive the live rate. Providers
+	// report usage only in the final chunk, so without an estimate the status
+	// line reads "0.0 tps · ↑0 ↓0" for the entire time text is arriving — which
+	// is the whole window anyone is actually looking at it.
+	streamStart  time.Time
+	streamChars  int
+	estimatedOut int
+
+	// genMS accumulates generation time across a turn's requests, which is what
+	// tokens-per-second is measured over.
+	genMS int
+
+	// ctxUsed is the newest request's context size, for the meter. It is not
+	// the sum of the turn's requests — each one carries the whole conversation.
+	ctxUsed int
+
+	// keepThinking leaves finished traces expanded (display.keep_thinking).
+	keepThinking bool
 
 	// hiddenPrompt is the text of an injected turn that must not be drawn as a
 	// user block, matched once when its turn starts.
@@ -438,6 +458,8 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.processing = true
 		m.turnAt = time.Now()
 		m.status = StatusState{Phase: PhaseSending, Animate: !Deterministic()}
+		m.genMS, m.estimatedOut, m.streamChars = 0, 0, 0
+		m.streamStart = time.Time{}
 		m.streamingIdx = -1
 		// A turn this client did not start still has to show its prompt, or an
 		// attached client renders answers to questions it never sees. The check
@@ -450,8 +472,8 @@ func (m *Model) applyEvent(e agent.Event) {
 		if e.Text != "" && e.Text == m.hiddenPrompt {
 			m.hiddenPrompt = ""
 		} else if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
-			m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: e.Text})
 			m.promptCount++
+			m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: e.Text, Number: m.promptCount})
 			m.renumberPrompts()
 			m.followIfPinned()
 		}
@@ -459,10 +481,16 @@ func (m *Model) applyEvent(e agent.Event) {
 	case agent.EventTextDelta:
 		m.status.Phase = PhaseStreaming
 		if m.streamingIdx < 0 {
+			// The answer starting is the end of the thinking that led to it.
+			// Without this a trace stayed open underneath the whole reply and
+			// only collapsed when the turn ended, which is far too late to be
+			// useful and pushes the answer down the screen while it streams.
+			m.finishReasoning()
 			m.blocks = append(m.blocks, Block{Kind: BlockAssistant, Streaming: true})
 			m.streamingIdx = len(m.blocks) - 1
 		}
 		m.blocks[m.streamingIdx].Text += e.Text
+		m.observeStreamed(e.Text)
 		m.followIfPinned()
 
 	case agent.EventReasoningDelta:
@@ -475,6 +503,7 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.reasoningIdx = len(m.blocks) - 1
 		}
 		m.blocks[m.reasoningIdx].Text += e.Text
+		m.observeStreamed(e.Text)
 		m.followIfPinned()
 
 	case agent.EventToolStart:
@@ -531,9 +560,30 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.followIfPinned()
 
 	case agent.EventTokenUsage:
-		m.status.TokensIn, m.status.TokensOut = e.Usage.In, e.Usage.Out
-		if secs := time.Since(m.turnAt).Seconds(); secs > 0 {
-			m.status.TokensPerSecond = float64(e.Usage.Out) / secs
+		// Accumulated, not assigned. A turn with tool calls makes one request
+		// per round and each reports only its own usage, so assigning here
+		// showed the last round's tokens as if they were the turn's — which
+		// also made the context meter read far below the truth.
+		// Two different numbers, which is why this used to be wrong in two
+		// directions at once. Spend is the sum across a turn's requests — a
+		// turn with three tool rounds makes four, and you paid for all of them.
+		// Context is the *latest* request's size, because prompt tokens already
+		// are the whole conversation; summing them would double-count it.
+		// The provider's own count replaces whatever the live estimate had
+		// reached for this request, rather than adding to it.
+		m.status.TokensOut -= m.estimatedOut
+		m.estimatedOut, m.streamChars = 0, 0
+		m.streamStart = time.Time{}
+
+		m.status.TokensIn += e.Usage.In
+		m.status.TokensOut += e.Usage.Out
+		m.ctxUsed = e.Usage.CtxUsed
+		m.genMS += e.Usage.GenMS
+		if m.genMS > 0 {
+			// Over generation time only. Wall-clock counts tool execution as
+			// generation and reports a rate that is not the model's.
+			m.status.TokensPerSecond = float64(m.status.TokensOut) /
+				(float64(m.genMS) / 1000)
 		}
 
 	case agent.EventNotice:
@@ -601,9 +651,16 @@ func (m *Model) finishStreaming() {
 	}
 	m.streamingIdx = -1
 
+	m.finishReasoning()
+}
+
+// finishReasoning freezes the live thinking trace and collapses it, unless the
+// reader has asked to keep traces open (display.keep_thinking).
+func (m *Model) finishReasoning() {
 	if m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) {
 		m.blocks[m.reasoningIdx].Streaming = false
-		m.blocks[m.reasoningIdx].Collapsed = true
+		m.blocks[m.reasoningIdx].Collapsed = !m.keepThinking
+		m.blocks[m.reasoningIdx].cache = nil
 	}
 	m.reasoningIdx = -1
 	m.collectReasoning()
@@ -1818,7 +1875,7 @@ func (m *Model) submit(text string) {
 	m.blocks = append(m.blocks, Block{
 		Kind:   BlockUser,
 		Text:   text,
-		Number: m.promptCount,
+		Number: m.promptCount + 1,
 	})
 	m.promptCount++
 	m.renumberPrompts()
@@ -1876,11 +1933,15 @@ func (m *Model) submitHidden(text string) {
 
 // renumberPrompts recomputes each user block's distance from the newest, which
 // is what the rainbow ramp is indexed by.
+// renumberPrompts recomputes each user block's distance from the newest, which
+// is what the rainbow ramp is indexed by (§7.7). It does not touch Number: a
+// prompt's ordinal is assigned once and never changes, because renumbering the
+// history every turn is how prompt 1 ended up labelled with the highest number.
 func (m *Model) renumberPrompts() {
 	seen := 0
 	for i := len(m.blocks) - 1; i >= 0; i-- {
 		if m.blocks[i].Kind == BlockUser {
-			m.blocks[i].Number = seen
+			m.blocks[i].Decay = seen
 			m.blocks[i].cache = nil
 			seen++
 		}
@@ -1987,6 +2048,10 @@ func (m *Model) composerState() ComposerState {
 		Text:         m.editor.Text,
 		Cursor:       m.editor.Cursor,
 		PromptNumber: m.promptCount,
+		Model:        m.header.Model,
+		CtxUsed:      m.ctxUsed,
+		CtxMax:       m.contextMax(),
+		Session:      m.header.SessionName,
 		Processing:   m.processing,
 		QueueMode:    m.queueMode,
 		ShellMode:    m.shellMode,
@@ -2284,8 +2349,22 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 		return rows
 	}
 
+	// The panel gets the whole terminal, not the height of the chat beside it.
+	// A short conversation next to a long file used to cut the panel off at the
+	// composer — the top of the diff rendered and everything below it, divider
+	// included, silently vanished.
 	height := max(len(rows), transcriptRows)
+	if m.height > height {
+		height = m.height
+	}
 	panel := m.renderer.RenderSidePanel(m.panel, m.diffMode, side, height, false)
+
+	// Grow the frame so every panel row has something to attach to. Blank chat
+	// rows below the composer are empty screen either way; without them the
+	// panel is truncated to whatever the conversation happens to be tall.
+	for len(rows) < len(panel) && len(rows) < m.height {
+		rows = append(rows, "")
+	}
 
 	for i := 0; i < len(rows) && i < len(panel); i++ {
 		pad := max(chat-lipgloss.Width(rows[i]), 0)
@@ -2330,7 +2409,7 @@ func (m *Model) factStack() FactStack {
 		Model:    m.header.Model,
 		Cwd:      m.header.Cwd,
 		Branch:   m.header.Branch,
-		Used:     m.status.TokensIn + m.status.TokensOut,
+		Used:     m.ctxUsed,
 		Total:    m.contextMax(),
 	}
 }
@@ -2351,8 +2430,8 @@ func (m *Model) activeWidgets() []Widget {
 	if m.todos != nil && !m.showTodoCard {
 		add(m.renderer.TodosWidget(m.todos.Items(), m.todos.Goals(), 4))
 	}
-	if m.status.TokensIn > 0 && m.contextMax() > 0 {
-		add(m.renderer.ContextWidget(m.status.TokensIn+m.status.TokensOut, m.contextMax()))
+	if m.ctxUsed > 0 && m.contextMax() > 0 {
+		add(m.renderer.ContextWidget(m.ctxUsed, m.contextMax()))
 	}
 	add(m.renderer.ModelInfoWidget(m.header, 1))
 	if m.bg != nil {
@@ -2496,4 +2575,45 @@ func Run(a *agent.Agent, h HeaderState) error {
 func RunModel(m *Model) error {
 	_, err := tea.NewProgram(m).Run()
 	return err
+}
+
+// WithDisplay applies the `[display]` block.
+//
+// It exists because these settings were reaching the model one at a time or not
+// at all: thinking_display was parsed, defaulted, documented, and then never
+// read by anything.
+func (m *Model) WithDisplay(d config.Display) *Model {
+	if mode := ThinkingMode(d.ThinkingDisplay); mode.Valid() {
+		m.thinking = mode
+	}
+	m.keepThinking = d.KeepThinking
+	m.renderer.ThinkingLines = d.ThinkingLines
+	if !d.InlineDiffs {
+		m.renderer.DiffMode = DiffOff
+	}
+	return m
+}
+
+// observeStreamed keeps a live token estimate while a response arrives.
+//
+// It is an estimate — four characters to a token, the same rule the tool rows
+// use — and it is replaced by the provider's exact count the moment that
+// arrives. The alternative is what was there before: a rate and a token count
+// that both sit at zero until the response is already finished.
+func (m *Model) observeStreamed(text string) {
+	if text == "" {
+		return
+	}
+	if m.streamStart.IsZero() {
+		m.streamStart = time.Now()
+	}
+	m.streamChars += len(text)
+
+	estimate := m.streamChars / 4
+	m.status.TokensOut += estimate - m.estimatedOut
+	m.estimatedOut = estimate
+
+	if secs := time.Since(m.streamStart).Seconds(); secs > 0.2 {
+		m.status.TokensPerSecond = float64(estimate) / secs
+	}
 }

@@ -144,6 +144,12 @@ context_window = 262144        # override what the provider reports
 smol = ["qwen3:8b@ollama-local"]
 
 [display]
+# How tall a live thinking trace grows before it scrolls in its own space.
+thinking_lines = 6
+# Leave finished traces expanded instead of folding them to "▸ thought (N lines)".
+keep_thinking = false
+# Show a diff under each edit in the transcript.
+inline_diffs = true
 theme = "dracula"
 centered = false
 
