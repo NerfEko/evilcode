@@ -30,6 +30,13 @@ type HeaderState struct {
 	// Skills and MCP servers, when present.
 	Skills []string
 	MCP    []MCPStatus
+
+	// Attached is the daemon socket this TUI is driving through, empty for a
+	// local session. ClientName names this client (plan.md §20): with two
+	// terminals on one session, "which of these am I" is the first question,
+	// and the header is where it gets answered.
+	Attached   string
+	ClientName string
 }
 
 // MCPStatus is one connected server, for the header line.
@@ -63,8 +70,20 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 
 	if h.SessionName != "" {
 		emoji := core.CreatureEmoji(h.SessionName)
-		out = append(out, dim.Render("session: ")+
-			sessionStyle.Render(core.Title(h.SessionName, emoji)))
+		title := sessionStyle.Render(core.Title(h.SessionName, emoji))
+		if h.Attached != "" {
+			// Attached mode names both ends. The session belongs to the daemon,
+			// so calling it "session:" as though it were local would be a lie
+			// the moment a second terminal attaches to the same one.
+			line := dim.Render("server: ") + title
+			if h.ClientName != "" {
+				line += dim.Render(" · client: ") +
+					sessionStyle.Render(core.Title(h.ClientName, core.CreatureEmoji(h.ClientName)))
+			}
+			out = append(out, line)
+		} else {
+			out = append(out, dim.Render("session: ")+title)
+		}
 	}
 
 	modelLine := dim.Render("/model to switch")

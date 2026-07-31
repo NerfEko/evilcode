@@ -211,7 +211,19 @@ var mockScenarios = map[string][][]Chunk{
 			call("call_2", "recall", map[string]any{"query": "indentation preference"}),
 			done(260, 16),
 		},
-		append(text("You prefer tabs, so that is what I used."), done(340, 12)),
+		// Deliberately long: the memory-activity widget is seven rows with its
+		// border, and §8.3 will not dock a box into a region shorter than it.
+		// A short reply leaves no room, so the frame would only ever prove the
+		// tile and never the widget.
+		// Short lines, not long prose: the dock needs free *columns*, and
+		// full-width paragraphs leave none. A list is what a real answer of
+		// this shape looks like anyway.
+		append(text("You prefer tabs, so that is what I used.\n\n"+
+			"- reindented the block\n"+
+			"- left the rest alone\n"+
+			"- no reflow of the file\n"+
+			"- gofmt is still clean\n\n"+
+			"Say the word to normalize\nthe whole file separately."), done(340, 92)),
 	},
 
 	// A tool call the model buffers whole, with no preceding text — the case

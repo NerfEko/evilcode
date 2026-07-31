@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 
+	"evilcode/internal/attachcmd"
 	"evilcode/internal/probecmd"
 	"evilcode/internal/runcmd"
+	"evilcode/internal/servecmd"
 	"evilcode/internal/tuicmd"
 )
 
@@ -53,7 +55,11 @@ func run(args []string) error {
 		return nil
 	case "tui":
 		return tuicmd.Run(args)
-	case "serve", "attach", "dictate":
+	case "serve":
+		return servecmd.Run(args)
+	case "attach":
+		return attachcmd.Run(args)
+	case "dictate":
 		return fmt.Errorf("%q is not implemented yet — see plan.md for the phase that lands it", sub)
 	case "help", "-h", "--help":
 		fmt.Print(usage)

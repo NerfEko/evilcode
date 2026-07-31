@@ -125,3 +125,36 @@ matches the session store, so one idiom covers both.
 **When this would need revisiting:** a bank in the hundreds of thousands, or
 multiple processes writing concurrently — the daemon in Phase 4 serializes
 through one process, so that is not yet the case.
+
+## 6. The MemoryActivity widget rarely finds a dock slot
+
+**Spec:** §8.8 puts the 4-step memory pipeline in the right margin, and §8.3
+gives it priority 7 — ahead of ModelInfo.
+
+**Built:** the widget renders exactly as specced and is unit-tested, and the
+priority order is now enforced by sorting on `WidgetKind` rather than by the
+order `activeWidgets` happens to append (which had drifted: MemoryActivity was
+appended after ModelInfo and lost its slot every frame). But at 7 rows it is the
+tallest widget in the set, and in practice it seldom finds a free rectangle.
+
+**Why:** `FreeWidth` measures a row with `lipgloss.Width`, and glamour pads every
+rendered paragraph out to the full wrap width. Prose therefore measures as
+occupying the whole line even where it visibly stops, so no slot spans it. The
+look-ahead in `reliableWidth` compounds it: a 7-row widget needs roughly 13
+consecutive unobstructed rows.
+
+Two attempts at the measurement half have been reverted. Counting only painted
+padding as occupied does find the slots, and a widget with its full bracket
+pipeline docks beside the recall tile — but on a second run nothing docked at
+all, so the rule is not yet right and is not worth guessing at from inside the
+memory loop.
+
+The write half *is* fixed: each of a widget's lines used to be padded from its
+own row's width, so a line with text under it started further right than its
+blank neighbours and the box came out as fragments at three different columns.
+The whole box now takes one column, chosen from the widest row it covers, which
+is what a rounded border needs to survive contact with real text.
+
+**When this would need revisiting:** it is the same root cause for every widget
+taller than about five rows, so fixing the measurement — and the write path with
+it — is worth its own loop rather than a corner of the memory one.

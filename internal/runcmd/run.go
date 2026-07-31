@@ -36,6 +36,8 @@ func Run(args []string) (int, error) {
 	resume := fs.String("resume", "", "resume a named session")
 	quiet := fs.Bool("q", false, "print only the model's text, no tool or usage lines")
 	noTools := fs.Bool("no-tools", false, "run without any tools")
+	remote := fs.Bool("remote", false, "submit into a running daemon instead of executing locally")
+	socket := fs.String("socket", "", "daemon socket path, with -remote")
 	if err := fs.Parse(args); err != nil {
 		return ExitError, err
 	}
@@ -50,6 +52,10 @@ func Run(args []string) (int, error) {
 	}
 	if prompt == "" {
 		return ExitError, fmt.Errorf(`usage: evilcode run [-m model] [-q] "prompt"`)
+	}
+
+	if *remote {
+		return runRemote(*socket, *resume, prompt, *quiet)
 	}
 
 	cfg, err := config.Load()
@@ -154,88 +160,125 @@ func Run(args []string) (int, error) {
 	return exit, runErr
 }
 
+// printer renders the event stream to the terminal. It is a type rather than a
+// loop so the local and `--remote` paths print identically — a daemon-backed
+// run that formatted its own output differently would be a second contract to
+// keep in step with §9.5.
+type printer struct {
+	quiet bool
+	store *session.Store
+
+	exit        int
+	atLineStart bool
+}
+
+func newPrinter(quiet bool) *printer {
+	return &printer{quiet: quiet, exit: ExitOK, atLineStart: true}
+}
+
+// newline ends the model's line before anything else writes, so a tool row
+// never lands mid-sentence.
+func (p *printer) newline() {
+	if !p.atLineStart {
+		fmt.Println()
+		p.atLineStart = true
+	}
+}
+
+// finish closes out a turn's output.
+func (p *printer) finish() { p.newline() }
+
+func (p *printer) print(e agent.Event) {
+	switch e.Kind {
+	case agent.EventTextDelta:
+		fmt.Print(e.Text)
+		p.atLineStart = strings.HasSuffix(e.Text, "\n")
+
+	case agent.EventToolResult:
+		if p.quiet {
+			return
+		}
+		p.newline()
+		fmt.Fprintln(os.Stderr, toolLine(e))
+
+	case agent.EventMemoryRecall:
+		// Headless has no tile, but it must not inject silently: a scripted run
+		// whose answer was shaped by a remembered fact should say so on stderr,
+		// where the tool lines already are.
+		if p.quiet {
+			return
+		}
+		hits, ok := e.Display.([]memory.Hit)
+		if !ok {
+			return
+		}
+		p.newline()
+		fmt.Fprintf(os.Stderr, "🧠 recalled %s\n", plural(len(hits), "memory"))
+		for _, h := range hits {
+			fmt.Fprintf(os.Stderr, "   · %s\n", h.Text)
+		}
+
+	case agent.EventNotice:
+		if p.quiet {
+			return
+		}
+		p.newline()
+		fmt.Fprintf(os.Stderr, "· %s\n", e.Text)
+
+	case agent.EventError:
+		p.newline()
+		// ErrText, not Err: a Go error cannot cross the socket, so a remote run
+		// would print "<nil>" for every failure. emit fills ErrText from Err, so
+		// the local path reads the same.
+		fmt.Fprintf(os.Stderr, "✗ %s\n", e.ErrText)
+		p.exit = ExitError
+
+	case agent.EventTokenUsage:
+		if p.store != nil {
+			p.store.WriteMeta(session.Meta{
+				Kind: session.MetaTokens, TokensIn: e.Usage.In, TokensOut: e.Usage.Out,
+			})
+		}
+
+	case agent.EventTurnEnd:
+		p.newline()
+		switch e.Reason {
+		case agent.EndInterrupted:
+			fmt.Fprintln(os.Stderr, "· interrupted")
+			p.exit = ExitInterrupted
+		case agent.EndError, agent.EndMaxSteps:
+			p.exit = ExitError
+		}
+	}
+}
+
+// plural renders a count with its noun. "memory" is spelled out because it does
+// not take a plain -s.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	if noun == "memory" {
+		return fmt.Sprintf("%d memories", n)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // printEvents consumes the stream in a goroutine and reports the exit code once
 // the turn ends. The stream is the only thing it knows about the agent.
 func printEvents(a *agent.Agent, store *session.Store, quiet bool) <-chan int {
 	out := make(chan int, 1)
+	p := newPrinter(quiet)
+	p.store = store
 	go func() {
-		exit := ExitOK
-		atLineStart := true
-
-		newline := func() {
-			if !atLineStart {
-				fmt.Println()
-				atLineStart = true
-			}
-		}
-
 		for e := range a.Events() {
-			switch e.Kind {
-			case agent.EventTextDelta:
-				fmt.Print(e.Text)
-				atLineStart = strings.HasSuffix(e.Text, "\n")
-
-			case agent.EventToolResult:
-				if quiet {
-					continue
-				}
-				newline()
-				fmt.Fprintln(os.Stderr, toolLine(e))
-
-			case agent.EventMemoryRecall:
-				// Headless has no tile, but it must not inject silently: a
-				// scripted run whose answer was shaped by a remembered fact
-				// should say so on stderr, where the tool lines already are.
-				if quiet {
-					continue
-				}
-				if hits, ok := e.Display.([]memory.Hit); ok {
-					newline()
-					fmt.Fprintf(os.Stderr, "🧠 recalled %d %s\n",
-						len(hits), plural(len(hits), "memory", "memories"))
-					for _, h := range hits {
-						fmt.Fprintf(os.Stderr, "   · %s\n", h.Text)
-					}
-				}
-
-			case agent.EventNotice:
-				if quiet {
-					continue
-				}
-				newline()
-				fmt.Fprintf(os.Stderr, "· %s\n", e.Text)
-
-			case agent.EventError:
-				newline()
-				fmt.Fprintf(os.Stderr, "✗ %v\n", e.Err)
-				exit = ExitError
-
-			case agent.EventTokenUsage:
-				if quiet {
-					continue
-				}
-				if store != nil {
-					store.WriteMeta(session.Meta{
-						Kind: session.MetaTokens, TokensIn: e.Usage.In, TokensOut: e.Usage.Out,
-					})
-				}
-
-			case agent.EventTurnEnd:
-				newline()
-				switch e.Reason {
-				case agent.EndInterrupted:
-					fmt.Fprintln(os.Stderr, "· interrupted")
-					exit = ExitInterrupted
-				case agent.EndError:
-					exit = ExitError
-				case agent.EndMaxSteps:
-					exit = ExitError
-				}
-				out <- exit
+			p.print(e)
+			if e.Kind == agent.EventTurnEnd {
+				out <- p.exit
 				return
 			}
 		}
-		out <- exit
+		out <- p.exit
 	}()
 	return out
 }
@@ -309,13 +352,4 @@ func humanCount(n int) string {
 	default:
 		return fmt.Sprint(n)
 	}
-}
-
-// plural picks a noun form. Two words rather than an -s rule, because "memory"
-// does not take one.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }

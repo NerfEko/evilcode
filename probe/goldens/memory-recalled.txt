@@ -25,6 +25,14 @@
    ✓ recall indentation preference · 13 tok
 
  You prefer tabs, so that is what I used.
+
+ • reindented the block
+ • left the rest alone
+ • no reflow of the file
+ • gofmt is still clean
+
+ Say the word to normalize
+ the whole file separately.
  💡 Ctrl+R searches your prompt history
  3>
    Ctrl+Enter to queue

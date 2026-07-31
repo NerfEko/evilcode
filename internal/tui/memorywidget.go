@@ -195,11 +195,14 @@ func memoryCount(n int) string {
 	return fmt.Sprintf("%d memories", n)
 }
 
-// plural renders a count with its noun, pluralized the naive way. Every noun it
-// is used with here takes a plain -s.
+// plural renders a count with its noun. "memory" is spelled out because it does
+// not take a plain -s, and the widget and the status line both need it.
 func plural(n int, noun string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, noun)
+	}
+	if noun == "memory" {
+		return fmt.Sprintf("%d memories", n)
 	}
 	return fmt.Sprintf("%d %ss", n, noun)
 }
@@ -252,6 +255,10 @@ func (m *Model) memoryCommand(arg string) tea.Cmd {
 }
 
 // memoryStatus is the report the bare `/memory` prints.
+//
+// Every line stands on its own rather than lining up in columns: notices are
+// re-wrapped for the pane width, which eats leading and repeated spaces, so an
+// aligned table here renders as a ragged one.
 func (m *Model) memoryStatus() string {
 	state := "ON"
 	if !m.memory.Enabled() {
@@ -268,21 +275,26 @@ func (m *Model) memoryStatus() string {
 		}
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "🧠 Memory %s · %d remembered\n", state, len(all))
+	var parts []string
 	for _, k := range []memory.Kind{memory.KindFact, memory.KindPreference,
 		memory.KindProject, memory.KindEpisode} {
 		if counts[k] > 0 {
-			fmt.Fprintf(&b, "  %-11s %d\n", k, counts[k])
+			parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
 		}
 	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "🧠 Memory %s · %d remembered\n", state, len(all))
+	if len(parts) > 0 {
+		b.WriteString(strings.Join(parts, " · ") + "\n")
+	}
 	if unembedded > 0 {
-		// Worth saying plainly: these are findable by substring and invisible to
-		// semantic recall, which looks like memory silently not working.
-		fmt.Fprintf(&b, "  %d without embeddings — lexical recall only\n", unembedded)
+		// Worth saying plainly: these are findable by substring and invisible
+		// to semantic recall, which looks like memory silently not working.
+		fmt.Fprintf(&b, "⚠ %d without embeddings — lexical recall only\n", unembedded)
 	}
 	if act := m.memory.Activity(); act.Failed != "" {
-		fmt.Fprintf(&b, "  last error: %s\n", act.Failed)
+		fmt.Fprintf(&b, "⚠ last error: %s\n", act.Failed)
 	}
 	b.WriteString("\n/memory list · /memory forget <id> · /memory off")
 	return b.String()
@@ -296,13 +308,13 @@ func (m *Model) memoryList() string {
 	}
 	const show = 20
 	var b strings.Builder
-	fmt.Fprintf(&b, "🧠 %s, newest first:\n", memoryCount(len(all)))
+	fmt.Fprintf(&b, "🧠 %s, newest first:\n", plural(len(all), "memory"))
 	for i, r := range all {
 		if i == show {
-			fmt.Fprintf(&b, "  … and %d more\n", len(all)-show)
+			fmt.Fprintf(&b, "… and %d more\n", len(all)-show)
 			break
 		}
-		fmt.Fprintf(&b, "  #%-4d %-11s %s\n", r.ID, r.Kind, memory.Truncate(r.Text, 72))
+		fmt.Fprintf(&b, "#%d (%s) %s\n", r.ID, r.Kind, memory.Truncate(r.Text, 72))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

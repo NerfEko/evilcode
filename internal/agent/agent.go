@@ -36,6 +36,15 @@ type Agent struct {
 	// embedder, and an empty result are all the same thing to the loop.
 	Recall func(ctx context.Context, userInput string) (tail string, display any)
 
+	// Forward diverts a turn to a session living somewhere else — the daemon,
+	// for an attached client (plan.md §20). See remote.go.
+	Forward Remote
+
+	// OnInterject observes a queued interrupt. An attached client returns true
+	// to say it sent the interrupt onward, so it is not also queued locally
+	// where nothing would ever drain it.
+	OnInterject func(Interrupt) bool
+
 	// NumCtx requests a context window from providers that accept one.
 	NumCtx int
 
@@ -126,6 +135,9 @@ func (a *Agent) Notice(level Level, format string, args ...any) {
 // Interject queues a message for injection at the next safe point. It is safe
 // to call while a turn is running — that is the entire point.
 func (a *Agent) Interject(in Interrupt) {
+	if a.OnInterject != nil && a.OnInterject(in) {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.interrupts = append(a.interrupts, in)
@@ -189,6 +201,12 @@ func (a *Agent) DrainInterrupts(urgentOnly bool) []provider.Message {
 // Run executes one turn: append the user's message, then loop until the model
 // stops asking for tools and no hook appends anything further.
 func (a *Agent) Run(ctx context.Context, userInput string) error {
+	// An attached client forwards the turn instead of running it. The check is
+	// first because everything below — the conversation append, recall, the
+	// loop — belongs to whichever process actually owns the session (§20).
+	if a.Forward != nil {
+		return a.Forward(ctx, userInput)
+	}
 	if strings.TrimSpace(userInput) != "" {
 		a.Conv.Append(provider.Message{Role: provider.RoleUser, Content: userInput})
 		a.recall(ctx, userInput)

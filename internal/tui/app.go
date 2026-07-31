@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -2190,6 +2191,12 @@ func (m *Model) activeWidgets() []Widget {
 	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
 		add(m.renderer.TipsWidget(tip))
 	}
+	// Sorted rather than appended in order. The dock places in list order, and
+	// §8.3 fixes the priorities — which the WidgetKind constants already spell
+	// out, so sorting by kind is the priority list rather than a second copy of
+	// it that can drift. It drifted once: MemoryActivity outranks ModelInfo but
+	// was added after it, and lost its slot every frame.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Kind < out[j].Kind })
 	return out
 }
 
@@ -2229,17 +2236,46 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []s
 	}
 
 	for _, p := range placements {
-		lines := m.renderer.RenderWidget(byKind[p.Kind])
-		for i, line := range lines {
-			row := p.Row + i
-			if row < 0 || row >= len(rows) || row >= transcriptRows {
-				continue
-			}
-			pad := max(p.Col-lipgloss.Width(rows[row]), 0)
-			rows[row] = rows[row] + strings.Repeat(" ", pad) + line
-		}
+		paintWidget(rows, m.renderer.RenderWidget(byKind[p.Kind]),
+			p.Row, p.Col, min(transcriptRows, len(rows)), m.width)
 	}
 	return rows
+}
+
+// paintWidget draws a widget's lines into the frame at one column.
+//
+// One column for the whole box, taken from the widest row it covers. Padding
+// each line against its own row is what tore a widget into fragments: a line
+// over prose started two cells past that prose while its blank neighbours
+// started at col, so one box came out at three different columns.
+//
+// A box that no longer fits is dropped rather than drawn past the right edge,
+// where the terminal would wrap it and push the whole frame down.
+func paintWidget(rows, lines []string, top, col, limit, frameWidth int) {
+	inRange := func(i int) bool {
+		row := top + i
+		return row >= 0 && row < limit
+	}
+
+	width := 0
+	for i := range lines {
+		if !inRange(i) {
+			continue
+		}
+		col = max(col, lipgloss.Width(rows[top+i])+WidgetGap)
+		width = max(width, lipgloss.Width(lines[i]))
+	}
+	if frameWidth > 0 && col+width > frameWidth {
+		return
+	}
+
+	for i, line := range lines {
+		if !inRange(i) {
+			continue
+		}
+		row := top + i
+		rows[row] += strings.Repeat(" ", max(col-lipgloss.Width(rows[row]), 0)) + line
+	}
 }
 
 // toolTarget pulls the one argument worth showing beside a tool name.
