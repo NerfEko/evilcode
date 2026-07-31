@@ -259,7 +259,6 @@ var Tips = []string{
 	"Ctrl+R searches your prompt history",
 	"Ctrl+G bookmarks your scroll position",
 	"Alt+C toggles centered layout",
-	"Start a line with ! to run a shell command",
 	"Ctrl+Enter does the opposite of your current send mode",
 	"/help lists everything",
 }

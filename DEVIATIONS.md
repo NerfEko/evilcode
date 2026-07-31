@@ -339,3 +339,25 @@ half empty". Images travel with one turn and are dropped.
 
 **When this would need revisiting:** if attachments should survive a resume, they
 need side-car files referenced by path, not bytes inline.
+
+## H5.2 — `!` shell mode removed (2026-08-01)
+
+`plan.md` §6.1 specced a composer shell mode: prefix a line with `!` and Enter
+runs it as a local shell command, with `$` styling and an "Enter runs locally"
+hint. It shipped only the *appearance* — `SendActionFor` routed `!`-prefixed
+input to `Submit`, so `!ls` was sent to the model as a literal prompt, never
+executed locally. H5.2 offered two resolutions; this pass takes the smaller
+one and **deletes** the mode rather than building the feature it advertised.
+
+Reason: wiring real local shell execution from the composer is new feature
+work with its own surface (output capture and rendering, working directory,
+timeouts, and a security boundary Phase H4 just spent tightening). That is out
+of scope for a correctness/hardening pass, and an advertised-but-dead control
+is worse than none. Removed: the `shellMode` field, `syncShellMode`, the
+`!` branch in `SendActionFor`, the `ShellMode` composer state and its prompt
+glyph / send-mode glyph / hint branches, the help-text line, the keymap entry,
+the idle tip, and the README row.
+
+Worth revisiting: if local shell escape from the composer is wanted, build it
+as a real `Exec` `SendAction` with bounded output, a deadline, and the H4
+sanitization on its result — then re-add the styling.

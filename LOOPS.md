@@ -3108,3 +3108,27 @@ two now agree. Display paths stay for people; canonical paths for the map.
 
 Verified: new test plus the existing registry suite green; `go build ./... &&
 go vet ./...` clean.
+
+## 2026-08-01 H5.2 — The shell mode that was never wired
+
+`!`-prefixed input was styled as a shell (`$` prompt, green "Enter runs
+locally" hint), listed in the help text, the keymap, the idle tips, and the
+README — and routed to `Submit`. So `!ls` went to the model as a literal
+prompt; nothing ran locally. A control that advertises one thing and does
+another is worse than no control.
+
+Reproduce: `TestShellModeIsNotAdvertised` asserted the help text does not
+mention a shell command — it failed, because `helpText()` listed `!` as "run
+the line as a shell command" with no execution path behind it.
+
+Decision (plan2.md H5.2 offered the choice): delete, not wire. Wiring real
+local shell execution is new feature work — output capture, cwd, timeouts,
+and a security boundary Phase H4 just tightened — out of scope for a
+hardening pass. Removed the `shellMode` field, `syncShellMode` and its three
+call sites, the `!` branch in `SendActionFor`, the `ShellMode` composer state
+plus its prompt-glyph / send-mode-glyph / hint-line / label branches, the
+help line, the keymap entry, the idle tip, and the README row. Logged in
+DEVIATIONS.md as specced behaviour deliberately not restored.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green; probe
+goldens unchanged (no fixture referenced the mode).

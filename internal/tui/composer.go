@@ -45,10 +45,10 @@ func SendActionFor(processing, queueMode bool, input string, alternate bool) Sen
 	if !processing {
 		return Submit
 	}
-	// A slash command or a shell escape is for the harness, not the model, so
-	// it runs immediately regardless of mode.
+	// A slash command is for the harness, not the model, so it runs
+	// immediately regardless of mode.
 	trimmed := strings.TrimSpace(input)
-	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "!") {
+	if strings.HasPrefix(trimmed, "/") {
 		return Submit
 	}
 	if alternate {
@@ -85,7 +85,6 @@ type ComposerState struct {
 	CtxUsed    int
 	CtxMax     int
 	Session    string
-	ShellMode  bool
 	SkillMode  bool
 	NewSession bool
 
@@ -104,8 +103,6 @@ const MaxComposerRows = 10
 // current state (plan.md §6.1).
 func (r *Renderer) promptGlyph(s ComposerState) (string, lipgloss.Style) {
 	switch {
-	case s.ShellMode:
-		return "$ ", rgbStyle(110, 214, 151)
 	case s.Processing:
 		return "… ", r.style(theme.RoleQueued)
 	case s.SkillMode:
@@ -118,8 +115,6 @@ func (r *Renderer) promptGlyph(s ComposerState) (string, lipgloss.Style) {
 // sendModeGlyph is the single right-aligned glyph on the composer's last row.
 func (r *Renderer) sendModeGlyph(s ComposerState) string {
 	switch {
-	case s.ShellMode:
-		return rgbStyle(110, 214, 151).Render("$")
 	case s.NewSession:
 		return rgbStyle(120, 200, 255).Render("↗")
 	case s.QueueMode:
@@ -137,8 +132,6 @@ func (r *Renderer) hintLine(s ComposerState) string {
 	}
 	dim := r.style(theme.RoleDim)
 	switch {
-	case s.ShellMode:
-		return rgbStyle(110, 214, 151).Render("  shell mode · Enter runs locally")
 	case s.NewSession:
 		return rgbStyle(120, 200, 255).Render("  ↗ Next prompt opens a new session")
 	case s.Processing && s.QueueMode:
@@ -200,10 +193,7 @@ func (r *Renderer) RenderComposer(s ComposerState) []string {
 	numStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(0)))).Bold(true)
 
-	label := ""
-	if !s.ShellMode {
-		label = strconv.Itoa(s.PromptNumber + 1)
-	}
+	label := strconv.Itoa(s.PromptNumber + 1)
 	prefix := label + glyph
 	prefixWidth := lipgloss.Width(prefix)
 	indent := strings.Repeat(" ", prefixWidth)

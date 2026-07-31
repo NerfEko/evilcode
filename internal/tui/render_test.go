@@ -63,7 +63,6 @@ func TestSendActionMatrix(t *testing.T) {
 
 		// A harness command is not for the model, so it runs now regardless.
 		{"slash command while processing", true, false, "/model", false, Submit},
-		{"shell escape while processing", true, true, "!ls", false, Submit},
 		{"slash command with leading space", true, true, "  /help", false, Submit},
 	}
 	for _, tt := range tests {
@@ -444,7 +443,6 @@ func TestComposerPromptGlyphs(t *testing.T) {
 		want  string
 	}{
 		{"default", ComposerState{}, "> "},
-		{"shell", ComposerState{ShellMode: true}, "$ "},
 		{"processing", ComposerState{Processing: true}, "… "},
 		{"skill", ComposerState{SkillMode: true}, "» "},
 	}
@@ -466,17 +464,6 @@ func TestComposerHintHiddenWhilePaletteOpen(t *testing.T) {
 	}
 	if got := r.hintLine(ComposerState{}); got == "" {
 		t.Error("hint should show when the palette is closed")
-	}
-}
-
-func TestComposerShellModeStyling(t *testing.T) {
-	r := testRenderer(60)
-	lines := plainLines(r.RenderComposer(ComposerState{ShellMode: true, Text: "ls -la"}))
-	if !strings.HasPrefix(lines[0], "$ ") {
-		t.Errorf("shell composer = %q, want a $ prompt with no prompt number", lines[0])
-	}
-	if !strings.Contains(strings.Join(lines, "\n"), "shell mode") {
-		t.Error("shell mode should announce itself in the hint")
 	}
 }
 

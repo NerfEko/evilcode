@@ -237,7 +237,6 @@ self-modifying program locks itself out.
 | `Alt+B` | send a running tool to the background |
 | `PgUp`, `PgDn` | scroll a page |
 | `↑`, `↓` on empty input | scroll a line |
-| `!` prefix | run the line as a shell command |
 
 Readline bindings (`Ctrl+U/K/W/A/E/B/F/Z/S`) work in the composer. Run
 `/terminal-setup` for help making `Shift+Enter` distinguishable in your terminal.

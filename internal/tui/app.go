@@ -61,7 +61,6 @@ type Model struct {
 
 	processing bool
 	queueMode  bool
-	shellMode  bool
 
 	status  StatusState
 	header  HeaderState
@@ -507,7 +506,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pastes = append(m.pastes, *stored)
 		}
 		m.lastPaste = time.Now()
-		m.syncShellMode()
 		return m, nil
 
 	case tea.MouseWheelMsg:
@@ -1071,7 +1069,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "backspace":
 		m.editor.Backspace()
-		m.syncShellMode()
 		return m, nil
 
 	case "pgup":
@@ -1114,7 +1111,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if txt := msg.Key().Text; txt != "" {
 		m.editor.Insert(txt)
 		m.confirmQuit = false
-		m.syncShellMode()
 		// Typing normally follows the bottom; the lock keeps the reader where
 		// they were (plan.md §4.5).
 		if !m.typingLock {
@@ -1316,10 +1312,6 @@ func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// syncShellMode tracks the `!` prefix that switches the composer to a shell.
-func (m *Model) syncShellMode() {
-	m.shellMode = strings.HasPrefix(m.editor.Text, "!")
-}
 
 // handleHistoryKey drives the Ctrl+R reverse search.
 func (m *Model) handleHistoryKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1905,7 +1897,6 @@ func helpText() string {
 		{"Ctrl+C", "interrupt; twice when idle to quit"},
 		{"Ctrl+G", "toggle a scroll bookmark"},
 		{"PgUp/PgDn", "scroll a page"},
-		{"!", "prefix a line to run it as a shell command"},
 	} {
 		b.WriteString("  " + k[0] + strings.Repeat(" ", max(16-len(k[0]), 1)) + k[1] + "\n")
 	}
@@ -2008,7 +1999,6 @@ func (m *Model) submit(text string) {
 		_ = m.prompts.Add(text)
 	}
 	m.editor.Clear()
-	m.shellMode = false
 	m.scroll.FollowBottom()
 	m.notice = ""
 
@@ -2199,7 +2189,6 @@ func (m *Model) composerState() ComposerState {
 		Session:      m.header.SessionName,
 		Processing:   m.processing,
 		QueueMode:    m.queueMode,
-		ShellMode:    m.shellMode,
 		PaletteOpen:  m.paletteOpen(),
 	}
 }

@@ -202,5 +202,4 @@ var HelpKeys = [][2]string{
 	{"Ctrl+A / E", "start / end of line"},
 	{"Ctrl+Z / S", "undo input / stash and restore a draft"},
 	{"PgUp / PgDn", "scroll a page"},
-	{"! prefix", "run the line as a shell command"},
 }

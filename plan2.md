@@ -354,7 +354,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   cleared and re-reading a file never re-arms notification: the coordination feature
   silently degrades to fire-once-per-file-pair. Fix: canonical paths for identity, display
   paths for output only.  ⟨both⟩
-- [ ] **H5.2** `internal/tui/app.go:1885` + `composer.go:51` — `!` shell mode is advertised
+- [x] **H5.2** `internal/tui/app.go:1885` + `composer.go:51` — `!` shell mode is advertised
   in the help text (`app.go:1823`), has dedicated composer styling and a `syncShellMode`
   path, and **has no execution path**: `SendActionFor` routes `!`-prefixed input to
   `Submit`, and `submit` sends the literal `!cmd` to the model as a prompt. `plan.md`
