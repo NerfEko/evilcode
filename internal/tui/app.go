@@ -64,6 +64,14 @@ type Model struct {
 	// opening it must never move the transcript (plan.md invariant 3).
 	palette PaletteState
 
+	// picker is the inline model picker. Unlike the palette it *does* reserve
+	// layout height, because it is a surface you interact with (plan.md §5.3).
+	picker     PickerState
+	pickerOpen bool
+
+	// models supplies picker entries; it is set once the provider answers.
+	models []ModelEntry
+
 	quitting     bool
 	confirmQuit  bool
 	scrollbarOn  bool
@@ -233,6 +241,11 @@ func (m *Model) flushPending() {
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// The picker owns the keyboard while it is open.
+	if m.pickerOpen {
+		return m.handlePickerKey(key)
+	}
+
 	// The palette owns navigation and accept keys while it is open.
 	if m.paletteOpen() {
 		suggestions := m.paletteSuggestions()
@@ -367,6 +380,114 @@ func (m *Model) syncShellMode() {
 	m.shellMode = strings.HasPrefix(m.input, "!")
 }
 
+// handlePickerKey drives the inline model picker.
+func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
+	entries, _ := m.picker.Filtered()
+
+	switch key {
+	case "esc", "ctrl+c":
+		m.pickerOpen = false
+		m.picker.Filter = ""
+		return m, nil
+
+	case "up", "ctrl+k":
+		m.picker.Selected = MovePaletteSelection(m.picker.Selected, -1, len(entries))
+		return m, nil
+
+	case "down", "ctrl+j":
+		m.picker.Selected = MovePaletteSelection(m.picker.Selected, 1, len(entries))
+		return m, nil
+
+	case "left":
+		if m.picker.Column > ColModel {
+			m.picker.Column--
+		}
+		return m, nil
+
+	case "right":
+		if m.picker.Column < ColVia {
+			m.picker.Column++
+		}
+		return m, nil
+
+	case "enter":
+		if len(entries) > 0 {
+			sel := entries[clamp(m.picker.Selected, 0, len(entries)-1)]
+			if sel.Unavailable {
+				m.notice = sel.Name + " is unavailable"
+				return m, nil
+			}
+			m.header.Model = sel.Name
+			if sel.Provider != "" {
+				m.header.Provider = sel.Provider
+			}
+			m.agent.Model = sel.Name
+			m.notice = "Model: " + sel.Name
+		}
+		m.pickerOpen = false
+		m.picker.Filter = ""
+		return m, nil
+
+	case "backspace":
+		if r := []rune(m.picker.Filter); len(r) > 0 {
+			m.picker.Filter = string(r[:len(r)-1])
+			m.picker.Selected = 0
+		}
+		return m, nil
+	}
+
+	// Anything printable filters the list.
+	if len(key) == 1 {
+		m.picker.Filter += key
+		m.picker.Selected = 0
+	}
+	return m, nil
+}
+
+// openPicker loads the provider's model list into the picker. The list is
+// fetched lazily and failures degrade to the configured model alone, because a
+// provider being unreachable should not make the picker unusable.
+func (m *Model) openPicker() {
+	if len(m.models) == 0 {
+		m.models = m.loadModels()
+	}
+	m.picker = PickerState{Entries: m.models, Height: DefaultPickerHeight}
+	for i, e := range m.picker.Entries {
+		if e.Name == m.header.Model {
+			m.picker.Selected = i
+		}
+	}
+	m.pickerOpen = true
+}
+
+func (m *Model) loadModels() []ModelEntry {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	infos, err := m.agent.Provider.Models(ctx)
+	if err != nil || len(infos) == 0 {
+		return []ModelEntry{{
+			Name:     m.header.Model,
+			Provider: m.header.Provider,
+			Current:  true,
+			Default:  true,
+		}}
+	}
+	out := make([]ModelEntry, 0, len(infos))
+	for _, info := range infos {
+		e := ModelEntry{
+			Name:     info.Name,
+			Provider: m.header.Provider,
+			Current:  info.Name == m.header.Model,
+		}
+		if info.Size != "" {
+			e.Detail = info.Size
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // runCommand executes a slash command. Unknown commands fall through to a
 // notice rather than being sent to the model, which would waste a turn.
 func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
@@ -388,6 +509,10 @@ func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
 		if m.processing {
 			m.interrupt(false)
 		}
+		return m, nil
+
+	case "model", "models":
+		m.openPicker()
 		return m, nil
 
 	case "version":
@@ -560,6 +685,11 @@ func (m *Model) stack() Stack {
 	}
 	s.Heights[SlotQueued] = min(len(m.pending), MaxPendingRows)
 
+	if m.pickerOpen {
+		s.Heights[SlotPicker] = len(m.renderer.RenderPicker(m.picker))
+		s.Heights[SlotPickerGap] = 1
+	}
+
 	composer := m.renderer.RenderComposer(m.composerState())
 	s.Heights[SlotComposer] = len(composer)
 	return s
@@ -616,6 +746,11 @@ func (m *Model) View() tea.View {
 
 	if m.notice != "" {
 		rows = append(rows, m.renderer.style(theme.RoleSystem).Render(m.notice))
+	}
+
+	if m.pickerOpen {
+		rows = append(rows, m.renderer.RenderPicker(m.picker)...)
+		rows = append(rows, "")
 	}
 
 	rows = append(rows, m.renderer.RenderComposer(m.composerState())...)

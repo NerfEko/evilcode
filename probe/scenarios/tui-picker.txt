@@ -1,0 +1,7 @@
+# The inline model picker (§5.3). Unlike the palette this reserves layout
+# height, so the composer moves down to make room for it.
+
+boot tui
+keys "/model"
+keys Enter
+capture picker-open

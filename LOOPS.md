@@ -286,3 +286,25 @@ Two bugs caught by looking at the PNG: the overlay was spliced after the left in
 applied, so it sat one column left of everything else; and the palette rendered the full
 list regardless of what was typed, because the query was mirrored into state that nothing
 updated. The query is now derived from the input at render time, so the two cannot drift.
+
+## 2026-07-30 P1.15 — model picker
+
+Done: `internal/tui/picker.go` — the inline box of §5.3, plus the reusable rounded-box
+helpers of §3.3 (`roundedBox`, `BoxTitled`).
+
+The picker is the counterpart to the palette: it *does* reserve layout height, because it
+is a surface you interact with rather than a hint floating over one. The key hints sit
+outside the box, above it, since they describe what the box does rather than being part
+of its content.
+
+The style cascade is first-match-wins exactly as §5.3 lists it, and the selection keeps
+itself centered rather than merely visible — a selection pinned to an edge gives no sense
+of position in a long list.
+
+Two bugs found by the tests: the filter underline was skipped on the selected row (the
+selection highlight had replaced it, but the two carry different information — which row
+is selected, and which characters matched — so the underline now applies on top); and a
+title longer than its box pushed the right border off screen, so `BoxTitled` truncates.
+
+Verified: 13 picker tests, including one that asserts every box row is the same cell
+width, since a ragged right border is the classic box-drawing bug. PNG looked at.

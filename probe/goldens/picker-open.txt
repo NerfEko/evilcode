@@ -1,0 +1,15 @@
+ Welcome to evilcode 🦇
+
+   ◖ explain this codebase ◗
+   ◖ find the bug in the scroll math ◗
+   ◖ add a test for the parser ◗
+ 💡 Ctrl+R searches your prompt history
+ keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite
+ ╭──────────────────────────────╮
+ │ model | provider | via (2/2) │
+ │    mock-small  mock  1b      │
+ │  ▸ mock-large  mock  480b    │
+ ╰──────────────────────────────╯
+
+ 1>
+   Ctrl+Enter to queue
