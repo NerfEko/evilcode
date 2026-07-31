@@ -1757,3 +1757,38 @@ the previous good one on its way to failing.
 
 Verified: both subtests pass — the rewrite refuses and the log is byte-identical
 afterwards — and `go test ./... -race` is green.
+
+## 2026-07-31 H1.9 — Closing a session outran the turn it was closing
+
+`Session.close` cancelled the turn and closed the store in the next statement,
+with nothing between them. A cancelled turn still writes: the partial answer,
+the stubs H1.2 now appends for the tools it abandoned, the interrupt notice. All
+of it went to a closed store.
+
+The reproduction turned out to be blunter than the report suggested. Because the
+turn runs on a goroutine, an immediate close can beat it to the *first* append:
+
+```
+close_test.go:41: the prompt never reached the session file
+close_test.go:44: the turn's output never reached the session file; it holds 0 messages
+```
+
+Zero messages. Not a missing tail — the whole turn, prompt included.
+
+`Session` now keeps a `turnDone` channel closed by the turn goroutine, and
+`close` cancels, waits for it, and only then closes the store. The wait is
+bounded at five seconds: a turn that will not unwind must not wedge shutdown,
+and losing its tail in that case is exactly the old behaviour, reached only when
+something is already stuck.
+
+`cancel` and `turnDone` are read and written under `sess.mu` here, which is part
+of what **H2.1** asks for; that task still owns the rest of the paths.
+
+The final assertion is the invariant rather than the symptom: after close, the
+session file holds everything the conversation holds. The store is shut, so
+anything missing at that point is missing permanently. It also refuses to pass
+vacuously — a turn that appended nothing fails the test rather than proving
+nothing.
+
+Verified: fails without the fix (disk empty, conversation holding the prompt),
+passes with it across five runs; `go test ./... -race` green.

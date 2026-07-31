@@ -86,6 +86,12 @@ type Session struct {
 	subs map[chan ServerMsg]struct{}
 
 	cancel context.CancelFunc
+
+	// turnDone is closed when the in-flight turn's goroutine returns. Closing a
+	// session cancels the turn and then waits on this: a cancelled turn still
+	// writes — the partial answer, the stubs for the tools it abandoned — and
+	// closing the store first sends all of it nowhere.
+	turnDone chan struct{}
 }
 
 // NewServer builds a server. It does not listen until Serve is called.
@@ -455,11 +461,28 @@ func (sess *Session) unsubscribe(ch chan ServerMsg) {
 }
 
 func (sess *Session) close() {
-	if sess.cancel != nil {
-		sess.cancel()
+	sess.mu.Lock()
+	cancel, done := sess.cancel, sess.turnDone
+	sess.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(turnUnwindTimeout):
+			// A turn that will not unwind must not wedge shutdown. Losing its
+			// tail is the same outcome as before this wait existed, and it is
+			// reached only when something is already stuck.
+		}
 	}
 	sess.built.Close()
 }
+
+// turnUnwindTimeout bounds how long closing a session waits for a cancelled
+// turn to finish writing.
+const turnUnwindTimeout = 5 * time.Second
 
 // snapshot describes the session to a client that has just attached.
 func (sess *Session) snapshot(cwd string) *Snapshot {
@@ -490,8 +513,12 @@ func (sess *Session) Input(text string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	sess.cancel = cancel
+	done := make(chan struct{})
+	sess.mu.Lock()
+	sess.cancel, sess.turnDone = cancel, done
+	sess.mu.Unlock()
 	go func() {
+		defer close(done)
 		defer cancel()
 		_ = a.Run(ctx, text)
 	}()
@@ -501,8 +528,11 @@ func (sess *Session) Input(text string) {
 // text to inject.
 func (sess *Session) Interrupt(text string, urgent bool) {
 	if text == "" {
-		if sess.cancel != nil {
-			sess.cancel()
+		sess.mu.Lock()
+		cancel := sess.cancel
+		sess.mu.Unlock()
+		if cancel != nil {
+			cancel()
 		}
 		return
 	}
