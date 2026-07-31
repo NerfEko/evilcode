@@ -163,6 +163,12 @@ func Run(args []string) error {
 	}, cfg.Features.Advisor)
 	advisor.TodoState = todos.Summary
 
+	// Last in the chain. It never appends, so it cannot starve anything, and
+	// putting it after auto-poke is what makes "one arguing voice at a time"
+	// true rather than aspirational: by the time it runs, poke has already
+	// decided whether it has something to say.
+	a.Hooks = append(a.Hooks.(agent.Chain), advisor)
+
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
 		skills.Names(), mcpStatus)).
 		WithTodos(todos, poke).

@@ -20,6 +20,10 @@
 │   /summon            Spawn a worker agent on a task                                                                                      │
 │   /agents            List the agents in the swarm                                                                                        │
 │                                                                                                                                          │
+│ Analysis                                                                                                                                 │
+│   /lsp               Language server status                                                                                              │
+│   /advisor           Second-opinion model on/off/status                                                                                  │
+│                                                                                                                                          │
 │ Sessions                                                                                                                                 │
 │   /resume            Resume a previous session                                                                                           │
 │   /sessions          List sessions                                                                                                       │
@@ -31,8 +35,4 @@
 │   /clear             Clear the transcript                                                                                                │
 │                                                                                                                                          │
 │ System                                                                                                                                   │
-│   /config            Show the loaded configuration                                                                                       │
-│   /theme             Switch, score, or generate a palette                                                                                │
-│   /terminal-setup    Fix Shift+Enter in this terminal                                                                                    │
-│   /screenshot        Write the current frame to a PNG                                                                                    │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘

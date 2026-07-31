@@ -946,3 +946,27 @@ provider per session from one config, so without it a worker can only ever
 replay whatever its parent is replaying.
 
 Phase 4 complete.
+
+## 2026-07-31 P5.1 — Graphics, mermaid, lsp, advisor
+
+Four Phase 5 tasks. `internal/graphics` speaks the kitty protocol; mermaid
+shells out to `mmdc` on a goroutine and lands through an atomic pointer, cached
+by source hash because mmdc starts a headless browser. The `lsp` tool wraps a
+generic client with gopls preconfigured, and the advisor watches turns through
+the `smol` role.
+
+Two design points worth recording. Image escape sequences ride *after* the
+frame, never inside a row: they carry no printable cells, so a row holding one
+would measure wrong everywhere the layout looks at widths. And support is
+detected from the environment rather than by querying the terminal — a query
+means writing an escape and waiting on stdin, which fights Bubble Tea for the
+input stream and hangs on a terminal that answers nothing.
+
+The rename was verified against real gopls on a two-file fixture: three edits
+across two files, both written, no mention of the old name left. `Rename` reads
+and rewrites every file in memory before touching disk, which is the atomicity
+that matters — a rename that writes three files and fails on the fourth leaves a
+workspace that does not compile and that nobody can easily undo.
+
+Diagrams render inline rather than in the §3.1 diagram pane; DEVIATIONS.md #7
+says why.
