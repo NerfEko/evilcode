@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,9 @@ type ollamaMessage struct {
 	Thinking  string           `json:"thinking,omitempty"`
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 	ToolName  string           `json:"tool_name,omitempty"`
+
+	// Images is Ollama's attachment field: bare base64, no data URI, no MIME.
+	Images []string `json:"images,omitempty"`
 }
 
 type ollamaToolCall struct {
@@ -110,6 +114,9 @@ func toOllamaMessages(msgs []Message) []ollamaMessage {
 			otc.Function.Name = tc.Name
 			otc.Function.Arguments = tc.Args
 			om.ToolCalls = append(om.ToolCalls, otc)
+		}
+		for _, img := range m.Images {
+			om.Images = append(om.Images, base64.StdEncoding.EncodeToString(img))
 		}
 		out = append(out, om)
 	}

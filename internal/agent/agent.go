@@ -81,9 +81,19 @@ type Agent struct {
 	// lastCtx is the newest request's context size, for the threshold.
 	lastCtx int
 
+	// pendingImages ride along with the next user message (§6.6).
+	pendingImages [][]byte
+
 	// prompt is what started the current turn, held so TurnStart can report it
 	// after recall has appended to the conversation behind it.
 	prompt string
+}
+
+// Attach stages images for the next Run. They travel with exactly one message.
+func (a *Agent) Attach(images [][]byte) {
+	a.mu.Lock()
+	a.pendingImages = images
+	a.mu.Unlock()
 }
 
 // takePrompt returns and clears the turn's originating prompt.
@@ -271,7 +281,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 		a.mu.Lock()
 		a.prompt = userInput
 		a.mu.Unlock()
-		a.Conv.Append(provider.Message{Role: provider.RoleUser, Content: userInput})
+		msg := provider.Message{Role: provider.RoleUser, Content: userInput}
+		msg.Images, a.pendingImages = a.pendingImages, nil
+		a.Conv.Append(msg)
 		a.recall(ctx, userInput)
 	}
 	return a.Loop(ctx)

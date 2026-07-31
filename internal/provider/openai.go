@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,11 +36,51 @@ func NewOpenAI(name, baseURL, apiKey string) *OpenAI {
 func (o *OpenAI) Name() string { return o.name }
 
 type oaiMessage struct {
-	Role       string        `json:"role"`
-	Content    string        `json:"content"`
+	Role string `json:"role"`
+
+	// Content is a string for an ordinary message and an array of parts when
+	// images are attached. The API accepts either, and every text-only request
+	// must keep emitting the bare string — switching everything to parts would
+	// change the shape of every call to serve the rare one.
+	Content    any           `json:"content"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	Name       string        `json:"name,omitempty"`
+}
+
+// oaiPart is one element of a multimodal content array.
+type oaiPart struct {
+	Type     string       `json:"type"`
+	Text     string       `json:"text,omitempty"`
+	ImageURL *oaiImageURL `json:"image_url,omitempty"`
+}
+
+type oaiImageURL struct {
+	URL string `json:"url"`
+}
+
+// oaiContent renders a message body: a plain string, or content parts when it
+// carries images.
+//
+// OpenAI wants a data URI with a MIME type where Ollama wants bare base64,
+// which is exactly why Message.Images holds raw bytes and each provider encodes
+// at its own edge.
+func oaiContent(m Message) any {
+	if len(m.Images) == 0 {
+		return m.Content
+	}
+	parts := make([]oaiPart, 0, len(m.Images)+1)
+	if m.Content != "" {
+		parts = append(parts, oaiPart{Type: "text", Text: m.Content})
+	}
+	for _, img := range m.Images {
+		parts = append(parts, oaiPart{
+			Type: "image_url",
+			ImageURL: &oaiImageURL{URL: "data:" + DetectImageMIME(img) +
+				";base64," + base64.StdEncoding.EncodeToString(img)},
+		})
+	}
+	return parts
 }
 
 type oaiToolCall struct {
@@ -98,7 +139,7 @@ func toOAIMessages(msgs []Message) []oaiMessage {
 	for _, m := range msgs {
 		om := oaiMessage{
 			Role:       string(m.Role),
-			Content:    m.Content,
+			Content:    oaiContent(m),
 			ToolCallID: m.ToolCallID,
 		}
 		for i, tc := range m.ToolCalls {

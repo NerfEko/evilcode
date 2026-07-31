@@ -1350,3 +1350,37 @@ same function overwrote it before Bubbletea got control back. And `/context` was
 registered in the command table with no case in the dispatch switch, so it
 printed "not implemented yet". `m.ctxUsed` is cleared on compaction now, which
 otherwise left the meter showing the pre-compaction size.
+
+## 2026-07-31 — Vision (plan item 5)
+
+The only one of the five outside the spec entirely: plan.md never mentions
+vision. §6.6 specs the attachment *UX* — explicit Ctrl+V, file drops, `[image n]`
+placeholders — without ever saying the images reach a model, and the helpers for
+it (`IsImagePath`, `ImageExtensions`, `QuoteIfNeeded`) had been sitting in
+`input.go` as dead code with only tests referencing them.
+
+`Message.Images` holds raw bytes because the two wire formats disagree: Ollama
+wants bare base64 with no MIME type, OpenAI wants a data URI inside content
+parts. Putting encoded strings on the shared type would impose one provider's
+format on the other. `oaiMessage.Content` had to become `any` for that, and every
+text-only request still emits a bare string — switching everything to parts would
+change the shape of every call to serve the rare one, and there is a test pinning
+that.
+
+MIME is sniffed from magic bytes rather than the file extension, because a
+clipboard image has no name at all.
+
+The capability gate is a per-model `vision = true` rather than a guess from the
+name. A guess that says no to a capable model is invisible; one that says yes to
+a text-only model fails deep in the provider with a message explaining nothing.
+
+Attachments are never written to the session log, and that is deliberate: one
+JSONL line per message against a 16 MB scanner buffer means a couple of images
+exceed a line, and `Read` then silently truncates the entire replay from that
+point with no error surfaced. Images ride one turn and are dropped. DEVIATIONS
+#14.
+
+Verified against a real vision model — `gemma4:31b-cloud` through evilcode's own
+Ollama provider, reading the mermaid diagram the graphics work produced earlier
+and describing the build loop it depicts. Both encodings are unit-tested, but the
+one that mattered was watching a model actually see the picture.

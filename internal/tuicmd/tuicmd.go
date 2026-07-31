@@ -199,7 +199,8 @@ func Run(args []string) error {
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
 		WithMemory(mem).
 		WithAdvisor(advisor, lsps).
-		WithCompactor(compactor)
+		WithCompactor(compactor).
+		WithVision(overrides.Vision)
 	if prior > 0 {
 		m.RebuildFrom(conv.Messages())
 	}

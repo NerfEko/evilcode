@@ -64,6 +64,13 @@ type ModelConfig struct {
 	// AnchorEdits picks the hash-anchored edit mode for models that handle it
 	// (plan.md §17). Classic string-replace remains for those that do not.
 	AnchorEdits bool `toml:"anchor_edits"`
+
+	// Vision declares that the model accepts image attachments (§6.6).
+	//
+	// Declared rather than sniffed from the name: a guess that says no to a
+	// capable model is invisible, and one that says yes to a text-only model
+	// fails deep inside the provider with a message that explains nothing.
+	Vision bool `toml:"vision"`
 }
 
 // Roles maps internal call sites to model references with fallback chains

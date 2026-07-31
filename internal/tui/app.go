@@ -105,6 +105,11 @@ type Model struct {
 	// caller re-execs into it after the program exits.
 	resumeTarget string
 
+	// attachments are images staged for the next message (§6.6), and vision
+	// records whether the active model can actually accept them.
+	attachments []Attachment
+	vision      bool
+
 	// compactor summarises and replaces the conversation when it gets long.
 	compactor *agent.Compactor
 
@@ -986,6 +991,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.drainDiagrams()
 		m.notice = fmt.Sprintf("Side panel: %d%%", m.panelRatio)
 		return m, nil
+
+	case "ctrl+v", "alt+v":
+		// Explicit only. Bracketed paste must never sniff the clipboard for
+		// images — a Wayland clipboard advertises several MIME types at once
+		// and is routinely misidentified (plan.md §6.6).
+		return m, m.pasteImage()
 
 	case "ctrl+up", "alt+up":
 		// Pending messages come back for editing before prompt history does:
@@ -1915,6 +1926,18 @@ func (m *Model) submit(text string) {
 	m.scroll.FollowBottom()
 	m.notice = ""
 
+	// Attachments ride with this message and are cleared by taking them, so a
+	// second prompt does not silently resend the first one's images.
+	if images := m.TakeAttachments(); len(images) > 0 {
+		if m.visionOK() {
+			m.agent.Attach(images)
+		} else {
+			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: fmt.Sprintf(
+				"%s cannot see images. Set `vision = true` on the model in your config, "+
+					"or switch with /model.", m.header.Model)})
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelTurn = cancel
 	go func() {
@@ -1922,6 +1945,13 @@ func (m *Model) submit(text string) {
 		_ = m.agent.Run(ctx, text)
 	}()
 }
+
+// visionOK reports whether the active model accepts images.
+//
+// Configured rather than inferred from the model name: a guess that says no to a
+// capable model is invisible, and a guess that says yes to a text-only one fails
+// deep in the provider with a message that explains nothing.
+func (m *Model) visionOK() bool { return m.vision }
 
 // drainPendingForEdit orders staged messages for retrieval: soft-interrupts
 // first, then interleaves, then queued, so the text comes back in the order it

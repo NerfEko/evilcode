@@ -49,6 +49,15 @@ type Message struct {
 	// IsError marks a tool result as a failure, including the interrupt stubs
 	// written at safe point C (§6.3).
 	IsError bool `json:"is_error,omitempty"`
+
+	// Images are attachments for a vision model, as raw bytes.
+	//
+	// Raw rather than encoded, because the two wire formats disagree: Ollama
+	// wants bare base64 and OpenAI wants a data URI with a MIME type. Encoding
+	// at the provider edge keeps either one from imposing its format on the
+	// shared type. `encoding/json` base64s a []byte for free, so the session
+	// log round-trips without a store change.
+	Images [][]byte `json:"images,omitempty"`
 }
 
 // ToolDef describes a tool to the model.
@@ -100,6 +109,12 @@ type Chunk struct {
 type ModelInfo struct {
 	Name          string
 	ContextWindow int
+
+	// Vision reports that the model accepts images. Nothing infers it from a
+	// name — sending bytes to a text-only model fails deep inside the provider
+	// with a message that explains nothing, so this is configured rather than
+	// guessed.
+	Vision bool
 	// Size is a human-readable parameter count or file size when known.
 	Size string
 }
@@ -113,4 +128,30 @@ type Provider interface {
 	ChatStream(ctx context.Context, req Req) (<-chan Chunk, error)
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 	Models(ctx context.Context) ([]ModelInfo, error)
+}
+
+// DetectImageMIME sniffs an image's type from its magic bytes.
+//
+// By content rather than by file extension: an attachment can arrive from a
+// clipboard with no name at all, and a wrong MIME is rejected by the API with an
+// error that says nothing about which file caused it.
+func DetectImageMIME(data []byte) string {
+	switch {
+	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return "image/jpeg"
+	case len(data) >= 6 && string(data[:6]) == "GIF89a":
+		return "image/gif"
+	case len(data) >= 6 && string(data[:6]) == "GIF87a":
+		return "image/gif"
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp"
+	case len(data) >= 2 && data[0] == 'B' && data[1] == 'M':
+		return "image/bmp"
+	default:
+		// PNG is the safest guess: it is what the render path produces and what
+		// every vision endpoint accepts.
+		return "image/png"
+	}
 }

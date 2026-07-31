@@ -319,3 +319,28 @@ ordinary error.
 **When this would need revisiting:** if overflows show up in practice despite the
 threshold, the error path is worth adding underneath it rather than instead
 of it.
+
+## 14. Vision is new scope, and attachments are never persisted
+
+**Spec:** plan.md never mentions vision or multimodal — grep returns nothing.
+§6.6 specs the *attachment UX* (explicit Ctrl+V, file drops, `[image {n}]`
+placeholders, the "Pasted image/png (412 KB)" notice) without ever saying the
+images reach a model.
+
+**Built:** the §6.6 input rules as written, plus the send path they imply —
+`Message.Images` as raw bytes, encoded per provider at the edge (Ollama takes
+bare base64, OpenAI takes a data URI inside content parts), gated on a per-model
+`vision = true`.
+
+**Why the gate is configured rather than sniffed:** a guess that says no to a
+capable model is invisible, and one that says yes to a text-only model fails deep
+inside the provider with a message that explains nothing.
+
+**Attachments are deliberately not written to the session log.** One JSONL line
+per message against a 16 MB scanner buffer means a couple of images exceed a
+line, and `Read` then silently truncates the *entire replay from that point on*
+with no error surfaced — a data-loss bug that presents as "my session came back
+half empty". Images travel with one turn and are dropped.
+
+**When this would need revisiting:** if attachments should survive a resume, they
+need side-car files referenced by path, not bytes inline.
