@@ -379,7 +379,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   `call_1` every request, so a multi-turn session persists duplicate `tool_call_id`s.
   Harmless to Ollama, breaks a session resumed against an OpenAI-kind provider. Fix:
   per-conversation or monotonic prefix.  ⟨fable⟩
-- [ ] **H5.8** `internal/agent/compact.go:298` `Transcript` — truncates at
+- [x] **H5.8** `internal/agent/compact.go:298` `Transcript` — truncates at
   `text[:CompactMessageCap]`, a byte index, splitting UTF-8 runes. The advisor's
   `truncateForAdvisor` already backtracks to a rune boundary; reuse it.  ⟨fable⟩
 - [ ] **H5.9** `internal/tui/sessioncmd.go:187` — the rewind collapse summary computes

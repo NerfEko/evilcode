@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"evilcode/internal/provider"
 )
@@ -121,6 +122,17 @@ func TestNilCompactorIsInert(t *testing.T) {
 	var c *Compactor
 	if c.Enabled() || c.ShouldCompact(99, 100) || c.Count() != 0 {
 		t.Error("a nil compactor is not inert")
+	}
+}
+
+func TestTranscriptCapDoesNotSplitARune(t *testing.T) {
+	// "é" is two bytes; placed so the cap (a byte index) lands on its second
+	// byte, a naive text[:CompactMessageCap] slice would split it in half.
+	content := strings.Repeat("a", CompactMessageCap-1) + "é" + strings.Repeat("b", 10)
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: content}}
+	got := Transcript(msgs)
+	if !utf8.ValidString(got) {
+		t.Errorf("transcript is not valid UTF-8: %q", got)
 	}
 }
 

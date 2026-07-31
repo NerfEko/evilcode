@@ -3354,3 +3354,24 @@ assumes single-goroutine access to a provider instance.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test
 ./...` green; `go test ./internal/provider/ -race -run TestOllama` clean.
+
+## 2026-07-31 H5.8 — Transcript truncation split UTF-8 runes mid-byte
+
+`Transcript` (`compact.go:88`) capped a message with a plain
+`text[:CompactMessageCap]` byte slice. When the cap landed inside a
+multi-byte rune, the result was invalid UTF-8 — the same class of bug
+`truncateForAdvisor` (`advisor.go:201`) had already solved by backtracking to
+a rune boundary before cutting.
+
+Reproduce: `TestTranscriptCapDoesNotSplitARune` in `compact_test.go` — a
+message with `CompactMessageCap-1` ASCII bytes followed by "é" (2 bytes), so
+the cap lands on the rune's continuation byte. Failed before the fix:
+`transcript is not valid UTF-8`, showing a bare `\xc3` where "é" should be.
+
+Fix: pulled the backtracking loop out of `truncateForAdvisor` into a shared
+`truncateAtRune(s string, n int) string` (`advisor.go`), and had both
+`truncateForAdvisor` and `Transcript` (`compact.go:89`) call it instead of
+duplicating the boundary logic or slicing raw.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test
+./...` green (995 tests).

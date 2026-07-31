@@ -86,7 +86,7 @@ func Transcript(msgs []provider.Message) string {
 			continue
 		}
 		if len(text) > CompactMessageCap {
-			text = text[:CompactMessageCap] + "…"
+			text = truncateAtRune(text, CompactMessageCap) + "…"
 		}
 		fmt.Fprintf(&b, "%s: %s\n\n", msg.Role, text)
 	}

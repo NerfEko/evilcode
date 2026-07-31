@@ -202,9 +202,15 @@ func truncateForAdvisor(s string) string {
 	if len(s) <= AdvisorMessageCap {
 		return s
 	}
-	cut := AdvisorMessageCap
+	return truncateAtRune(s, AdvisorMessageCap) + " […]"
+}
+
+// truncateAtRune returns the prefix of s within n bytes, backtracked to the
+// nearest rune boundary so a multi-byte character is never split in half.
+func truncateAtRune(s string, n int) string {
+	cut := n
 	for cut > 0 && s[cut]&0xC0 == 0x80 {
 		cut--
 	}
-	return s[:cut] + " […]"
+	return s[:cut]
 }
