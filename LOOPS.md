@@ -1461,3 +1461,34 @@ discarding it just moves the jump to a different moment. It holds the largest
 single collapse now rather than their sum — one trace's worth, which is exactly
 what the reply is expected to fill, and does. Live against deepseek: a 40-word
 answer after a long think leaves no gap at all.
+
+## 2026-07-31 H1.1 — The store kept writing to a file that no longer had a name
+
+Both reviewers flagged it and both were right, which is rarer than it sounds.
+`Compact` and `Rewind` rewrite the log the careful way — build the new content in
+a temp file, `os.Rename` it over the old path — and every caller holds a
+`*session.Store` whose `O_APPEND` descriptor is still on the pre-rename inode.
+That inode now has zero links. Every message appended after an auto-compact,
+`/compact` or `/rewind` went into it and ceased to exist the moment the process
+closed the fd.
+
+Reproduced before touching anything: create a session, write a message, compact,
+append "now the retry gate", close, resume. The message is gone —
+
+```
+zz_bug_test.go:44: message appended after compaction is gone; resumed =
+  [{user [conversation compacted]\n\nwe wired auth ...}]
+zz_bug_test.go:87: message appended after rewind is gone; resumed = [{user first}]
+```
+
+Two paths, one mechanism, so one fix: `Store.Reopen()` closes the orphan and
+opens the path again. It flushes the old writer first — whatever was still
+buffered was written *before* the rewrite and belongs to what is now the `.bak`.
+
+The call sites are what makes this recur, so they got the structural half of the
+fix: `Store.Compact` and `Store.Rewind` methods that do the free function and
+then reopen. All four callers (`wiring.go`, `tuicmd.go`, `run.go`,
+`tui/sessioncmd.go`) now go through those, and the shape of the API no longer
+lets someone rewrite a session out from under a store they are holding.
+
+Verified: both reproductions pass, `go test ./...` green.

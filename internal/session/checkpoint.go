@@ -125,6 +125,19 @@ func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
 	return Messages(path)
 }
 
+// Rewind truncates the live session and reopens the store on the new file.
+//
+// Every caller holds an open store across the rewrite, so this is the form to
+// reach for: the free function leaves the caller's descriptor on the orphaned
+// inode.
+func (s *Store) Rewind(dataDir string, entryIndex int) ([]provider.Message, error) {
+	msgs, err := Rewind(dataDir, s.Name, entryIndex)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, s.Reopen()
+}
+
 // CollapseSummary is the one-paragraph handoff injected after a rewind, so the
 // model knows what happened in the pruned stretch rather than silently losing it.
 func CollapseSummary(discarded []provider.Message) string {
@@ -286,4 +299,14 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 		return nil, err
 	}
 	return Messages(path)
+}
+
+// Compact rewrites the live session and reopens the store on the new file.
+// See Store.Rewind for why the method exists.
+func (s *Store) Compact(dataDir, summary string) ([]provider.Message, error) {
+	msgs, err := Compact(dataDir, s.Name, summary)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, s.Reopen()
 }

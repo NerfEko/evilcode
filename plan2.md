@@ -98,7 +98,7 @@ one reproduce-fix cycle — but still one commit each.
 
 Everything here destroys user data or state with no error surfaced. Fix in order.
 
-- [ ] **H1.1** `internal/session/checkpoint.go:281` `Compact`/`Rewind` — the rewrite is
+- [x] **H1.1** `internal/session/checkpoint.go:281` `Compact`/`Rewind` — the rewrite is
   temp-file + `os.Rename`, but every caller keeps the already-open `*session.Store` whose
   `O_APPEND` fd now points at the **orphaned pre-rename inode**. Every message persisted
   after an auto-compact, `/compact`, or `/rewind` is written to a zero-link inode and

@@ -141,7 +141,7 @@ func Run(args []string) (int, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
 		Persist: func(summary string) ([]provider.Message, error) {
-			return session.Compact(dataDir, store.Name, summary)
+			return store.Compact(dataDir, summary)
 		},
 	}
 	defer a.Close()

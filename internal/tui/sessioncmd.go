@@ -176,7 +176,7 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 	target := points[n-1]
 
 	before := m.agent.Conv.Messages()
-	kept, err := session.Rewind(m.dataDir, m.store.Name, target.Entry)
+	kept, err := m.store.Rewind(m.dataDir, target.Entry)
 	if err != nil {
 		m.notice = err.Error()
 		return m, nil

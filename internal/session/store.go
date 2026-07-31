@@ -155,6 +155,33 @@ func (s *Store) WriteMeta(m Meta) error {
 	return s.Append(Entry{Type: TypeMeta, Data: data})
 }
 
+// Reopen points the store back at its path.
+//
+// Compact and Rewind replace the log with a temp file and a rename, which
+// leaves this store's O_APPEND descriptor on the orphaned pre-rename inode:
+// everything written afterwards goes to a file with no name and disappears
+// when the descriptor closes. Reopen is how a store survives its own file
+// being rewritten underneath it.
+func (s *Store) Reopen() error {
+	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Flush to the old inode first: whatever is still buffered was written
+	// before the rewrite and belongs to the file that is now the backup.
+	if s.w != nil {
+		_ = s.w.Flush()
+	}
+	if s.file != nil {
+		_ = s.file.Close()
+	}
+	s.file = f
+	s.w = bufio.NewWriter(f)
+	return nil
+}
+
 // Close flushes and marks a clean exit, which is how crash detection tells a
 // killed session from a finished one (plan.md §18).
 func (s *Store) Close() error {
