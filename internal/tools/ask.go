@@ -115,39 +115,91 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// PendingAsk holds the question the UI is currently showing. It is a single
-// slot rather than a queue: two questions on screen at once is a worse
-// experience than serializing them, and the tool batch already bounds how many
-// can be in flight.
+// PendingAsk holds the question the UI is showing, and the ones behind it.
+//
+// One on screen at a time — two questions at once is a worse experience than
+// answering them in turn — but the ones waiting are queued rather than
+// discarded. They used to be: a second question overwrote the first, whose tool
+// call was left blocked on a channel nobody held any more until the user
+// interrupted the turn. The comment claiming the tool batch bounded this was
+// wrong in the ordinary case, since a batch runs its calls concurrently.
 type PendingAsk struct {
-	mu  sync.Mutex
-	req *AskRequest
+	mu     sync.Mutex
+	req    *AskRequest
+	queued []*AskRequest
 }
 
-// Set stores the pending question.
+// Set shows the question, or queues it behind the one already showing.
 func (p *PendingAsk) Set(req *AskRequest) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.req = req
+	if p.req == nil {
+		p.req = req
+		return
+	}
+	p.queued = append(p.queued, req)
 }
 
-// Get returns the pending question, if any.
+// Get returns the question on screen, if any.
 func (p *PendingAsk) Get() *AskRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.req
 }
 
-// Answer resolves the pending question and clears the slot.
+// Answer resolves the question on screen and shows the next one.
 func (p *PendingAsk) Answer(labels []string) {
 	p.mu.Lock()
 	req := p.req
 	p.req = nil
+	if len(p.queued) > 0 {
+		p.req, p.queued = p.queued[0], p.queued[1:]
+	}
 	p.mu.Unlock()
-	if req != nil {
-		select {
-		case req.Reply <- labels:
-		default:
+	reply(req, labels)
+}
+
+// Remove resolves one specific question with no answer, wherever it is in the
+// queue. The tool calls this when its own call is cancelled, which is not the
+// same as the user dismissing whatever happens to be on screen.
+func (p *PendingAsk) Remove(req *AskRequest) {
+	p.mu.Lock()
+	if p.req == req {
+		p.req = nil
+		if len(p.queued) > 0 {
+			p.req, p.queued = p.queued[0], p.queued[1:]
 		}
+	} else {
+		for i, q := range p.queued {
+			if q == req {
+				p.queued = append(p.queued[:i], p.queued[i+1:]...)
+				break
+			}
+		}
+	}
+	p.mu.Unlock()
+	reply(req, nil)
+}
+
+// Cancel resolves every outstanding question with no answer.
+func (p *PendingAsk) Cancel() {
+	p.mu.Lock()
+	reqs := append([]*AskRequest{p.req}, p.queued...)
+	p.req, p.queued = nil, nil
+	p.mu.Unlock()
+	for _, req := range reqs {
+		reply(req, nil)
+	}
+}
+
+// reply hands an answer back without blocking: the Reply channel is buffered,
+// and a UI that has gone away must not wedge the tool.
+func reply(req *AskRequest, labels []string) {
+	if req == nil {
+		return
+	}
+	select {
+	case req.Reply <- labels:
+	default:
 	}
 }

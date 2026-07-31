@@ -315,7 +315,9 @@ func (m *Model) Asker() tools.Asker {
 		case labels := <-req.Reply:
 			return labels, nil
 		case <-ctx.Done():
-			m.pendingAsk.Answer(nil)
+			// This question, not whichever one happens to be on screen: a
+			// cancelled call may well be one waiting behind another.
+			m.pendingAsk.Remove(req)
 			return nil, ctx.Err()
 		}
 	})

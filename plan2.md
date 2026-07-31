@@ -223,7 +223,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [ ] **H2.14** `internal/tools/exec.go:167` — parallel stateful shell calls snapshot the
   same working directory; last finisher wins and the others' `cd` is lost. Fix: serialize
   stateful execution.  ⟨codex⟩
-- [ ] **H2.15** `internal/tools/ask.go:128` — `PendingAsk` is a single slot with no queue,
+- [x] **H2.15** `internal/tools/ask.go:128` — `PendingAsk` is a single slot with no queue,
   so two `ask` calls in one batch deadlock the turn: `Set` overwrites the first, its
   `Reply` never arrives, its goroutine blocks until the user interrupts. The code comment
   claiming the batch bounds this is wrong. Fix: queue, or answer-with-nil the displaced

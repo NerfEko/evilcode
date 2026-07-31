@@ -57,9 +57,11 @@ evilcode run --remote "..."   # submit into a running daemon
 composes with other tools. It exits 130 on interrupt.
 
 Sessions are the source of truth: every message is written as it lands, `/compact` and
-`/rewind` rewrite the log atomically and the live session follows the rewrite, and a
-turn that could not be fully written says so rather than leaving a session that comes
-back short on resume.
+`/rewind` rewrite the log atomically — a backup is written and synced before the
+primary is replaced, and the live session follows the rewrite — and a turn that could
+not be fully written says so rather than leaving a session that comes back short on
+resume. Closing a session waits for its in-flight turn to finish, so a shutdown or a
+closed terminal does not drop the messages the turn was still writing.
 
 ## Configuration
 
@@ -145,7 +147,9 @@ tool-owned, so a model cannot author its own evidence trail.
 
 When work is marked finished with nothing to show for it, the harness says so and asks
 again. Every path that can re-prompt has a circuit breaker, because the ones that did
-not have looped in production.
+not have looped in production. A todo write is atomic: it stages every file and commits
+them together, so a failure leaves the prior state on disk and in memory rather than
+half of each.
 
 ### Memory
 

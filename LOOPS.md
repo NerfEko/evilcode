@@ -2421,3 +2421,29 @@ fills in the tail it never sent rather than leaving blanks.
 Verified: goroutines in flight stay at the cap for a 5,000-call batch, calls
 past 64 come back refused, a cancelled batch answers all 32; `go test ./...
 -race` green.
+
+## 2026-07-31 H2.15 — The second question ate the first
+
+`PendingAsk` was a single slot. A second question overwrote the first, and the
+first tool call was left blocked on a `Reply` channel nobody held any more —
+until the user noticed the turn had stopped and interrupted it.
+
+The comment above the type explained why a slot was enough: "the tool batch
+already bounds how many can be in flight". A batch runs its calls
+*concurrently*, so two asks in one round is the ordinary case rather than the
+exotic one. The reasoning was not just wrong, it named the exact mechanism that
+made it wrong.
+
+```
+the second question displaced the first on screen
+```
+
+Now one on screen and the rest queued — answering shows the next. `Remove`
+resolves one specific question wherever it sits, which is what a cancelled tool
+call needs: its own call may be the one waiting behind another, and answering
+"whatever is on screen" with nil would strand the wrong one. `Cancel` releases
+everything, for the end of a turn.
+
+Verified: two questions in one round are both answered in order, removing a
+queued one leaves the visible one alone, cancelling releases all three; `go test
+./... -race` green.
