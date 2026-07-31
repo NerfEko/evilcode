@@ -80,8 +80,8 @@ func workingList(t *testing.T) *todo.Store {
 		t.Fatal(err)
 	}
 	if _, err := store.Apply(todo.Write{Items: []todo.Item{
-		{Content: "wire the auth flow", Status: todo.StatusPending},
-		{Content: "add the retry gate", Status: todo.StatusPending},
+		{ID: "1", Content: "wire the auth flow", Status: todo.StatusPending},
+		{ID: "2", Content: "add the retry gate", Status: todo.StatusPending},
 	}}); err != nil {
 		t.Fatal(err)
 	}

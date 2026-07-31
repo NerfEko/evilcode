@@ -239,6 +239,101 @@ func TestOwnershipGateIgnoresAlreadyCompleteGroups(t *testing.T) {
 	}
 }
 
+// H5.16: blank/duplicate ids, invalid or self-referential dependencies, and
+// out-of-range confidence must all be rejected rather than silently
+// producing ambiguous or ungoverned state.
+func TestApplyRejectsBlankID(t *testing.T) {
+	s := newStore(t)
+	res, err := s.Apply(Write{Items: []Item{item("", "task", StatusPending)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Rejected {
+		t.Error("a blank id must be rejected")
+	}
+	if len(s.Items()) != 0 {
+		t.Error("a rejected write must not be stored")
+	}
+}
+
+func TestApplyRejectsDuplicateID(t *testing.T) {
+	s := newStore(t)
+	res, err := s.Apply(Write{Items: []Item{
+		item("a", "first", StatusPending),
+		item("a", "second", StatusPending),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Rejected {
+		t.Error("a duplicate id within one write must be rejected")
+	}
+}
+
+func TestApplyRejectsSelfReferentialDependency(t *testing.T) {
+	s := newStore(t)
+	dep := item("a", "task", StatusPending)
+	dep.BlockedBy = []string{"a"}
+	res, err := s.Apply(Write{Items: []Item{dep}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Rejected {
+		t.Error("an item depending on itself must be rejected")
+	}
+}
+
+func TestApplyRejectsUnknownDependency(t *testing.T) {
+	s := newStore(t)
+	dep := item("a", "task", StatusPending)
+	dep.BlockedBy = []string{"ghost"}
+	res, err := s.Apply(Write{Items: []Item{dep}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Rejected {
+		t.Error("a dependency on an unknown id must be rejected")
+	}
+}
+
+func TestApplyAllowsDependencyOnAnAlreadyStoredItem(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Apply(Write{Items: []Item{item("a", "first", StatusPending)}}); err != nil {
+		t.Fatal(err)
+	}
+	dep := item("b", "second", StatusPending)
+	dep.BlockedBy = []string{"a"}
+	res, err := s.Apply(Write{Items: []Item{item("a", "first", StatusPending), dep}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rejected {
+		t.Errorf("a dependency on an existing stored item must be allowed: %s", res.Explanation)
+	}
+}
+
+func TestApplyRejectsOutOfRangeConfidence(t *testing.T) {
+	s := newStore(t)
+	res, err := s.Apply(Write{Items: []Item{item("a", "task", StatusPending, withConf(101))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Rejected {
+		t.Error("confidence above 100 must be rejected")
+	}
+}
+
+func TestApplyRejectsOutOfRangeCompletionConfidence(t *testing.T) {
+	s := newStore(t)
+	res, err := s.Apply(Write{Items: []Item{item("a", "task", StatusPending, withDone(200))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Rejected {
+		t.Error("completion_confidence above 100 must be rejected")
+	}
+}
+
 func TestLowScoresDeferRatherThanNag(t *testing.T) {
 	// Nagging per write punishes the healthy low-then-rising pattern.
 	s := newStore(t)

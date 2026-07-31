@@ -18,7 +18,7 @@ func TestAFailedWriteLeavesMemoryMatchingDisk(t *testing.T) {
 	}
 
 	if _, err := store.Apply(Write{
-		Items: []Item{{Content: "wire the auth flow", Status: StatusPending}},
+		Items: []Item{{ID: "1", Content: "wire the auth flow", Status: StatusPending}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -34,8 +34,8 @@ func TestAFailedWriteLeavesMemoryMatchingDisk(t *testing.T) {
 
 	if _, err := store.Apply(Write{
 		Items: []Item{
-			{Content: "wire the auth flow", Status: StatusPending},
-			{Content: "add the retry gate", Status: StatusPending},
+			{ID: "1", Content: "wire the auth flow", Status: StatusPending},
+			{ID: "2", Content: "add the retry gate", Status: StatusPending},
 		},
 	}); err == nil {
 		t.Fatal("the write reported success even though a file could not be written")

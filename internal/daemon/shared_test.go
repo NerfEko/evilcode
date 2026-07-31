@@ -28,7 +28,7 @@ func TestSessionsShareOneTodoStore(t *testing.T) {
 	}
 
 	if _, err := one.built.Todos.Apply(todo.Write{
-		Items: []todo.Item{{Content: "wire the auth flow", Status: todo.StatusPending}},
+		Items: []todo.Item{{ID: "1", Content: "wire the auth flow", Status: todo.StatusPending}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestSessionsShareOneTodoStore(t *testing.T) {
 		t.Fatalf("the second session sees %d items, want the first session's one", len(seen))
 	}
 	if _, err := two.built.Todos.Apply(todo.Write{
-		Items: append(seen, todo.Item{Content: "add the retry gate", Status: todo.StatusPending}),
+		Items: append(seen, todo.Item{ID: "2", Content: "add the retry gate", Status: todo.StatusPending}),
 	}); err != nil {
 		t.Fatal(err)
 	}

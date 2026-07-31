@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -343,11 +344,21 @@ func (s *Store) Apply(w Write) (Result, error) {
 				len(w.Items), MaxItems),
 		}, nil
 	}
+	seen := make(map[string]bool, len(w.Items))
 	for i, item := range w.Items {
 		if strings.TrimSpace(item.Content) == "" {
 			return Result{Rejected: true,
 				Explanation: fmt.Sprintf("item %d has empty content", i)}, nil
 		}
+		if strings.TrimSpace(item.ID) == "" {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("item %d (%q) has a blank id", i, item.Content)}, nil
+		}
+		if seen[item.ID] {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("item id %q is used by more than one item in this write", item.ID)}, nil
+		}
+		seen[item.ID] = true
 		if !item.Status.Valid() {
 			return Result{Rejected: true,
 				Explanation: fmt.Sprintf("item %q has invalid status %q", item.Content, item.Status)}, nil
@@ -355,6 +366,34 @@ func (s *Store) Apply(w Write) (Result, error) {
 		if item.Priority != "" && !item.Priority.Valid() {
 			return Result{Rejected: true,
 				Explanation: fmt.Sprintf("item %q has invalid priority %q", item.Content, item.Priority)}, nil
+		}
+		if item.Confidence != nil && *item.Confidence > 100 {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("item %q has confidence %d, which must be 0-100", item.Content, *item.Confidence)}, nil
+		}
+		if item.CompletionConfidence != nil && *item.CompletionConfidence > 100 {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("item %q has completion_confidence %d, which must be 0-100", item.Content, *item.CompletionConfidence)}, nil
+		}
+		if slices.Contains(item.BlockedBy, item.ID) {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("item %q depends on itself", item.Content)}, nil
+		}
+	}
+
+	validIDs := make(map[string]bool, len(s.items)+len(seen))
+	for _, it := range s.items {
+		validIDs[it.ID] = true
+	}
+	for id := range seen {
+		validIDs[id] = true
+	}
+	for _, item := range w.Items {
+		for _, dep := range item.BlockedBy {
+			if !validIDs[dep] {
+				return Result{Rejected: true,
+					Explanation: fmt.Sprintf("item %q depends on unknown id %q", item.Content, dep)}, nil
+			}
 		}
 	}
 

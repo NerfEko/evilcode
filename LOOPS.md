@@ -3599,3 +3599,54 @@ ordering restored.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green, including
 the pre-existing `TestExtractDrainsItsTranscript` and `TestExtractToleratesProse`.
+
+## 2026-07-31 H5.16 — What Apply refused to notice
+
+`Store.Apply`'s per-item validation checked content, status, and priority,
+and stopped there. It said nothing about the id, or about `BlockedBy`, or
+about the range of `Confidence`/`CompletionConfidence`, even though every one
+of those feeds into ownership gates and dependency tracking elsewhere in the
+package (plan.md §12.3).
+
+A blank id and a duplicate id inside one write are the same failure by two
+routes: `mergeItems` keys its old-vs-new lookup by `item.ID`, but never
+deduplicates `incoming` itself, so two items sharing one id both land in
+`s.items` — every later write that matches by id hits whichever one the map
+happened to keep, and `AggregateConfidence`/ownership scoring silently double-
+or under-counts the group. A self-referential `BlockedBy` entry makes an item
+permanently blocked on itself with no path to ever clearing. A dependency on
+an id that exists nowhere — not in this write, not already stored — is
+either a typo or a stale reference to something deleted, and either way
+`Blocked()` reports true forever for a gate that can never fire. `Confidence`
+and `CompletionConfidence` are `*uint8`, so the wire format tolerates 101-255
+even though every consumer (`IsSpike`, `AggregateConfidence`, the §12.3
+thresholds) treats the value as a 0-100 percentage.
+
+Fix: extended the existing per-item loop in `Apply` to reject a blank id, a
+duplicate id within the write (tracked in a `seen` set), confidence or
+completion-confidence over 100, and a `BlockedBy` entry equal to the item's
+own id. A second pass, after the per-item loop confirms every id in this
+write is valid and unique, builds `validIDs` from both the already-stored
+items and this write's items and rejects any `BlockedBy` entry not in it —
+so a dependency on an item introduced earlier in the *same* write is allowed,
+only a dependency on nothing anywhere is refused.
+
+This tightened an implicit contract three existing tests were leaning on:
+`TestAFailedWriteLeavesMemoryMatchingDisk` (todo), `TestSessionsShareOneTodoStore`
+(daemon), and `workingList` in `internal/tui/overnight_bug_test.go` all built
+`Item{}` literals with no `ID`, which previously merged into the store
+formless and are now rejected outright before ever reaching the code those
+tests meant to exercise. Gave each fixture a real id; none of the three were
+testing id validation, so the fix was mechanical.
+
+Reproduce: seven new tests in `internal/todo/todo_test.go` —
+`TestApplyRejectsBlankID`, `TestApplyRejectsDuplicateID`,
+`TestApplyRejectsSelfReferentialDependency`, `TestApplyRejectsUnknownDependency`,
+`TestApplyAllowsDependencyOnAnAlreadyStoredItem` (the permitted case, so the
+new check doesn't overreach), `TestApplyRejectsOutOfRangeConfidence`, and
+`TestApplyRejectsOutOfRangeCompletionConfidence`. Confirmed the six rejection
+cases fail against the pre-fix `model.go` (stashed, re-ran, restored); the
+"allows" case passed both before and after, as it should.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green across
+every package.
