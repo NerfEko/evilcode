@@ -18,6 +18,8 @@
 
  Tracked. Working through the refresh path next.Done.Done.Done.
 
- ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
+   ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
+
+ 👉 3 incomplete todos. We poked it for you. /poke off to stop.
  2>
    Ctrl+Enter to queue

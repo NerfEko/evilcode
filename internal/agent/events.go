@@ -94,6 +94,19 @@ type Event struct {
 // IsError reports whether a tool-result event represents a failure.
 func (e Event) IsError() bool { return e.Err != nil || e.ErrText != "" }
 
+// ErrMessage is the reason, whichever field survived. An event that crossed the
+// daemon socket has only ErrText: Err is an interface and does not serialize,
+// so anything reading Err alone reports a remote failure as "<nil>".
+func (e Event) ErrMessage() string {
+	if e.ErrText != "" {
+		return e.ErrText
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return ""
+}
+
 // newEvent stamps the session and sequence number every event carries.
 func (a *Agent) newEvent(kind EventKind) Event {
 	a.seq++

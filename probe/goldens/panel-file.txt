@@ -1,19 +1,18 @@
- evilcode · v0.1.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit
- <repo> (main)
-
- 1› fix the clamp
-
- Fixing the off-by-one.
-
-   ✗ edit testdata/clamp.go
-   ✗ old string not found in testdata/clamp.go. Re-read the file — it may have changed, or the indentation may differ from what you expected
-
- That was the clamp bug.
- 💡 Ctrl+R searches your prompt history
- Diff mode: pinned
- 2>
-   Ctrl+Enter to queue
+ evilcode · v0.1.0                                                    │ testdata/clamp.go
+ session: Dracula 🧛                                                  │   8 │ // makes every scenario's edit fail with "old string not found
+ /model to switch · local:mock · mock-large                           │   9 │ // goldens then bake in the failure — which is exactly what ha
+ ● ollama-local  ○ ollama-cloud  ● mock                               │  10 │ func clamp(offset, max int) int {
+ skills: /commit                                                      │     │-    if offset > max {
+ <repo> (main)                       │  11 │+    if offset >= max {
+                                                                      │  12 │         return max
+ 1› fix the clamp                                                     │  13 │     }
+                                                                      │  14 │     return offset
+ Fixing the off-by-one.                                               │
+                                                                      │
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                           │
+                                                                      │
+ That was the clamp bug.                                              │
+ 💡 Ctrl+R searches your prompt history                               │
+ Diff mode: file                                                      │
+ 2>                                                                   │
+   Ctrl+Enter to queue                                                │

@@ -17,10 +17,12 @@
      + Write the integration test                                                                       ╰──────────────────────────────────╯
 
  Tracked. Working through the refresh path next.Done.Done.Done.
+
+   ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
  Understands user intent 87%                                                                        ╭──────────────────────────────────────╮
    User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before  │ ⚡ mock-large                        │
                     work starts                                                                     │ 1 sessions · dracula                 │
- auth flow  ●●○○                                                                                    │ /mnt/cachyos-home/eko/projects  main │
+ auth flow  ●●○○                                                                                    │ …os-home/eko/projects/evilcode  main │
    Closed feedback loop 92% · Ownership 88%                                                         │ ☁ mock                               │
    Feedback · go test ./internal/auth/...                                                           ╰──────────────────────────────────────╯
    ● Wire the refresh path                                                                                ╭────────────────────────────────╮
@@ -29,6 +31,6 @@
    ✓ Read the OAuth callback handler · 75→100%                                                            ╰────────────────────────────────╯
 
 
- ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.
+ 👉 3 incomplete todos. We poked it for you. /poke off to stop.
  2>
    Ctrl+Enter to queue

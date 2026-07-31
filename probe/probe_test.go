@@ -122,6 +122,14 @@ func runScenario(t *testing.T, root, file string) {
 			scenario = rest
 		case "keys":
 			runProbe(t, root, append([]string{"keys"}, splitArgs(rest)...)...)
+		case "serve":
+			args := []string{"serve"}
+			if scenario != "" {
+				args = append(args, "--scenario="+scenario)
+			}
+			runProbe(t, root, args...)
+		case "attach":
+			runProbe(t, root, append([]string{"attach"}, splitArgs(rest)...)...)
 		case "kill":
 			runProbe(t, root, "kill")
 		case "capture":

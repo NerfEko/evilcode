@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/provider"
@@ -338,4 +339,108 @@ func TestObserveIsInertWithoutAServer(t *testing.T) {
 	sess := &Session{}
 	sess.observe(toolResult("edit", "auth.go"))
 	sess.observe(agent.Event{Kind: agent.EventTurnEnd})
+}
+
+// waitFor polls until cond holds, which is how a test waits on a worker: a
+// worker runs on its own goroutine by design, so there is nothing to join.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestWorkerRunsAndReportsAValidatedResult(t *testing.T) {
+	// The whole §20 chain in one test: a worker is spawned, does real tool
+	// work, and its answer comes back schema-validated rather than as prose the
+	// spawner has to interpret.
+	srv, _ := testServer(t)
+	defer srv.Close()
+
+	// After testServer, which pins its own scenario. The rotation gives the
+	// session the first script and the worker it spawns the second.
+	t.Setenv("EVILCODE_SCENARIO", "conflict,conflict-worker")
+	provider.ResetMockRotation()
+
+	spawner, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {"file": {"type": "string"}, "changed": {"type": "boolean"}},
+		"required": ["file", "changed"]
+	}`)
+	name, err := srv.SpawnFor(spawner.Name, "fix the clamp", []string{"testdata/clamp.go"}, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.Lock()
+	worker := srv.sessions[name]
+	srv.mu.Unlock()
+	waitFor(t, "the worker to finish", func() bool { return !worker.built.Agent.Running() })
+
+	// The result reaches the spawner as a message, not a return value: the
+	// spawner was free to keep working while the worker ran.
+	var report string
+	waitFor(t, "the worker's result", func() bool {
+		for _, m := range spawner.built.Agent.DrainInterrupts(false) {
+			report += m.Content
+		}
+		return strings.Contains(report, name)
+	})
+
+	if strings.Contains(report, "did not match") {
+		t.Errorf("the worker's output failed validation:\n%s", report)
+	}
+	if !strings.Contains(report, "clamp.go") {
+		t.Errorf("report = %q, want the worker's validated answer", report)
+	}
+}
+
+func TestWorkerResultFailingItsSchemaIsReportedAsSuch(t *testing.T) {
+	// A worker whose answer does not fit gets one retry, then the spawner is
+	// told plainly rather than handed prose to guess at.
+	srv, _ := testServer(t)
+	defer srv.Close()
+	provider.ResetMockRotation()
+
+	spawner, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {"answer": {"type": "string"}},
+		"required": ["answer"]
+	}`)
+	name, err := srv.SpawnFor(spawner.Name, "answer something", nil, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.Lock()
+	worker := srv.sessions[name]
+	srv.mu.Unlock()
+
+	var report string
+	waitFor(t, "the failure report", func() bool {
+		if worker.built.Agent.Running() {
+			return false
+		}
+		for _, m := range spawner.built.Agent.DrainInterrupts(false) {
+			report += m.Content
+		}
+		return strings.Contains(report, name)
+	})
+	if !strings.Contains(report, "schema") {
+		t.Errorf("report = %q, want it to say the schema was not met", report)
+	}
 }

@@ -311,7 +311,11 @@ func toolLine(e agent.Event) string {
 	if e.IsError() {
 		// An error is always shown in full: a tool row you cannot diagnose is
 		// worse than no row (plan.md §9.5).
-		fmt.Fprintf(&b, "\n    %v", e.Err)
+		//
+		// ErrText, not Err: an event that crossed the daemon socket was
+		// serialized, so only the text survives — and printing the nil Err
+		// rendered every remote failure as the word "<nil>".
+		fmt.Fprintf(&b, "\n    %s", e.ErrMessage())
 	}
 	return b.String()
 }

@@ -16,6 +16,18 @@ import (
 // which is the whole trick: it needs no separate execution path, and attaching
 // to one later to see what it is doing works for free.
 func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Session, error) {
+	return s.spawn(task, files, schema, nil)
+}
+
+// spawn builds a worker and runs it. register, if set, is called after the
+// session exists but before its turn starts.
+//
+// The ordering matters and was wrong once: a mock worker finishes in
+// microseconds, so recording who spawned it *after* starting it meant the turn
+// could end before the spawner was known, and the result was dropped on the
+// floor. Anything the report path needs has to be in place before the goroutine
+// starts.
+func (s *Server) spawn(task string, files []string, schema json.RawMessage, register func(*Session)) (*Session, error) {
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return nil, fmt.Errorf("a worker needs a task")
@@ -52,8 +64,18 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
 
 	s.mu.Lock()
+	// Names collide: EVILCODE_DETERMINISTIC pins every new session to the same
+	// one (invariant 5), and even without it the creature table is finite. An
+	// unqualified insert here silently replaced the session a client was
+	// attached to with a worker, which is how `/summon` reported summoning the
+	// session that summoned it.
+	sess.Name = s.uniqueName(sess.Name)
 	s.sessions[sess.Name] = sess
 	s.mu.Unlock()
+
+	if register != nil {
+		register(sess)
+	}
 
 	go sess.pump()
 
@@ -68,6 +90,23 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 		sess.markFinished()
 	}()
 	return sess, nil
+}
+
+// uniqueName returns a name no live session holds. The caller must hold s.mu.
+//
+// The suffix rather than a rename of the file on disk: the JSONL session keeps
+// the name it was created with, and only the daemon's live map needs the two to
+// be distinguishable.
+func (s *Server) uniqueName(name string) string {
+	if _, taken := s.sessions[name]; !taken {
+		return name
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", name, n)
+		if _, taken := s.sessions[candidate]; !taken {
+			return candidate
+		}
+	}
 }
 
 // WorkerTimeout bounds a spawned worker. Every auto-started loop needs a

@@ -1033,8 +1033,8 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 ## Phase 4 — Daemon + swarms
 
 - [x] Daemon + socket protocol + ring-buffer replay (§20). `attach` (TUI over socket). Headless workers + `run --remote`.
-- [ ] File-conflict registry + notices; agent messaging; `spawn_worker` with schema-validated results + `/summon`; shared plan groups; SwarmStatus widget + swarm strip w/ stand-down hysteresis; compact-notifications; breakers.
-- [ ] Probe: serve + 2 attached clients (two tmux panes) + worker editing shared repo → conflict notice golden.
+- [x] File-conflict registry + notices; agent messaging; `spawn_worker` with schema-validated results + `/summon`; shared plan groups; SwarmStatus widget + swarm strip w/ stand-down hysteresis; compact-notifications; breakers.
+- [x] Probe: serve + 2 attached clients (two tmux panes) + worker editing shared repo → conflict notice golden.
 - [ ] Verify: kill terminal → attach resumes live session; conflict notice fires; `/summon` completes a task with validated JSON output. Tag `phase-4`.
 
 ## Phase 5 — Graphics, intelligence extras, graduation

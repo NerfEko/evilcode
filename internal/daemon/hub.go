@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -97,18 +98,18 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 		}
 	}
 
-	sess, err := s.Spawn(task, files, schema)
+	sess, err := s.spawn(task, files, schema, func(sess *Session) {
+		s.swarm.mu.Lock()
+		s.swarm.spawnedBy[sess.Name] = spawner
+		s.swarm.spawnCount[spawner]++
+		if len(schema) > 0 {
+			s.swarm.schemas[sess.Name] = schema
+		}
+		s.swarm.mu.Unlock()
+	})
 	if err != nil {
 		return "", err
 	}
-
-	s.swarm.mu.Lock()
-	s.swarm.spawnedBy[sess.Name] = spawner
-	s.swarm.spawnCount[spawner]++
-	if len(schema) > 0 {
-		s.swarm.schemas[sess.Name] = schema
-	}
-	s.swarm.mu.Unlock()
 	return sess.Name, nil
 }
 
@@ -117,13 +118,13 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 // The result is validated against the spawner's schema before delivery, and a
 // worker that answered in prose is sent back to try again rather than having
 // its prose parsed — parsing prose is exactly what §20 rules out.
-func (s *Server) reportWorkerResult(worker *Session) {
+func (s *Server) reportWorkerResult(worker *Session) bool {
 	s.swarm.mu.Lock()
 	spawner := s.swarm.spawnedBy[worker.Name]
 	raw := s.swarm.schemas[worker.Name]
 	s.swarm.mu.Unlock()
 	if spawner == "" {
-		return
+		return true
 	}
 
 	output := lastAssistantText(worker)
@@ -132,26 +133,40 @@ func (s *Server) reportWorkerResult(worker *Session) {
 		if err != nil {
 			// One retry, then give up and report the failure. Re-asking forever
 			// is the loop §12.6 exists to prevent.
+			// Only worth asking again if the worker can still answer. Its Run
+			// has usually already returned by the time this fires, and
+			// interjecting into a session that will never take another turn
+			// loses the result entirely — the spawner waits forever for a
+			// message that cannot come.
 			if !worker.retried {
+				// Interjecting alone does nothing here: this runs at the turn's
+				// end, so nothing would ever drain the queue. The retry has to
+				// drive another loop itself — and exactly one, which is what
+				// `retried` bounds (plan.md §12.6).
 				worker.retried = true
 				worker.built.Agent.Interject(agent.Interrupt{
 					Source: agent.SourceSystem,
 					Text: fmt.Sprintf("Your final message did not match the requested schema: %v\n"+
 						"Reply with only the JSON, no prose and no code fence.", err),
-					Urgent: true,
 				})
-				return
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), WorkerTimeout)
+					defer cancel()
+					_ = worker.built.Agent.Loop(ctx)
+				}()
+				return false
 			}
 			s.deliver(spawner, fmt.Sprintf(
 				"⚠ worker %s finished but its result did not match the schema: %v\nIt said:\n%s",
 				worker.Name, err, tools.Truncate(output)))
-			return
+			return true
 		}
 		output = validated
 	}
 
 	s.deliver(spawner, fmt.Sprintf("✓ worker %s finished %q:\n%s",
 		worker.Name, worker.Task, tools.Truncate(output)))
+	return true
 }
 
 // lastAssistantText is the worker's final message.

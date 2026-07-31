@@ -68,9 +68,24 @@ about rather than by its name. `/memory` reports, `/memory list` shows ids, `/me
 forget <id>` drops one, `/memory off` stops all of it. A dead embedder degrades recall
 to substring matching rather than disabling it.
 
+**Daemon and swarms** — `evilcode serve`, `evilcode attach`, `evilcode run --remote`
+
+One process holds N sessions and speaks NDJSON over a unix socket. `attach` is the
+ordinary TUI with the socket as its event source, so two terminals can watch one
+conversation and a killed terminal loses nothing; the header names both ends,
+`server: Crypt ⚰ · client: Bat 🦇`. Per-session ring buffers cover reconnects.
+
+Inside the daemon, agents coordinate: a shared file registry tells one agent when
+another rewrote a file it had read, delivered between turns rather than mid-thought;
+`send_message`, `broadcast`, and `peers` route through the daemon; `spawn_worker` and
+`/summon` start headless workers whose results are validated against a JSON Schema the
+spawner supplies, so nobody parses prose. Live agents show in the SwarmStatus widget,
+with a one-line strip as the fallback when it cannot dock.
+
 **Headless** — `evilcode run "prompt"`
 
-Text on stdout, tool rows and notices on stderr, exit 130 on interrupt.
+Text on stdout, tool rows and notices on stderr, exit 130 on interrupt. `--remote`
+submits into a running daemon and streams the same output back.
 
 **Under the hood** — provider clients (Ollama native, OpenAI-compatible, and a
 deterministic mock), TOML config with `model@provider` refs and role routing, the tool
@@ -78,7 +93,7 @@ set (read/write/edit with hash anchors, glob/grep/bash, git helpers, `ask`) with
 bounded-concurrency batching, the agent loop with safe-point interleaving and retry
 classification, and JSONL sessions with crash detection.
 
-Not yet built: the daemon and swarms, and graphics.
+Not yet built: graphics, mermaid, the `lsp` tool, and the advisor.
 
 ## Config reference
 
@@ -86,7 +101,7 @@ Not yet built: the daemon and swarms, and graphics.
 missing file is a working setup.
 
 ```toml
-default_model = "qwen3-coder:480b-cloud@ollama-cloud"
+default_model = "glm-5.2:cloud@ollama-cloud"
 
 [[provider]]
 name = "ollama-cloud"
@@ -152,7 +167,9 @@ The probe rig is how an agent verifies the TUI without a human watching.
 ```sh
 go build -o evilcode ./            # the binary probe.sh drives
 probe/probe.sh boot                # start a 140x40 tmux pane running evilcode
-probe/probe.sh keys "/help" Enter  # send keys
+probe/probe.sh serve               # start a daemon on a private socket
+probe/probe.sh attach [session]    # open a client pane against it; splits if one exists
+probe/probe.sh keys "/help" Enter  # send keys (--pane=N to pick a pane)
 probe/probe.sh frame welcome       # capture plain + ANSI frames to probe/frames/
 probe/probe.sh png welcome         # capture and render probe/frames/welcome.png
 probe/probe.sh kill                # tear down

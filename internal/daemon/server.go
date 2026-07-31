@@ -60,6 +60,9 @@ type Session struct {
 
 	// turn counts completed turns, which is what a conflict notice cites when
 	// it says how stale a reader's copy is.
+	// turn counts this session's turns, 1-based: it is shown to a human in a
+	// conflict notice, and "you read it at turn 0" reads as a bug rather than
+	// as the first turn.
 	turn int
 
 	// retried marks a worker that has already been asked once to fix its output
@@ -92,7 +95,7 @@ func NewServer(cfg *config.Config, cwd, model string) *Server {
 		Cwd:      cwd,
 		Model:    model,
 		Path:     SocketPath(),
-		Files:    NewRegistry(),
+		Files:    newRegistryAt(cwd),
 		swarm:    newSwarmState(),
 		sessions: map[string]*Session{},
 	}
@@ -208,6 +211,16 @@ func (s *Server) Sessions() []SessionInfo {
 	return out
 }
 
+// sessionInfo returns one session's row, or nothing when the name is unknown.
+func (s *Server) sessionInfo(name string) []SessionInfo {
+	for _, info := range s.Sessions() {
+		if info.Name == name {
+			return []SessionInfo{info}
+		}
+	}
+	return nil
+}
+
 // Open returns a session, building it if the name is new.
 //
 // An empty name creates a fresh session, which is what a client attaching
@@ -293,6 +306,9 @@ func (sess *Session) observe(e agent.Event) {
 	if sess.srv == nil || sess.srv.Files == nil {
 		return
 	}
+	if sess.turn == 0 {
+		sess.turn = 1
+	}
 	switch e.Kind {
 	case agent.EventToolResult:
 		if e.Call == nil || e.IsError() {
@@ -320,8 +336,11 @@ func (sess *Session) observe(e agent.Event) {
 			// A worker's turn ending is the worker finishing. Its result goes
 			// back to whoever summoned it as a message, so the spawner never
 			// had to block on it.
-			sess.srv.reportWorkerResult(sess)
-			sess.markFinished()
+			// A worker asked to retry its output is not finished: its next turn
+			// end is the one that reports.
+			if sess.srv.reportWorkerResult(sess) {
+				sess.markFinished()
+			}
 		}
 	}
 }
@@ -386,10 +405,16 @@ func (sess *Session) deliverConflicts() {
 			lines = append(lines, c.Notice())
 		}
 	}
+	text := strings.Join(lines, "\n")
 	sess.built.Agent.Interject(agent.Interrupt{
 		Source: agent.SourceSystem,
-		Text:   strings.Join(lines, "\n"),
+		Text:   text,
 	})
+	// And as an event, so every attached client shows it. An interjection alone
+	// only reaches the model: it becomes a conversation message, and a message
+	// is not an event, so the humans watching would never learn that the file
+	// under them had moved.
+	sess.built.Agent.Notice(agent.LevelWarning, "%s", text)
 }
 
 func (sess *Session) broadcast(msg ServerMsg) {
@@ -593,7 +618,10 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 				continue
 			}
-			send(ServerMsg{Kind: MsgSessions, Sessions: s.Sessions()})
+			// Only the new worker. Replying with the whole roster made the
+			// client read Sessions[0] — the oldest session, which is the one
+			// that did the summoning — and report that it had summoned itself.
+			send(ServerMsg{Kind: MsgSessions, Sessions: s.sessionInfo(name)})
 			if spawner != "" {
 				s.deliver(spawner, fmt.Sprintf(
 					"👉 Worker %s started on: %s", name, msg.Task))

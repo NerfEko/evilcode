@@ -2,6 +2,8 @@
 # probe.sh — tmux driver for the evilcode self-test rig (plan.md §14).
 #
 #   probe.sh boot [cmd...]     start a 140x40 pane running evilcode (default: probe hello)
+#   probe.sh serve             start a daemon on a private socket (no pane)
+#   probe.sh attach [session]  open a client pane against it; splits if one exists
 #                              PROBE_SCENARIO picks the mock provider's script
 #   probe.sh keys <k>...       send keys to the pane (tmux send-keys syntax)
 #   probe.sh frame <name>      capture probe/frames/<name>.txt (plain) and .ansi (styled)
@@ -49,11 +51,25 @@ tm() { tmux -L "$SOCKET" "$@"; }
 # settle waits for the pane to stop changing, so a capture never lands mid-frame.
 # Bubble Tea's synchronized output makes each frame atomic; this just makes sure
 # we are not sampling between two of them.
+# STABLE_SAMPLES is how many identical captures in a row count as settled.
+#
+# One repeat is not enough: a keypress the app has not started reacting to yet
+# looks exactly like a finished frame, so a scenario that sends two keys in
+# quick succession can capture the state after only the first. That failure is
+# intermittent and produces a golden that is simply wrong, which is the worst
+# kind of flake a golden rig can have.
+STABLE_SAMPLES=3
+
 settle() {
-    local prev="" cur="" i
-    for ((i = 0; i < 40; i++)); do
+    local prev="" cur="" i stable=0
+    for ((i = 0; i < 60; i++)); do
         cur="$(tm capture-pane -p -t evil 2>/dev/null || true)"
-        [[ "$cur" == "$prev" && -n "$cur" ]] && return 0
+        if [[ "$cur" == "$prev" && -n "$cur" ]]; then
+            stable=$((stable + 1))
+            [[ $stable -ge $STABLE_SAMPLES ]] && return 0
+        else
+            stable=0
+        fi
         prev="$cur"
         sleep 0.05
     done
@@ -112,7 +128,85 @@ cmd_boot() {
 
 cmd_keys() {
     require_session
-    tm send-keys -t evil "$@"
+    local pane=0
+    if [[ "${1:-}" == --pane=* ]]; then
+        pane="${1#--pane=}"
+        shift
+    fi
+    tm send-keys -t "evil.$pane" "$@"
+    settle
+}
+
+# The daemon runs outside tmux: it has no terminal to own, and putting it in a
+# pane would mean its startup line and any stderr landed in a golden.
+SOCKET_PATH="$TMUX_TMPDIR/e.sock"
+SERVE_PID="$TMUX_TMPDIR/serve.pid"
+
+probe_env() {
+    printf "HOME='%s' XDG_DATA_HOME='%s/.local/share' XDG_CONFIG_HOME='%s/.config' " \
+        "$FAKEHOME" "$FAKEHOME" "$FAKEHOME"
+    printf "XDG_CACHE_HOME='%s/.cache' XDG_STATE_HOME='%s/.local/state' " \
+        "$FAKEHOME" "$FAKEHOME"
+    printf "XDG_RUNTIME_DIR='%s' TERM=xterm-256color COLORTERM=truecolor " "$TMUX_TMPDIR"
+    printf "EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock "
+}
+
+cmd_serve() {
+    local scenario="chat"
+    if [[ "${1:-}" == --scenario=* ]]; then
+        scenario="${1#--scenario=}"
+        shift
+    fi
+    # A scenario starts from nothing: any pane left over from a previous run
+    # would be split into rather than replaced, and its transcript would show
+    # up in this run's golden.
+    tm kill-session -t evil 2>/dev/null || true
+    cmd_unserve
+    reset_fixtures
+    mkdir -p "$FAKEHOME"
+
+    env HOME="$FAKEHOME" \
+        XDG_DATA_HOME="$FAKEHOME/.local/share" \
+        XDG_CONFIG_HOME="$FAKEHOME/.config" \
+        XDG_CACHE_HOME="$FAKEHOME/.cache" \
+        XDG_STATE_HOME="$FAKEHOME/.local/state" \
+        EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
+        EVILCODE_SCENARIO="$scenario" \
+        "$BIN" serve -socket "$SOCKET_PATH" -q >"$TMUX_TMPDIR/serve.log" 2>&1 &
+    echo $! >"$SERVE_PID"
+
+    # Wait for the socket rather than sleeping a guessed interval, so the rig
+    # is neither slow nor flaky on a loaded machine.
+    local i
+    for ((i = 0; i < 100; i++)); do
+        [[ -S "$SOCKET_PATH" ]] && return 0
+        sleep 0.05
+    done
+    echo "probe: the daemon never bound $SOCKET_PATH" >&2
+    cat "$TMUX_TMPDIR/serve.log" >&2
+    exit 1
+}
+
+cmd_unserve() {
+    [[ -f "$SERVE_PID" ]] && kill "$(cat "$SERVE_PID")" 2>/dev/null || true
+    rm -f "$SERVE_PID" "$SOCKET_PATH"
+}
+
+# cmd_attach opens a client. The first call creates the window; each later one
+# splits it, so a golden of two clients is one frame rather than two files.
+cmd_attach() {
+    local session="${1:-}"
+    local client="${2:-client}"
+    local cmd
+    cmd="env $(probe_env) EVILCODE_CLIENT='$client' EVILCODE_SCENARIO='' \
+         $BIN attach -socket '$SOCKET_PATH' $session"
+
+    if tm has-session -t evil 2>/dev/null; then
+        tm split-window -h -t evil "$cmd"
+        tm select-layout -t evil even-horizontal
+    else
+        tm new-session -d -s evil -x "$COLS" -y "$ROWS" "$cmd"
+    fi
     settle
 }
 
@@ -120,8 +214,24 @@ cmd_frame() {
     require_session
     local name="${1:?usage: probe.sh frame <name>}"
     mkdir -p "$FRAMES"
-    tm capture-pane -p -t evil >"$FRAMES/$name.txt"
-    tm capture-pane -e -p -N -t evil >"$FRAMES/$name.ansi"
+
+    # Every pane, in order, separated by a rule. A two-client golden is one
+    # frame: the whole point is what the two show at the same instant.
+    local panes
+    panes="$(tm list-panes -t evil -F '#{pane_index}')"
+    : >"$FRAMES/$name.txt"
+    : >"$FRAMES/$name.ansi"
+    local first=1
+    local p
+    for p in $panes; do
+        if [[ $first -eq 0 ]]; then
+            printf -- '--- pane %s ---\n' "$p" >>"$FRAMES/$name.txt"
+            printf -- '--- pane %s ---\n' "$p" >>"$FRAMES/$name.ansi"
+        fi
+        first=0
+        tm capture-pane -p -t "evil.$p" >>"$FRAMES/$name.txt"
+        tm capture-pane -e -p -N -t "evil.$p" >>"$FRAMES/$name.ansi"
+    done
     echo "$FRAMES/$name.txt"
 }
 
@@ -135,10 +245,13 @@ cmd_png() {
 
 cmd_kill() {
     tm kill-session -t evil 2>/dev/null || true
+    cmd_unserve
 }
 
 case "${1:-}" in
-    boot)  shift; cmd_boot "$@" ;;
+    boot)   shift; cmd_boot "$@" ;;
+    serve)  shift; cmd_serve "$@" ;;
+    attach) shift; cmd_attach "$@" ;;
     keys)  shift; cmd_keys "$@" ;;
     frame) shift; cmd_frame "$@" ;;
     png)   shift; cmd_png "$@" ;;

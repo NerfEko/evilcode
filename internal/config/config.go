@@ -128,7 +128,7 @@ type Config struct {
 // Ollama, plus Ollama Cloud when a key is in the environment.
 func Default() *Config {
 	c := &Config{
-		DefaultModel: "qwen3-coder:480b-cloud@ollama-cloud",
+		DefaultModel: "glm-5.2:cloud@ollama-cloud",
 		Providers: []ProviderConfig{
 			{Name: "ollama-local", Kind: KindOllama, BaseURL: "http://localhost:11434"},
 			{Name: "ollama-cloud", Kind: KindOllama, BaseURL: "https://ollama.com", APIKeyEnv: EnvOllamaKey},

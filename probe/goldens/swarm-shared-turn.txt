@@ -1,0 +1,57 @@
+ evilcode · v0.1.0
+ server: Dracula 🧛 · client: Bat 🦇
+ /model to switch · socket:daemon · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo>
+
+ 1› look at the clamp
+
+ Let me look at the clamp.
+
+   ✓ read testdata/clamp.go · 151 tok
+
+ It clamps with > where it wants >=. Summoning help.
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   Ctrl+Enter to queue
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--- pane 1 ---
+ evilcode · v0.1.0
+ server: Dracula 🧛 · client: Serpent 🐉
+ /model to switch · socket:daemon · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo>
+
+ 1› look at the clamp
+
+ Let me look at the clamp.
+
+   ✓ read testdata/clamp.go · 151 tok
+
+ It clamps with > where it wants >=. Summoning help.
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   Ctrl+Enter to queue

@@ -1,0 +1,33 @@
+# Two clients on one daemon session, and the file-conflict notice (§20).
+#
+# The daemon runs outside tmux; each `attach` opens a pane against it. Both
+# panes show the same conversation, which is the whole reason the daemon
+# exists — the capture is one frame so the two can be compared at an instant.
+
+# Two scenarios: the session takes the first, the worker it spawns takes the
+# second. One daemon builds one provider per session from one config, so a
+# rotation is the only way to give them different scripts.
+scenario conflict,conflict-worker
+serve
+attach "" bat
+attach dracula spider
+capture swarm-two-clients
+
+# Typing into one client reaches the daemon, and the other client sees it.
+keys --pane=0 "look at the clamp"
+keys --pane=0 Enter
+capture swarm-shared-turn
+
+# /summon starts a worker, which edits the file the session just read. The
+# conflict notice reaches the reader at its next turn end.
+keys --pane=0 "/summon fix the clamp"
+keys --pane=0 Enter
+capture swarm-summoned
+
+# The worker's edit lands on the file this session read. The notice is
+# delivered at the reader's next turn end rather than the instant the write
+# happens (§6.3 safe point D), so it takes one more turn to appear — and it
+# appears in both panes, because it is the session's news and not one client's.
+keys --pane=0 "anything else?"
+keys --pane=0 Enter
+capture swarm-conflict

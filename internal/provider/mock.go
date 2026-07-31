@@ -28,8 +28,21 @@ type Mock struct {
 	Turns [][]Chunk
 }
 
+// mockRotation hands out scenarios in order when several are named. The daemon
+// builds one provider per session from one config, so a comma-separated
+// EVILCODE_SCENARIO is the only way for a probe to give two sessions in the same
+// daemon different scripts — which is what a swarm scenario needs to show two
+// agents colliding on a file.
+var mockRotation struct {
+	mu   sync.Mutex
+	next int
+}
+
 // NewMock builds a mock provider. An empty scenario reads ScenarioEnv, falling
 // back to "chat".
+//
+// A comma-separated scenario is a rotation: successive providers take the next
+// entry, and the last one repeats once the list runs out.
 func NewMock(name, scenario string) *Mock {
 	if scenario == "" {
 		scenario = os.Getenv(ScenarioEnv)
@@ -37,7 +50,22 @@ func NewMock(name, scenario string) *Mock {
 	if scenario == "" {
 		scenario = "chat"
 	}
+	if names := strings.Split(scenario, ","); len(names) > 1 {
+		mockRotation.mu.Lock()
+		i := min(mockRotation.next, len(names)-1)
+		mockRotation.next++
+		mockRotation.mu.Unlock()
+		scenario = strings.TrimSpace(names[i])
+	}
 	return &Mock{name: name, scenario: scenario}
+}
+
+// ResetMockRotation restarts the rotation, so one test's providers do not shift
+// the next test's.
+func ResetMockRotation() {
+	mockRotation.mu.Lock()
+	mockRotation.next = 0
+	mockRotation.mu.Unlock()
 }
 
 func (m *Mock) Name() string { return m.name }
@@ -60,7 +88,16 @@ func (m *Mock) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 	m.mu.Lock()
 	turns := m.Turns
 	if turns == nil {
-		turns = mockScenarios[m.scenario]
+		scenario := m.scenario
+		// A swarm scenario needs two scripts at once: the agent that reads a
+		// file and the worker that edits it out from under it. They are one
+		// process with one EVILCODE_SCENARIO, so the worker is recognized by
+		// its own brief — which the daemon writes, not the model.
+		if worker, ok := mockScenarios[scenario+"-worker"]; ok && isWorkerBrief(req) {
+			turns = worker
+		} else {
+			turns = mockScenarios[scenario]
+		}
 	}
 	if turns == nil {
 		m.mu.Unlock()
@@ -89,6 +126,16 @@ func (m *Mock) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 		}
 	}()
 	return ch, nil
+}
+
+// isWorkerBrief reports whether this conversation is a spawned worker's.
+func isWorkerBrief(req Req) bool {
+	for _, msg := range req.Messages {
+		if msg.Role == RoleUser && strings.HasPrefix(msg.Content, "You are a worker agent.") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Mock) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -378,4 +425,31 @@ func MockScenarios() []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// Swarm conflict (§20): one agent reads a file, a worker edits it, and the
+// reader is told at its next turn end. Two scripts because the daemon runs both
+// in one process — the worker is picked out by its brief.
+func init() {
+	mockScenarios["conflict"] = [][]Chunk{
+		{
+			{Text: "Let me look at the clamp."},
+			call("call_1", "read", map[string]any{"path": "testdata/clamp.go"}),
+			done(200, 14),
+		},
+		append(text("It clamps with `>` where it wants `>=`. Summoning help."), done(320, 10)),
+		append(text("Understood — I will re-read it before editing."), done(420, 8)),
+	}
+	mockScenarios["conflict-worker"] = [][]Chunk{
+		{
+			{Text: "Fixing it."},
+			call("call_1", "edit", map[string]any{
+				"path": "testdata/clamp.go",
+				"old":  "if offset > max {",
+				"new":  "if offset >= max {",
+			}),
+			done(240, 18),
+		},
+		append(text(`{"file":"testdata/clamp.go","changed":true}`), done(300, 12)),
+	}
 }

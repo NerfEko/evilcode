@@ -1,0 +1,64 @@
+ evilcode · v0.1.0
+ server: Dracula 🧛 · client: Bat 🦇
+ /model to switch · socket:daemon · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo>
+
+ 2› look at the clamp
+
+ Let me look at the clamp.
+
+   ✓ read testdata/clamp.go · 151 tok
+
+ It clamps with > where it wants >=. Summoning help.
+
+   👉 Summoned dracula-2
+   fix the clamp
+
+   Its result will arrive as a message.
+
+ 1› anything else?
+
+ Understood — I will re-read it before editing.
+
+   ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
+   Re-read it before you edit it — what you have is stale.
+ 💡 Ctrl+R searches your prompt history
+ 3>
+   Ctrl+Enter to queue
+
+
+
+
+
+
+
+
+
+
+
+
+--- pane 1 ---
+ evilcode · v0.1.0
+ server: Dracula 🧛 · client: Serpent 🐉
+ /model to switch · socket:daemon · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo>
+
+ 2› look at the clamp
+
+ Let me look at the clamp.
+
+   ✓ read testdata/clamp.go · 151 tok
+
+ It clamps with > where it wants >=. Summoning help.
+
+ 1› anything else?
+
+ Understood — I will re-read it before editing.
+
+   ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
+   Re-read it before you edit it — what you have is stale.
+ 💡 Ctrl+R searches your prompt history
+ 3>
+   Ctrl+Enter to queue

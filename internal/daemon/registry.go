@@ -45,6 +45,30 @@ func (c Conflict) Notice() string {
 		c.Other, c.Path, c.ReadTurn)
 }
 
+// Root is the workspace paths are reported relative to. Notices name
+// `internal/tui/app.go`, not a sixty-character absolute path: the absolute form
+// wraps across three lines in a transcript and tells the reader nothing they
+// did not already know about where they are.
+//
+// Stored on the registry rather than passed to Notice because the registry is
+// the only thing that knows both forms.
+func (r *Registry) SetRoot(root string) {
+	r.mu.Lock()
+	r.root = root
+	r.mu.Unlock()
+}
+
+// display shortens a path for a notice.
+func (r *Registry) display(path string) string {
+	if r.root == "" {
+		return path
+	}
+	if rel, err := filepath.Rel(r.root, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return path
+}
+
 // Registry tracks which session read or wrote which file, so a swarm can tell
 // an agent that the ground moved under it (plan.md §20).
 //
@@ -59,6 +83,9 @@ type Registry struct {
 
 	// writes is the log of writes, used to decide what each reader has missed.
 	writes []Access
+
+	// root is the workspace, for relative display paths.
+	root string
 
 	// delivered records conflicts already handed to a session, so a reader that
 	// does not re-read is not told the same thing every turn. Without it the
@@ -127,7 +154,7 @@ func (r *Registry) Write(session, path string, turn int) []Conflict {
 			continue
 		}
 		out = append(out, Conflict{
-			Session: reader, Other: session, Path: path, ReadTurn: readTurn,
+			Session: reader, Other: session, Path: r.display(path), ReadTurn: readTurn,
 		})
 	}
 	// Stable order so the same write always produces the same notices, which is
@@ -247,4 +274,11 @@ func ToolPath(tool string, args json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(a.Path)
+}
+
+// newRegistryAt builds a registry that reports paths relative to a workspace.
+func newRegistryAt(root string) *Registry {
+	r := NewRegistry()
+	r.SetRoot(root)
+	return r
 }

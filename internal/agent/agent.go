@@ -284,7 +284,15 @@ func (a *Agent) Loop(ctx context.Context) error {
 		a.mu.Unlock()
 	}()
 
-	a.emit(a.newEvent(EventTurnStart))
+	// TurnStart carries the prompt that started the turn. A local frontend
+	// already drew it — it typed it — but a client that attached mid-session
+	// has no other way to learn what was asked: the conversation only reaches
+	// it in a snapshot, and the snapshot is taken once (plan.md §20).
+	start := a.newEvent(EventTurnStart)
+	if last, ok := a.Conv.Last(); ok && last.Role == provider.RoleUser {
+		start.Text = last.Content
+	}
+	a.emit(start)
 
 	for step := 0; ; step++ {
 		if step >= MaxSteps {

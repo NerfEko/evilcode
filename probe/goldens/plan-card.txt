@@ -1,25 +1,40 @@
- evilcode · v0.1.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ● mock
  skills: /commit
  <repo> (main)
-
- Here is the plan.
- ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮     ╭────────────────────────────────╮
- │ Goal                                                                                             │     │ 💡 Ctrl+R searches your prompt │
- │ Make the refresh path survive a cold start.                                                      │     │ history                        │
- │                                                                                                  │     ╰────────────────────────────────╯
- │ Approach                                                                                         │
- │ 1. Read the callback handler                                                                     │
- │ 2. Add the retry gate                                                                            │
- │                                                                                                  │
- │ go test ./internal/auth/...                                                                      │
- │                                                                                                  │
- │ Validation                                                                                       │
- │ The test above, plus one manual cold start.                                                      │
- ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                                           ╷
+ 1› You are entering planning mode.                                                                                                        │
+                                                                                                                                           │
+    Goal: wire the auth flow                                                                                                               │
+                                                                                                                                           │
+    Your job is to produce a clear, concrete, actionable plan. Do NOT implement anything yet: do not edit files, write patches, or change  │
+    git state. You may freely read, search, run read-only commands, and analyze the codebase so the plan is grounded in how things actually│
+    work.                                                                                                                                  │
+                                                                                                                                           │
+    When the plan is ready, present it directly in your reply inside a fenced code block whose language is `plan` (```plan ... ```). The UI│
+    renders that block as a dedicated plan card. Structure the plan inside the block with these sections: a top-level `# <short plan       │
+    title>` heading, then Goal, Scope / affected areas, Approach (concrete ordered steps), Validation (how each part will be verified), and│
+    Open questions / decisions.                                                                                                            │
+                                                                                                                                           │
+    Keep it tight and high-signal. Avoid speculative rewrites and busywork. After presenting the plan card, stop and wait for the user. Do │
+    not start implementing.                                                                                                                │
+                                                                                                                                           │
+    Only once the user approves, use the `todo` tool to turn the plan into an executable todo list and then begin the work.                │
+                                                                                                                                           │
+ Here is the plan.                                                                                                                         │
+ ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮                                      │
+ │ Goal                                                                                             │                                      │
+ │ Make the refresh path survive a cold start.                                                      │                                      │
+ │                                                                                                  │                                      │
+ │ Approach                                                                                         │                                      │
+ │ 1. Read the callback handler                                                                     │                                      │
+ │ 2. Add the retry gate                                                                            │                                      │
+ │                                                                                                  │                                      │
+ │ go test ./internal/auth/...                                                                      │                                      │
+ │                                                                                                  │                                      │
+ │ Validation                                                                                       │                                      │
+ │ The test above, plus one manual cold start.                                                      │                                      │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯                                      ╵
 
  🧭 Planning wire the auth flow... (plan-only; no edits)
- 1>
+ 2>
    Ctrl+Enter to queue

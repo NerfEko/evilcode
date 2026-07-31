@@ -815,3 +815,62 @@ Verified by hand as well as by test: a daemon on a short socket, `run --remote`
 answering through it, `attach` in tmux showing `server: Leech 🐛 · client:
 Spider 🕷`, and a prompt typed into the attached TUI reaching the daemon and
 streaming back.
+
+## 2026-07-31 P4.2 — Swarm coordination
+
+Conflict registry, agent messaging, `spawn_worker` with schema-validated
+results, `/summon`, a shared todo namespace, and the SwarmStatus widget.
+
+The registry reads the event stream rather than instrumenting the tools —
+`internal/tools` knows nothing about swarms and should not start to, and the
+events already say which file was touched and whether it changed. Results are
+validated with jsonschema-go rather than a hand-rolled subset; it is already in
+the module graph as the MCP SDK's dependency, and a partial validator silently
+passes what it does not understand, which means a spawner cannot trust a pass.
+
+Bugs the tests caught: conflicts were queued on the writer, which then filtered
+them out as someone else's and dropped them; the live-worker breaker counted
+`Running()`, false for the first instants after a spawn, so a model could spawn
+straight past the limit in one turn; and `Agent.Close` closed the events channel
+while a turn could still be emitting, which the flag-and-recover guard did not
+make safe and the race detector said so. Close now closes a separate `done`
+channel and every consumer selects on it.
+
+## 2026-07-31 P4.3 — Two-client probe, and what it found
+
+The rig learned three verbs: `serve` starts a daemon outside tmux, `attach`
+opens a client pane and splits the window if one already exists, and `keys`
+takes `--pane=N`. A capture now walks every pane, so two clients on one session
+are one golden rather than two files.
+
+Four real defects, all found by looking at the frame:
+
+The second client rendered answers to a question it never showed. TurnStart
+carried no text, and a client that attaches mid-session learns the conversation
+only from its one snapshot. TurnStart now carries the prompt, and the client
+that typed it skips drawing it twice.
+
+`/summon` reported summoning the session that had summoned it. The spawn reply
+sent the whole roster and the client read `Sessions[0]` — the oldest. It now
+replies with the worker alone. Under `EVILCODE_DETERMINISTIC` the worker also
+took the same session name and *replaced* the attached session in the daemon's
+map; names are disambiguated now.
+
+The conflict notice fired, was recorded, and reached nobody. It went in as an
+interjection, which becomes a conversation message — and a message is not an
+event, so no attached client ever saw it. It is emitted as a warning too, and
+warnings render as transcript blocks rather than a status line that the next
+keystroke clears.
+
+`testdata/clamp.go` had been committed in its post-edit state, so `git checkout
+-- testdata` restored the *after* version and every scenario's edit failed with
+"old string not found" — with the golden regenerated around the failure. The
+inline diff renderer had not been exercised by the probe since. The fixture now
+carries a comment saying which state it must be committed in.
+
+One rig fix on top: `settle` returned after a single unchanged capture, and a
+keypress the app had not started reacting to yet looks exactly like a finished
+frame. Two `Alt+G` presses intermittently registered as one, and the golden was
+regenerated around whichever happened that run. It now needs three consecutive
+identical samples. The suite went from 8s to 16s, and from intermittently wrong
+to green on three consecutive runs.

@@ -391,6 +391,16 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.turnAt = time.Now()
 		m.status = StatusState{Phase: PhaseSending, Animate: !Deterministic()}
 		m.streamingIdx = -1
+		// A turn this client did not start still has to show its prompt, or an
+		// attached client renders answers to questions it never sees. The check
+		// is against the last block rather than a flag, because the client that
+		// typed it has already drawn it.
+		if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
+			m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: e.Text})
+			m.promptCount++
+			m.renumberPrompts()
+			m.followIfPinned()
+		}
 
 	case agent.EventTextDelta:
 		m.status.Phase = PhaseStreaming
@@ -473,7 +483,16 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 
 	case agent.EventNotice:
-		m.notice = e.Text
+		if e.Level == agent.LevelInfo || e.Level == "" {
+			m.notice = e.Text
+			break
+		}
+		// A warning goes in the transcript, not the status line. The status line
+		// is cleared by the next thing the user types, and "another agent
+		// rewrote the file you are working from" is not something to lose to a
+		// keystroke.
+		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: e.Text})
+		m.followIfPinned()
 
 	case agent.EventMemoryRecall:
 		// Drawn as a block rather than a status flash: what memory put in front
@@ -495,6 +514,17 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.status = StatusState{Phase: PhaseIdle}
 		m.flushPending()
 	}
+}
+
+// lastBlockIsPrompt reports whether the newest user block already holds this
+// text, which is how the client that typed it avoids drawing it twice.
+func (m *Model) lastBlockIsPrompt(text string) bool {
+	for i := len(m.blocks) - 1; i >= 0; i-- {
+		if m.blocks[i].Kind == BlockUser {
+			return m.blocks[i].Text == text
+		}
+	}
+	return false
 }
 
 // finishStreaming freezes the streaming block so it caches from now on.

@@ -112,7 +112,11 @@ func (r *Renderer) ModelInfoWidget(h HeaderState, sessions int) Widget {
 		lines = append(lines, meta.Render(fmt.Sprintf("%d sessions · %s", sessions, h.SessionName)))
 	}
 	if h.Cwd != "" {
-		row := meta.Render(truncateCells(h.Cwd, 30))
+		// Elided from the left, so what survives is the end of the path — the
+		// directory you are actually in. Truncating from the right kept the
+		// leading slashes and dropped the project name, which is both useless
+		// and, in a golden, an unscrubbable machine-specific prefix.
+		row := meta.Render(elideLeft(h.Cwd, 30))
 		if h.Branch != "" {
 			row += branch.Render("  " + h.Branch)
 		}
@@ -122,6 +126,20 @@ func (r *Renderer) ModelInfoWidget(h HeaderState, sessions int) Widget {
 		lines = append(lines, meta.Render("☁ "+h.Provider))
 	}
 	return Widget{Kind: WidgetModelInfo, Lines: lines}
+}
+
+// elideLeft trims a path to a cell width from the left, marking the cut.
+func elideLeft(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	// One cell for the ellipsis; walk back from the end until the rest fits.
+	keep := len(runes)
+	for keep > 0 && lipgloss.Width(string(runes[len(runes)-keep:])) > width-1 {
+		keep--
+	}
+	return "…" + string(runes[len(runes)-keep:])
 }
 
 // TodosWidget is the compact dock form of the todo list (plan.md §8.4).
