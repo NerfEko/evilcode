@@ -602,18 +602,23 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
 	// the assistant's tool_calls unanswered in the conversation and in the
 	// JSONL, and a strict OpenAI-compatible endpoint rejects that transcript on
 	// the next request — including the next request of a *resumed* session,
-	// long after the interrupt is forgotten. A tool that finished before the
-	// cancel keeps its real output; the rest get the same stub safe point C
-	// uses.
-	cancelled := ctx.Err() != nil
+	// long after the interrupt is forgotten.
+	//
+	// Which calls the cancel actually reached is read off each outcome rather
+	// than off the round: a tool that finished before the interrupt keeps its
+	// real result, including one that legitimately returns nothing, and a tool
+	// that failed for its own reasons keeps its own error rather than being
+	// relabelled as interrupted.
+	cancelled := false
 	for i, out := range outcomes {
-		if cancelled && out.Result.Output == "" {
+		if errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded) {
+			cancelled = true
 			a.appendToolResult(calls[i], stubSkipped, fmt.Errorf("interrupted"), tools.Result{})
 			continue
 		}
 		a.appendToolResult(calls[i], out.Result.Output, out.Err, out.Result)
 	}
-	if cancelled {
+	if cancelled || ctx.Err() != nil {
 		return context.Canceled
 	}
 	return nil

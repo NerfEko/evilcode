@@ -430,6 +430,11 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [ ] **H5.20** Verify H5: a conflict clears after a re-read and re-fires on the next write;
   `!ls` either runs or is not offered; a corrupt session line is reported with its number
   rather than skipped; a repo-pinned model actually loads. Tag `harden-5`.
+- [ ] **H5.22** `internal/session/store.go` `Messages` — replay does not check that every
+  assistant `tool_call` has an adjacent result, so a session whose log was already
+  malformed before H1.2/H1.3 landed — or truncated by a crash or a daemon shutdown mid-round
+  — still produces the 400 those tasks fixed. Fix: stub the unanswered calls on replay, the
+  way `runTools` stubs them live.  ⟨codex, reviewing H1.2⟩
 - [ ] **H5.21** `internal/lsp/ops.go` `docPosition` — the outbound direction of H1.4.
   The `lsp` tool takes a 1-based column "as read prints it" and sends it as a protocol
   character, which is a UTF-16 code unit: on a line with non-ASCII text to the left of the

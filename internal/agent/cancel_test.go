@@ -155,3 +155,76 @@ func assertToolCallsAnswered(t *testing.T, msgs []provider.Message) {
 		}
 	}
 }
+
+// A tool that finished before the interrupt keeps its own result, even when
+// that result is empty — "no output" is an answer, not evidence of a cancel.
+func TestCancelledRoundKeepsFinishedResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	quiet := make(chan struct{})
+	set := tools.Set{
+		{
+			Name: "quiet", Desc: "succeeds with nothing to say",
+			Schema: json.RawMessage(`{"type":"object"}`),
+			Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+				close(quiet)
+				return tools.Result{}, nil
+			},
+		},
+		{
+			Name: "blocker", Desc: "waits for cancellation",
+			Schema: json.RawMessage(`{"type":"object"}`),
+			Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+				<-ctx.Done()
+				return tools.Result{}, ctx.Err()
+			},
+		},
+	}
+
+	a := newTestAgent(t, &mixedProvider{}, set)
+	_, err := collect(t, a, func() error {
+		go func() {
+			<-quiet
+			cancel()
+		}()
+		return a.Run(ctx, "go")
+	})
+	if err != nil {
+		t.Fatalf("an interrupt is not an error: %v", err)
+	}
+
+	msgs := a.Conv.Messages()
+	assertToolCallsAnswered(t, msgs)
+	for _, m := range msgs {
+		if m.ToolCallID != "call_quiet" {
+			continue
+		}
+		if strings.Contains(m.Content, "Skipped") {
+			t.Errorf("a tool that finished was labelled interrupted: %q", m.Content)
+		}
+	}
+}
+
+// mixedProvider asks for one tool that finishes and one that hangs.
+type mixedProvider struct{ served bool }
+
+func (p *mixedProvider) Name() string { return "mixed" }
+func (p *mixedProvider) Embed(ctx context.Context, t []string) ([][]float32, error) {
+	return nil, nil
+}
+func (p *mixedProvider) Models(ctx context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *mixedProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk, 1)
+	if !p.served {
+		p.served = true
+		ch <- provider.Chunk{ToolCalls: []provider.ToolCall{
+			{ID: "call_quiet", Name: "quiet", Args: json.RawMessage(`{}`)},
+			{ID: "call_block", Name: "blocker", Args: json.RawMessage(`{}`)},
+		}}
+	} else {
+		ch <- provider.Chunk{Text: "done"}
+	}
+	close(ch)
+	return ch, nil
+}

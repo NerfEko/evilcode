@@ -5,6 +5,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,23 +164,33 @@ func (s *Store) WriteMeta(m Meta) error {
 // when the descriptor closes. Reopen is how a store survives its own file
 // being rewritten underneath it.
 func (s *Store) Reopen() error {
-	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reopenLocked()
+}
+
+// reopenLocked swaps in a fresh descriptor with s.mu already held, so a rewrite
+// can hold the lock across the whole read-write-rename-reopen sequence. Without
+// that, an append landing between the rename and the reopen still reaches the
+// orphaned inode — the window is narrow but it is a busy one, since a rewrite
+// is proportional to the size of the log.
+func (s *Store) reopenLocked() error {
 	// Flush to the old inode first: whatever is still buffered was written
 	// before the rewrite and belongs to the file that is now the backup.
+	var flushErr error
 	if s.w != nil {
-		_ = s.w.Flush()
+		flushErr = s.w.Flush()
 	}
 	if s.file != nil {
 		_ = s.file.Close()
 	}
+	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return errors.Join(flushErr, err)
+	}
 	s.file = f
 	s.w = bufio.NewWriter(f)
-	return nil
+	return flushErr
 }
 
 // Close flushes and marks a clean exit, which is how crash detection tells a

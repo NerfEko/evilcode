@@ -131,11 +131,31 @@ func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
 // reach for: the free function leaves the caller's descriptor on the orphaned
 // inode.
 func (s *Store) Rewind(dataDir string, entryIndex int) ([]provider.Message, error) {
-	msgs, err := Rewind(dataDir, s.Name, entryIndex)
+	return s.rewrite(func() ([]provider.Message, error) {
+		return Rewind(dataDir, s.Name, entryIndex)
+	})
+}
+
+// rewrite runs a whole-file replacement with the store's lock held.
+//
+// The lock spans the rewrite, not just the reopen: an append arriving between
+// the rename and the swap would otherwise still reach the orphaned inode, and a
+// rewrite takes as long as the log is large. Holding it also means the buffer is
+// flushed before the rewrite reads, so nothing in flight is silently dropped
+// from the history it is about to summarize.
+func (s *Store) rewrite(do func() ([]provider.Message, error)) ([]provider.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.w != nil {
+		if err := s.w.Flush(); err != nil {
+			return nil, err
+		}
+	}
+	msgs, err := do()
 	if err != nil {
 		return nil, err
 	}
-	return msgs, s.Reopen()
+	return msgs, s.reopenLocked()
 }
 
 // CollapseSummary is the one-paragraph handoff injected after a rewind, so the
@@ -304,9 +324,7 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 // Compact rewrites the live session and reopens the store on the new file.
 // See Store.Rewind for why the method exists.
 func (s *Store) Compact(dataDir, summary string) ([]provider.Message, error) {
-	msgs, err := Compact(dataDir, s.Name, summary)
-	if err != nil {
-		return nil, err
-	}
-	return msgs, s.Reopen()
+	return s.rewrite(func() ([]provider.Message, error) {
+		return Compact(dataDir, s.Name, summary)
+	})
 }

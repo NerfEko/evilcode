@@ -1582,3 +1582,43 @@ rather than folded into this commit.
 
 Verified: four reproductions pass, existing ASCII edit tests unchanged,
 `go test ./...` green.
+
+## 2026-07-31 H1.1/H1.2 — Two corrections from the codex reviews
+
+Both reviews came back with the same shape of finding: the fix was right about
+the mechanism and drew its boundary one step too narrow.
+
+**H1.1 — the window is the whole rewrite, not the reopen.** Reopening after
+`Compact`/`Rewind` fixes every append that comes *later*; an append that arrives
+*during* the rewrite still lands on the doomed inode, and a rewrite takes as long
+as the log is large.
+
+The reproduction needed a detector, because ordering cannot see this: the lost
+appends and the legitimately-compacted ones both sit before the survivors. The
+backup is the detector. Compaction copies the log to `.bak` before replacing it,
+so anything it erases is still recorded — a message in *neither* the new file nor
+the backup was never erased, it was dropped. With 4,000 entries of history and an
+appender running flat out:
+
+```
+"racer 11874" was appended successfully but is in neither the compacted log nor
+its backup: it went to the orphaned inode (12151 of 12151 racers)
+```
+
+Twelve thousand racers, and the one that fell in the hole is named exactly.
+
+Fixed by holding `s.mu` across the entire read-write-rename-reopen sequence
+(`Store.rewrite`), so a concurrent append blocks and then lands on the new file
+rather than the old one. The buffer is flushed before the rewrite reads, too, so
+nothing in flight is dropped from the history it is about to summarize.
+
+**H1.2 — empty output is not evidence of a cancel.** The first version stubbed
+every outcome with empty output once the round was cancelled, which mislabels a
+tool that succeeded with nothing to say and buries the error of one that failed
+for its own reasons. Cancellation is now read off each outcome's error
+(`errors.Is(out.Err, context.Canceled)`), which is where it actually lives; the
+round is still reported as interrupted if the context is done.
+
+Also logged from the reviews, not fixed here: the daemon closing a store while a
+round is still stubbing (that is **H1.9**, already in the plan) and replay not
+repairing histories that were already malformed (new: **H5.22**).

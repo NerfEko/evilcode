@@ -1,7 +1,10 @@
 package session
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"evilcode/internal/provider"
@@ -91,5 +94,85 @@ func TestAppendAfterRewindSurvivesResume(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("message appended after rewind is gone; resumed = %v", resumed)
+	}
+}
+
+// An append racing the rewrite must not fall into the hole between the rewrite
+// reading the log and the store reopening on the result. Codex found this
+// reviewing the first fix: reopening afterwards closes the window for later
+// appends, not for concurrent ones.
+//
+// The detector is the backup. Compaction copies the log to `.bak` before
+// replacing it, so every message it erases is still recorded there. A message
+// that is in neither the backup nor the compacted file was never erased — it
+// was written to the orphaned inode and is simply gone.
+func TestAppendsRacingCompactAreNotLost(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := store.Name
+	path := filepath.Join(Dir(dir), name+".jsonl")
+
+	// A log with some bulk in it: the rewrite has to read, re-encode and write
+	// every entry, and that is the window an append can fall into.
+	for i := range 4000 {
+		if err := store.WriteMessage(provider.Message{
+			Role:    provider.RoleUser,
+			Content: fmt.Sprintf("history %d %s", i, strings.Repeat("x", 200)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	var wrote []string
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c := fmt.Sprintf("racer %04d", i)
+			if err := store.WriteMessage(provider.Message{Role: provider.RoleUser, Content: c}); err != nil {
+				return
+			}
+			mu.Lock()
+			wrote = append(wrote, c)
+			mu.Unlock()
+		}
+	}()
+
+	if _, err := store.Compact(dir, "summary"); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	<-done
+	store.Close()
+
+	seen := map[string]bool{}
+	for _, p := range []string{path, path + ".bak"} {
+		msgs, err := Messages(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range msgs {
+			seen[m.Content] = true
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, c := range wrote {
+		if !seen[c] {
+			t.Fatalf("%q was appended successfully but is in neither the compacted "+
+				"log nor its backup: it went to the orphaned inode (%d of %d racers)",
+				c, len(wrote), len(wrote))
+		}
 	}
 }
