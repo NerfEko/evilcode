@@ -556,3 +556,35 @@ Verified: 30 theme tests including Oklab round-trip, gamut mapping preserving hu
 lightness, generation scoring ≥70 from five seeds on both backgrounds, conventional hues
 surviving generation, and repair terminating on the success/warning/error triangle that
 greedy pairwise repair provably cycles on. PNG looked at after switching to gloom.
+
+## 2026-07-31 P2.18–P2.19 — theme engine and harmony scoring
+
+Done: four palettes, the two-pass frame substitution, the ad-hoc literals registry, and
+Oklab harmony scoring with palette generation behind `/theme`.
+
+Substitution runs once per frame at the buffer level, rewriting truecolor SGR sequences.
+Pass 2 is exempt from pass 1 by construction: a configured role is replaced outright and
+never sees the light-background luminance flip, because a deliberately dark red must not
+become pale pink on a light terminal. Indexed colors are left alone — the terminal owns
+that palette, and overriding it is how themed output stops matching its surroundings.
+
+The literals registry is what keeps a themed UI from looking half-painted. Each ad-hoc
+`rgb()` the renderer emits is anchored to the role it varies from, and re-expressed
+keeping its own lightness and chroma offset, so "a slightly dimmer warning" stays that
+under any palette. Two tests hold the registry honest: every literal must be near its
+anchor, and every role that should have variations must have at least one.
+
+The scorer immediately earned its keep. `nosferatu` scored 52 — below the floor — and the
+breakdown said why: chroma coherence 24, because flat grays sat beside saturated accents
+and read as two palettes stapled together. The fix was the palette, not the threshold:
+tinting the neutrals warm gives it one hue family, which is what good near-mono themes
+actually do. It now scores 63, and it looks better.
+
+Scores: daywalker 69, dracula 67, gloom 64, nosferatu 63, a generated teal palette 73.
+These sit below the spec's calibration pins; DEVIATIONS.md P2.19 records why, and the
+test asserts the orderings the plan actually requires rather than absolute values.
+
+Verified: 13 harmony tests including the calibration ordering, the generation floor
+across six seeds on both backgrounds, conventional hues surviving generation, and that
+the repair pass terminates — greedy pairwise repair provably cycles on the
+success/warning/error triangle. PNG looked at with nosferatu live.
