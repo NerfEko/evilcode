@@ -23,6 +23,15 @@ Requires Go 1.26+. Runtime deps: `tmux` and `rg` (ripgrep) for the probe rig and
 ./evilcode probe ...    # probe rig driver (see below)
 ```
 
+To run it from anywhere, symlink it onto your PATH. Symlinks (rather than shell
+aliases) keep pointing at whatever `go build` last produced, so a rebuild needs
+no re-linking, and they work in scripts and non-interactive shells too:
+
+```sh
+ln -sf "$PWD/evilcode" ~/.local/bin/evilcode
+ln -sf "$PWD/evilcode" ~/.local/bin/ec      # short form
+```
+
 ## What works today
 
 Phase 0 (bootstrap and the probe rig) and most of Phase 1 (a drivable core).
