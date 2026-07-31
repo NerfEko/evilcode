@@ -338,3 +338,36 @@ packed→scrolling scenario. PNGs looked at for the scrolled transcript and the 
 continuation.
 
 Codex verdict on every commit so far: n/a (CLI absent, DEVIATIONS.md P0.3).
+
+## 2026-07-30 P1.20 — Phase 1 verification
+
+Verified against a real model, not the mock. The local ollama daemon proxies cloud
+models (`remote_host: https://ollama.com`), so `deepseek-v4-flash:cloud@ollama-local`
+exercises the cloud path through the native API without a separate key.
+
+**Headless edit task.** Asked it to read a file and change a string. The transcript is
+worth recording because it validates a design decision:
+
+    ✓ read main.go · 20 tok
+    ✗ edit main.go
+      old string not found in main.go. Re-read the file — it may have changed, or the
+      indentation may differ from what you expected
+    ✓ bash cat -A main.go · 18 tok
+    ✓ edit main.go · 5 tok (+1 -1)
+
+The model's first edit guessed the indentation wrong. The error message — which §17
+specifically asks to push toward re-reading rather than saying "not found" — drove it to
+inspect the actual whitespace with `cat -A` and then edit correctly. That is the
+edit-retry loop being broken by wording alone, before hash anchors (Phase 2) exist. The
+file was genuinely modified and the process exited 0.
+
+**Interactive TUI.** Same model, real streaming, real tool row, session auto-named
+`Ghoul 💀`. Provider dots correctly show ollama-local ready and ollama-cloud
+unconfigured. PNG looked at.
+
+**Goldens**: 12 green. `go build ./... && go vet ./... && go test ./...` green.
+
+Phase 1 complete; tagged `phase-1`.
+
+Note for Phase 2: ripgrep is still not installed on this machine, so the `grep` tool
+reports that and its happy path remains unexercised. Everything else is covered.

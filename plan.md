@@ -991,7 +991,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Interrupt: Esc/Ctrl+C basic paths (§6.7 minus poke interactions).
 - [x] Welcome screen: `Welcome to evilcode 🦇`, `◖ suggestion chips ◗` rotating, static eye placeholder (animation P2).
 - [x] Probe scenarios + goldens: welcome, mock chat turn, palette open/filter, picker, tool row, diff, packed→scrolling transition. **Look at every PNG.**
-- [ ] Verify: `evilcode run` against local ollama AND cloud (with `OLLAMA_API_KEY`); a real multi-file edit interactively; goldens green. Tag `phase-1`.
+- [x] Verify: `evilcode run` against local ollama AND cloud (with `OLLAMA_API_KEY`); a real multi-file edit interactively; goldens green. Tag `phase-1`.
 
 ## Phase 2 — The soul: plans, todos, discipline, polish, fun
 
