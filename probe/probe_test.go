@@ -36,7 +36,7 @@ func runProbe(t *testing.T, root string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(root, "probe", "probe.sh"), args...)
 	cmd.Dir = root
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "PROBE_SCENARIO=")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("probe.sh %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -80,6 +80,8 @@ func runScenario(t *testing.T, root, file string) {
 	// broken scenario cannot wedge the next.
 	t.Cleanup(func() { runProbe(t, root, "kill") })
 
+	scenario := ""
+
 	for lineNo, line := range strings.Split(string(src), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -90,10 +92,16 @@ func runScenario(t *testing.T, root, file string) {
 
 		switch verb {
 		case "boot":
-			runProbe(t, root, append([]string{"boot"}, strings.Fields(rest)...)...)
+			args := []string{"boot"}
+			if scenario != "" {
+				args = append(args, "--scenario="+scenario)
+			}
+			runProbe(t, root, append(args, strings.Fields(rest)...)...)
 		case "scenario":
-			// Selects the mock provider's script for subsequent boots.
-			t.Setenv("PROBE_SCENARIO", rest)
+			// Passed explicitly to the next boot rather than exported. An
+			// environment variable leaked between subtests and produced
+			// goldens containing a different scenario's transcript.
+			scenario = rest
 		case "keys":
 			runProbe(t, root, append([]string{"keys"}, splitArgs(rest)...)...)
 		case "kill":

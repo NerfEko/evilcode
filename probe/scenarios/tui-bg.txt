@@ -1,0 +1,8 @@
+# A detached command (§17): the tool returns immediately and a notice fires
+# when the command actually finishes.
+
+scenario background
+boot tui
+keys "build it"
+keys Enter
+capture bg-started

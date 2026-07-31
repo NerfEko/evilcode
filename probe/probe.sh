@@ -76,6 +76,15 @@ cmd_boot() {
     reset_fixtures
     mkdir -p "$FAKEHOME" "$FRAMES"
 
+    # The scenario is an explicit argument rather than inherited environment.
+    # Relying on the env let one golden run leak a scenario into the next,
+    # which produced goldens containing another scenario's transcript.
+    local scenario="${PROBE_SCENARIO:-chat}"
+    if [[ "${1:-}" == --scenario=* ]]; then
+        scenario="${1#--scenario=}"
+        shift
+    fi
+
     local app=("$BIN" probe hello)
     [[ $# -gt 0 ]] && app=("$BIN" "$@")
 
@@ -87,7 +96,7 @@ cmd_boot() {
              XDG_STATE_HOME='$FAKEHOME/.local/state' \
              TERM=xterm-256color COLORTERM=truecolor \
              EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
-             EVILCODE_SCENARIO='${PROBE_SCENARIO:-chat}' ${app[*]}"
+             EVILCODE_SCENARIO='$scenario' ${app[*]}"
     settle
 }
 

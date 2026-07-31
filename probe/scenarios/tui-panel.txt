@@ -1,0 +1,10 @@
+# Diff modes and the side panel (§9.3, §9.4). Alt+G twice moves from inline to
+# the file view, which must clear the transcript copy rather than showing both.
+
+scenario diff
+boot tui
+keys "fix the clamp"
+keys Enter
+keys M-g
+keys M-g
+capture panel-file

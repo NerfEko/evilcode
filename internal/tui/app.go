@@ -302,7 +302,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if m.processing {
-			m.status.Elapsed = time.Since(m.turnAt)
+			// Deterministic mode has no wall-clock text (invariant 5). Without
+			// this a golden of any in-flight state — a running tool, a pending
+			// question — races its own elapsed counter and never settles.
+			if !Deterministic() {
+				m.status.Elapsed = time.Since(m.turnAt)
+			}
 		}
 		m.takeSideAnswer()
 		if done := m.bgDone.Swap(nil); done != nil {

@@ -1,0 +1,17 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit
+ <repo> (main)
+
+ 1› build it
+
+ Starting the build.
+
+   ✓ bash sleep 2 && echo built · 20 tok
+
+ Kicked off; I will report when it lands.
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   Ctrl+Enter to queue

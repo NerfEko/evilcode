@@ -699,3 +699,19 @@ With both fixed the round-trip is three calls: `read`, anchored `edit`, `read` t
 confirm. No retry loop.
 
 Phase 2 complete; tagged `phase-2`.
+
+## 2026-07-31 P2.28–P2.29 — Phase 2 verification
+
+All six criteria from plan.md line 1026 pass, each backed by a named test rather than an
+assertion in prose: auto-poke fires on incomplete todos, the gate digest picks its wording
+by trajectory, the `75→100%` arrow renders, the ownership gate rejects a premature group
+close and leaves the stored list untouched, anchored edits round-trip and stale ones are
+refused, and every poke path terminates.
+
+23 goldens across 13 scenarios. Getting them stable exposed a real invariant-5 gap: the
+status line's elapsed counter kept ticking under `EVILCODE_DETERMINISTIC`, so any golden
+of an in-flight state — a running tool, a pending question, a background command — raced
+its own clock and never settled. Invariant 5 says deterministic mode carries no
+wall-clock text; it now does not. Four consecutive clean runs after the fix.
+
+Phase 2 complete.
