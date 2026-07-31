@@ -99,3 +99,49 @@ func TestAnUnconfinedReadStillReachesOutside(t *testing.T) {
 		t.Errorf("an unconfined session could not read outside its root: %v", err)
 	}
 }
+
+// The write path had the same check-then-use shape the read path was fixed for:
+// it verified the parent directory, closed it, and then called an ordinary
+// write that re-resolves the pathname from scratch. Holding the directory
+// descriptor across the temp file and the rename is what closes it.
+func TestAConfinedWriteCannotBeRedirectedAfterItsCheck(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(target, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := NewFS(root).WithConfine(true)
+	full, err := f.resolve("sub/victim.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The swap, after the path has been judged safe.
+	if err := os.RemoveAll(filepath.Join(root, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "sub")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.writeConfined(full, []byte("overwritten\n")); err == nil {
+		t.Error("a confined write followed a symlink swapped in after its check")
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original\n" {
+		t.Errorf("the file outside the workspace was rewritten: %q", data)
+	}
+}

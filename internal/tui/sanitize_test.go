@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"evilcode/internal/agent"
 )
 
 // H4.1: repository content reaches the terminal through the transcript. A file
@@ -74,5 +76,29 @@ func assertInert(t *testing.T, frame string) {
 	// renderer was told to drop.
 	if strings.Contains(frame, "cm0gLXJmIH4=") {
 		t.Error("the OSC 52 payload is still in the frame")
+	}
+}
+
+// A control sequence can arrive split across two streaming deltas. Sanitizing
+// each fragment as it lands would drop the introducer from one and leave the
+// payload in the next as visible junk; the transcript sanitizes the block's
+// accumulated text, which sees the whole sequence.
+func TestASequenceSplitAcrossDeltasIsStillConsumed(t *testing.T) {
+	m := newTestModel(t)
+
+	for _, frag := range []string{
+		"here you go ",
+		"\x1b]52;c;",
+		"cm0gLXJmIH4=\x07",
+		" done",
+	} {
+		m.applyEvent(agent.Event{Kind: agent.EventTextDelta, Text: frag})
+	}
+	m.finishStreaming()
+
+	frame := frameString(m)
+	assertInert(t, frame)
+	if !strings.Contains(frame, "here you go") || !strings.Contains(frame, "done") {
+		t.Errorf("the prose around the sequence was lost: %q", frame)
 	}
 }

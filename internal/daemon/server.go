@@ -179,11 +179,17 @@ func (s *Server) Listen() error {
 		return err
 	}
 
-	// Bind first, and only clear the path if binding fails because something
-	// is already there. Dialling and then unconditionally removing was a race
-	// with itself: two daemons starting together both fail the dial, and the
-	// second unlinks the socket the first has just bound — leaving daemon one
-	// running and unreachable, with nothing to indicate why.
+	// Serialized against other starting daemons. Binding first fixed the
+	// original race but not its sibling: two daemons finding the *same stale*
+	// socket both fail the dial, and the second removes the socket the first
+	// has by then bound. The window between "this is stale" and "I have bound
+	// it" cannot be closed by ordering alone, so it is held under a lock.
+	unlock, err := lockSocketPath(s.Path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	ln, err := net.Listen("unix", s.Path)
 	if err != nil {
 		if !errors.Is(err, syscall.EADDRINUSE) {

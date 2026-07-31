@@ -226,6 +226,32 @@ func (p *printer) text(s string) string {
 	return s
 }
 
+// clean sanitizes an event's text for this destination, leaving piped output
+// byte-exact.
+func (p *printer) clean(e agent.Event) agent.Event {
+	if !p.tty {
+		return e
+	}
+	e.Text = core.SanitizeTerminal(e.Text)
+	e.ErrText = core.SanitizeTerminal(e.ErrText)
+	e.Output = core.SanitizeTerminal(e.Output)
+	e.Intent = core.SanitizeTerminal(e.Intent)
+	if e.Call != nil {
+		call := *e.Call
+		call.Name = core.SanitizeTerminal(call.Name)
+		e.Call = &call
+	}
+	if hits, ok := e.Display.([]memory.Hit); ok {
+		out := make([]memory.Hit, len(hits))
+		for i, h := range hits {
+			h.Text = core.SanitizeTerminal(h.Text)
+			out[i] = h
+		}
+		e.Display = out
+	}
+	return e
+}
+
 // newline ends the model's line before anything else writes, so a tool row
 // never lands mid-sentence.
 func (p *printer) newline() {
@@ -239,9 +265,13 @@ func (p *printer) newline() {
 func (p *printer) finish() { p.newline() }
 
 func (p *printer) print(e agent.Event) {
+	// Everything below writes provider- or tool-authored text to a terminal.
+	// Sanitizing each site invites the one that gets forgotten, so the event is
+	// cleaned once on the way in — the same shape the TUI uses.
+	e = p.clean(e)
 	switch e.Kind {
 	case agent.EventTextDelta:
-		fmt.Print(p.text(e.Text))
+		fmt.Print(e.Text)
 		p.atLineStart = strings.HasSuffix(e.Text, "\n")
 
 	case agent.EventToolResult:
@@ -251,7 +281,7 @@ func (p *printer) print(e agent.Event) {
 		p.newline()
 		// The tool row names a file and an intent, both of which came from the
 		// model or from the workspace.
-		fmt.Fprintln(os.Stderr, p.text(toolLine(e)))
+		fmt.Fprintln(os.Stderr, toolLine(e))
 
 	case agent.EventMemoryRecall:
 		// Headless has no tile, but it must not inject silently: a scripted run

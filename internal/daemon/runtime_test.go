@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -91,6 +92,66 @@ func TestASecondDaemonDoesNotUnlinkTheFirstsSocket(t *testing.T) {
 	conn, err := net.Dial("unix", path)
 	if err != nil {
 		t.Fatalf("the first daemon's socket was unlinked by the second: %v", err)
+	}
+	conn.Close()
+}
+
+// Two daemons finding the same *stale* socket both fail the liveness dial. The
+// bind-first ordering fixed the original race but not this one: the second's
+// removal could unlink the socket the first had by then bound.
+func TestConcurrentStartsOnAStaleSocketLeaveOneReachable(t *testing.T) {
+	dir, err := os.MkdirTemp("", "evild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "s.sock")
+
+	// A stale socket: a real one, bound and then abandoned without cleanup.
+	stale, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uc, ok := stale.(*net.UnixListener); ok {
+		uc.SetUnlinkOnClose(false)
+	}
+	stale.Close()
+
+	const racers = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var bound []*Server
+	for range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			srv := NewServer(nil, t.TempDir(), "")
+			srv.Path = path
+			if err := srv.Listen(); err != nil {
+				return
+			}
+			mu.Lock()
+			bound = append(bound, srv)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	defer func() {
+		for _, srv := range bound {
+			srv.Close()
+		}
+	}()
+
+	if len(bound) != 1 {
+		t.Fatalf("%d of %d daemons bound the same socket", len(bound), racers)
+	}
+	// And the one that won is the one that is reachable.
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("the daemon that bound the socket is unreachable: %v", err)
 	}
 	conn.Close()
 }

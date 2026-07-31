@@ -32,6 +32,9 @@ func TestSanitizeKeepsLayoutAndDropsControl(t *testing.T) {
 		{"colour we did not choose", "\x1b[31mred\x1b[0m", "red"},
 		{"window title", "\x1b]0;retitled\x07", ""},
 		{"unterminated DCS", "\x1bPmalformed", ""},
+		{"OSC ended by the C1 terminator", "\x1b]52;c;cGF5bG9hZA==\u009ckept", "kept"},
+		{"DCS ended by the C1 terminator", "\x1bPq#0;2\u009ckept", "kept"},
+		{"OSC ended by the seven-bit ST", "\x1b]0;title\x1b\\kept", "kept"},
 		{"eight-bit CSI", "31mred", "31mred"},
 		{"text survives", "emoji 🔥 and accents é", "emoji 🔥 and accents é"},
 	}

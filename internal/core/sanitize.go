@@ -42,6 +42,29 @@ func SanitizeTerminal(s string) string {
 	return b.String()
 }
 
+// stringTerminator finds the end of an OSC or DCS-style sequence, in runes.
+//
+// Three ways to end one, and the first version of this knew two: BEL, the
+// seven-bit ST (ESC backslash), and the eight-bit C1 ST at U+009C. Missing the
+// last meant a sequence terminated that way ran to the end of the string, so
+// everything after it was consumed and dropped — the payload never reached the
+// terminal, but neither did the rest of the file.
+//
+// alt is an additional single-rune terminator (BEL for OSC), or -1 for none.
+func stringTerminator(runes []rune, alt rune) int {
+	for i := 2; i < len(runes); i++ {
+		switch {
+		case alt >= 0 && runes[i] == alt:
+			return i + 1
+		case runes[i] == 0x9c: // C1 ST
+			return i + 1
+		case runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '\\':
+			return i + 2
+		}
+	}
+	return 0
+}
+
 func needsSanitizing(s string) bool {
 	for _, r := range s {
 		if r == '\n' || r == '\t' {
@@ -71,20 +94,13 @@ func escapeLen(runes []rune) int {
 		}
 		return len(runes)
 	case ']': // OSC: runs to BEL or ST.
-		for i := 2; i < len(runes); i++ {
-			if runes[i] == 0x07 {
-				return i + 1
-			}
-			if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '\\' {
-				return i + 2
-			}
+		if n := stringTerminator(runes, 0x07); n > 0 {
+			return n
 		}
 		return len(runes)
 	case 'P', 'X', '^', '_': // DCS, SOS, PM, APC: run to ST.
-		for i := 2; i < len(runes); i++ {
-			if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '\\' {
-				return i + 2
-			}
+		if n := stringTerminator(runes, -1); n > 0 {
+			return n
 		}
 		return len(runes)
 	default:

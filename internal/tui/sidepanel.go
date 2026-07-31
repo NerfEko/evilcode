@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/core"
 	"evilcode/internal/theme"
 )
 
@@ -80,7 +81,10 @@ func (r *Renderer) RenderSidePanel(c PanelContent, mode DiffMode, width, height 
 	dim := r.style(theme.RoleDim)
 
 	inner := width - 2
-	title := c.Title
+	// The panel shows a file path, a diff, or an answer from a side call —
+	// none of it ours. The diff branches route through the highlighter, which
+	// sanitizes; Body and Title do not, so they are cleaned here.
+	title := core.SanitizeTerminal(c.Title)
 	if title == "" {
 		title = "Panel"
 	}
@@ -94,7 +98,10 @@ func (r *Renderer) RenderSidePanel(c PanelContent, mode DiffMode, width, height 
 	case c.Diff != "":
 		body = r.renderDiffLang(c.Diff, langFromPath(c.Path))
 	default:
-		body = c.Body
+		body = make([]string, len(c.Body))
+		for i, line := range c.Body {
+			body[i] = core.SanitizeTerminal(line)
+		}
 	}
 
 	out := make([]string, 0, height)

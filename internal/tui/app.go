@@ -17,6 +17,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/core"
 	"evilcode/internal/graphics"
 	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
@@ -516,6 +517,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // applyEvent folds one agent event into the view.
 func (m *Model) applyEvent(e agent.Event) {
+	e = sanitizeEvent(e)
 	switch e.Kind {
 	case agent.EventTurnStart:
 		m.processing = true
@@ -703,6 +705,77 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.submitHidden(prompt)
 		}
 	}
+}
+
+// sanitizeEvent strips terminal control sequences from everything an event
+// carries into the UI.
+//
+// At ingress rather than at each renderer. The first pass at this sanitized the
+// transcript renderer alone, and a review found five other paths — the status
+// line's tool name, the side panel, the ask picker, the model list, the memory
+// and todo widgets — each rendering event-derived text through its own code.
+// Chasing renderers means finding all of them, and then finding the next one
+// somebody adds. Everything here arrived from a provider, a tool, or a file.
+func sanitizeEvent(e agent.Event) agent.Event {
+	// Streaming deltas are the exception: they are fragments, and a control
+	// sequence can span two of them. Sanitizing each fragment drops the
+	// introducer from one and leaves the payload in the next as visible junk.
+	// The transcript sanitizes each block's accumulated text at render, which
+	// sees the whole sequence and consumes it — so the fragments pass through
+	// here untouched and are cleaned once they are whole.
+	switch e.Kind {
+	case agent.EventTextDelta, agent.EventReasoningDelta:
+	default:
+		e.Text = core.SanitizeTerminal(e.Text)
+	}
+	e.ErrText = core.SanitizeTerminal(e.ErrText)
+	e.Output = core.SanitizeTerminal(e.Output)
+	e.Intent = core.SanitizeTerminal(e.Intent)
+	e.Diff = core.SanitizeTerminal(e.Diff)
+	if e.Call != nil {
+		call := *e.Call
+		call.Name = core.SanitizeTerminal(call.Name)
+		e.Call = &call
+	}
+	e.Display = sanitizeDisplay(e.Display)
+	return e
+}
+
+// sanitizeDisplay cleans the typed payloads widgets render directly.
+//
+// These never pass through the transcript, so the block-level sanitize does not
+// see them: a remembered fact and a todo item are both model-authored text on
+// their way to a widget that draws them itself.
+func sanitizeDisplay(display any) any {
+	switch v := display.(type) {
+	case []memory.Hit:
+		out := make([]memory.Hit, len(v))
+		for i, h := range v {
+			h.Text = core.SanitizeTerminal(h.Text)
+			h.Session = core.SanitizeTerminal(h.Session)
+			out[i] = h
+		}
+		return out
+	case todo.Delta:
+		return sanitizeTodoDelta(v)
+	}
+	return display
+}
+
+// sanitizeTodoDelta cleans the item text a todo card draws. The content is
+// whatever the model wrote into its plan.
+func sanitizeTodoDelta(d todo.Delta) todo.Delta {
+	out := d
+	out.Changes = make([]todo.ItemChange, len(d.Changes))
+	for i, c := range d.Changes {
+		c.Item.Content = core.SanitizeTerminal(c.Item.Content)
+		if c.Item.Group != nil {
+			group := core.SanitizeTerminal(*c.Item.Group)
+			c.Item.Group = &group
+		}
+		out.Changes[i] = c
+	}
+	return out
 }
 
 // lastBlockIsPrompt reports whether the newest user block already holds this
@@ -1311,7 +1384,6 @@ func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-
 
 // handleHistoryKey drives the Ctrl+R reverse search.
 func (m *Model) handleHistoryKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -2302,7 +2374,12 @@ func (m *Model) View() tea.View {
 	}
 
 	if m.notice != "" {
-		rows = append(rows, m.renderer.style(theme.RoleSystem).Render(m.notice))
+		// Sanitized at the draw rather than at each of the hundred-odd
+		// assignments: a notice is usually ours, but some carry text straight
+		// from elsewhere — a renderer's stderr, a provider's error, a tool's
+		// message — and the ones that do are not marked.
+		rows = append(rows, m.renderer.style(theme.RoleSystem).
+			Render(core.SanitizeTerminal(m.notice)))
 	}
 
 	if m.ask != nil {

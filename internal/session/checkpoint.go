@@ -137,7 +137,10 @@ func backup(path string) error {
 // exploratory *context*, not the work that was done (plan.md §18). The original
 // file is kept alongside as `.bak` so a mistaken rewind is recoverable.
 func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
-	path := filepath.Join(Dir(dataDir), name+".jsonl")
+	path, err := pathFor(dataDir, name)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := Read(path)
 	if err != nil {
 		return nil, err
@@ -289,7 +292,11 @@ func Rename(dataDir, from, to string) error {
 // Transfer compacts a session into a summary handoff in a fresh one, carrying
 // the durable state across (plan.md §18).
 func Transfer(dataDir, from, to, summary string) error {
-	if _, err := os.Stat(filepath.Join(Dir(dataDir), to+".jsonl")); err == nil {
+	dst, err := pathFor(dataDir, to)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("session %q already exists", to)
 	}
 	st, err := Open(dataDir, to)
@@ -340,7 +347,10 @@ const CompactedPrefix = "[conversation compacted]\n\n"
 // Same atomic shape as Rewind — backup, temp file, rename — so an interrupted
 // compaction leaves the previous log intact rather than a half-written one.
 func Compact(dataDir, name, summary string) ([]provider.Message, error) {
-	path := filepath.Join(Dir(dataDir), name+".jsonl")
+	path, err := pathFor(dataDir, name)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := Read(path)
 	if err != nil {
 		return nil, err

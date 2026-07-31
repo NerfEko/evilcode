@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/core"
 	"evilcode/internal/theme"
 	"evilcode/internal/tools"
 )
@@ -198,7 +199,7 @@ func (r *Renderer) pickerRow(s PickerState, e ModelEntry, matched []int, selecte
 	// The selection highlight and the filter underline carry different
 	// information — which row is selected, and which characters matched — so
 	// the underline is applied on top of the highlight rather than instead.
-	b.WriteString(underlineMatch(name, matched, nameStyle))
+	b.WriteString(underlineMatch(core.SanitizeTerminal(name), matched, nameStyle))
 	if e.Provider != "" {
 		b.WriteString("  " + cell(e.Provider, ColProvider,
 			lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(140, 180, 255))))))
@@ -378,7 +379,7 @@ func (r *Renderer) RenderAsk(req *tools.AskRequest, cursor int, chosen map[int]b
 		Background(lipgloss.Color(pickerSelectedBg)).Bold(true)
 
 	var body []string
-	for _, line := range wrapPlain(req.Question, max(r.Width-8, 20)) {
+	for _, line := range wrapPlain(core.SanitizeTerminal(req.Question), max(r.Width-8, 20)) {
 		body = append(body, question.Render(line))
 	}
 	body = append(body, "")
@@ -388,7 +389,7 @@ func (r *Renderer) RenderAsk(req *tools.AskRequest, cursor int, chosen map[int]b
 		if i == cursor {
 			marker = "▸"
 		}
-		text := opt.Label
+		text := core.SanitizeTerminal(opt.Label)
 		if req.Multi {
 			box := "○"
 			if chosen[i] {
@@ -404,7 +405,8 @@ func (r *Renderer) RenderAsk(req *tools.AskRequest, cursor int, chosen map[int]b
 			row += label.Render(text)
 		}
 		if opt.Description != "" {
-			row += dim.Render("  " + truncateCells(opt.Description, max(r.Width-len(text)-12, 10)))
+			row += dim.Render("  " + truncateCells(
+				core.SanitizeTerminal(opt.Description), max(r.Width-len(text)-12, 10)))
 		}
 		body = append(body, row)
 	}

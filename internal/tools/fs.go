@@ -362,6 +362,38 @@ func humanBytes(n int64) string {
 	}
 }
 
+// mkdirAllConfined creates a file's parent directories, refusing to create
+// anything outside the workspace.
+//
+// MkdirAll follows symlinks, so on a confined session it could otherwise build
+// a path outside the root before the bounded write ever ran.
+func (f *FS) mkdirAllConfined(full string) error {
+	dir := filepath.Dir(full)
+	if !f.Confine {
+		return os.MkdirAll(dir, 0o755)
+	}
+	// resolve() is the check the rest of the tools already agree on, including
+	// its handling of a workspace reached through a symlink.
+	if _, err := f.resolve(dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	// And verify what was actually created is where it was meant to be:
+	// MkdirAll follows symlinks, so the check above describes intent and this
+	// describes the result.
+	root := f.Root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	probe, err := openBeneath(root, resolveExisting(dir), os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	return probe.Close()
+}
+
 // openConfined opens a file for reading, atomically bounded to the workspace
 // when confinement is on.
 //
@@ -407,17 +439,14 @@ func (f *FS) writeConfined(full string, data []byte) error {
 	if !f.Confine {
 		return writeAtomic(full, data)
 	}
-	// The temp file and the rename both have to be bounded, not just the final
-	// open: a swapped directory component redirects where the replacement
-	// lands just as effectively as it redirects a read.
+	// Through a descriptor on the parent directory, so the temp file, the write
+	// and the rename all name the directory that was verified rather than
+	// re-resolving a pathname that something may have changed underneath.
 	root := f.Root
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	if err := checkBeneath(root, resolveExisting(full)); err != nil {
-		return err
-	}
-	return writeAtomic(full, data)
+	return writeAtomicBeneath(root, resolveExisting(full), data)
 }
 
 func writeAtomic(path string, data []byte) error {
@@ -486,7 +515,7 @@ func (f *FS) writeTool() Tool {
 			if old, err := f.readConfined(full); err == nil {
 				before = string(old)
 			}
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			if err := f.mkdirAllConfined(full); err != nil {
 				return Result{}, err
 			}
 			if err := f.writeConfined(full, []byte(a.Content)); err != nil {

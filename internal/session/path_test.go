@@ -113,3 +113,25 @@ func TestRewriteArtefactsAreNotWorldReadable(t *testing.T) {
 		t.Fatalf("expected a log and a backup, checked %d files", checked)
 	}
 }
+
+// pathFor is lexical: a name can be a perfectly good basename and still be a
+// symlink pointing out of the sessions directory. Writing a conversation
+// through it writes wherever it points.
+func TestASessionThatIsASymlinkIsRefused(t *testing.T) {
+	base := t.TempDir()
+	dir := Dir(base)
+	if err := os.MkdirAll(dir, DirPerm); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "elsewhere.jsonl")
+	if err := os.WriteFile(outside, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "planted.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(base, "planted"); err == nil {
+		t.Error("a session log that is a symlink out of the directory was opened for writing")
+	}
+}

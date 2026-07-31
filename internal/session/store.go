@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"evilcode/internal/core"
@@ -132,8 +133,16 @@ func Open(dataDir, name string) (*Store, error) {
 	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, FilePerm)
+	// O_NOFOLLOW: pathFor is lexical, so a name that is a perfectly good
+	// basename can still be a symlink pointing out of the sessions directory —
+	// planted by anything that can write there, or by an earlier version of
+	// this program. Appending a conversation through it would write wherever it
+	// points.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, FilePerm)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("session %q is a symlink; refusing to write through it", name)
+		}
 		return nil, err
 	}
 	return &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}, nil
@@ -206,9 +215,9 @@ func CreateNamed(dataDir, name string) (*Store, error) {
 		return nil, err
 	}
 
-	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY | os.O_APPEND
+	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY | os.O_APPEND | syscall.O_NOFOLLOW
 	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND | syscall.O_NOFOLLOW
 	}
 	f, err := os.OpenFile(path, flags, FilePerm)
 	if err != nil {
@@ -340,7 +349,7 @@ func (s *Store) reopenLocked() error {
 	if s.file != nil {
 		_ = s.file.Close()
 	}
-	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, FilePerm)
+	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, FilePerm)
 	if err != nil {
 		return errors.Join(flushErr, err)
 	}
@@ -418,7 +427,10 @@ func List(dataDir string) ([]Info, error) {
 // Describe reads a session file's summary without loading its messages into
 // the conversation.
 func Describe(dataDir, name string) (Info, error) {
-	path := filepath.Join(Dir(dataDir), name+".jsonl")
+	path, err := pathFor(dataDir, name)
+	if err != nil {
+		return Info{}, err
+	}
 	stat, err := os.Stat(path)
 	if err != nil {
 		return Info{}, err

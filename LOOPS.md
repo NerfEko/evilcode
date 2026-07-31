@@ -3186,3 +3186,70 @@ request still retries as before.
 Verified: repro test passes (no replay); the existing flaky/retry tests still
 green (they fail before any delta, so retry still fires); `go build ./... &&
 go vet ./... && go test ./...` and probe goldens green.
+
+## 2026-07-31 H4 — Finishing what the review found
+
+A codex review of the phase returned twelve findings, and it was right about all
+of them. H4 was not done; it was announced as done. What follows is the gap
+between those two things.
+
+**Sanitization covered one renderer out of seven.** H4.1 cleaned the transcript
+and stopped there, so provider- and tool-authored text still reached the
+terminal through the status line's tool name, the `/btw` side panel, the ask
+picker, the model list, the memory widget, the todo card, and every notice —
+including `m.notice`, which is where a mermaid renderer's stderr lands verbatim.
+
+Chasing renderers was the mistake. It means finding all of them today and then
+finding the next one somebody adds. Sanitizing moved to **ingress**: one
+function on the event, before anything can consume it, covering text, errors,
+tool output, intents, diffs, the call name, and the typed payloads the widgets
+draw directly. Notices are cleaned at the draw, since a hundred assignment sites
+cannot each be trusted to know where their text came from. Headless got the same
+treatment for the same reason.
+
+Streaming deltas are the one deliberate exception. A control sequence can arrive
+split across two of them, and sanitizing fragments drops the introducer from one
+while the payload rides through in the next as visible junk. Deltas now pass
+through untouched and are cleaned when the block renders its accumulated text,
+which sees the whole sequence. Headless prints per-delta and cannot do this; the
+result there is junk on screen, never execution, because the escape byte itself
+is gone.
+
+**`escapeLen` knew two of the three ways to end a sequence.** BEL and the
+seven-bit ST, not the eight-bit C1 ST at U+009C. A sequence terminated that way
+ran to the end of the string — the payload never reached the terminal, but
+neither did anything after it, so a hostile file could silently swallow the rest
+of the text it appeared in.
+
+**Half the session package still built paths by hand.** `Rewind`, `Compact`,
+`Transfer` and `Describe` joined names directly, so H4.2's validator guarded the
+front door while four windows stood open. And `pathFor` is lexical: a name can
+be a perfectly good basename and still be a symlink pointing out of the sessions
+directory. Session logs now open `O_NOFOLLOW`.
+
+**The confined write was check-then-use — the exact shape H4.6 was fixing.** It
+verified the parent directory with `openBeneath`, *closed it*, and then called an
+ordinary write that re-resolves the pathname from scratch. A component swapped
+in between redirects it as before, with an extra step in the way. Writes now
+hold the directory descriptor across the temp file, the write and the rename, so
+every operation names the directory that was verified rather than a path that
+might have changed. `MkdirAll` ran before any check at all and could build a
+path outside the root; it is checked before and verified after.
+
+Writing that fix and its test in the same commit as the read-side fix is what
+hid it: the read test passed, the write had no test, and "H4.6" felt done.
+
+**The daemon's socket race had a sibling.** Bind-first fixed two daemons racing
+to bind; it did not fix two daemons finding the same *stale* socket, both
+failing the dial, and the second removing what the first had by then bound. That
+window cannot be closed by ordering, so it is held under a lock file beside the
+socket. Eight concurrent starts on a stale socket now leave exactly one daemon,
+and it is the reachable one.
+
+The lesson is about the shape of the mistake rather than any one instance. Four
+of the twelve were the same error I had just written a fix for, applied one
+place and not the next: sanitize the transcript but not the widgets, bound the
+read but not the write, validate `Open` but not `Rewind`, order the bind but not
+the removal. A fix that names a mechanism is a claim about every place that
+mechanism occurs, and the only way to find out whether the claim holds is to go
+looking — which is what the review did and I had not.

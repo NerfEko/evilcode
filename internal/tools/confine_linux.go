@@ -50,23 +50,62 @@ func openBeneath(root, full string, flags int, perm os.FileMode) (*os.File, erro
 	return os.NewFile(uintptr(fd), full), nil
 }
 
-// checkBeneath reports whether full resolves inside root, using the same
-// kernel resolution the confined open relies on.
+// writeAtomicBeneath replaces a file's contents through a descriptor held on
+// its parent directory.
 //
-// A write goes through a temp file and a rename rather than a single open, so
-// there is no descriptor to hand it; opening the parent directory beneath the
-// root is what proves the destination is where it claims to be.
-func checkBeneath(root, full string) error {
-	dir := filepath.Dir(full)
-	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path %q is outside the workspace %s", full, root)
-	}
-	f, err := openBeneath(root, dir, os.O_RDONLY, 0)
+// The first version of this checked the parent with openBeneath, closed it, and
+// then called the ordinary write — which re-resolves the pathname from scratch.
+// That is the same check-then-use shape confinement had in the first place,
+// with an extra step: a component swapped between the check and the write
+// redirects it exactly as before.
+//
+// Holding the directory descriptor is what closes it. Every operation after
+// that — creating the temp file, writing it, renaming it into place — names
+// files relative to that descriptor, so it does not matter what the path
+// resolves to afterwards: the fd refers to the directory that was verified.
+func writeAtomicBeneath(root, full string, data []byte) error {
+	dir, err := openBeneath(root, filepath.Dir(full), os.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return err
 	}
-	return f.Close()
+	defer dir.Close()
+	dirFd := int(dir.Fd())
+	base := filepath.Base(full)
+
+	mode := uint32(0o644)
+	var st unix.Stat_t
+	if err := unix.Fstatat(dirFd, base, &st, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		mode = st.Mode & 0o777
+	}
+
+	tmp := "." + base + ".tmp"
+	_ = unix.Unlinkat(dirFd, tmp, 0)
+	fd, err := unix.Openat(dirFd, tmp,
+		unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, mode)
+	if err != nil {
+		return fmt.Errorf("creating a temporary file in the workspace: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), tmp)
+
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		_ = unix.Unlinkat(dirFd, tmp, 0)
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		_ = unix.Unlinkat(dirFd, tmp, 0)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = unix.Unlinkat(dirFd, tmp, 0)
+		return err
+	}
+	if err := unix.Renameat(dirFd, tmp, dirFd, base); err != nil {
+		_ = unix.Unlinkat(dirFd, tmp, 0)
+		return err
+	}
+	return nil
 }
 
 // openat2Supported reports whether the kernel has the syscall at all. It landed
