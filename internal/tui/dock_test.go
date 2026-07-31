@@ -406,3 +406,88 @@ func TestCenteredContentWidth(t *testing.T) {
 		t.Errorf("pad %d + width %d overflows 160", pad, w)
 	}
 }
+
+func TestDiffModeCycles(t *testing.T) {
+	// Off → Inline → Pinned → File → Off, and only the last two need the pane.
+	seen := map[DiffMode]bool{}
+	m := DiffOff
+	for i := 0; i < int(numDiffModes); i++ {
+		if seen[m] {
+			t.Fatalf("cycle repeated %v after %d steps", m, i)
+		}
+		seen[m] = true
+		m = m.Next()
+	}
+	if m != DiffOff {
+		t.Errorf("cycle ended at %v, want it back at off", m)
+	}
+	if DiffOff.UsesPanel() || DiffInline.UsesPanel() {
+		t.Error("off and inline should not open the pane")
+	}
+	if !DiffPinned.UsesPanel() || !DiffFile.UsesPanel() {
+		t.Error("pinned and file need the pane")
+	}
+}
+
+func TestFileDiffBlanksDeletedLineNumbers(t *testing.T) {
+	// A deleted line does not exist in the new file, so numbering it invites
+	// the reader to go look at a line that says something else (plan.md §9.4).
+	r := testRenderer(80)
+	diff := "--- a/x.go\n+++ b/x.go\n@@ -3,4 +3,4 @@\n ctx\n-old line\n+new line\n more\n"
+	rows := plainLines(r.fileDiffLines("x.go", diff, 70))
+
+	var deleted, added string
+	for _, row := range rows {
+		if strings.Contains(row, "old line") {
+			deleted = row
+		}
+		if strings.Contains(row, "new line") {
+			added = row
+		}
+	}
+	if deleted == "" || added == "" {
+		t.Fatalf("rows = %v", rows)
+	}
+	gutter := strings.SplitN(deleted, "│", 2)[0]
+	if strings.TrimSpace(gutter) != "" {
+		t.Errorf("deleted line carries number %q, want a blank gutter", gutter)
+	}
+	if strings.TrimSpace(strings.SplitN(added, "│", 2)[0]) == "" {
+		t.Error("the added line should be numbered")
+	}
+}
+
+func TestParseHunkStart(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"@@ -1,3 +5,4 @@", 5, true},
+		{"@@ -1 +12 @@ func main", 12, true},
+		{"not a hunk", 0, false},
+		{"@@ -1,3 @@", 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := parseHunkStart(tt.in)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("parseHunkStart(%q) = %d, %v; want %d, %v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestSidePanelRefusesTooNarrow(t *testing.T) {
+	// Half a diff is worse than none.
+	r := testRenderer(80)
+	if got := r.RenderSidePanel(PanelContent{Diff: "x"}, DiffPinned, 10, 20, false); got != nil {
+		t.Errorf("a %d-wide pane rendered %d rows", 10, len(got))
+	}
+}
+
+func TestSidePanelEmptySaysSo(t *testing.T) {
+	r := testRenderer(120)
+	rows := plainLines(r.RenderSidePanel(PanelContent{}, DiffPinned, 40, 6, false))
+	if !strings.Contains(strings.Join(rows, "\n"), "nothing pinned") {
+		t.Errorf("rows = %v", rows)
+	}
+}
