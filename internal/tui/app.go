@@ -99,6 +99,14 @@ type Model struct {
 	dock      *Dock
 	widgetsOn bool
 
+	// centered is the Alt+C layout toggle, and overscroll drives the elastic
+	// pull-to-reveal facts line (§4.4).
+	centered   bool
+	overscroll Overscroll
+
+	// typingLock keeps the view where it is while typing (Alt+S, §4.5).
+	typingLock bool
+
 	// helpOpen and helpScroll drive the full-screen help overlay (§5.5).
 	helpOpen   bool
 	helpScroll int
@@ -136,6 +144,7 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		streamingIdx: -1,
 		dock:         NewDock(),
 		widgetsOn:    true,
+		overscroll:   Overscroll{Mode: OverscrollPull},
 	}
 }
 
@@ -531,6 +540,27 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.history.Open(m.editor.Text, m.editor.Cursor)
 		return m, nil
 
+	case "alt+c":
+		m.centered = !m.centered
+		m.renderer.Centered = m.centered
+		m.dock.Reset()
+		m.applyWrapWidth()
+		if m.centered {
+			m.notice = "Centered layout"
+		} else {
+			m.notice = "Left-aligned layout"
+		}
+		return m, nil
+
+	case "alt+s":
+		m.typingLock = !m.typingLock
+		if m.typingLock {
+			m.notice = "Typing scroll lock: ON - typing stays at current chat position"
+		} else {
+			m.notice = "Typing scroll lock: OFF - typing follows chat bottom"
+		}
+		return m, nil
+
 	case "alt+i":
 		m.widgetsOn = !m.widgetsOn
 		m.dock.Reset()
@@ -603,6 +633,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.editor.Insert(txt)
 		m.confirmQuit = false
 		m.syncShellMode()
+		// Typing normally follows the bottom; the lock keeps the reader where
+		// they were (plan.md §4.5).
+		if !m.typingLock {
+			m.scroll.FollowBottom()
+		}
 	}
 	return m, nil
 }
@@ -626,8 +661,12 @@ func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseWheelUp:
 		m.scroll.WheelUp(now, m.contentHeight(), m.transcriptHeight())
+		// Scrolling up cancels the reveal instantly; it is a downward gesture.
+		m.overscroll.Cancel()
 	case tea.MouseWheelDown:
+		atBottom := m.scroll.AtBottom()
 		m.scroll.WheelDown(now)
+		m.overscroll.Tick(now, atBottom)
 	}
 	return m, nil
 }
@@ -1179,7 +1218,7 @@ func (m *Model) transcriptLines() []string {
 // applyWrapWidth sets the renderer's wrap width, reserving a column for the
 // scrollbar when the previous frame showed one (plan.md §3.5).
 func (m *Model) applyWrapWidth() {
-	width, _ := ContentWidth(m.width, false)
+	width, _ := ContentWidth(m.width, m.centered)
 	if m.scrollbarOn {
 		width--
 	}
@@ -1300,23 +1339,34 @@ func (m *Model) View() tea.View {
 
 	rows = append(rows, m.renderer.RenderComposer(m.composerState())...)
 
+	// The elastic facts line lives below the composer and owns the same facts
+	// as the fact stack, so only one of them shows at a time (§4.4, §8.6).
+	now := time.Now()
+	if m.overscroll.Visible(now, m.scroll.AtBottom()) {
+		rows = append(rows, m.renderer.RenderOverscrollFacts(
+			m.factStack(), m.overscroll.Remaining(now)))
+	}
+
+	// Centering is literal left padding rather than per-line centering, which
+	// keeps copy and column math sane (plan.md Phase 2). It is applied before
+	// docking so widgets measure the real frame, not the pre-padded one.
+	// ContentWidth already accounts for the left gutter, so pad is the whole
+	// left offset — adding Inset again would double-count it.
+	_, pad := ContentWidth(m.width, m.centered)
+	inset := strings.Repeat(" ", pad)
+	for i, row := range rows {
+		rows[i] = inset + row
+	}
+
 	// Widgets dock into the blank space beside the transcript, so they cost no
 	// layout height at all — they live where the text is not (plan.md §8.3).
 	rows = m.dockWidgets(rows, res.Transcript, len(content))
 
-	// The palette is spliced over the finished frame rather than added to it,
-	// so opening it reserves no layout height and the transcript never moves
-	// (plan.md invariant 3). It runs before the inset so the overlay shares the
-	// same gutter as every other row.
-	rows = m.overlayPalette(rows)
-	rows = m.overlayHistory(rows)
-
-	// The left inset is applied here rather than per-widget, so every row
-	// shares one gutter (plan.md §3.4).
-	inset := strings.Repeat(" ", Inset(false))
-	for i, row := range rows {
-		rows[i] = inset + row
-	}
+	// Overlays are spliced over the finished frame rather than added to it, so
+	// opening one reserves no layout height and the transcript never moves
+	// (plan.md invariant 3).
+	rows = m.overlayPalette(rows, inset)
+	rows = m.overlayHistory(rows, inset)
 
 	v := tea.NewView(strings.Join(rows, "\n"))
 	// These are view properties in Bubble Tea v2, not program options.
@@ -1333,14 +1383,25 @@ func (m *Model) View() tea.View {
 
 // overlayHistory splices the reverse search over the finished frame. It is
 // drawn after the palette so it wins when both could apply (plan.md §5.2).
-func (m *Model) overlayHistory(rows []string) []string {
-	overlay := m.renderer.RenderHistorySearch(&m.history)
-	return spliceOverlay(rows, overlay, m.height,
-		len(m.renderer.RenderComposer(m.composerState())))
+func (m *Model) overlayHistory(rows []string, inset string) []string {
+	return spliceOverlay(rows, indent(m.renderer.RenderHistorySearch(&m.history), inset),
+		m.height, len(m.renderer.RenderComposer(m.composerState())))
+}
+
+// indent prefixes overlay rows so they line up with the padded frame.
+func indent(rows []string, prefix string) []string {
+	if prefix == "" {
+		return rows
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = prefix + r
+	}
+	return out
 }
 
 // overlayPalette splices the command list over the finished frame.
-func (m *Model) overlayPalette(rows []string) []string {
+func (m *Model) overlayPalette(rows []string, inset string) []string {
 	if !m.paletteOpen() {
 		return rows
 	}
@@ -1348,7 +1409,7 @@ func (m *Model) overlayPalette(rows []string) []string {
 	// the two can never drift apart.
 	state := m.palette
 	state.Query = strings.TrimPrefix(m.editor.Text, "/")
-	overlay := m.renderer.RenderPalette(state, VisibleCommands())
+	overlay := indent(m.renderer.RenderPalette(state, VisibleCommands()), inset)
 	return spliceOverlay(rows, overlay, m.height,
 		len(m.renderer.RenderComposer(m.composerState())))
 }
@@ -1392,6 +1453,19 @@ func spliceOverlay(rows, overlay []string, screenHeight, composerRows int) []str
 		rows[idx] = line
 	}
 	return rows
+}
+
+// factStack gathers the always-true, never-urgent facts (§8.6).
+func (m *Model) factStack() FactStack {
+	return FactStack{
+		Provider: m.header.Provider,
+		Auth:     m.header.AuthKind,
+		Model:    m.header.Model,
+		Cwd:      m.header.Cwd,
+		Branch:   m.header.Branch,
+		Used:     m.status.TokensIn + m.status.TokensOut,
+		Total:    m.contextMax(),
+	}
 }
 
 // activeWidgets builds the widget list in priority order, dropping any that
@@ -1441,7 +1515,7 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []s
 		region = region[:transcriptRows]
 	}
 
-	placements := m.dock.Layout(m.activeWidgets(), region, m.width-Inset(false),
+	placements := m.dock.Layout(m.activeWidgets(), region, m.width,
 		max(contentLines-transcriptRows-m.scroll.Offset, 0), false)
 	if len(placements) == 0 {
 		return rows

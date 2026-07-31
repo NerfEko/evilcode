@@ -501,3 +501,24 @@ past the threshold, and never overlaps another widget. One test bug found and fi
 the way — the first scroll test held the rows array constant while scrolling, which is
 not what scrolling does. PNG looked at: the Todos widget docked in the right margin.
 25 goldens green.
+
+## 2026-07-31 P2.16–P2.17 — centered mode, overscroll, typing lock
+
+Done: Alt+C centered layout, the elastic pull-to-reveal facts line, Alt+S typing scroll
+lock, and the right fact stack.
+
+Overscroll only reveals when the gesture *began* at the bottom. Momentum that merely
+arrives there is swallowed, so scrolling down through a long transcript does not flash
+the facts line at the end of every scroll — that distinction is the whole difference
+between "intentional" and "twitchy". The gesture gap is asserted by test to exceed the
+redraw cadence, since a shorter one splits a single flick into two gestures and the
+reveal never fires at all.
+
+Centering is literal left padding rather than per-line centering, which keeps copy and
+column math sane. Two ordering bugs found by looking at the frame: widgets were docked
+before the padding was applied, so in centered mode they were pushed off the right edge;
+and the left gutter was counted twice, because `ContentWidth` already includes it in the
+pad it returns. Overlays now carry the same padding so they line up with the content
+rather than the terminal.
+
+Verified: 8 overscroll/centered tests. PNG looked at in both alignments.

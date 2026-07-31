@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // rowsOfWidth builds a frame whose rows are the given text widths.
@@ -308,5 +309,100 @@ func TestFactStackOmitsUnknownFields(t *testing.T) {
 	r := testRenderer(80)
 	if got := r.RenderFactStack(FactStack{}); len(got) != 0 {
 		t.Errorf("an empty fact stack rendered %d rows", len(got))
+	}
+}
+
+func TestOverscrollRequiresGestureToBeginAtBottom(t *testing.T) {
+	// The rule that makes it feel intentional: momentum merely *arriving* at
+	// the bottom is swallowed, so scrolling down through a long transcript
+	// does not flash the facts line every time (plan.md §4.4).
+	now := time.Now()
+
+	var arriving Overscroll
+	arriving.Mode = OverscrollPull
+	arriving.Tick(now, false) // gesture began mid-transcript
+	arriving.Tick(now.Add(50*time.Millisecond), true)
+	if arriving.Visible(now.Add(60*time.Millisecond), true) {
+		t.Error("a gesture that merely arrived at the bottom must not reveal")
+	}
+
+	var deliberate Overscroll
+	deliberate.Mode = OverscrollPull
+	deliberate.Tick(now, true) // already pinned when the flick started
+	if !deliberate.Visible(now.Add(10*time.Millisecond), true) {
+		t.Error("a flick that began at the bottom should reveal")
+	}
+}
+
+func TestOverscrollDwellExpires(t *testing.T) {
+	now := time.Now()
+	var o Overscroll
+	o.Mode = OverscrollPull
+	o.Tick(now, true)
+	if !o.Visible(now.Add(OverscrollDwell-time.Millisecond), true) {
+		t.Error("should still be visible within the dwell")
+	}
+	if o.Visible(now.Add(OverscrollDwell+time.Millisecond), true) {
+		t.Error("should have rebounded away after the dwell")
+	}
+}
+
+func TestOverscrollGestureGapStartsANewGesture(t *testing.T) {
+	// The gap must exceed the idle redraw cadence, or one flick gets split
+	// into two gestures and the reveal never triggers.
+	if OverscrollGesture <= SpinnerInterval {
+		t.Errorf("gesture gap %v must exceed the redraw cadence %v",
+			OverscrollGesture, SpinnerInterval)
+	}
+	now := time.Now()
+	var o Overscroll
+	o.Mode = OverscrollPull
+	o.Tick(now, false)
+	// A long pause, then a flick that does begin at the bottom.
+	o.Tick(now.Add(OverscrollGesture+time.Millisecond), true)
+	if !o.Visible(now.Add(OverscrollGesture+2*time.Millisecond), true) {
+		t.Error("a new gesture beginning at the bottom should reveal")
+	}
+}
+
+func TestOverscrollModes(t *testing.T) {
+	now := time.Now()
+
+	var off Overscroll
+	off.Mode = OverscrollOff
+	off.Tick(now, true)
+	if off.Visible(now, true) {
+		t.Error("off must never reveal")
+	}
+
+	var always Overscroll
+	always.Mode = OverscrollAlways
+	if !always.Visible(now, true) {
+		t.Error("on should show whenever pinned, with no gesture")
+	}
+	if always.Visible(now, false) {
+		t.Error("on should hide when scrolled up")
+	}
+}
+
+func TestOverscrollCancelledByScrollingUp(t *testing.T) {
+	now := time.Now()
+	var o Overscroll
+	o.Mode = OverscrollPull
+	o.Tick(now, true)
+	o.Cancel()
+	if o.Visible(now, true) {
+		t.Error("scrolling up must cancel the reveal instantly")
+	}
+}
+
+func TestCenteredContentWidth(t *testing.T) {
+	// Centering is literal left padding, which keeps copy and column math sane.
+	w, pad := ContentWidth(160, true)
+	if w != CenteredCap {
+		t.Errorf("width = %d, want the cap %d", w, CenteredCap)
+	}
+	if pad*2+w > 160 {
+		t.Errorf("pad %d + width %d overflows 160", pad, w)
 	}
 }

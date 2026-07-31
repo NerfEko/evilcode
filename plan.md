@@ -1010,8 +1010,8 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [ ] Full keymap + configurable bindings + hotkey feedback/near-miss (§11, §6.8).
 - [x] Command registry completion: `/help` overlay + anti-drift + `/help <cmd>`, argument completion, remaining P2 commands (§5.5, §13).
 - [x] Widget dock engine + anchoring/hysteresis (§8.3); widgets: Todos, ContextUsage, ModelInfo, GitStatus, BackgroundTasks, Tips (§8.4, §8.5, §8.9).
-- [ ] Right fact stack (§8.6). Elastic overscroll (§4.4). Typing scroll lock (§4.5).
-- [ ] Centered mode: 96-col cap, centering by literal left-padding (not per-line Center alignment — keeps copy/column math sane), per-role exemptions (tool/system/code-block rows stay left), left-side widget margin only exists here, cursor offset math, images split slack both sides, part of the render cache key, `/alignment` persist.
+- [x] Right fact stack (§8.6). Elastic overscroll (§4.4). Typing scroll lock (§4.5).
+- [x] Centered mode: 96-col cap, centering by literal left-padding (not per-line Center alignment — keeps copy/column math sane), per-role exemptions (tool/system/code-block rows stay left), left-side widget margin only exists here, cursor offset math, images split slack both sides, part of the render cache key, `/alignment` persist.
 - [ ] Theme engine: roles, palettes (dracula/nosferatu/gloom/daywalker), two-pass substitution, literals file + tests (§7.1–7.4).
 - [ ] Harmony scoring + generation + `/theme score|generate` + calibration tests (§7.5).
 - [ ] Prompt-entry animation (§10.2). Idle art: subpixel renderer + `eye` + `blackhole` (§10.1).

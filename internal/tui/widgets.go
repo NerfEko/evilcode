@@ -286,3 +286,35 @@ func (r *Renderer) RenderFactStack(f FactStack) []string {
 	}
 	return rows
 }
+
+// RenderOverscrollFacts draws the one-row elastic facts line with its live
+// countdown (plan.md §4.4). It is the same information as the fact stack,
+// which is why only one of them shows at a time.
+func (r *Renderer) RenderOverscrollFacts(f FactStack, remaining float64) string {
+	meta := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(140, 140, 150))))
+	countdown := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Hex(theme.RGB(150, 150, 165)))).Italic(true)
+
+	var parts []string
+	if f.Model != "" {
+		parts = append(parts, f.Model)
+	}
+	if f.Provider != "" {
+		parts = append(parts, f.Provider)
+	}
+	if f.Auth != "" {
+		parts = append(parts, f.Auth)
+	}
+	if f.Total > 0 {
+		parts = append(parts, fmt.Sprintf("%s/%s", humanTokens(f.Used), humanTokens(f.Total)))
+	}
+	if f.Cwd != "" {
+		parts = append(parts, f.Cwd)
+	}
+
+	left := meta.Render(strings.Join(parts, " · "))
+	right := countdown.Render(fmt.Sprintf("(overscroll %.1f)", remaining))
+
+	gap := max(r.Width-lipgloss.Width(left)-lipgloss.Width(right), 1)
+	return left + strings.Repeat(" ", gap) + right
+}

@@ -233,6 +233,87 @@ func TailCatchup(currentLag, viewportHeight int, snapPending, animate bool) int 
 	return max(lag-TailCatchupPerFrame, 0)
 }
 
+// Overscroll timings (plan.md §4.4).
+const (
+	// OverscrollDwell is how long the facts line lingers after the last tick.
+	OverscrollDwell = 1500 * time.Millisecond
+
+	// OverscrollGesture is the gap that separates one flick from the next. It
+	// must exceed the idle redraw cadence, or a single flick gets split into
+	// two gestures and the reveal never triggers.
+	OverscrollGesture = 500 * time.Millisecond
+)
+
+// OverscrollMode is the config setting for the pull-to-reveal facts line.
+type OverscrollMode string
+
+const (
+	// OverscrollOff never reveals.
+	OverscrollOff OverscrollMode = "off"
+
+	// OverscrollAlways pins the facts line whenever the view is at the bottom.
+	OverscrollAlways OverscrollMode = "on"
+
+	// OverscrollPull is the default: reveal on a deliberate downward flick.
+	OverscrollPull OverscrollMode = "overscroll"
+)
+
+// Overscroll tracks the elastic pull-to-reveal gesture.
+//
+// The rule that makes it feel intentional rather than twitchy: the gesture must
+// have *begun* at the bottom. Momentum that merely arrives at the bottom is
+// swallowed, so scrolling down through a long transcript does not flash the
+// facts line at the end of every scroll (plan.md §4.4).
+type Overscroll struct {
+	Mode OverscrollMode
+
+	revealUntil time.Time
+	lastTick    time.Time
+	beganAtEnd  bool
+}
+
+// Tick records a downward wheel notch. atBottom is whether the view was already
+// pinned when this notch arrived.
+func (o *Overscroll) Tick(now time.Time, atBottom bool) {
+	if o.Mode == OverscrollOff {
+		return
+	}
+	// A long enough pause starts a new gesture.
+	if now.Sub(o.lastTick) > OverscrollGesture {
+		o.beganAtEnd = atBottom
+	}
+	o.lastTick = now
+	if o.beganAtEnd && atBottom {
+		o.revealUntil = now.Add(OverscrollDwell)
+	}
+}
+
+// Cancel hides the facts line immediately, which scrolling up does.
+func (o *Overscroll) Cancel() {
+	o.revealUntil = time.Time{}
+	o.beganAtEnd = false
+}
+
+// Visible reports whether the facts line should show.
+func (o *Overscroll) Visible(now time.Time, atBottom bool) bool {
+	switch o.Mode {
+	case OverscrollOff:
+		return false
+	case OverscrollAlways:
+		return atBottom
+	default:
+		return now.Before(o.revealUntil)
+	}
+}
+
+// Remaining is the countdown shown beside the facts, in seconds.
+func (o *Overscroll) Remaining(now time.Time) float64 {
+	if !now.Before(o.revealUntil) {
+		return 0
+	}
+	return o.revealUntil.Sub(now).Seconds()
+}
+
 // ScrollbarVisible decides whether the transcript needs a scrollbar, with the
 // hysteresis of plan.md §3.6.
 //
