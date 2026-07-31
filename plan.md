@@ -972,8 +972,8 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 
 ## Phase 1 — Drivable core
 
-- [ ] Provider interface + `ollama.go` + `openai.go` + `mock.go` (§16). Tests: NDJSON/SSE parsing fixtures, tool-call accumulation, whole-buffered tool calls.
-- [ ] Config (§16, §1.4 paths): TOML load, env overrides, provider registry, `default_model`, `-m` flag.
+- [x] Provider interface + `ollama.go` + `openai.go` + `mock.go` (§16). Tests: NDJSON/SSE parsing fixtures, tool-call accumulation, whole-buffered tool calls.
+- [x] Config (§16, §1.4 paths): TOML load, env overrides, provider registry, `default_model`, `-m` flag.
 - [ ] Tools: read/write/edit (classic mode)/glob/grep/bash + batch concurrency + DiffStat (§17).
 - [ ] Agent core: events, loop, safe-point interleave drain (mechanism only — UI in P2), retries, context assembly, AGENTS.md/CLAUDE.md (§15).
 - [ ] Sessions: JSONL store, creature names, `--resume <name>`, simple resume list (§18). Prompt-history recording (§6.1).

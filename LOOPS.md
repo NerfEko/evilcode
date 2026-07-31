@@ -97,3 +97,41 @@ at `-size 30`. The sheet's visible tofu boxes match `evilcode probe fonts` exact
 34 glyphs, all but three being color emoji.
 
 Phase 0 complete.
+
+## 2026-07-30 P1.1 — provider layer
+
+Done: `internal/provider` — interface plus three implementations.
+
+- `provider.go`: own `Message`/`ToolCall`/`Req`/`Chunk` structs, mapped at the provider
+  edge so the agent core never sees a vendor JSON shape. `Reasoning` is kept separate
+  from `Content` so the TUI can GC traces independently (§9.7, §4.6).
+- `ollama.go`: native `/api/chat` NDJSON, `/api/embed`, `/api/tags`. One client serves
+  localhost and ollama.com — only BaseURL and the bearer token differ. Ollama issues no
+  tool-call IDs, so the client synthesizes unique ones. `HTTPError` classifies retryable
+  (429, 408, 5xx) from terminal (401, 404, 400), which the §12.6 breakers depend on.
+- `openai.go`: SSE with indexed tool-call fragment accumulation — arguments arrive as
+  string pieces that only parse once concatenated.
+- `mock.go`: 9 deterministic scenarios (chat, thinking, tools, tools-buffered,
+  tools-batch, plan, diff, error, long) selected by `EVILCODE_SCENARIO`.
+
+Verified: 27 tests. Notable cases — tool calls arriving whole with no preceding text
+(the Part V warning), synthesized IDs staying unique across chunks, the stream stopping
+at `done:true` rather than reading into a following response, cancellation being honored
+promptly, and the plan scenario chunking mid-fence so the streaming plan card (§12.1) is
+actually exercised. A compile-time check asserts all three satisfy `Provider`.
+
+## 2026-07-30 P1.2 — config
+
+Done: `internal/config` — TOML load, env overrides, provider registry, `model@provider`
+refs, per-model overrides, role chains, XDG paths.
+
+Decoding straight into the defaults (rather than merging a parsed struct over them)
+means an absent key keeps its default. This matters for booleans that default to true:
+a merge from a zero value would silently clear `keybinding_hints`, `idle_animation`, and
+`auto_poke` for anyone whose config file did not mention them. That deleted the whole
+merge function too.
+
+Verified: 20 tests, including the partial-config regression above, explicit `false`
+still winning, providers replacing rather than merging, `SplitModelRef` taking the last
+`@` (model names can contain one), and validation rejecting duplicate/unnamed/unknown-kind
+providers before anything tries to use them.
