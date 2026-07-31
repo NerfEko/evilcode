@@ -186,15 +186,19 @@ func (e *Exec) bashTool() Tool {
 
 			cmd := exec.CommandContext(ctx, "bash", "-c", script)
 			cmd.Dir = e.Cwd()
-			var buf bytes.Buffer
+			var buf ringWriter
 			cmd.Stdout = &buf
 			cmd.Stderr = &buf
+			// Its own process group, so cancelling kills the descendants too.
+			// Killing the shell alone leaves a grandchild running in the
+			// workspace after the tool call has already returned a timeout.
+			setProcessGroup(cmd)
 			// Killing bash does not close the output pipes if a grandchild
 			// still holds them open, so Run would block past the timeout
 			// waiting on `sleep 10` rather than returning. WaitDelay forces
 			// the pipes shut shortly after cancellation.
 			cmd.WaitDelay = 2 * time.Second
-			runErr := cmd.Run()
+			runErr := runGroup(ctx, cmd)
 
 			out := buf.String()
 			if idx := strings.LastIndex(out, marker); idx >= 0 {
@@ -241,12 +245,13 @@ func (e *Exec) runBackground(command string) Result {
 
 		cmd := exec.CommandContext(ctx, "bash", "-c", command)
 		cmd.Dir = e.Cwd()
-		var buf bytes.Buffer
+		var buf ringWriter
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
 		cmd.WaitDelay = 2 * time.Second
+		setProcessGroup(cmd)
 
-		err := cmd.Run()
+		err := runGroup(ctx, cmd)
 		e.Bg.finish(task, Truncate(buf.String()), err != nil)
 	}()
 
@@ -255,6 +260,53 @@ func (e *Exec) runBackground(command string) Result {
 			"its result will be reported when it finishes", task.ID),
 		Intent: "bg: " + shortCmd(command),
 	}
+}
+
+// ringWriter keeps the last MaxOutputBytes of a command's output.
+//
+// A command's output length is not a fact about the machine — `yes`, a build
+// with a verbose flag, a tail on a busy log — and both execution paths were
+// accumulating all of it in memory before truncating at the end. The tail is
+// what is kept because that is where a failure says why.
+type ringWriter struct {
+	mu       sync.Mutex
+	buf      []byte
+	overflow bool
+}
+
+// MaxOutputBytes bounds what one command may hold in memory. Well above
+// MaxResultBytes, so the truncation the model sees is still the one it was
+// always shown; this is the ceiling behind it.
+const MaxOutputBytes = 1 << 20
+
+func (w *ringWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(p)
+	if len(p) >= MaxOutputBytes {
+		p = p[len(p)-MaxOutputBytes:]
+		w.buf = append(w.buf[:0], p...)
+		w.overflow = true
+		return n, nil
+	}
+	if len(w.buf)+len(p) > MaxOutputBytes {
+		drop := len(w.buf) + len(p) - MaxOutputBytes
+		w.buf = append(w.buf[:0], w.buf[drop:]...)
+		w.overflow = true
+	}
+	w.buf = append(w.buf, p...)
+	return n, nil
+}
+
+// String returns what was kept, marked if anything was dropped.
+func (w *ringWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.overflow {
+		return string(w.buf)
+	}
+	return "[earlier output dropped: the command produced more than " +
+		humanBytes(MaxOutputBytes) + "]\n" + string(w.buf)
 }
 
 // BackgroundTimeout is the ceiling on a detached command, so a runaway watcher

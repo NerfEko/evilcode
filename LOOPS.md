@@ -2629,3 +2629,43 @@ than inside the loop that was racing.
 Verified: an oversized read is refused with guidance, a paged read of the same
 file works, twenty runs of the batch tests are clean; `go test ./... -race`
 green.
+
+## 2026-07-31 H3.3/H3.4 — What a command may hold, and what it may leave behind
+
+Same file, same two lines of setup, so they went together.
+
+**Unbounded output.** Both paths accumulated stdout and stderr in a
+`bytes.Buffer` and truncated at the end. The truncation was real — the model
+never saw more than `MaxResultBytes` — so the bug is invisible in the result and
+lives entirely in what it cost to get there.
+
+Allocation is how that shows from outside:
+
+```
+a 64 MB command allocated 189.1 MB; the output buffer is unbounded
+a 64 MB background command allocated 189.1 MB; its output is unbounded
+```
+
+189 MB to deliver 50 KB, and a background command holds it for up to thirty
+minutes. A ring writer keeps the last megabyte and says so when it dropped
+anything. The tail rather than the head, because that is where a failure
+explains itself.
+
+**Orphaned grandchildren.** Cancelling kills the process that was started, not
+its children, and a shell command is almost always a parent. A grandchild
+sleeping past the timeout wrote into the workspace after the tool call had
+already returned an error:
+
+```
+a grandchild survived the timeout and wrote to the workspace after the tool call
+had returned
+```
+
+Commands run in their own process group now, and cancellation signals the group
+— the negative pid — rather than the leader. The existing `WaitDelay` comment
+had noticed the symptom ("killing bash does not close the output pipes if a
+grandchild still holds them open") and worked around the pipe half without
+following it to the process half.
+
+Verified: both allocation checks under 32 MB, the grandchild's marker file never
+appears; `go test ./... -race` green.

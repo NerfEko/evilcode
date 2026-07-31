@@ -256,10 +256,10 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   unbounded `os.ReadFile` plus a full line split; output truncation happens only after the
   whole file is resident. A multi-GB file OOMs the process. Fix: stat or limited-reader
   before load.  ⟨both⟩
-- [ ] **H3.3** `internal/tools/exec.go:169` — foreground and background execution both
+- [x] **H3.3** `internal/tools/exec.go:169` — foreground and background execution both
   accumulate stdout and stderr unbounded; background commands hold it for up to 30 minutes
   before `Truncate` runs. Fix: bounded ring writers, kill on hard output limit.  ⟨both⟩
-- [ ] **H3.4** `internal/tools/exec.go:167` — cancellation kills the shell but not its
+- [x] **H3.4** `internal/tools/exec.go:167` — cancellation kills the shell but not its
   descendants, so grandchildren outlive timeouts and keep modifying the workspace. Fix:
   start in a process group, kill the group.  ⟨codex⟩
 - [ ] **H3.5** `internal/agent/agent.go:285` — raw image bytes are persisted into transcript
