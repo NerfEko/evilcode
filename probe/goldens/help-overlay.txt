@@ -27,12 +27,12 @@
 │                                                                                                                                          │
 │ System                                                                                                                                   │
 │   /config            Show the loaded configuration                                                                                       │
+│   /theme             Switch, score, or generate a palette                                                                                │
 │   /terminal-setup    Fix Shift+Enter in this terminal                                                                                    │
 │   /screenshot        Write the current frame to a PNG                                                                                    │
+│   /compact           Summarize the conversation into a fresh context                                                                     │
+│   /fix               Nudge a stalled model back on track                                                                                 │
+│   /btw               Ask a side question without touching the conversation                                                               │
 │   /cancel            Cancel the current turn                                                                                             │
 │   /quit              Exit evilcode                                                                                                       │
-│                                                                                                                                          │
-│ More commands                                                                                                                            │
-│   /theme             Switch, score, or generate a palette                                                                                │
-│                                                                                                                                          │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘

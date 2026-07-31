@@ -1,6 +1,6 @@
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock                                                                                                    ╷
- <repo> (main)                                                                                            │
+ ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit
+ <repo> (main)                                                                                            ╷
                                                                                                                                            │
  1› long answer                                                                                                                            │
                                                                                                                                            │

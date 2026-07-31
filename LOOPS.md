@@ -671,3 +671,31 @@ could go look at.
 
 Verified: PNG looked at with the panel open — syntax highlighting survives the diff tint
 in the panel as it does inline, and the transcript reflows to the narrower column.
+
+## 2026-07-31 P2.24–P2.29 — skills, MCP, self-test commands, Phase 2 verification
+
+Done: the skills index and `skill` tool, the MCP client, `/compact`, `/fix`, `/btw`,
+background bash with its widget and completion notices, and the self-test commands.
+
+**Phase 2 verification, all five criteria.** Four are covered by
+`TestPhase2Verification` in `internal/todo`: a 3-item list pokes on an early stop, a low
+loop score produces a digest at turn end, the `75→100%` arrow marks a bulk end-stamp, and
+the ownership gate rejects a premature group close while leaving the stored list
+untouched.
+
+The fifth — anchored edits round-tripping — was run against a real cloud model and
+**failed twice before revealing two real bugs**:
+
+1. The model passed the line's *text* where the anchor code belongs, and the error
+   echoed a lowercased copy of it. That made it look as though the tool had mangled its
+   input, and it went off chasing a case-sensitivity bug that did not exist. The error
+   now says what an anchor actually is and gives an example.
+2. Anchors were never enabled at all. `ModelOverrides` was being looked up by the `-m`
+   *flag* rather than the resolved model, so any session relying on `default_model`
+   silently got no per-model settings. This was invisible because the fallback path
+   works — the model just used exact-string edits instead.
+
+With both fixed the round-trip is three calls: `read`, anchored `edit`, `read` to
+confirm. No retry loop.
+
+Phase 2 complete; tagged `phase-2`.

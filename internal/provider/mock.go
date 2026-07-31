@@ -284,6 +284,19 @@ var mockScenarios = map[string][][]Chunk{
 		append(text("Exponential it is."), done(400, 6)),
 	},
 
+	// A detached command, for the background-task widget and its completion
+	// notice (§17, §8.3).
+	"background": {
+		{
+			{Text: "Starting the build."},
+			call("call_1", "bash", map[string]any{
+				"cmd": "sleep 2 && echo built", "background": true,
+			}),
+			done(200, 20),
+		},
+		append(text("Kicked off; I will report when it lands."), done(300, 8)),
+	},
+
 	// A failure mid-stream, for the error row and retry paths (§9.8, §9.9).
 	"error": {
 		{

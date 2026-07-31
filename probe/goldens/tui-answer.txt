@@ -2,6 +2,7 @@
  session: Dracula 🧛
  /model to switch · local:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ● mock
+ skills: /commit
  <repo> (main)
 
  1› what does the config package do

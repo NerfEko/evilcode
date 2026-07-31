@@ -1022,8 +1022,8 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] `/compact` with context_epoch. `/fix`. `/btw` (side-panel side-question).
 - [x] Self-test commands: `/screenshot /screenshot-mode /record /debug-visual /onboarding-sim /smoothness` (§14, §13).
 - [x] Background bash UI: `⌥B bg` hint, BackgroundTasks widget, completion notices.
-- [ ] Probe scenarios: todo card w/ arrows, plan card streaming, pending rows (all 3 kinds), ask picker, centered toggle, docked widgets, overscroll, theme switch, help overlay scroll %, session picker, prompt-entry animation frames, idle eye. **Look at every PNG.**
-- [ ] Verify: 3-item task → auto-poke fires on early stop; low loop score → gate digest at turn end; `75→100%` arrows visible; ownership gate rejects a premature group close; anchor edit round-trips. Tag `phase-2`.
+- [x] Probe scenarios: todo card w/ arrows, plan card streaming, pending rows (all 3 kinds), ask picker, centered toggle, docked widgets, overscroll, theme switch, help overlay scroll %, session picker, prompt-entry animation frames, idle eye. **Look at every PNG.**
+- [x] Verify: 3-item task → auto-poke fires on early stop; low loop score → gate digest at turn end; `75→100%` arrows visible; ownership gate rejects a premature group close; anchor edit round-trips. Tag `phase-2`.
 
 ## Phase 3 — Semantic memory
 

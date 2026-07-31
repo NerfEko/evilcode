@@ -24,5 +24,6 @@
    ◖ add a test for the parser ◗
  💡 Ctrl+R searches your prompt history
  1> /mod
- /model   Switch model
- /models  List available models
+ /model            Switch model
+ /models           List available models
+ /screenshot-mode  Auto-capture every changed frame
