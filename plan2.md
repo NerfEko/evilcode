@@ -360,7 +360,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   `Submit`, and `submit` sends the literal `!cmd` to the model as a prompt. `plan.md`
   Phase 1 lists it as shipped. Decide: wire it to `Exec`, or delete the mode, the styling,
   and the help line. Do not leave a third state.  ⟨fable⟩
-- [ ] **H5.3** `internal/tui/app.go:1706` `/rename` — after `session.Rename` the live
+- [x] **H5.3** `internal/tui/app.go:1706` `/rename` — after `session.Rename` the live
   `m.store.Name`/`Path` still hold the old name, so later `/rewind`, `/fork`, and `/save`
   target a path that no longer exists (appends still reach the renamed inode through the
   fd, so nothing is lost yet). Fix: update store identity with the rename, or enforce the

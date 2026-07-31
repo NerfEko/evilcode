@@ -3132,3 +3132,32 @@ DEVIATIONS.md as specced behaviour deliberately not restored.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green; probe
 goldens unchanged (no fixture referenced the mode).
+
+## 2026-08-01 H5.3 — The live store that did not move with its file
+
+`/rename` called the standalone `session.Rename`, which `os.Rename`s the log
+and the blob dir on disk but never tells the live `*Store` anything. The open
+descriptor follows the inode, so plain appends kept landing — but the store's
+`Name` and `Path` stayed on the old location. Consequences: an image-bearing
+append computed its blob dir from the stale `Path`, re-creating the orphaned
+old blob dir; and `/rewind`, `/fork`, `/save` resolved `m.store.Name` to a
+path that no longer existed. The command's own notice ("resume it to continue
+there") was the tell — it admitted the live session could not continue under
+the new name.
+
+Reproduce: `TestStandaloneRenameLeavesLiveStoreStale` — after `Rename`, an
+image append wrote its blob to `blobDir(old.jsonl)`, which the rename had
+left behind. Failed before the fix.
+
+Fix: a `Store.Rename(dataDir, to)` method does the disk rename and updates
+`s.Name`/`s.Path` in one step under `s.mu`, so no append can land between the
+rename and the identity update. The TUI now calls `m.store.Rename(...)`,
+updates `m.header.SessionName`, and drops the "resume it" qualifier — the live
+session continues under the new name. The standalone `Rename` stays as the
+disk-level helper and a regression guard documenting that it does not touch a
+live store.
+
+Verified: `TestStoreRenameKeepsIdentityAndBlobsInSync` — Name/Path match,
+old log gone, an image append lands beside the renamed log, old blob dir not
+re-created. `go build ./... && go vet ./... && go test ./...` and probe
+goldens green.

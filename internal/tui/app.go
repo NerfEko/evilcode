@@ -1780,11 +1780,12 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 			m.notice = "usage: /rename <new-name>"
 			return m, nil
 		}
-		if err := session.Rename(m.dataDir, m.store.Name, arg); err != nil {
+		if err := m.store.Rename(m.dataDir, arg); err != nil {
 			m.notice = err.Error()
 			return m, nil
 		}
-		m.notice = "Renamed to " + arg + " · resume it to continue there"
+		m.header.SessionName = arg
+		m.notice = "Renamed to " + arg
 		return m, nil
 
 	case "fork":

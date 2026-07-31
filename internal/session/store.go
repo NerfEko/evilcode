@@ -287,6 +287,44 @@ func (s *Store) Reopen() error {
 	return s.reopenLocked()
 }
 
+// Rename moves this session's log and blobs to a new name and updates the live
+// store's identity in the same locked step, so the running session keeps
+// writing to the renamed file rather than to a path that no longer exists.
+//
+// The open descriptor follows the inode across os.Rename, so appends keep
+// landing — but the store's Name and Path must move with it, or a later
+// image-bearing append writes its blob beside the orphaned old path, and
+// /rewind, /fork, /save resolve a location that is gone. The disk work runs
+// under s.mu so no append can land between the rename and the identity update.
+func (s *Store) Rename(dataDir, to string) error {
+	if strings.ContainsAny(to, " \t") {
+		return fmt.Errorf("session names must be a single filesystem-safe word")
+	}
+	dst, err := pathFor(dataDir, to)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.Path
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("session %q already exists", to)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	// The attachments travel with the log. Left behind, every image reference
+	// in the renamed session resolves to nothing on the next resume.
+	if _, err := os.Stat(blobDir(src)); err == nil {
+		if err := os.Rename(blobDir(src), blobDir(dst)); err != nil {
+			return err
+		}
+	}
+	s.Name = to
+	s.Path = dst
+	return nil
+}
+
 // reopenLocked swaps in a fresh descriptor with s.mu already held, so a rewrite
 // can hold the lock across the whole read-write-rename-reopen sequence. Without
 // that, an append landing between the rename and the reopen still reaches the
