@@ -1826,3 +1826,30 @@ both sessions see both — which is the behaviour §20 describes.
 
 Verified: fails before (each session seeing only its own half), passes after;
 `go test ./... -race` green.
+
+## 2026-07-31 H1.6/H1.7/H1.8 — Three corrections from the codex review
+
+**The per-path lock was keyed on a spelling, not a file.** `lockPath` used the
+path as `resolve` returned it, and `resolve` only resolves symlinks for the
+confinement check — it hands back the unresolved path. Two calls naming one file
+two ways (through a link, and as the link's target) took two different locks and
+raced exactly as before. Now keyed on `resolveExisting`, the same resolution the
+confinement check trusts.
+
+**`Loop` could return without ending its turn.** The non-cancellation branch of
+the `runTools` error returned straight out, skipping `endTurn` — so no TurnEnd
+event, every listener waiting forever, and with H1.7 in place the persist error
+unreported too. Unreachable today, since `runTools` only ever returns nil or
+`context.Canceled`, but "unreachable" is a property of the current callee and
+this is a loop that outlives its assumptions. It ends the turn as errored now.
+
+**The backup was durable, its name was not.** `backup` synced the temp file and
+checked the rename, but never synced the containing directory, so a crash
+between the rename and the directory's own writeback could leave the `.bak`
+entry gone while the primary had already been replaced — which is the single
+outcome the function exists to prevent. It syncs the directory before returning.
+
+Also reported and not acted on: `Append` holds `sinkMu` across an arbitrary
+sink, so a sink that re-entered `Conversation` would deadlock against another
+append. Every sink in the tree is `store.WriteMessage`, and a re-entrant one
+would be a different bug; noted rather than defended against.

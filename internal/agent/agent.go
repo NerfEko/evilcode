@@ -400,6 +400,10 @@ func (a *Agent) Loop(ctx context.Context) error {
 					a.endTurn(EndInterrupted)
 					return nil
 				}
+				// Unreachable today — runTools returns nil or context.Canceled —
+				// but a turn that returns without ending leaves every listener
+				// waiting for a TurnEnd that never comes.
+				a.endTurn(EndError)
 				return err
 			}
 			// Safe point D: after all tool results, before the next request.

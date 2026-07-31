@@ -116,7 +116,18 @@ func backup(path string) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path+".bak")
+	if err := os.Rename(tmp, path+".bak"); err != nil {
+		return err
+	}
+	// Sync the directory too: without it the rename can be lost to a crash
+	// while the primary log has already been replaced, which is the one
+	// outcome this whole function exists to prevent.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // Rewind truncates a session back to an entry index and returns the resulting

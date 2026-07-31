@@ -46,10 +46,15 @@ type FS struct {
 
 // lockPath serializes changes to one file, returning the unlock.
 //
+// The key is the symlink-resolved path, because the lock is on the *file*: two
+// calls spelling one file two ways — through a link, or as a link and its
+// target — would otherwise take two different locks and race each other.
+//
 // ponytail: the map is never pruned. It holds one mutex per file edited in a
 // session, which is bounded by how much work one session does; a sweep is worth
 // adding only if that stops being true.
 func (f *FS) lockPath(full string) func() {
+	full = resolveExisting(full)
 	f.pathMu.Lock()
 	if f.paths == nil {
 		f.paths = map[string]*sync.Mutex{}
