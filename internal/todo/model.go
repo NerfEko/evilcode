@@ -4,6 +4,7 @@ package todo
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,21 +170,29 @@ func (s *Store) path(suffix string) string {
 }
 
 func (s *Store) load() error {
-	readJSON(s.path(""), &s.items)
-	readJSON(s.path("-goals"), &s.goals)
-	readJSON(s.path("-plan"), &s.plan)
-	readJSON(s.path("-gates"), &s.obs)
-	return nil
+	return errors.Join(
+		readJSON(s.path(""), &s.items),
+		readJSON(s.path("-goals"), &s.goals),
+		readJSON(s.path("-plan"), &s.plan),
+		readJSON(s.path("-gates"), &s.obs),
+	)
 }
 
-// readJSON loads a file if present. A missing or corrupt file is not fatal:
-// todo state is coordination, and losing it must not take a session down.
-func readJSON(path string, dst any) {
+// readJSON loads a file if present. A missing file is a fresh session's
+// legitimate empty state; anything else — a permissions error, a corrupt
+// file — is real trouble and must not be mistaken for the same thing.
+func readJSON(path string, dst any) error {
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return
+	if os.IsNotExist(err) {
+		return nil
 	}
-	_ = json.Unmarshal(data, dst)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, dst); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
 }
 
 // stage writes a file's new contents beside it, ready to be renamed into place.

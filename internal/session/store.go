@@ -501,9 +501,11 @@ func Describe(dataDir, name string) (Info, error) {
 	return info, nil
 }
 
-// Read parses a session file into entries. A truncated final line (the classic
-// result of a hard kill) is skipped rather than failing the whole read — the
-// point of resuming is to recover what survived.
+// Read parses a session file into entries. A malformed final line (the
+// classic result of a hard kill) is tolerated and dropped, since the point of
+// resuming is to recover what survived; a malformed line anywhere earlier is
+// mid-log corruption, and returns an error naming its line number rather than
+// vanishing silently before the next write buries the evidence.
 func Read(path string) ([]Entry, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -512,20 +514,46 @@ func Read(path string) ([]Entry, error) {
 	defer f.Close()
 
 	var out []Entry
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	parse := func(lineNo int, raw string, final bool) error {
+		line := strings.TrimSpace(raw)
 		if line == "" {
-			continue
+			return nil
 		}
 		var e Entry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue
+			if final {
+				return nil
+			}
+			return fmt.Errorf("%s:%d: malformed session record: %w", path, lineNo, err)
 		}
 		out = append(out, e)
+		return nil
 	}
-	return out, sc.Err()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	var havePending bool
+	var pendingLine string
+	var pendingNo int
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		if havePending {
+			if err := parse(pendingNo, pendingLine, false); err != nil {
+				return nil, err
+			}
+		}
+		pendingLine, pendingNo, havePending = sc.Text(), lineNo, true
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if havePending {
+		if err := parse(pendingNo, pendingLine, true); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Messages replays a session file into a message list.
@@ -535,13 +563,16 @@ func Messages(path string) ([]provider.Message, error) {
 		return nil, err
 	}
 	var out []provider.Message
-	for _, e := range entries {
+	for i, e := range entries {
 		if e.Type == TypeMeta {
 			continue
 		}
 		m, err := decodeMessage(path, e.Data)
 		if err != nil {
-			continue
+			if i == len(entries)-1 {
+				break
+			}
+			return nil, fmt.Errorf("%s: malformed message record (entry %d): %w", path, i+1, err)
 		}
 		out = append(out, m)
 	}

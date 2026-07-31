@@ -399,7 +399,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   flush failure and can leave the descriptor open; a metadata-write failure during creation
   returns while leaving the new store live. Fix: always close, return `errors.Join`.
   ⟨codex⟩
-- [ ] **H5.13** `internal/session/store.go:293`, `internal/memory/store.go:132`,
+- [x] **H5.13** `internal/session/store.go:293`, `internal/memory/store.go:132`,
   `internal/todo/model.go:181` — all three skip malformed complete JSON records silently,
   hiding mid-log corruption and letting later writes bury the evidence. Fix, uniformly:
   tolerate only an unterminated **final** record; return a line-numbered error (or

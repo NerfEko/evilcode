@@ -3484,3 +3484,49 @@ rather than skipping the close on a flush error.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test
 ./...` green.
+
+## 2026-07-31 H5.13 — The evidence a later write buries
+
+Three JSONL/JSON loaders shared one shape: on a record that failed to parse,
+skip it and keep going. `session.Read` and `session.Messages` (the message
+replay path), `memory.Store.load`, and `todo.readJSON` all did this, and all
+three justified it the same way in their own comments — a crash leaves a
+truncated final line, and refusing to resume over that would trade a small
+loss for a total one. True for the last line. Not true for any other line: a
+record mangled in the *middle* of a log is not a crash artifact, it is
+corruption, and skipping it silently means the next write timestamps right
+over the only evidence it happened.
+
+Fix, applied the same way in `internal/session/store.go` and
+`internal/memory/store.go`: both loaders now read with one line of lookahead
+(`havePending`/`pendingLine`) so they know, at parse time, whether the record
+they are looking at is the file's last line. A parse failure on the final
+line is tolerated and dropped, exactly as before. A parse failure anywhere
+earlier returns `fmt.Errorf("%s:%d: malformed ... record: %w", ...)` naming
+the 1-based line number, instead of vanishing. `session.Messages` applies the
+identical rule one layer down: a `decodeMessage` failure on the file's last
+entry is tolerated (the entry parsed as valid JSON but the record inside it
+was cut off), anywhere earlier it errors.
+
+`todo`'s case is different in kind, not just in package: its four state files
+are whole-document JSON written through stage-then-rename, so there is no
+"truncated final line" — a torn write never becomes visible under the real
+path. The bug there was `readJSON` discarding both the `os.ReadFile` error and
+the `json.Unmarshal` error unconditionally, so a permissions problem and a
+hand-edited-into-garbage file both read back as empty state. Fixed to
+propagate anything that isn't `os.IsNotExist`, and `Store.load` now joins the
+four files' errors with `errors.Join` instead of swallowing them one by one.
+
+Reproduce: `TestReadErrorsOnMidLogCorruption` / `TestReadTakesTruncatedFinalLine`
+/ `TestMessagesErrorsOnMidLogCorruption` / `TestMessagesTakesUndecodableFinalRecord`
+(session), `TestReloadErrorsOnMidLogCorruption` alongside the pre-existing
+`TestReloadSkipsCorruptLines` (memory, confirming the final-line tolerance
+didn't regress), `TestNewStoreErrorsOnCorruptFile` /
+`TestNewStoreErrorsOnUnreadableFile` (todo). Every new test was confirmed
+failing against the pre-fix code (stashed the three source files, re-ran,
+restored) before the fix landed.
+
+Verified: all listed tests pass; `go build ./... && go vet ./... && go test
+./...` green across every package, including the existing callers of
+`session.Read`/`session.Messages` in `checkpoint.go` and `sessioncmd.go`,
+which already propagated these functions' errors and needed no changes.

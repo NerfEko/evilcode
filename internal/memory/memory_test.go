@@ -184,6 +184,33 @@ func TestReloadSkipsCorruptLines(t *testing.T) {
 	}
 }
 
+func TestReloadErrorsOnMidLogCorruption(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	s.Add("first", KindFact, "a", vec(1, 0), time.Now())
+	s.Add("third", KindFact, "a", vec(0, 1), time.Now())
+	s.Close()
+
+	// Splice a malformed line between the two real records — corruption in the
+	// middle of the log, not a crash-truncated tail.
+	path := filepath.Join(dir, FileName)
+	data, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 records before splicing, got %d", len(lines))
+	}
+	spliced := lines[0] + "\n{not valid json\n" + lines[1] + "\n"
+	if err := os.WriteFile(path, []byte(spliced), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(dir); err == nil {
+		t.Fatal("expected an error for a malformed line in the middle of the log")
+	} else if !strings.Contains(err.Error(), ":2:") {
+		t.Errorf("error should name the line number, got: %v", err)
+	}
+}
+
 // stubEmbedder returns a fixed vector per text, so a test can pin distances.
 type stubEmbedder struct {
 	vecs map[string][]float32

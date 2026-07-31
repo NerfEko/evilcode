@@ -108,8 +108,11 @@ func Open(dataDir string) (*Store, error) {
 	return s, nil
 }
 
-// load replays the file. A truncated final line is skipped rather than fatal:
-// losing the last memory to a crash is survivable, refusing to start is not.
+// load replays the file. A malformed final line is tolerated and dropped —
+// the classic shape of a crash mid-write, and losing the last memory to one
+// is survivable — but a malformed line anywhere earlier is corruption further
+// back in the log, and returns an error naming its line number rather than
+// vanishing silently before the next write buries the evidence.
 func (s *Store) load(path string) error {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -121,16 +124,16 @@ func (s *Store) load(path string) error {
 	defer f.Close()
 
 	byID := map[int64]int{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
+	apply := func(lineNo int, line []byte, final bool) error {
 		if len(line) == 0 {
-			continue
+			return nil
 		}
 		var r Record
 		if json.Unmarshal(line, &r) != nil {
-			continue
+			if final {
+				return nil
+			}
+			return fmt.Errorf("%s:%d: malformed memory record", path, lineNo)
 		}
 		if r.ID >= s.nextID {
 			s.nextID = r.ID + 1
@@ -139,12 +142,39 @@ func (s *Store) load(path string) error {
 		// a merge or a tombstone lands without rewriting the file.
 		if i, ok := byID[r.ID]; ok {
 			s.records[i] = r
-			continue
+			return nil
 		}
 		byID[r.ID] = len(s.records)
 		s.records = append(s.records, r)
+		return nil
 	}
-	return sc.Err()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var havePending bool
+	var pendingLine []byte
+	var pendingNo int
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		if havePending {
+			if err := apply(pendingNo, pendingLine, false); err != nil {
+				return err
+			}
+		}
+		pendingLine = append([]byte(nil), sc.Bytes()...)
+		pendingNo = lineNo
+		havePending = true
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if havePending {
+		if err := apply(pendingNo, pendingLine, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) append(r Record) error {

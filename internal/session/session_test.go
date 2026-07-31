@@ -634,3 +634,71 @@ func TestTransferCarriesASummary(t *testing.T) {
 		t.Error("transferring onto an existing session must be refused")
 	}
 }
+
+func TestReadErrorsOnMidLogCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"user","data":{"role":"user","content":"first"}}` + "\n" +
+		`{not valid json at all` + "\n" +
+		`{"ts":"2026-01-01T00:00:01Z","type":"user","data":{"role":"user","content":"third"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Read(path); err == nil {
+		t.Fatal("expected an error for a malformed line in the middle of the log")
+	} else if !strings.Contains(err.Error(), ":2:") {
+		t.Errorf("error should name the line number, got: %v", err)
+	}
+}
+
+func TestReadTakesTruncatedFinalLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"user","data":{"role":"user","content":"first"}}` + "\n" +
+		`{"ts":"2026-01-01T00:00:01Z","type":"user","data":{"role":"user` // truncated, no closing braces/newline
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("a truncated final line must be tolerated, got: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only the surviving first entry, got %d", len(entries))
+	}
+}
+
+func TestMessagesErrorsOnMidLogCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"user","data":{"role":"user","content":"first"}}` + "\n" +
+		`{"ts":"2026-01-01T00:00:01Z","type":"user","data":42}` + "\n" +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"third"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Messages(path); err == nil {
+		t.Fatal("expected an error for a mid-log record that fails to decode as a message")
+	}
+}
+
+func TestMessagesTakesUndecodableFinalRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"user","data":{"role":"user","content":"first"}}` + "\n" +
+		`{"ts":"2026-01-01T00:00:01Z","type":"user","data":42}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Messages(path)
+	if err != nil {
+		t.Fatalf("an undecodable final record must be tolerated, got: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != "first" {
+		t.Fatalf("expected only the surviving first message, got %+v", msgs)
+	}
+}
