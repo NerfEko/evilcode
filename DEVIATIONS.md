@@ -181,3 +181,33 @@ a new region.
 large to read at 16 rows. That is a real limit, not a hypothetical one — it is
 just not the common case, and the zoom keys are worth building against a real
 diagram rather than an imagined one.
+
+## 7. Three Phase 5 verifications could not be run on this machine
+
+**Spec:** the Phase 5 gate asks for five checks: mermaid renders as an image in
+kitty, a pasted image displays, `/productivity` emits a PNG, an `lsp` rename
+lands atomically, and a `/selfdev` session completes one real task end to end.
+
+**Verified:** `/productivity` emits a PNG — rendered through the same ANSI→PNG
+path the probe rig uses, and looked at. And the `lsp` rename, against a real
+gopls: `clamp` → `clampOffset` across the declaration and its doc comment, two
+edits, one file, atomically, with a DiffStat.
+
+**Not verified here, and why:**
+
+- *mermaid in kitty* — `mmdc` is not installed on this machine, and this session
+  runs under tmux against xterm-256color rather than a kitty-protocol terminal.
+  The absent-renderer path is the one that is exercised: the source is shown
+  with highlighting under `↻ mermaid (render requires mmdc)`, which is what §5
+  specifies for exactly this case.
+- *a pasted image displays* — same reason. `graphics.Detect` sniffs the
+  environment rather than querying the terminal, so the probe rig always
+  resolves to the placeholder tier.
+- *`/selfdev` completes a real task* — needs a live model, and no
+  `OLLAMA_API_KEY` is set in this environment. The command, the skill, and the
+  `/rebuild` → test → re-exec path are built and unit-tested; what has not
+  happened is a model driving them.
+
+**What would close these:** run under kitty or ghostty with `mmdc` on PATH for
+the first two, and one session with a key set for the third. None of the three
+needs code — they need a terminal and a key this machine does not have.

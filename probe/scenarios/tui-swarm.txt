@@ -28,6 +28,10 @@ capture swarm-summoned
 # delivered at the reader's next turn end rather than the instant the write
 # happens (§6.3 safe point D), so it takes one more turn to appear — and it
 # appears in both panes, because it is the session's news and not one client's.
+# The worker writes on its own goroutine, so the pane is perfectly still while
+# the edit is still in flight. Waiting on the file is deterministic where
+# waiting on the pane is a race.
+wait testdata/clamp.go "offset >="
 keys --pane=0 "anything else?"
 keys --pane=0 Enter
 capture swarm-conflict

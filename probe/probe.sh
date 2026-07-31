@@ -243,6 +243,27 @@ cmd_png() {
     echo "$FRAMES/$name.png"
 }
 
+# cmd_wait blocks until a file contains a pattern.
+#
+# settle watches the pane, which is the wrong thing when what a scenario is
+# waiting for is a background worker writing to disk: the pane is perfectly
+# still while the edit is still in flight. Polling the actual condition is
+# deterministic where a sleep is a guess.
+cmd_wait() {
+    local file="${1:?usage: probe.sh wait <file> <pattern>}"
+    local pattern="${2:?usage: probe.sh wait <file> <pattern>}"
+    local i
+    for ((i = 0; i < 200; i++)); do
+        if grep -q -- "$pattern" "$file" 2>/dev/null; then
+            settle
+            return 0
+        fi
+        sleep 0.05
+    done
+    echo "probe: $file never matched $pattern" >&2
+    exit 1
+}
+
 cmd_kill() {
     tm kill-session -t evil 2>/dev/null || true
     cmd_unserve
@@ -255,6 +276,7 @@ case "${1:-}" in
     keys)  shift; cmd_keys "$@" ;;
     frame) shift; cmd_frame "$@" ;;
     png)   shift; cmd_png "$@" ;;
+    wait)   shift; cmd_wait "$@" ;;
     kill)  shift; cmd_kill ;;
     *)
         sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
