@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	"evilcode/internal/memory"
 	"evilcode/internal/theme"
 )
 
@@ -126,6 +127,43 @@ func ownerOrSentinel(owner []int, r int) int {
 		return -999
 	}
 	return owner[r]
+}
+
+// TestTranscriptLinesOwnerCoversEveryKind is the F1.4 verify: a transcript
+// containing every block kind has every kind represented in Owner, and the
+// invariant holds across the lot. A kind that renders zero lines contributes no
+// entries (and is not expected to appear); kinds that render at least one line
+// must each own at least one row.
+func TestTranscriptLinesOwnerCoversEveryKind(t *testing.T) {
+	m := &Model{
+		renderer: NewRenderer(theme.Dracula(), 80),
+		blocks: []Block{
+			{Kind: BlockUser, Text: "prompt one two three", Number: 1},
+			{Kind: BlockAssistant, Text: "answer line one\nanswer line two"},
+			{Kind: BlockTool, ToolName: "read", ToolTarget: "a.go", ToolTokens: 10},
+			{Kind: BlockError, Text: "something went wrong here"},
+			{Kind: BlockNotice, Text: "a notice to the user"},
+			{Kind: BlockReasoning, Text: "thinking about the problem\ndeeply\nand more"},
+			{Kind: BlockTodoDelta},
+			{Kind: BlockMemory, Memories: []memory.Hit{{Record: memory.Record{Text: "a fact"}}}},
+		},
+	}
+	rows := m.transcriptLines()
+	if len(rows.Lines) != len(rows.Owner) {
+		t.Fatalf("len(Lines)=%d != len(Owner)=%d", len(rows.Lines), len(rows.Owner))
+	}
+
+	// Each block that rendered at least one line must own at least one row.
+	for i := range m.blocks {
+		if len(rowsForBlock(rows.Owner, i)) == 0 {
+			// Re-render that block alone to see whether it legitimately produced
+			// zero lines (then this is fine) or whether Owner dropped it.
+			if len(m.renderer.Lines(&m.blocks[i])) == 0 {
+				continue // a zero-line block contributes nothing, as specified
+			}
+			t.Errorf("block %d (%v) rendered lines but owns none in Owner", i, m.blocks[i].Kind)
+		}
+	}
 }
 
 // TestTranscriptLinesWelcomeOwnerIsChrome covers the empty-transcript path: the

@@ -4045,3 +4045,13 @@ opening with no /diff panel and closing returns to closed; a third that Esc stil
 interrupts a turn when no quick view is up.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green.
+
+## 2026-07-31 F1.4 — verify F1, tag feat-1
+
+Done: extended provenance coverage to every block kind
+(`TestTranscriptLinesOwnerCoversEveryKind`: User, Assistant, Tool, Error, Notice,
+Reasoning, TodoDelta, Memory) — each kind that renders lines owns at least one row, and
+the invariant holds across all. The quick-view-over-pinned-/diff case is covered by F1.3's
+`TestQuickViewIsTransientAndDoesNotTouchDiffState`.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green. Tagged `feat-1`.
