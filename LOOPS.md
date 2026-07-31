@@ -3284,3 +3284,27 @@ the real one.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green, no code
 changes needed since the fix already matched the task exactly.
+
+## 2026-07-31 H5.5 — Sorted by arrival, not by index
+
+`toolCallAccum` tracked `order` as the sequence in which each index was *first
+seen*, then `finish()` built the final slice by walking `order` as-is. That's
+first-arrival order, not protocol order. Two tool calls streaming concurrently
+can have index 1's fragments complete before index 0's; the accumulator then
+emitted `[index 1, index 0]`, and a caller matching results back to calls by
+position pairs the wrong result with the wrong call.
+
+Reproduce: `TestToolCallsEmitInIndexOrder` in the new `openai_test.go` — an SSE
+body whose first frame carries index 1's tool call complete, whose second
+frame carries index 0's. Failed before the fix: `got [call_b, call_a], want
+[call_a, call_b]`.
+
+Root cause confirmed in `toolCallAccum.finish()` (`openai.go:245`) — the emit
+site, matching the report exactly; no caller-side fix needed.
+
+Fix: `finish()` now sorts `a.order` by index value (`slices.Sort`) before
+building the output slice, so the emitted order always matches protocol index
+regardless of arrival order.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test ./...`
+green.

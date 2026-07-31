@@ -368,7 +368,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [x] **H5.4** `internal/agent/agent.go:469` — a stream retried after deltas were already
   emitted replays visible content and events. Fix: retry only before the first emitted
   delta, or buffer attempts until success.  ⟨codex⟩
-- [ ] **H5.5** `internal/provider/openai.go:245` — completed tool calls are emitted in
+- [x] **H5.5** `internal/provider/openai.go:245` — completed tool calls are emitted in
   first-arrival order rather than protocol index order, so out-of-order fragments can
   associate the wrong call with a later result. Fix: collect by index, sort before building
   the slice.  ⟨codex⟩

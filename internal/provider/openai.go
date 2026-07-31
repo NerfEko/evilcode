@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -243,6 +244,10 @@ func (a *toolCallAccum) add(tc oaiToolCall) {
 }
 
 func (a *toolCallAccum) finish() []ToolCall {
+	// a.order records indices in first-arrival order, not protocol order —
+	// out-of-order fragment delivery must not scramble which result a caller
+	// later pairs with which call.
+	slices.Sort(a.order)
 	out := make([]ToolCall, 0, len(a.order))
 	for i, idx := range a.order {
 		tc := *a.byIdx[idx]
