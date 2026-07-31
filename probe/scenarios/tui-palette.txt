@@ -1,0 +1,11 @@
+# The slash palette (§5.1): a zero-height float over the finished frame, with
+# fuzzy filtering and the recolor highlight.
+
+boot tui
+capture palette-closed
+
+keys "/"
+capture palette-open
+
+keys "mod"
+capture palette-filtered

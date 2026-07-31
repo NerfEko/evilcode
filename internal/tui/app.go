@@ -60,6 +60,10 @@ type Model struct {
 
 	pending []PendingMessage
 
+	// palette is the slash-command overlay. It reserves no layout height:
+	// opening it must never move the transcript (plan.md invariant 3).
+	palette PaletteState
+
 	quitting     bool
 	confirmQuit  bool
 	scrollbarOn  bool
@@ -229,6 +233,35 @@ func (m *Model) flushPending() {
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// The palette owns navigation and accept keys while it is open.
+	if m.paletteOpen() {
+		suggestions := m.paletteSuggestions()
+		switch key {
+		case "up", "ctrl+k":
+			m.palette.Selected = MovePaletteSelection(m.palette.Selected, -1, len(suggestions))
+			return m, nil
+		case "down":
+			m.palette.Selected = MovePaletteSelection(m.palette.Selected, 1, len(suggestions))
+			return m, nil
+		case "tab":
+			if len(suggestions) > 0 {
+				sel := clamp(m.palette.Selected, 0, len(suggestions)-1)
+				m.input = "/" + suggestions[sel].Name
+				m.cursor = len([]rune(m.input))
+			}
+			return m, nil
+		case "enter":
+			if len(suggestions) > 0 {
+				sel := clamp(m.palette.Selected, 0, len(suggestions)-1)
+				return m.runCommand(suggestions[sel].Name)
+			}
+			return m, nil
+		case "esc":
+			m.input, m.cursor, m.palette.Selected = "", 0, 0
+			return m, nil
+		}
+	}
+
 	switch key {
 	case "ctrl+c", "ctrl+d":
 		// While processing this interrupts; idle, it quits — and quitting
@@ -316,9 +349,92 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// paletteOpen reports whether the composer is in slash mode.
+func (m *Model) paletteOpen() bool {
+	return strings.HasPrefix(m.input, "/") && !m.palette.Suppressed
+}
+
+// paletteSuggestions is the currently ranked list.
+func (m *Model) paletteSuggestions() []Suggestion {
+	if !m.paletteOpen() {
+		return nil
+	}
+	return RankCommands(strings.TrimPrefix(m.input, "/"), VisibleCommands())
+}
+
 // syncShellMode tracks the `!` prefix that switches the composer to a shell.
 func (m *Model) syncShellMode() {
 	m.shellMode = strings.HasPrefix(m.input, "!")
+}
+
+// runCommand executes a slash command. Unknown commands fall through to a
+// notice rather than being sent to the model, which would waste a turn.
+func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
+	m.input, m.cursor, m.palette.Selected = "", 0, 0
+
+	switch name {
+	case "quit":
+		m.quitting = true
+		return m, tea.Quit
+
+	case "clear", "cls":
+		m.blocks = nil
+		m.promptCount = 0
+		m.scroll.FollowBottom()
+		m.notice = ""
+		return m, nil
+
+	case "cancel":
+		if m.processing {
+			m.interrupt(false)
+		}
+		return m, nil
+
+	case "version":
+		m.notice = "evilcode " + m.header.Version
+		return m, nil
+
+	case "info":
+		m.notice = m.header.SessionName + " · " + m.header.Model + " · " + m.header.Provider
+		return m, nil
+
+	case "help", "?", "commands", "keys", "hotkeys":
+		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: helpText()})
+		m.scroll.FollowBottom()
+		return m, nil
+
+	default:
+		if _, ok := FindCommand(name); ok {
+			m.notice = "/" + name + " is not implemented yet"
+		} else {
+			m.notice = "unknown command /" + name
+		}
+		return m, nil
+	}
+}
+
+// helpText lists every registered command. Building it from the registry means
+// a newly registered command can never be invisible (plan.md §5.5).
+func helpText() string {
+	var b strings.Builder
+	b.WriteString("Commands\n")
+	for _, c := range VisibleCommands() {
+		b.WriteString("  /" + c.Name + strings.Repeat(" ", max(16-len(c.Name), 1)) + c.Help + "\n")
+	}
+	b.WriteString("\nKeys\n")
+	for _, k := range [][2]string{
+		{"Enter", "submit, or interleave while a turn is running"},
+		{"Ctrl+Enter", "the opposite of the current send mode"},
+		{"Ctrl+T", "toggle queue mode"},
+		{"Esc", "cancel: close overlays, interrupt, or clear input"},
+		{"Ctrl+C", "interrupt; twice when idle to quit"},
+		{"Ctrl+G", "toggle a scroll bookmark"},
+		{"PgUp/PgDn", "scroll a page"},
+		{"!", "prefix a line to run it as a shell command"},
+	} {
+		b.WriteString("  " + k[0] + strings.Repeat(" ", max(16-len(k[0]), 1)) + k[1] + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // escape is the layered cancel of plan.md §6.7.
@@ -457,6 +573,7 @@ func (m *Model) composerState() ComposerState {
 		Processing:   m.processing,
 		QueueMode:    m.queueMode,
 		ShellMode:    m.shellMode,
+		PaletteOpen:  m.paletteOpen(),
 	}
 }
 
@@ -503,16 +620,77 @@ func (m *Model) View() tea.View {
 
 	rows = append(rows, m.renderer.RenderComposer(m.composerState())...)
 
+	// The palette is spliced over the finished frame rather than added to it,
+	// so opening it reserves no layout height and the transcript never moves
+	// (plan.md invariant 3). It runs before the inset so the overlay shares the
+	// same gutter as every other row.
+	rows = m.overlayPalette(rows)
+
 	// The left inset is applied here rather than per-widget, so every row
 	// shares one gutter (plan.md §3.4).
 	inset := strings.Repeat(" ", Inset(false))
 	for i, row := range rows {
 		rows[i] = inset + row
 	}
+
 	v := tea.NewView(strings.Join(rows, "\n"))
 	// Alt-screen is a view property in Bubble Tea v2, not a program option.
 	v.AltScreen = true
 	return v
+}
+
+// overlayPalette splices the command list over existing rows, covering them
+// rather than displacing them.
+//
+// Placement prefers the rows directly below the composer. When the frame ends
+// before that — which it does whenever the layout is packed — the list flips
+// above the composer and covers the transcript tail instead. Either way the
+// row count is unchanged.
+func (m *Model) overlayPalette(rows []string) []string {
+	if !m.paletteOpen() {
+		return rows
+	}
+	// The query is derived from the input rather than mirrored into state, so
+	// the two can never drift apart.
+	state := m.palette
+	state.Query = strings.TrimPrefix(m.input, "/")
+	overlay := m.renderer.RenderPalette(state, VisibleCommands())
+	if len(overlay) == 0 {
+		return rows
+	}
+
+	// The composer's last row is the anchor.
+	composerRows := len(m.renderer.RenderComposer(m.composerState()))
+	composerEnd := len(rows)
+	composerStart := max(composerEnd-composerRows, 0)
+
+	below := m.height - composerEnd
+	var at int
+	if below >= len(overlay) {
+		// Room underneath: grow the frame into the empty rows the terminal
+		// already shows.
+		at = composerEnd
+		for len(rows) < at+len(overlay) {
+			rows = append(rows, "")
+		}
+	} else {
+		// Flip above the composer, covering the transcript tail.
+		at = max(composerStart-len(overlay), 0)
+	}
+
+	for i, line := range overlay {
+		idx := at + i
+		if idx < 0 {
+			continue
+		}
+		for len(rows) <= idx {
+			rows = append(rows, "")
+		}
+		// Explicitly clear the covered cells; a shorter overlay row must not
+		// leave the tail of whatever was underneath visible.
+		rows[idx] = line
+	}
+	return rows
 }
 
 // toolTarget pulls the one argument worth showing beside a tool name.

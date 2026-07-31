@@ -193,3 +193,49 @@ func checkGolden(t *testing.T, root, name string) {
 			name, wantText, gotText)
 	}
 }
+
+// TestPaletteReservesNoLayoutHeight enforces plan.md invariant 3: opening the
+// slash palette must never move the transcript. The palette is drawn over the
+// finished frame, so every row above the composer has to be byte-identical
+// before and after it opens.
+//
+// This is checked against captured frames rather than unit-tested because the
+// failure mode is a layout interaction, which only exists once everything is
+// composed together.
+func TestPaletteReservesNoLayoutHeight(t *testing.T) {
+	root := repoRoot(t)
+	closed, err := os.ReadFile(filepath.Join(root, "probe", "goldens", "palette-closed.txt"))
+	if err != nil {
+		t.Skipf("no golden yet: %v", err)
+	}
+	open, err := os.ReadFile(filepath.Join(root, "probe", "goldens", "palette-open.txt"))
+	if err != nil {
+		t.Skipf("no golden yet: %v", err)
+	}
+
+	closedLines := strings.Split(strings.TrimRight(string(closed), "\n"), "\n")
+	openLines := strings.Split(strings.TrimRight(string(open), "\n"), "\n")
+
+	// Everything up to the composer row must be untouched. The composer itself
+	// changes, because a "/" was typed into it.
+	composer := -1
+	for i, l := range closedLines {
+		if strings.Contains(l, "1>") {
+			composer = i
+			break
+		}
+	}
+	if composer < 0 {
+		t.Fatalf("could not find the composer row in:\n%s", closed)
+	}
+
+	for i := 0; i < composer; i++ {
+		if i >= len(openLines) {
+			t.Fatalf("opening the palette removed row %d (%q)", i, closedLines[i])
+		}
+		if closedLines[i] != openLines[i] {
+			t.Errorf("opening the palette moved the transcript at row %d:\n  closed: %q\n  open:   %q",
+				i, closedLines[i], openLines[i])
+		}
+	}
+}

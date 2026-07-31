@@ -260,3 +260,29 @@ path forms are now scrubbed to `<repo>`.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green; `go test -tags probe
 ./probe/...` green against 6 goldens.
+
+## 2026-07-30 P1.14 — slash palette
+
+Done: `internal/tui/palette.go` (ranking, fuzzy recolor, windowing) and
+`commands.go` (the §13 registry, Phase 1 subset only — the palette never offers a
+command that does nothing).
+
+Ranking is two-bucket by design: a literal case-insensitive prefix outranks every fuzzy
+match however good its score, so typing `/mod` always offers `/model` first. An empty
+query keeps registry order rather than sorting, because the registry groups related
+commands and length-sorting an unfiltered list is noise.
+
+The highlight is a recolor, not an underline (§5.1): matched characters lift toward white
+and go bold, unmatched ones dim, both staying in the row's own hue. A test asserts no
+underline escape is emitted, so a future "improvement" to underlining fails the build.
+
+Verified: 16 unit tests, plus `TestPaletteReservesNoLayoutHeight` in the probe suite,
+which diffs the captured frame before and after opening the palette and requires every
+row above the composer to be byte-identical. That is invariant 3 checked against real
+frames rather than asserted in prose — the failure mode is a layout interaction, which
+only exists once everything is composed.
+
+Two bugs caught by looking at the PNG: the overlay was spliced after the left inset was
+applied, so it sat one column left of everything else; and the palette rendered the full
+list regardless of what was typed, because the query was mirrored into state that nothing
+updated. The query is now derived from the input at render time, so the two cannot drift.
