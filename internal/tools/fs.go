@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -204,6 +205,26 @@ func (f *FS) readTool() Tool {
 			if info.IsDir() {
 				return Result{}, fmt.Errorf("%s is a directory; use glob to list it", a.Path)
 			}
+
+			// MaxReadBytes was declared, documented as capping a single read,
+			// initialized — and never referenced. A file larger than the cap
+			// was loaded whole and split into lines before any truncation
+			// applied, so the peak cost of reading a multi-gigabyte file was
+			// the file itself, twice.
+			cap := f.MaxReadBytes
+			if cap <= 0 {
+				cap = MaxResultBytes
+			}
+			if info.Size() > int64(cap) {
+				if a.Offset <= 0 && a.Limit <= 0 {
+					return Result{}, fmt.Errorf(
+						"%s is %s, past the %s single-read limit; read it in pieces "+
+							"with offset and limit, or grep it for what you need",
+						a.Path, humanBytes(info.Size()), humanBytes(int64(cap)))
+				}
+				return f.readWindow(full, info, a, cap)
+			}
+
 			data, err := os.ReadFile(full)
 			if err != nil {
 				return Result{}, err
@@ -245,6 +266,94 @@ func (f *FS) readTool() Tool {
 				Intent: fmt.Sprintf("reading %s", f.rel(full)),
 			}, nil
 		},
+	}
+}
+
+// readWindow reads one offset/limit window without loading the whole file.
+//
+// The window is what the model asked for, so a large file stays readable in
+// pieces rather than becoming unreadable — refusing outright would make `read`
+// useless on exactly the files where paging matters.
+func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Result, error) {
+	file, err := os.Open(full)
+	if err != nil {
+		return Result{}, err
+	}
+	defer file.Close()
+
+	start := 0
+	if a.Offset > 0 {
+		start = a.Offset - 1
+	}
+	limit := a.Limit
+	if limit <= 0 {
+		limit = -1
+	}
+
+	sc := bufio.NewScanner(file)
+	sc.Buffer(make([]byte, 0, 64*1024), cap)
+
+	var lines []string
+	size := 0
+	n := 0
+	truncated := false
+	for sc.Scan() {
+		if n < start {
+			n++
+			continue
+		}
+		if limit >= 0 && len(lines) >= limit {
+			truncated = true
+			break
+		}
+		line := sc.Text()
+		if size+len(line)+1 > cap {
+			truncated = true
+			break
+		}
+		if len(lines) == 0 && isBinary([]byte(line)) {
+			return Result{}, fmt.Errorf("%s looks like a binary file (%s)",
+				f.rel(full), humanBytes(info.Size()))
+		}
+		lines = append(lines, line)
+		size += len(line) + 1
+		n++
+	}
+	if err := sc.Err(); err != nil {
+		return Result{}, fmt.Errorf("reading %s: %w", f.rel(full), err)
+	}
+
+	// Anchors describe what the model saw, which here is the window.
+	f.anchors.record(full, info, lines)
+
+	var b strings.Builder
+	if f.Anchors {
+		b.WriteString(AnnotateLines(lines, start+1))
+	} else {
+		for i, line := range lines {
+			fmt.Fprintf(&b, "%d\t%s\n", start+1+i, line)
+		}
+	}
+	if truncated {
+		fmt.Fprintf(&b, "\n[more lines; re-read with offset=%d]\n", start+len(lines)+1)
+	}
+	return Result{
+		Output: b.String(),
+		Intent: fmt.Sprintf("reading %s", f.rel(full)),
+	}, nil
+}
+
+// humanBytes renders a size the way an error message wants to say it.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d bytes", n)
 	}
 }
 

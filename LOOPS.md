@@ -2596,3 +2596,36 @@ Both branches now send and return.
 
 Verified: both providers close their stream after a malformed line, three runs;
 `go test ./... -race` green.
+
+## 2026-07-31 H3.2 — A limit that was only ever documentation
+
+`FS.MaxReadBytes` is declared, documented as capping a single read, and
+initialized in `NewFS`. Nothing reads it. `read` did an unbounded `os.ReadFile`
+and then split the whole thing into lines, so the peak cost of reading a
+multi-gigabyte file was the file itself, twice, and truncation applied only
+after all of it was resident.
+
+```
+an 80000-byte file was read whole against a 4096-byte cap
+```
+
+A file past the cap with no `offset`/`limit` is refused, with an error that says
+how big it is and what to do instead. A file past the cap *with* a window
+streams just that window through a scanner — refusing outright would make `read`
+useless on exactly the files where paging matters, which is not a limit, it is a
+missing feature.
+
+Both reviewers flagged this pattern — a declared limit that is never enforced —
+as worth grepping for as a class. `MaxReadBytes` was one; `MaxResultBytes` is
+enforced; command output is H3.3, next.
+
+**A flake of my own, found by the full run rather than by the targeted one.**
+H2.13's dispatch loop broke out on cancellation without filling the calls it had
+not sent, so a cancelled batch could return zero-valued outcomes in the middle
+of the slice — the unanswered `tool_use` of H1.2, arriving through the fix for a
+different problem. The sweep now runs after `wg.Wait()` over everything, rather
+than inside the loop that was racing.
+
+Verified: an oversized read is refused with guidance, a paged read of the same
+file works, twenty runs of the batch tests are clean; `go test ./... -race`
+green.

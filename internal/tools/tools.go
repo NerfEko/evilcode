@@ -143,10 +143,6 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 		select {
 		case queue <- i:
 		case <-ctx.Done():
-			// Everything still unsent is answered here rather than left blank.
-			for ; i < runnable; i++ {
-				out[i] = Outcome{Call: calls[i], Err: ctx.Err()}
-			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -154,6 +150,19 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 	}
 	close(queue)
 	wg.Wait()
+
+	// Whatever was never dispatched is answered here. Every tool_use needs an
+	// adjacent result (H1.2), and a cancelled batch that leaves blanks in the
+	// middle of the slice is the same malformed transcript by another route.
+	for i, o := range out {
+		if o.Call.Name == "" && o.Err == nil {
+			err := ctx.Err()
+			if err == nil {
+				err = fmt.Errorf("the tool was not run")
+			}
+			out[i] = Outcome{Call: calls[i], Err: err}
+		}
+	}
 	return out
 }
 

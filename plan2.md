@@ -251,7 +251,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   next unbuffered send, holding the response body, the connection, and its goroutine for
   the rest of the turn — while a retry opens another. Fix: `return` after emitting the
   terminal parse error, as the `resp.Error` branch already does.  ⟨both⟩
-- [ ] **H3.2** `internal/tools/fs.go:173` — `FS.MaxReadBytes` is declared, documented as
+- [x] **H3.2** `internal/tools/fs.go:173` — `FS.MaxReadBytes` is declared, documented as
   capping a single read, initialized, and **never referenced**. `readTool` does an
   unbounded `os.ReadFile` plus a full line split; output truncation happens only after the
   whole file is resident. A multi-GB file OOMs the process. Fix: stat or limited-reader
