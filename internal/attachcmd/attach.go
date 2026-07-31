@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"evilcode/internal/config"
 	"evilcode/internal/core"
 	"evilcode/internal/daemon"
+	"evilcode/internal/graphics"
 	"evilcode/internal/provider"
 	"evilcode/internal/tui"
 )
@@ -85,7 +87,8 @@ func Run(args []string) error {
 	m := tui.NewModel(a, header(cfg, snap, path)).
 		WithSwarm(swarm, func(task string) (string, error) {
 			return summon(path, task)
-		})
+		}).
+		WithGraphics(graphics.Detect(), filepath.Join(config.DataDir(), "diagrams"))
 	m.RebuildFrom(conv.Messages())
 	go pollRoster(path, snap.Session, swarm)
 

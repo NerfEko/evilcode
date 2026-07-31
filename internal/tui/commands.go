@@ -34,6 +34,9 @@ var Commands = []Command{
 	{Name: "todos", Help: "Toggle the todo card"},
 	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
 	{Name: "poke", Help: "Auto-poke on/off/status"},
+	{Name: "advisor", Help: "Second-opinion model on/off/status"},
+	{Name: "lsp", Help: "Language server status"},
+
 	{Name: "summon", Help: "Spawn a worker agent on a task",
 		Long: "  /summon <task>   start a headless worker in the daemon\n" +
 			"Its result arrives as a message when it finishes."},
@@ -149,6 +152,7 @@ var HelpSections = []HelpSection{
 	{"Models", []string{"model", "models"}},
 	{"Working", []string{"plan", "todos", "poke", "memory"}},
 	{"Swarm", []string{"summon", "agents"}},
+	{"Analysis", []string{"lsp", "advisor"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "terminal-setup", "screenshot",

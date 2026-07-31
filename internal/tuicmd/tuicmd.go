@@ -13,6 +13,8 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/graphics"
+	"evilcode/internal/lsp"
 	"evilcode/internal/mcp"
 	"evilcode/internal/memory"
 	"evilcode/internal/session"
@@ -149,6 +151,18 @@ func Run(args []string) error {
 		WithConfine(cfg.Features.ConfineToWorkspace)
 	execTools := tools.NewExec(cwd)
 
+	// Language servers start on first use, not here: gopls costs seconds and
+	// indexes the module, and a session that never asks should never pay.
+	lsps := lsp.NewManager(pc.Root, cfg.LSP)
+	defer lsps.Close()
+
+	// The advisor is a second, cheap voice, so it goes through the smol role
+	// like every other ambient call (§16, §21).
+	advisor := agent.NewAdvisor(func(ctx context.Context, system, user string) (string, error) {
+		return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
+	}, cfg.Features.Advisor)
+	advisor.TodoState = todos.Summary
+
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
 		skills.Names(), mcpStatus)).
 		WithTodos(todos, poke).
@@ -156,7 +170,9 @@ func Run(args []string) error {
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
 		WithSessions(dataDir, cwd, store).
 		WithBackground(execTools.Bg).
-		WithMemory(mem)
+		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
+		WithMemory(mem).
+		WithAdvisor(advisor, lsps)
 	if prior > 0 {
 		m.RebuildFrom(conv.Messages())
 	}
@@ -171,6 +187,8 @@ func Run(args []string) error {
 	if mem != nil {
 		ts = append(ts, tools.NewMemory(mem)...)
 	}
+
+	ts = append(ts, tools.NewLSP(lsps))
 	ts = append(ts, mcpClient.Tools()...)
 	a.Tools = ts
 

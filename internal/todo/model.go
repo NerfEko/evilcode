@@ -565,3 +565,32 @@ func SortItems(items []Item) []Item {
 	})
 	return out
 }
+
+// Summary is a one-line description of the list, for anything that needs to
+// reason about progress without reading the whole thing — the advisor's
+// compressed view most of all (plan.md §21).
+func (s *Store) Summary() string {
+	items := s.Items()
+	if len(items) == 0 {
+		return ""
+	}
+	var done, active, blocked int
+	for _, it := range items {
+		switch {
+		case it.Status == StatusCompleted || it.Status == StatusCancelled:
+			done++
+		case len(it.BlockedBy) > 0:
+			blocked++
+		case it.Status == StatusInProgress:
+			active++
+		}
+	}
+	out := fmt.Sprintf("%d/%d done", done, len(items))
+	if active > 0 {
+		out += fmt.Sprintf(", %d in progress", active)
+	}
+	if blocked > 0 {
+		out += fmt.Sprintf(", %d blocked", blocked)
+	}
+	return out
+}

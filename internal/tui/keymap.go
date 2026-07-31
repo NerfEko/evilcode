@@ -31,6 +31,7 @@ const (
 	ActionInfoWidgets     Action = "info_widget_toggle"
 	ActionTodoCard        Action = "todo_card_toggle"
 	ActionDiffMode        Action = "diff_mode_cycle"
+	ActionImages          Action = "images_toggle"
 	ActionSidePanel       Action = "side_panel_toggle"
 	ActionTypingLock      Action = "typing_scroll_lock"
 	ActionQueueMode       Action = "queue_mode_toggle"
@@ -62,6 +63,7 @@ var DefaultBindings = []Binding{
 	{ActionInfoWidgets, []string{"alt+i"}, "toggle info widgets"},
 	{ActionTodoCard, []string{"alt+x"}, "toggle the todo card"},
 	{ActionDiffMode, []string{"alt+g"}, "cycle diff display mode"},
+	{ActionImages, []string{"alt+shift+i"}, "show images inline or as placeholders"},
 	{ActionSidePanel, []string{"alt+m"}, "toggle the side panel"},
 	{ActionTypingLock, []string{"alt+s"}, "typing scroll lock"},
 	{ActionQueueMode, []string{"ctrl+t"}, "toggle queue mode"},

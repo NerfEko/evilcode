@@ -1039,8 +1039,8 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 
 ## Phase 5 — Graphics, intelligence extras, graduation
 
-- [ ] Kitty graphics protocol images (+ sixel fallback); `Alt+Shift+I` toggle; centered/left slack rules.
-- [ ] Mermaid: ```` ```mermaid ```` → shell to `mmdc` → PNG → kitty inline/side panel; absent → styled source + `↻ mermaid (render requires mmdc)`. **Do not write a renderer.** Diagram pane position/zoom/pan keys (§11, §3.1).
+- [x] Kitty graphics protocol images (+ sixel fallback); `Alt+Shift+I` toggle; centered/left slack rules.
+- [x] Mermaid: ```` ```mermaid ```` → shell to `mmdc` → PNG → kitty inline/side panel; absent → styled source + `↻ mermaid (render requires mmdc)`. **Do not write a renderer.** Diagram pane position/zoom/pan keys (§11, §3.1).
 - [ ] **`lsp` tool** (gopls first) per §17. `/lsp status`.
 - [ ] **Advisor** per §21.
 - [ ] Shell completions: generated bash/zsh/fish completion scripts (`evilcode completions <shell>`) covering subcommands, flags, model names, session names.

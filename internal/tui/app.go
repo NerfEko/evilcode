@@ -14,6 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/graphics"
+	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
 	"evilcode/internal/session"
 	"evilcode/internal/theme"
@@ -180,6 +182,26 @@ type Model struct {
 	// is off.
 	memory *memory.Manager
 
+	// graphics is the image protocol this terminal speaks, and imagesOn is the
+	// Alt+Shift+I toggle. pendingImages holds escape sequences to emit after
+	// the next frame — they carry no printable cells, so they must not be part
+	// of any row the layout measures.
+	graphics      graphics.Protocol
+	imagesOn      bool
+	pendingImages string
+
+	// diagrams maps mermaid source to its rendered PNG, so an unchanged
+	// diagram is never re-rendered — mmdc starts a headless browser.
+	diagrams     map[string]string
+	diagramDir   string
+	diagramInbox atomic.Pointer[mermaidRendered]
+	nextImageID  int
+
+	// advisor is the §21 second opinion, and lsp the language-server manager.
+	// Both are nil when unconfigured, which every path has to survive.
+	advisor *agent.Advisor
+	lsp     *lsp.Manager
+
 	// swarm is the other agents in the daemon, nil outside one (plan.md §20).
 	swarm  *SwarmState
 	summon SummonFunc
@@ -325,6 +347,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		return m, nil
 
 	case tickMsg:
@@ -531,6 +555,9 @@ func (m *Model) lastBlockIsPrompt(text string) bool {
 func (m *Model) finishStreaming() {
 	if m.streamingIdx >= 0 && m.streamingIdx < len(m.blocks) {
 		m.blocks[m.streamingIdx].Streaming = false
+		// A fence only becomes renderable once it closes, which is why this is
+		// here rather than on every delta: mmdc on half a diagram fails slowly.
+		m.renderDiagrams(m.blocks[m.streamingIdx].Text)
 	}
 	m.streamingIdx = -1
 
@@ -791,6 +818,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.renderer.Centered = m.centered
 		m.dock.Reset()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		if m.centered {
 			m.notice = "Centered layout"
 		} else {
@@ -812,6 +841,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
 		m.dock.Reset()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		m.notice = "Diff mode: " + m.diffMode.String()
 		return m, nil
 
@@ -819,6 +850,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.panelOpen = !m.panelOpen
 		m.dock.Reset()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		return m, nil
 
 	case "ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4":
@@ -827,6 +860,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.panelOpen = true
 		m.dock.Reset()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		m.notice = fmt.Sprintf("Side panel: %d%%", m.panelRatio)
 		return m, nil
 
@@ -958,6 +993,8 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 		m.renderer.Centered = m.centered
 		m.dock.Reset()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		m.notice = map[bool]string{true: "Centered layout", false: "Left-aligned layout"}[m.centered]
 	case ActionInfoWidgets:
 		m.widgetsOn = !m.widgetsOn
@@ -1395,6 +1432,12 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "memory":
 		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
 
+	case "advisor":
+		return m, m.advisorCommand(strings.TrimSpace(m.commandArg))
+
+	case "lsp":
+		return m, m.lspCommand(strings.TrimSpace(m.commandArg))
+
 	case "summon":
 		return m, m.summonCommand(strings.TrimSpace(m.commandArg))
 
@@ -1437,6 +1480,8 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.diffMode = m.diffMode.Next()
 		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		m.notice = "Diff mode: " + m.diffMode.String()
 		return m, nil
 
@@ -1445,6 +1490,8 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.renderer.Centered = m.centered
 		m.dock.Reset()
 		m.applyWrapWidth()
+		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+		m.drainDiagrams()
 		if m.centered {
 			m.notice = "Centered layout"
 		} else {
@@ -1903,6 +1950,8 @@ func (m *Model) View() tea.View {
 	// exists to damp: a visible bar narrows the wrap width, which changes the
 	// content height, which can change the decision.
 	m.applyWrapWidth()
+	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+	m.drainDiagrams()
 
 	if m.sessionsOpen {
 		v := tea.NewView(strings.Join(
@@ -2038,6 +2087,14 @@ func (m *Model) View() tea.View {
 		max(len(content)-res.Transcript-m.scroll.Offset, 0))
 
 	frame := strings.Join(rows, "\n")
+	// Image escape sequences ride after the frame, never inside it: they carry
+	// no printable cells, so a row holding one would measure wrong everywhere
+	// the layout looks at widths. The terminal draws them at the cursor, which
+	// is wherever the frame left it.
+	if m.pendingImages != "" {
+		frame += m.pendingImages
+		m.pendingImages = ""
+	}
 	m.lastFrame = frame
 	m.autoCapture(frame)
 

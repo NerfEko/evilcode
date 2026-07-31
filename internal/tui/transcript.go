@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/graphics"
 	"evilcode/internal/memory"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
@@ -24,6 +25,7 @@ const (
 	BlockReasoning
 	BlockTodoDelta
 	BlockMemory
+	BlockImage
 )
 
 // Block is one renderable transcript entry.
@@ -55,6 +57,9 @@ type Block struct {
 	// Memories is what passive recall injected, shown as the 🧠 tile (§9.5).
 	Memories []memory.Hit
 
+	// Image is a picture drawn over this block's rows (Phase 5).
+	Image ImageBlock
+
 	// Streaming marks the tail block, which re-renders every frame.
 	Streaming bool
 
@@ -84,6 +89,11 @@ type Renderer struct {
 
 	// DiffMode decides whether diffs render inline or in the side panel.
 	DiffMode DiffMode
+
+	// Graphics and ImagesOn decide whether an image block reserves rows for a
+	// picture or falls back to a one-line placeholder.
+	Graphics graphics.Protocol
+	ImagesOn bool
 
 	// ToolDetails shows the technical summary on a tool row. Off by default:
 	// the row already says what ran and how it went. An errored call shows its
@@ -147,6 +157,8 @@ func (r *Renderer) render(b *Block) []string {
 		return r.RenderTodoDelta(b.TodoDelta)
 	case BlockMemory:
 		return r.RenderMemoryTile(b.Memories)
+	case BlockImage:
+		return r.RenderImagePlaceholder(b.Image, r.Graphics, r.ImagesOn)
 	default:
 		return r.renderAssistant(b)
 	}
@@ -223,6 +235,13 @@ func (r *Renderer) renderProse(b *Block, text string) []string {
 	var out []string
 	for _, seg := range SplitSegments(text) {
 		if seg.Code {
+			// A mermaid fence is a diagram, not code. With mmdc absent it comes
+			// back as its own source plus a line saying what would render it,
+			// which is more useful than an error and more honest than silence.
+			if seg.Lang == "mermaid" && !seg.Open {
+				out = append(out, r.RenderMermaidSource(seg.Text)...)
+				continue
+			}
 			out = append(out, r.renderCodeBlock(seg)...)
 			continue
 		}

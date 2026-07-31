@@ -120,6 +120,10 @@ type Config struct {
 	Keybindings  map[string]string `toml:"keybindings"`
 	MCP          []MCPServer       `toml:"mcp"`
 
+	// LSP maps a language id to the command that serves it, overriding the
+	// built-in defaults (plan.md §17). `lsp.go = ["gopls"]`.
+	LSP map[string][]string `toml:"lsp"`
+
 	// Path records where this config was loaded from, or "" for defaults.
 	Path string `toml:"-"`
 }

@@ -158,3 +158,26 @@ is what a rounded border needs to survive contact with real text.
 **When this would need revisiting:** it is the same root cause for every widget
 taller than about five rows, so fixing the measurement — and the write path with
 it — is worth its own loop rather than a corner of the memory one.
+
+## 7. Diagrams render inline, not in a dedicated diagram pane
+
+**Spec:** §3.1 puts a diagram pane outermost in the horizontal split, carved
+before the side pane — `Right` or `Top`, min width 30 / min height 6, ratio
+clamped 20..100 — with its own position, zoom, and pan keys in §11.
+
+**Built:** mermaid fences render through `mmdc` to a PNG and are drawn inline in
+the transcript with the kitty graphics protocol, reserving a fixed 16 rows. With
+`mmdc` absent the source shows styled with `↻ mermaid (render requires mmdc)`.
+
+**Why:** the pane is a third region in a split that already carves a side pane
+out of the chat column, and every one of its knobs — position, ratio, zoom, pan
+— is a keybinding plus a piece of layout state plus a hysteresis rule, none of
+which can be checked without a terminal that draws images. Inline delivers what
+the diagram is for: seeing it. The side panel already exists and already takes
+arbitrary content, so a diagram that wants more room has somewhere to go without
+a new region.
+
+**When this would need revisiting:** the first time a diagram is genuinely too
+large to read at 16 rows. That is a real limit, not a hypothetical one — it is
+just not the common case, and the zoom keys are worth building against a real
+diagram rather than an imagined one.
