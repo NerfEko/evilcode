@@ -71,6 +71,10 @@ type Agent struct {
 
 	seq atomic.Int64
 
+	// runGen distinguishes one turn's reservation from the next, so a finished
+	// turn's release cannot free the reservation a later one is holding.
+	runGen uint64
+
 	mu         sync.Mutex
 	interrupts []Interrupt
 	running    bool
@@ -282,10 +286,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 	// message, the recall tail and the attached images had already been
 	// committed by the time the caller was told the turn never started — and a
 	// caller that then re-sent the text duplicated it.
-	if !a.beginRun() {
+	gen, ok := a.beginRun()
+	if !ok {
 		return ErrBusy
 	}
-	defer a.endRun()
+	defer a.endRun(gen)
 
 	if strings.TrimSpace(userInput) != "" {
 		msg := provider.Message{Role: provider.RoleUser, Content: userInput}
@@ -363,29 +368,49 @@ var ErrBusy = errors.New("a turn is already running on this session")
 // which is what the duplicated overnight step (H1.12) produced before it was
 // fixed at the call site. Callers are expected to check before starting; this
 // is the backstop for the ones that check and race.
-func (a *Agent) beginRun() bool {
+func (a *Agent) beginRun() (uint64, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.running {
-		return false
+		return 0, false
 	}
 	a.running = true
-	return true
+	a.runGen++
+	return a.runGen, true
 }
 
-func (a *Agent) endRun() {
+// endRun releases the reservation, if this run still holds it.
+//
+// The generation is what makes that "if" real. A turn is released twice — once
+// by endTurn, so a listener acting on TurnEnd finds a ready agent, and once by
+// the deferred call that covers the paths endTurn does not reach. Between those
+// two the next turn can start, and an unconditional release would clear *its*
+// reservation and let a third turn in beside it.
+func (a *Agent) endRun(gen uint64) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.runGen == gen {
+		a.running = false
+	}
+}
+
+// releaseRun ends the current reservation and invalidates its generation, so
+// the run's own deferred release becomes a no-op.
+func (a *Agent) releaseRun() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.running = false
-	a.mu.Unlock()
+	a.runGen++
 }
 
 // Loop is the agent loop proper (plan.md §15). It is the entry point for a turn
 // with no new user message — a worker's schema retry, most notably.
 func (a *Agent) Loop(ctx context.Context) error {
-	if !a.beginRun() {
+	gen, ok := a.beginRun()
+	if !ok {
 		return ErrBusy
 	}
-	defer a.endRun()
+	defer a.endRun(gen)
 	return a.loop(ctx)
 }
 
@@ -476,7 +501,7 @@ func (a *Agent) endTurn(reason EndReason) {
 	// Released before the event: a listener that starts the next turn the
 	// instant it sees TurnEnd — the worker schema retry does exactly that —
 	// would otherwise be refused by a turn that has already finished.
-	a.endRun()
+	a.releaseRun()
 
 	// A transcript that is behind the conversation is invisible until someone
 	// resumes and finds the session short. Every turn ends here, so this is the

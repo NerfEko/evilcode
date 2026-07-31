@@ -344,3 +344,30 @@ func TestABusyAgentCommitsNothing(t *testing.T) {
 	}
 	close(release)
 }
+
+// A turn is released twice: by endTurn, so a listener acting on TurnEnd finds a
+// ready agent, and by the deferred call covering the paths endTurn misses.
+// Between them the next turn can start — and an unconditional release would
+// clear its reservation, letting a third turn run beside it.
+func TestAFinishedTurnDoesNotReleaseTheNextOnes(t *testing.T) {
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+
+	// One full turn, so its deferred release has definitely run.
+	if _, err := collect(t, a, func() error { return a.Run(context.Background(), "first") }); err != nil {
+		t.Fatal(err)
+	}
+
+	gen, ok := a.beginRun()
+	if !ok {
+		t.Fatal("the agent is still reserved after its turn finished")
+	}
+	// A stale release from any earlier turn must not free this one.
+	a.endRun(gen - 1)
+	if _, stillFree := a.beginRun(); stillFree {
+		t.Error("a stale release freed the live turn's reservation")
+	}
+	a.endRun(gen)
+	if _, free := a.beginRun(); !free {
+		t.Error("the turn's own release did not free the reservation")
+	}
+}

@@ -162,7 +162,14 @@ func CreateNamed(dataDir, name string) (*Store, error) {
 	}
 	st := &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}
 	cwd, _ := os.Getwd()
-	return st, st.WriteMeta(Meta{Kind: MetaStart, Cwd: cwd})
+	if err := st.WriteMeta(Meta{Kind: MetaStart, Cwd: cwd}); err != nil {
+		// A store returned alongside an error is a store nobody closes: the
+		// caller takes the error path and the descriptor, and the claimed name,
+		// stay held for the life of the process.
+		f.Close()
+		return nil, err
+	}
+	return st, nil
 }
 
 // Append writes one entry.

@@ -2305,3 +2305,35 @@ rather than building their own copy to throw away. A fresh session — empty nam
 
 Verified: eight concurrent opens produce one session and a log with no
 lifecycle markers in it, five runs with -race.
+
+## 2026-07-31 H2.3/H2.12 — Two corrections from the codex review
+
+**A finished turn could free the next turn's reservation.** This one I would not
+have found by reading, and it undoes the guard entirely.
+
+A turn is released twice. `endTurn` releases it before emitting the event, so a
+listener acting on TurnEnd finds a ready agent — that was the previous
+correction. The deferred release in `Run` then fires when `loop` returns,
+covering the paths `endTurn` does not reach. Between those two moments the next
+turn can start, and the deferred release does not know that: turn A's `defer`
+clears turn B's reservation, and turn C walks in beside B.
+
+So the guard held right up until a turn ended, which is the only moment anything
+tries to start another one.
+
+Fixed with a generation. `beginRun` stamps the reservation, `endRun` releases
+only if the stamp still matches, and `releaseRun` — what `endTurn` calls — bumps
+it so the run's own deferred release becomes a no-op.
+
+**`CreateNamed` returned a store alongside an error.** If the start-marker write
+failed, the caller took the error path and the descriptor and the claimed name
+stayed held for the life of the process. It closes the file and returns nil now.
+
+Also reported, not acted on:
+
+- `Server.Close` does not `markFinished` its workers, so the live counter is
+  left non-zero. The server is being torn down and the counter dies with it.
+- Deterministic mode drops `O_EXCL` by design, so two processes both running
+  with `EVILCODE_DETERMINISTIC=1` can append to one log. That is what the flag
+  is for — goldens need the same session name every run — and it is documented
+  as such rather than treated as a bug here.
