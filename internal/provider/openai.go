@@ -142,6 +142,7 @@ func toOAIMessages(msgs []Message) []oaiMessage {
 			Role:       string(m.Role),
 			Content:    oaiContent(m),
 			ToolCallID: m.ToolCallID,
+			Name:       m.ToolName,
 		}
 		for i, tc := range m.ToolCalls {
 			var otc oaiToolCall

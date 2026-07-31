@@ -51,3 +51,18 @@ func TestToolCallsEmitInIndexOrder(t *testing.T) {
 			got.ToolCalls[0].ID, got.ToolCalls[1].ID)
 	}
 }
+
+// H5.6: some OpenAI-compatible gateways require role:"tool" messages to carry
+// the tool's name, not just the call ID. toOAIMessages must copy it from
+// Message.ToolName.
+func TestToOAIMessagesSetsToolName(t *testing.T) {
+	out := toOAIMessages([]Message{
+		{Role: RoleTool, Content: "result", ToolCallID: "call_a", ToolName: "get_weather"},
+	})
+	if len(out) != 1 {
+		t.Fatalf("want 1 message, got %d", len(out))
+	}
+	if out[0].Name != "get_weather" {
+		t.Errorf("Name = %q, want %q", out[0].Name, "get_weather")
+	}
+}

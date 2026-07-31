@@ -3308,3 +3308,21 @@ regardless of arrival order.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test ./...`
 green.
+
+## 2026-07-31 H5.6 — tool-result messages never carried their tool's name
+
+`toOAIMessages` built each wire message from `Role`, `Content`, and
+`ToolCallID`, but never copied `ToolName` into `oaiMessage.Name` — even though
+the struct already has a `Name` field for exactly this. Some OpenAI-compatible
+gateways require `name` on `role:"tool"` messages alongside `tool_call_id`;
+without it those gateways reject or mishandle the tool result.
+
+Reproduce: `TestToOAIMessagesSetsToolName` in `openai_test.go` — a tool-result
+`Message` with `ToolName: "get_weather"` run through `toOAIMessages`. Failed
+before the fix: `Name = "", want "get_weather"`.
+
+Fix: set `Name: m.ToolName` alongside the other fields in `toOAIMessages`
+(`openai.go:141`). One line.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test ./...`
+green.
