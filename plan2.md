@@ -107,7 +107,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   called after `Compact`/`Rewind`, or perform the rewrite through the live `Store` under
   its lock. Reproduce: compact a session, append a message, resume, assert the message is
   there.  ⟨both — critical⟩
-- [ ] **H1.2** `internal/agent/agent.go:595` `runTools` — bails with `context.Canceled`
+- [x] **H1.2** `internal/agent/agent.go:595` `runTools` — bails with `context.Canceled`
   mid-loop, leaving the round's remaining `tool_use` entries unanswered. The conversation
   and the JSONL then hold assistant `tool_calls` with no adjacent results; strict
   OpenAI-compatible endpoints reject the next request with 400. Fix: append a result

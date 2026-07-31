@@ -1492,3 +1492,33 @@ then reopen. All four callers (`wiring.go`, `tuicmd.go`, `run.go`,
 lets someone rewrite a session out from under a store they are holding.
 
 Verified: both reproductions pass, `go test ./...` green.
+
+## 2026-07-31 H1.2 — A cancelled tool round left the calls unanswered
+
+`runTools` checked `ctx.Err()` at the top of the result loop and returned
+`context.Canceled` on the first iteration that saw it — before appending
+anything. The assistant message with its `tool_calls` was already on the
+conversation and already in the JSONL; the results never joined it.
+
+Reproduced with a provider that answers once with a two-call round and a tool
+that blocks until cancellation:
+
+```
+cancel_test.go:68: tool call "call_1" (blocker) has no result message
+cancel_test.go:68: tool call "call_2" (blocker) has no result message
+```
+
+The cost is delayed, which is what makes it worth fixing rather than tolerating.
+Nothing breaks at interrupt time — the turn ends, the UI looks right. The
+malformed pair is durable, so the 400 arrives on the next request against a
+strict endpoint, and again on every resume of that session afterwards.
+
+The round now answers every call: an outcome with real output keeps it (a tool
+that finished before the cancel did real work and the model should see it), and
+everything else gets `stubSkipped`, the same stub safe point C already writes.
+`context.Canceled` is returned after the appends rather than instead of them, so
+`Loop` still ends the turn as interrupted.
+
+The `_ = i` left over in the safe-point-C loop went with it.
+
+Verified: reproduction passes, `go test ./...` green.

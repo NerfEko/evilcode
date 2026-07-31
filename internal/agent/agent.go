@@ -581,8 +581,7 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
 	// Safe point C: an urgent interrupt cuts the round short. Every call still
 	// gets a result, because the wire format requires it.
 	if a.hasUrgent() {
-		for i, c := range calls {
-			_ = i
+		for _, c := range calls {
 			a.appendToolResult(c, stubSkipped, fmt.Errorf("interrupted"), tools.Result{})
 		}
 		a.injectInterrupts(true)
@@ -591,11 +590,24 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
 	}
 
 	outcomes := a.Tools.RunBatch(ctx, batch)
+
+	// Answer every call even when the round was cancelled. Returning early left
+	// the assistant's tool_calls unanswered in the conversation and in the
+	// JSONL, and a strict OpenAI-compatible endpoint rejects that transcript on
+	// the next request — including the next request of a *resumed* session,
+	// long after the interrupt is forgotten. A tool that finished before the
+	// cancel keeps its real output; the rest get the same stub safe point C
+	// uses.
+	cancelled := ctx.Err() != nil
 	for i, out := range outcomes {
-		if ctx.Err() != nil {
-			return context.Canceled
+		if cancelled && out.Result.Output == "" {
+			a.appendToolResult(calls[i], stubSkipped, fmt.Errorf("interrupted"), tools.Result{})
+			continue
 		}
 		a.appendToolResult(calls[i], out.Result.Output, out.Err, out.Result)
+	}
+	if cancelled {
+		return context.Canceled
 	}
 	return nil
 }
