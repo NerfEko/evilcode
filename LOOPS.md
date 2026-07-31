@@ -2213,3 +2213,27 @@ the filesystem does not.
 
 Verified: a suffixed worker owns its own log and identity, and the session it
 collided with keeps its own; `go test ./... -race` green.
+
+## 2026-07-31 H2.3 — Refusing after committing is not refusing
+
+The codex review of H2.3 found the guard in the wrong place. `Loop` held it, but
+`Run` appends the user message, runs recall and consumes the attached images
+*before* calling `Loop` — so a caller told "busy" had already had its prompt
+committed to the conversation and the session file. The TUI's new `ErrBusy`
+handler then interjected the same text, duplicating it.
+
+The reservation moved to the top of `Run`, before any mutation; `Loop` keeps its
+own for the callers that use it directly, and both share `beginRun`/`endRun`.
+
+The same review found the worker schema retry vanishing: it calls `Loop` the
+moment it sees `EventTurnEnd`, and `running` was cleared by a deferred call that
+had not run yet, so the retry was refused and silently dropped. `endTurn` now
+releases the reservation *before* emitting the event, so a listener acting on
+TurnEnd finds an agent that is ready.
+
+That is the second time in this phase the same pattern has cost something: a new
+guard converts a silent wrong behaviour into a silent refusal, and every caller
+that ignored the error was correct only while the error was impossible.
+
+Verified: a refused turn appends nothing and its prompt is nowhere in the
+conversation; `go test ./... -race` green.

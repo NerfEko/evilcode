@@ -278,6 +278,15 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 	if a.Forward != nil {
 		return a.Forward(ctx, userInput)
 	}
+	// Reserved before anything is mutated. Refusing inside Loop meant the user
+	// message, the recall tail and the attached images had already been
+	// committed by the time the caller was told the turn never started — and a
+	// caller that then re-sent the text duplicated it.
+	if !a.beginRun() {
+		return ErrBusy
+	}
+	defer a.endRun()
+
 	if strings.TrimSpace(userInput) != "" {
 		msg := provider.Message{Role: provider.RoleUser, Content: userInput}
 		a.mu.Lock()
@@ -290,7 +299,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 		a.Conv.Append(msg)
 		a.recall(ctx, userInput)
 	}
-	return a.Loop(ctx)
+	return a.loop(ctx)
 }
 
 // recall injects remembered context after the user message.
@@ -347,26 +356,41 @@ func (a *Agent) noteContext(n int) {
 // ErrBusy is returned by Loop when a turn is already running on this agent.
 var ErrBusy = errors.New("a turn is already running on this session")
 
-// Loop is the agent loop proper (plan.md §15).
+// beginRun takes the single-flight reservation, reporting whether it got it.
 //
-// One turn at a time, atomically. Two loops share one conversation, one tool
-// set and one event sequence, and the result is a transcript interleaved from
-// two turns — which is what the duplicated overnight step (H1.12) produced
-// before it was fixed. Callers are expected to check before starting; this is
-// the backstop for the ones that check and race.
-func (a *Agent) Loop(ctx context.Context) error {
+// One turn at a time. Two loops share one conversation, one tool set and one
+// event sequence, and the result is a transcript interleaved from two turns —
+// which is what the duplicated overnight step (H1.12) produced before it was
+// fixed at the call site. Callers are expected to check before starting; this
+// is the backstop for the ones that check and race.
+func (a *Agent) beginRun() bool {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.running {
-		a.mu.Unlock()
-		return ErrBusy
+		return false
 	}
 	a.running = true
+	return true
+}
+
+func (a *Agent) endRun() {
+	a.mu.Lock()
+	a.running = false
 	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
-		a.running = false
-		a.mu.Unlock()
-	}()
+}
+
+// Loop is the agent loop proper (plan.md §15). It is the entry point for a turn
+// with no new user message — a worker's schema retry, most notably.
+func (a *Agent) Loop(ctx context.Context) error {
+	if !a.beginRun() {
+		return ErrBusy
+	}
+	defer a.endRun()
+	return a.loop(ctx)
+}
+
+// loop is the body, with the reservation already held.
+func (a *Agent) loop(ctx context.Context) error {
 
 	// TurnStart carries the prompt that started the turn. A local frontend
 	// already drew it — it typed it — but a client that attached mid-session
@@ -449,6 +473,11 @@ func (a *Agent) Loop(ctx context.Context) error {
 }
 
 func (a *Agent) endTurn(reason EndReason) {
+	// Released before the event: a listener that starts the next turn the
+	// instant it sees TurnEnd — the worker schema retry does exactly that —
+	// would otherwise be refused by a turn that has already finished.
+	a.endRun()
+
 	// A transcript that is behind the conversation is invisible until someone
 	// resumes and finds the session short. Every turn ends here, so this is the
 	// one place that cannot be forgotten.

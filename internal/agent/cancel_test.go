@@ -306,3 +306,41 @@ func TestOneTurnAtATimePerAgent(t *testing.T) {
 	}
 	close(release)
 }
+
+// The refusal must come before anything is committed. Refusing inside Loop left
+// the user message, the recall tail and the images already appended, so a caller
+// told "busy" that re-sent its text duplicated it.
+func TestABusyAgentCommitsNothing(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	blocker := tools.Tool{
+		Name: "blocker", Desc: "holds the turn open",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			return tools.Result{Output: "done"}, nil
+		},
+	}
+
+	a := newTestAgent(t, &twoToolProvider{}, tools.Set{blocker})
+	go func() { _ = a.Run(context.Background(), "first") }()
+	<-entered
+
+	before := a.Conv.Len()
+	if err := a.Run(context.Background(), "second"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second turn returned %v, want ErrBusy", err)
+	}
+	if got := a.Conv.Len(); got != before {
+		t.Errorf("the refused turn appended %d message(s) before being refused", got-before)
+	}
+	for _, m := range a.Conv.Messages() {
+		if m.Content == "second" {
+			t.Error("the refused prompt is in the conversation")
+		}
+	}
+	close(release)
+}
