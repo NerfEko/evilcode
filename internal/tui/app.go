@@ -968,6 +968,11 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.scroll.FollowBottom()
 		return m, nil
 
+	case "theme", "color":
+		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: m.runTheme(arg)})
+		m.scroll.FollowBottom()
+		return m, nil
+
 	case "version":
 		m.notice = "evilcode " + m.header.Version
 		return m, nil

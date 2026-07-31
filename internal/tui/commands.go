@@ -42,6 +42,12 @@ var Commands = []Command{
 	{Name: "info", Help: "Show session info"},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
+	{Name: "theme", Help: "Switch, score, or generate a palette",
+		Long: "  /theme               list the built-in palettes\n" +
+			"  /theme <name>        switch to one\n" +
+			"  /theme score         score the current palette\n" +
+			"  /theme generate #hex build a palette from a seed color"},
+	{Name: "color", Help: "Switch, score, or generate a palette", Hidden: true},
 
 	{Name: "resume", Help: "Resume a previous session"},
 	{Name: "graveyard", Help: "Resume a previous session", Hidden: true},

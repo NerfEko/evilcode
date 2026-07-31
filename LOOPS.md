@@ -522,3 +522,37 @@ pad it returns. Overlays now carry the same padding so they line up with the con
 rather than the terminal.
 
 Verified: 8 overscroll/centered tests. PNG looked at in both alignments.
+
+## 2026-07-31 P2.18–P2.19 — theme engine and harmony scoring
+
+Done: three more palettes (nosferatu, gloom, daywalker), the two-pass frame substitution,
+the ad-hoc literals registry, Oklab harmony scoring and generation, and `/theme`.
+
+Substitution runs once per frame over the rendered string, rewriting truecolor SGR
+sequences with a hand-rolled tokenizer. Pass 2 is exempt from pass 1, as specced: a
+configured color arrives exactly as configured whatever the terminal background, because
+a deliberately dark red must not become pale pink on a light one. Indexed colors are left
+alone — the terminal owns that palette.
+
+The literals registry is what keeps a themed UI from looking half-done. Roles move when
+the palette changes; every ad-hoc shade that sits near a role is re-expressed relative to
+its new value, keeping its own lightness and chroma offset, so "a slightly dimmer
+warning" stays that. Two invariant tests guard it.
+
+Tuning was done by measurement, not by adjusting the assertion. A diagnostic test prints
+each palette's scorecard, which showed nosferatu at 52 — its vivid red accent against
+near-gray roles wrecked chroma coherence. The palette was retuned so its *colorful* roles
+agree in intensity while it stays near-mono; it now scores 63. One scorer change was made
+for the same reason the must-distinguish list omits user↔info: `tool` and `dim` are
+*supposed* to be muted, so scoring them as chroma outliers measures the wrong thing.
+
+Deviation logged (DEVIATIONS.md P2.19): absolute scores land below the spec's calibration
+pins — Dracula 66.9 against ≈76 — because Dracula's own queued/asap pair measures 0.191
+in Oklab, under the 0.20 target the same spec sets. The plan's stated test requirement is
+that the orderings hold, and `TestCalibrationOrdering` asserts exactly that rather than
+absolute values.
+
+Verified: 30 theme tests including Oklab round-trip, gamut mapping preserving hue and
+lightness, generation scoring ≥70 from five seeds on both backgrounds, conventional hues
+surviving generation, and repair terminating on the success/warning/error triangle that
+greedy pairwise repair provably cycles on. PNG looked at after switching to gloom.

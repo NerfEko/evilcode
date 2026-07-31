@@ -171,13 +171,6 @@ func TestRainbowClampsIndex(t *testing.T) {
 	}
 }
 
-func colorDistance(a, b color.RGBA) float64 {
-	dr := float64(a.R) - float64(b.R)
-	dg := float64(a.G) - float64(b.G)
-	db := float64(a.B) - float64(b.B)
-	return math.Sqrt(dr*dr + dg*dg + db*db)
-}
-
 func TestAnimatedToolCycles(t *testing.T) {
 	flat := RGB(120, 120, 120)
 
@@ -364,6 +357,37 @@ func TestMarkdownPaletteMatchesSpec(t *testing.T) {
 	for name, tt := range want {
 		if got := Hex(tt.got); got != tt.want {
 			t.Errorf("markdown %s = %s, want %s", name, got, tt.want)
+		}
+	}
+}
+
+func TestEveryPaletteIsComplete(t *testing.T) {
+	for name, p := range Palettes() {
+		if p.Name != name {
+			t.Errorf("palette registered as %q calls itself %q", name, p.Name)
+		}
+		for _, r := range AllRoles() {
+			if c := p.Get(r); c.A == 0 {
+				t.Errorf("palette %q has no color for role %s", name, r)
+			}
+		}
+	}
+}
+
+func TestPalettesAreReadableAgainstTheirBackground(t *testing.T) {
+	// Every foreground role must stand off the background it was designed for,
+	// or the palette is unusable however nice it looks in a swatch.
+	for name, p := range Palettes() {
+		bg := RGB(18, 18, 24)
+		if p.Light {
+			bg = RGB(250, 250, 252)
+		}
+		bgLum := Luminance(bg)
+		for _, r := range []Role{RoleUser, RoleAI, RoleAccent, RoleError, RoleWarning, RoleSuccess} {
+			if diff := math.Abs(Luminance(p.Get(r)) - bgLum); diff < 0.12 {
+				t.Errorf("palette %q role %s has luminance contrast %.3f against its background",
+					name, r, diff)
+			}
 		}
 	}
 }

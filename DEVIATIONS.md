@@ -53,6 +53,33 @@ layout checks are unaffected — only the glyph artwork is missing, and
 PNG is never a mystery. Golden frames are plain text (§14), so none of this
 affects test reproducibility.
 
+## 2026-07-31 — P2.19 harmony scores differ from the spec's calibration pins
+
+**Spec** (§7.5): "Calibration pins (dark bg): Dracula ≈76, Solarized Dark ≈70, Nord ≈69,
+Gruvbox ≈67, neon-chaos ≈56, unreadable-mud ≈38. A test asserts these orderings hold."
+
+**Built**: the scorer implements every documented rule — Oklab throughout, the five
+weighted criteria, `0.4·mean + 0.6·worst` per criterion, `0.75·weighted_mean +
+0.25·worst_critical` overall, the CVD projections, and the must-distinguish pairs with
+their documented omissions. But absolute scores land lower than the pins: Dracula 66.9
+rather than ≈76.
+
+**Why it was not tuned to match**: the gap comes from `DistinctTarget = 0.20`, which the
+spec also states. Measured in Oklab, Dracula's own `queued`/`asap` pair sits at 0.191 and
+`system`/`queued` at 0.158 — both below the target the same spec sets. Either the pins
+came from a scorer with a different distance metric, or the target is stricter than the
+reference palette satisfies. Moving the target to make one number match would be tuning
+to a constant rather than to the eye.
+
+The plan's actual test requirement is that the *orderings* hold, and they do:
+unreadable-mud < neon-chaos < the built-in palettes, with Dracula above neon-chaos.
+`TestCalibrationOrdering` asserts exactly that and deliberately does not assert absolute
+values, which would break on any future tuning.
+
+**Visible effect**: `/theme score` reports numbers a few points below what the spec's
+table would suggest. Relative judgments — is this palette better than that one — are
+unaffected.
+
 ## 2026-07-30 — P1.5 two §2.2 name-table emoji swapped
 
 **Spec conflict, not a judgment call**: invariant 7 forbids Unicode 13+ codepoints
