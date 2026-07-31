@@ -316,12 +316,12 @@ different claim from "model output is trusted", and the first does not imply the
   and tab, then apply only application-owned styling; raw output only behind an explicit
   non-tty mode. Reproduce: a fixture file containing an OSC 52 payload, rendered, asserting
   the sequence does not reach the writer.  ⟨codex — high⟩
-- [ ] **H4.2** `internal/session/store.go:81` — session names are joined into paths with no
+- [x] **H4.2** `internal/session/store.go:81` — session names are joined into paths with no
   validation of absolute paths, separators, or `..`; only `Rename` (`checkpoint.go:189`)
   validates. `--resume '../x'` or `/fork ../../tmp/evil` escapes the sessions directory.
   Fix: hoist `Rename`'s validator into one basename check used by `Open`, `Fork`, and
   `Resume`, and assert the resolved path stays under the session root.  ⟨both⟩
-- [ ] **H4.3** `internal/session/store.go:78` — session directories are `0755` and logs
+- [x] **H4.3** `internal/session/store.go:78` — session directories are `0755` and logs
   `0644`, so every prompt, tool output, and anything a model echoed is world-readable. Fix:
   `0700` directories, `0600` files, including temp and backup files.  ⟨codex⟩
 - [ ] **H4.4** `internal/daemon/protocol.go:33` — the `/tmp/evilcode-$UID` fallback (used

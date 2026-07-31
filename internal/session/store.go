@@ -73,14 +73,66 @@ type Store struct {
 // Dir returns the sessions directory under the data directory.
 func Dir(dataDir string) string { return filepath.Join(dataDir, "sessions") }
 
+// DirPerm and FilePerm keep a session to its owner.
+//
+// A session log holds every prompt, every tool result and anything a model
+// echoed back — API keys it was shown, file contents it read. World-readable is
+// the wrong default for that on any machine with a second account on it.
+const (
+	DirPerm  = 0o700
+	FilePerm = 0o600
+)
+
+// ValidName checks that a session name is a name and not a path.
+//
+// Only Rename validated. Everything else joined the name straight into a path,
+// so `--resume ../x` or a fork naming `../../tmp/evil` read and then wrote
+// outside the sessions directory entirely. One check, used by every entry
+// point, because the next one added will forget.
+func ValidName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("a session needs a name")
+	case name == "." || name == "..":
+		return fmt.Errorf("session name %q is a directory, not a name", name)
+	case strings.ContainsAny(name, `/\`):
+		return fmt.Errorf("session names cannot contain path separators: %q", name)
+	case strings.ContainsRune(name, 0):
+		return fmt.Errorf("session name contains a null byte")
+	case filepath.IsAbs(name):
+		return fmt.Errorf("session names cannot be absolute paths: %q", name)
+	case name != filepath.Base(name):
+		return fmt.Errorf("session name %q is not a single filename", name)
+	}
+	return nil
+}
+
+// pathFor resolves a session name to its log, refusing anything that would land
+// outside the sessions directory.
+func pathFor(dataDir, name string) (string, error) {
+	if err := ValidName(name); err != nil {
+		return "", err
+	}
+	dir := Dir(dataDir)
+	path := filepath.Join(dir, name+".jsonl")
+	// Belt and braces: the name is already a bare filename, and this catches a
+	// case the character checks miss on some future platform.
+	if filepath.Dir(path) != filepath.Clean(dir) {
+		return "", fmt.Errorf("session name %q escapes the sessions directory", name)
+	}
+	return path, nil
+}
+
 // Open creates or appends to a named session.
 func Open(dataDir, name string) (*Store, error) {
-	dir := Dir(dataDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	path, err := pathFor(dataDir, name)
+	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, name+".jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, FilePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -146,17 +198,19 @@ func PickFreeName(dataDir string) string {
 // is reopened rather than refused — goldens depend on the same session name
 // every run, and refusing would break every replay.
 func CreateNamed(dataDir, name string) (*Store, error) {
-	dir := Dir(dataDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	path, err := pathFor(dataDir, name)
+	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, name+".jsonl")
+	if err := os.MkdirAll(Dir(dataDir), DirPerm); err != nil {
+		return nil, err
+	}
 
 	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY | os.O_APPEND
 	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	}
-	f, err := os.OpenFile(path, flags, 0o644)
+	f, err := os.OpenFile(path, flags, FilePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +302,7 @@ func (s *Store) reopenLocked() error {
 	if s.file != nil {
 		_ = s.file.Close()
 	}
-	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, FilePerm)
 	if err != nil {
 		return errors.Join(flushErr, err)
 	}
@@ -422,7 +476,10 @@ func Messages(path string) ([]provider.Message, error) {
 
 // Resume loads a session for appending and returns its messages.
 func Resume(dataDir, name string) (*Store, []provider.Message, error) {
-	path := filepath.Join(Dir(dataDir), name+".jsonl")
+	path, err := pathFor(dataDir, name)
+	if err != nil {
+		return nil, nil, err
+	}
 	if _, err := os.Stat(path); err != nil {
 		return nil, nil, fmt.Errorf("no session named %q", name)
 	}
@@ -439,16 +496,22 @@ func Resume(dataDir, name string) (*Store, []provider.Message, error) {
 
 // Fork copies a session under a new name (plan.md §18).
 func Fork(dataDir, from, to string) error {
-	src := filepath.Join(Dir(dataDir), from+".jsonl")
-	dst := filepath.Join(Dir(dataDir), to+".jsonl")
-	if _, err := os.Stat(dst); err == nil {
-		return fmt.Errorf("session %q already exists", to)
-	}
-	data, err := os.ReadFile(src)
+	src, err := pathFor(dataDir, from)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	dst, err := pathFor(dataDir, to)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("session %q already exists", to)
+	}
+	data, rerr := os.ReadFile(src)
+	if rerr != nil {
+		return rerr
+	}
+	if err := os.WriteFile(dst, data, FilePerm); err != nil {
 		return err
 	}
 	return copyBlobs(blobDir(src), blobDir(dst))
@@ -464,7 +527,7 @@ func copyBlobs(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dst, 0o755); err != nil {
+	if err := os.MkdirAll(dst, DirPerm); err != nil {
 		return err
 	}
 	for _, e := range entries {
@@ -475,7 +538,7 @@ func copyBlobs(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, FilePerm); err != nil {
 			return err
 		}
 	}

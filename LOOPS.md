@@ -2920,3 +2920,47 @@ finished. Rewritten to test what serialization actually guarantees — mutual
 exclusion, with each call proving it about itself by claiming a marker — plus a
 separate test that a `cd` carries to the next call. The first version was
 testing an implementation detail it had accidentally frozen.
+
+## 2026-07-31 H4.2/H4.3 — A name is not a path, and a session is not public
+
+**Names were joined straight into paths.** `Rename` validated; nothing else did.
+`--resume ../outside` opened a file outside the sessions directory and then
+appended to it:
+
+```
+Open accepted "../outside"        Resume accepted "../outside"
+Open accepted ".."                Resume accepted "."
+```
+
+`ValidName` refuses empty, `.`, `..`, separators, absolute paths, null bytes and
+anything that is not its own basename; `pathFor` runs it and then checks the
+resolved path's directory is still the sessions directory. Every entry point —
+`Open`, `CreateNamed`, `Resume`, `Fork`, `Rename` — goes through it, because a
+check that lives in one function is a check the next function will not have.
+
+`Rename`'s own rule shrank to what only it cares about: no spaces, which is a
+usability rule rather than a safety one and was doing both jobs badly.
+
+**Sessions were world-readable.** Directory `0755`, logs `0644` — and a session
+log holds every prompt, every tool result, and whatever a model echoed back,
+including things it was shown. `0700` and `0600` now, and the same for the
+artefacts a rewrite leaves lying around:
+
+```
+crow.jsonl is -rw-r--r--, readable outside the owner
+crow.jsonl.bak is -rw-r--r--, readable outside the owner
+```
+
+The backup was the one worth catching. It holds the *pre-compaction* history —
+strictly more than the file everyone thinks about — and it persists.
+
+Attachments get the same treatment: `os.CreateTemp` makes a file `0600` already,
+but the explicit chmod says so rather than relying on it.
+
+**Not done:** existing sessions keep the permissions they were created with.
+Tightening them on open would be a surprise write to files the user owns; a
+`chmod -R go= ~/.local/share/evilcode/sessions` is the honest fix and belongs to
+whoever wants it.
+
+Verified: seven escaping names refused across four entry points, directory and
+log and backup all owner-only; `go test ./... -race` green.

@@ -39,6 +39,17 @@ could not be faked: the reproduction failed or it did not. This one can be faked
 still worse than what it was copied from. The gate is the only thing standing between the
 plan and that outcome.
 
+Two things are stricter here than in any predecessor, and they are the reason this plan can
+be trusted at all:
+
+- **Every task ends in its own commit.** Including the ones that wrote no code. The history
+  is the record of what this plan did; a task that landed inside somebody else's commit did
+  not happen as far as anyone reading later is concerned.
+- **Every commit that touched code goes through codex review, and the findings are worked
+  before the next task starts.** `plan.md` and `plan2.md` treated codex as optional colour.
+  Here it is mandatory — see §0.2 step 11. Between it and the parity gate, every line this
+  plan produces is read twice by something that did not write it.
+
 Tasks carry a loop tag, as in `plan3.md`:
 
 - **⟨fix⟩** — evilcode's behavior is wrong today, not merely thinner. Run the `plan2.md`
@@ -102,13 +113,35 @@ Tasks carry a loop tag, as in `plan3.md`:
 
 9. TUI-visible change → probe rig, PNG, **look at the image**. Very little of this plan is
    visible; where it is (J3.3, J8.1), the frame matters as much as the test.
-10. Mark `[x]`. Commit — one task per commit, always green.
-11. Background codex review of the commit (`codex:rescue`). Don't block. Fold findings
-    into the next iteration; log dismissed findings with a reason.
+10. Mark `[x]`. **Commit.** One task, one commit, always green — no exceptions and no
+    batching. A ⟨prep⟩ task that wrote no code still commits: its `LOOPS.md` entry is the
+    commit. A task that needed three attempts is still one commit; squash before landing,
+    do not leave the false starts in the history.
+11. **Codex review — required, not advisory.** Every commit that touched code goes through
+    `codex:rescue` on that commit's diff. Kick it off in the background so it does not
+    block the commit, but it must **run**, and its findings must be **resolved before the
+    next task starts**:
+    - Real finding → fix it, **its own commit**, subject `fix(J<n>.<m>): …`, and append a
+      `LOOPS.md` entry for it. A finding fixed inside the next task's commit is a finding
+      nobody can find later.
+    - Dismissed → say why in the `LOOPS.md` entry and add it to the Dismissed findings
+      ledger in PART III. "Codex was wrong" is a reason only when followed by *how*.
+    - Nothing found → say that. A silent review is indistinguishable from a review that
+      never ran.
+
+    The one thing codex does not do is gate the commit. `go build ./... && go vet ./... &&
+    go test ./...` is the gate; codex is a second reader whose findings are worked, not a
+    green light waited on. Do not start `J<n>.<m+1>` with an unread review outstanding.
 12. Append one entry to **`LOOPS.md`** (append-only, never edit old):
     `## <date> J<n>.<m>` — what was done, the reproduction for ⟨fix⟩, verification (test
-    names / PNG filenames), **the parity line from step 8**, codex verdict when known,
-    deviations.
+    names / PNG filenames), **the parity line from step 8**, **the codex line from step
+    11**, deviations. Two verdict lines per entry, both mandatory:
+
+    ```
+    parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par (…)
+    codex:  2 findings — 1 fixed in a1b2c3d (nil deref on a zero-byte image),
+            1 dismissed (suggested caching decoded bytes; read is once-per-turn)
+    ```
 13. Behavior changed → `README.md` in the same commit. Specced behavior deliberately not
     built → `DEVIATIONS.md`.
 
@@ -849,15 +882,24 @@ saves the next reader the trip.
 
 ## Dismissed findings
 
-Empty at authoring. Anything the parity gate rules out goes here with its reason, never
-deleted.
+Empty at authoring. Two sources feed it, neither ever deleted:
+
+- **Parity gate** (§0.2 step 8) — a jcode behavior judged deliberately not worth carrying.
+  Note the `DEVIATIONS.md` entry it pairs with.
+- **Codex review** (§0.2 step 11) — a finding not acted on. Format:
+  `J<n>.<m> · <finding in one line> · dismissed: <why>`. "Codex was wrong" needs the *how*
+  after it, otherwise it is not a reason, it is a shrug.
 
 ---
 
 # Definition of done
 
 Every task `[x]`, every phase tagged, `go build ./... && go vet ./... && go test ./...`
-green at every commit.
+green at every commit, and every task its own commit.
+
+Every code-touching commit reviewed by codex, with its findings either fixed in a named
+follow-up commit or dismissed with a reason in the PART III ledger. No task started with an
+unread review behind it.
 
 Concretely, when this plan is finished:
 
@@ -896,6 +938,8 @@ without a restart.
 An overnight run leaves an HTML report naming what it changed, what validated it, and which
 limit stopped it.
 
-And — the claim this plan actually rests on — **for every one of those, `LOOPS.md` holds a
-parity line naming the jcode file and range that was read, and the verdict is `on par` or
-`better`.** A finished plan with a `worse` verdict anywhere in the log is not finished.
+And — the claim this plan actually rests on — **for every one of those, `LOOPS.md` holds
+two lines: a parity line naming the jcode file and range that was read, verdict `on par` or
+`better`; and a codex line naming what the review found and what happened to it.** A
+finished plan with a `worse` verdict anywhere in the log is not finished, and neither is one
+with a task whose codex line is missing.

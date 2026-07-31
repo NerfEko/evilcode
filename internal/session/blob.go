@@ -41,7 +41,7 @@ func encodeMessage(path string, m provider.Message) ([]byte, error) {
 
 	if len(m.Images) > 0 {
 		dir := blobDir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, DirPerm); err != nil {
 			return nil, err
 		}
 		for _, img := range m.Images {
@@ -68,6 +68,11 @@ func writeBlob(path string, data []byte) error {
 		return err
 	}
 	name := tmp.Name()
+	if err := tmp.Chmod(FilePerm); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
 	defer os.Remove(name)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()

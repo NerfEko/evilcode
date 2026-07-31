@@ -100,7 +100,7 @@ func backup(path string) error {
 		return err
 	}
 	tmp := path + ".bak.tmp"
-	f, err := os.Create(tmp)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, FilePerm)
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
 		b.WriteByte('\n')
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(b.String()), FilePerm); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -256,11 +256,21 @@ func Save(dataDir, name string, pinned bool) error {
 
 // Rename moves a session's file, refusing to overwrite an existing one.
 func Rename(dataDir, from, to string) error {
-	if strings.ContainsAny(to, "/\\ ") || to == "" {
+	// Rename's own check was the only validation in the package; it is
+	// ValidName's job now, via pathFor, on every entry point rather than this
+	// one. The space rule stays, because a session name with a space in it is
+	// a nuisance in every command that takes one.
+	if strings.ContainsAny(to, " \t") {
 		return fmt.Errorf("session names must be a single filesystem-safe word")
 	}
-	src := filepath.Join(Dir(dataDir), from+".jsonl")
-	dst := filepath.Join(Dir(dataDir), to+".jsonl")
+	src, err := pathFor(dataDir, from)
+	if err != nil {
+		return err
+	}
+	dst, err := pathFor(dataDir, to)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("session %q already exists", to)
 	}
@@ -366,7 +376,7 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(b.String()), FilePerm); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(tmp, path); err != nil {
