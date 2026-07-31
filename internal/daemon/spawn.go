@@ -84,8 +84,13 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	go sess.pump()
 
 	ctx, cancel := context.WithTimeout(context.Background(), WorkerTimeout)
-	sess.cancel = cancel
+	done, ok := sess.beginTurn(cancel)
+	if !ok {
+		cancel()
+		return nil, fmt.Errorf("the session is shutting down")
+	}
 	go func() {
+		defer close(done)
 		defer cancel()
 		_ = sess.built.Agent.Run(ctx, WorkerPrompt(task, files, schema))
 		// A worker that errors out never emits a turn end, so the breaker's

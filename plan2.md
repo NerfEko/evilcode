@@ -173,7 +173,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
 
 Wrong results under load, on a machine where the daemon and the swarm make load normal.
 
-- [ ] **H2.1** `internal/daemon/server.go:492` `sess.cancel` — assigned, read, and cleared
+- [x] **H2.1** `internal/daemon/server.go:492` `sess.cancel` — assigned, read, and cleared
   across input, interrupt, close, and worker paths with no consistent locking. Two attached
   clients, or an interrupt racing a new turn, can cancel the wrong turn. Fix: touch
   `cancel` only under `sess.mu`, and cancel the previous one before overwriting.  ⟨both⟩

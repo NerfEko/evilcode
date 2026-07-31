@@ -1980,3 +1980,34 @@ round instead of off each call. Locking a path spelling instead of a file.
 Waiting for a turn without preventing the next one. Worth carrying into H2,
 where the boundaries are all concurrency and there is no reason to think that
 gets easier.
+
+# Phase H2 — Concurrency
+
+## 2026-07-31 H2.1 — One field, four writers, no lock
+
+`sess.cancel` was assigned in `Input` and in the worker spawn, read in
+`Interrupt` and in `close`, with no lock holding any of it together. Two
+attached clients could each overwrite the other's, so an interrupt cancelled a
+turn that had already ended while the live one carried on unstoppable.
+
+The reproduction is the race detector. Eight concurrent `Input`s, eight
+concurrent `Interrupt`s and four spawns against one session:
+
+```
+WARNING: DATA RACE
+Read at 0x00c000188888 by goroutine 34:
+Previous write at 0x00c000188888 by goroutine 31:
+```
+
+Every path now goes through `beginTurn` or `cancelTurn`, both under `sess.mu`,
+and `beginTurn` cancels whatever it replaces rather than dropping it on the
+floor. The worker spawn used the field directly and now shares the same door,
+which also gives workers the `closing` refusal and the `turnDone` tracking that
+`close` waits on — neither of which it had.
+
+The test is not in this commit. What it exercises after this fix are races
+*inside* the agent — `a.seq++` in `newEvent`, the `pendingImages` swap in `Run`
+— because nothing yet stops two `Run`s on one agent. Those are H2.3, H2.8 and
+H2.9, and the test lands with the one that finally makes it pass. The evidence
+for this task is that no daemon field appears in the race report any more; what
+is left is a different bug that the same test happens to find.

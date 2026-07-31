@@ -551,15 +551,11 @@ func (sess *Session) Input(text string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	sess.mu.Lock()
-	if sess.closing {
-		sess.mu.Unlock()
+	done, ok := sess.beginTurn(cancel)
+	if !ok {
 		cancel()
 		return
 	}
-	sess.cancel, sess.turnDone = cancel, done
-	sess.mu.Unlock()
 	go func() {
 		defer close(done)
 		defer cancel()
@@ -567,16 +563,45 @@ func (sess *Session) Input(text string) {
 	}()
 }
 
+// beginTurn records a turn's cancel and completion channel under the session
+// lock, and reports whether it may start.
+//
+// Every path that touches cancel goes through here or cancelTurn. It used to be
+// assigned, read and cleared from input, interrupt, close and the worker spawn
+// with no lock between them: two attached clients could each overwrite the
+// other's, leaving an interrupt cancelling a turn that had already ended and
+// the live one unstoppable.
+func (sess *Session) beginTurn(cancel context.CancelFunc) (chan struct{}, bool) {
+	done := make(chan struct{})
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.closing {
+		return nil, false
+	}
+	// Cancel whatever this replaces. Normally already finished — Input checks
+	// Running first — and cancelling a finished turn only releases its context.
+	if sess.cancel != nil {
+		sess.cancel()
+	}
+	sess.cancel, sess.turnDone = cancel, done
+	return done, true
+}
+
+// cancelTurn stops the current turn, if there is one.
+func (sess *Session) cancelTurn() {
+	sess.mu.Lock()
+	cancel := sess.cancel
+	sess.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // Interrupt injects a message into a live turn, or cancels it when there is no
 // text to inject.
 func (sess *Session) Interrupt(text string, urgent bool) {
 	if text == "" {
-		sess.mu.Lock()
-		cancel := sess.cancel
-		sess.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
+		sess.cancelTurn()
 		return
 	}
 	source := agent.SourceUser
