@@ -25,21 +25,65 @@ Requires Go 1.26+. Runtime deps: `tmux` and `rg` (ripgrep) for the probe rig and
 
 ## What works today
 
-Phase 0 — bootstrap and the probe rig.
+Phase 0 (bootstrap and the probe rig) and most of Phase 1 (a drivable core).
 
-- `internal/ansirender`: ANSI → PNG renderer (SGR 0/1/2/3/7/22/23/27, 30–37, 90–97,
-  40–47, 100–107, 38;5;n / 48;5;n, 38;2;r;g;b / 48;2;r;g;b, 39/49), wide-glyph aware.
-- `evilcode probe`: `render` (ANSI → PNG), `text` (ANSI → plain), `fonts` (glyph
-  coverage diagnostic), `hello` (bubbletea smoke app).
-- `probe/probe.sh`: tmux driver — `boot / keys / frame / png / kill`.
-- Golden-frame tests behind the `probe` build tag.
+**Interactive TUI** — `evilcode tui`
 
-Nothing else is wired yet. See `plan.md` for the full spec and phase list.
+- Packed-vs-scrolling transcript: while the conversation fits, it hugs the composer;
+  on overflow it becomes a scrolling viewport with a hysteretic scrollbar.
+- Rainbow-decayed prompt numbers on the user band, markdown prose, syntax-highlighted
+  code blocks with streaming chrome, and inline diffs tinted toward add/delete while
+  keeping their highlighting.
+- Slash palette (zero layout height, fuzzy recolor) and an inline model picker.
+- Composer with the readline edit set, three newline paths, and paste collapsing.
+
+**Headless** — `evilcode run "prompt"`
+
+Text on stdout, tool rows and notices on stderr, exit 130 on interrupt.
+
+**Under the hood** — provider clients (Ollama native, OpenAI-compatible, and a
+deterministic mock), TOML config with `model@provider` refs, the tool set
+(read/write/edit/glob/grep/bash) with bounded-concurrency batching, the agent loop with
+safe-point interleaving and retry classification, and JSONL sessions with crash
+detection.
+
+Not yet built: the todo/plan discipline system, memory, the daemon and swarms, and
+graphics. See `plan.md` for the full spec and phase list.
 
 ## Config reference
 
-Not implemented yet (Phase 1). Paths will be `~/.config/evilcode/config.toml` and
-`~/.local/share/evilcode/`.
+`~/.config/evilcode/config.toml`, or `$EVILCODE_CONFIG`. Everything has a default; a
+missing file is a working setup.
+
+```toml
+default_model = "qwen3-coder:480b-cloud@ollama-cloud"
+
+[[provider]]
+name = "ollama-cloud"
+kind = "ollama"                # ollama | openai | mock
+base_url = "https://ollama.com"
+api_key_env = "OLLAMA_API_KEY"
+
+[[model]]
+name = "qwen3-coder:480b-cloud"
+context_window = 262144        # override what the provider reports
+
+[roles]                        # every internal side-call goes through smol
+smol = ["qwen3:8b@ollama-local"]
+
+[display]
+theme = "dracula"
+centered = false
+
+[features]
+auto_poke = true
+```
+
+Declaring any `[[provider]]` replaces the defaults entirely, so a provider can be
+removed. Everything else merges over them.
+
+Data lives under `~/.local/share/evilcode/` — `sessions/*.jsonl` and
+`prompt-history.jsonl`.
 
 Environment variables in use today:
 
@@ -53,7 +97,22 @@ Environment variables in use today:
 
 ## Keymap
 
-Not implemented yet (Phase 1). See `plan.md` §11 for the target keymap.
+| key | action |
+|---|---|
+| `Enter` | submit; interleave into a running turn; queue in queue mode |
+| `Ctrl+Enter` | the opposite of the current send mode |
+| `Shift+Enter` / `Alt+Enter` / trailing `\` | newline |
+| `Esc` | layered cancel: close overlays, interrupt, then clear input |
+| `Ctrl+C` | interrupt; twice when idle to quit |
+| `Ctrl+T` | toggle queue mode |
+| `Ctrl+G` | toggle a scroll bookmark |
+| `Ctrl+U/K/W/A/E/B/F/Z/S` | readline edits |
+| `PgUp` / `PgDn` | scroll a page |
+| `↑` / `↓` (empty input) | scroll a line |
+| wheel | momentum scroll |
+| `!` prefix | run the line as a shell command |
+
+`/terminal-setup` explains how to make `Shift+Enter` work in your terminal.
 
 ## Probe rig
 

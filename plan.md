@@ -982,15 +982,15 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Transcript: message blocks, render caching, user-prompt bands + rainbow numbers (§9.6, §7.7), tool rows (§9.5), error rows (§9.8).
 - [x] Markdown: glamour style JSON (§9.1) + custom code blocks with streaming chrome (§9.2).
 - [x] Inline diffs with tint formula (§9.3).
-- [ ] Composer: textarea, prompt glyphs, hint line, newline paths, `!` shell prefix, paste rules (§6.1, §6.2, §6.6).
+- [x] Composer: textarea, prompt glyphs, hint line, newline paths, `!` shell prefix, paste rules (§6.1, §6.2, §6.6).
 - [x] Status line: full matrix incl. knight-rider bar + spinner discipline (§8.2, §8.1).
 - [x] Header (§8.7, minus changelog box).
 - [x] Slash palette overlay: zero-height float, ranking, fuzzy recolor, suppression, P1 command subset (§5.1, §13).
 - [x] Model picker (§5.3).
-- [ ] Scrolling: momentum + ease-out + tail-follow + keyboard nav + scrollbar with hysteresis + full-repaint-on-scroll (§4.1–4.3, §3.5–3.6, §4.7).
-- [ ] Interrupt: Esc/Ctrl+C basic paths (§6.7 minus poke interactions).
-- [ ] Welcome screen: `Welcome to evilcode 🦇`, `◖ suggestion chips ◗` rotating, static eye placeholder (animation P2).
-- [ ] Probe scenarios + goldens: welcome, mock chat turn, palette open/filter, picker, tool row, diff, packed→scrolling transition. **Look at every PNG.**
+- [x] Scrolling: momentum + ease-out + tail-follow + keyboard nav + scrollbar with hysteresis + full-repaint-on-scroll (§4.1–4.3, §3.5–3.6, §4.7).
+- [x] Interrupt: Esc/Ctrl+C basic paths (§6.7 minus poke interactions).
+- [x] Welcome screen: `Welcome to evilcode 🦇`, `◖ suggestion chips ◗` rotating, static eye placeholder (animation P2).
+- [x] Probe scenarios + goldens: welcome, mock chat turn, palette open/filter, picker, tool row, diff, packed→scrolling transition. **Look at every PNG.**
 - [ ] Verify: `evilcode run` against local ollama AND cloud (with `OLLAMA_API_KEY`); a real multi-file edit interactively; goldens green. Tag `phase-1`.
 
 ## Phase 2 — The soul: plans, todos, discipline, polish, fun

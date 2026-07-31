@@ -1,0 +1,12 @@
+# The packed→scrolling transition (§3.2) and the scrollbar (§3.5). A long
+# answer overflows the viewport, so the transcript becomes a scrolling window
+# and wraps one column narrower to make room for the bar.
+
+scenario long
+boot tui
+keys "long answer"
+keys Enter
+capture scroll-bottom
+
+keys PPage
+capture scroll-paged

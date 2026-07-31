@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/theme"
@@ -37,8 +38,13 @@ type Model struct {
 	blocks []Block
 	scroll Scroll
 
-	input  string
-	cursor int
+	editor Editor
+
+	// pastes holds collapsed paste contents, restored on send.
+	pastes []Paste
+
+	// lastPaste times the most recent paste, for the trailing-Enter guard.
+	lastPaste time.Time
 
 	processing bool
 	queueMode  bool
@@ -71,6 +77,9 @@ type Model struct {
 
 	// models supplies picker entries; it is set once the provider answers.
 	models []ModelEntry
+
+	// sawEscapeHint keeps the trailing-backslash tip to once per session.
+	sawEscapeHint bool
 
 	quitting     bool
 	confirmQuit  bool
@@ -114,8 +123,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		width, _ := ContentWidth(m.width, false)
-		m.renderer.SetWidth(width)
+		m.applyWrapWidth()
 		return m, nil
 
 	case tickMsg:
@@ -133,6 +141,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		// Bracketed paste never inspects the clipboard for images: on Wayland
+		// a multi-MIME clipboard is routinely misidentified, and a stray image
+		// attachment is worse than a missing one (plan.md §6.6).
+		insert, stored := CollapsePaste(msg.Content)
+		m.editor.Insert(insert)
+		if stored != nil {
+			m.pastes = append(m.pastes, *stored)
+		}
+		m.lastPaste = time.Now()
+		m.syncShellMode()
+		return m, nil
+
+	case tea.MouseWheelMsg:
+		return m.handleWheel(msg)
 	}
 	return m, nil
 }
@@ -259,8 +283,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if len(suggestions) > 0 {
 				sel := clamp(m.palette.Selected, 0, len(suggestions)-1)
-				m.input = "/" + suggestions[sel].Name
-				m.cursor = len([]rune(m.input))
+				m.editor.Text = "/" + suggestions[sel].Name
+				m.editor.Cursor = len([]rune(m.editor.Text))
 			}
 			return m, nil
 		case "enter":
@@ -270,7 +294,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "esc":
-			m.input, m.cursor, m.palette.Selected = "", 0, 0
+			m.editor.Clear()
+			m.palette.Selected = 0
 			return m, nil
 		}
 	}
@@ -283,7 +308,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.interrupt(false)
 			return m, nil
 		}
-		if m.confirmQuit || m.input == "" {
+		if m.confirmQuit || m.editor.Text == "" {
 			m.quitting = true
 			return m, tea.Quit
 		}
@@ -296,6 +321,22 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
+		// A bare Enter right after a paste is the terminal ending the paste,
+		// not the user submitting (plan.md §6.6).
+		if time.Since(m.lastPaste) < TrailingEnterGuard {
+			return m, nil
+		}
+		// The universal newline fallback: an odd number of trailing
+		// backslashes escapes the Enter (plan.md §6.2).
+		if EndsWithEscapedNewline(m.editor.Text) {
+			m.editor.Text = StripEscapedNewline(m.editor.Text)
+			m.editor.Insert("\n")
+			if !m.sawEscapeHint {
+				m.sawEscapeHint = true
+				m.notice = "Tip: run /terminal-setup to make Shift+Enter insert newlines"
+			}
+			return m, nil
+		}
 		return m.send(false)
 
 	case "ctrl+j":
@@ -311,7 +352,55 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+u":
-		m.input, m.cursor = "", 0
+		m.editor.KillToStart()
+		return m, nil
+
+	case "ctrl+k":
+		m.editor.KillToEnd()
+		return m, nil
+
+	case "ctrl+w", "alt+backspace", "ctrl+backspace":
+		m.editor.DeleteWord()
+		return m, nil
+
+	case "ctrl+a", "home":
+		m.editor.Home()
+		return m, nil
+
+	case "ctrl+e", "end":
+		m.editor.End()
+		return m, nil
+
+	case "left":
+		m.editor.Left()
+		return m, nil
+
+	case "right":
+		m.editor.Right()
+		return m, nil
+
+	case "ctrl+b", "ctrl+left", "alt+left":
+		m.editor.WordLeft()
+		return m, nil
+
+	case "ctrl+f", "ctrl+right", "alt+right":
+		m.editor.WordRight()
+		return m, nil
+
+	case "ctrl+z":
+		if m.editor.Undo() {
+			m.notice = "Restored"
+		}
+		return m, nil
+
+	case "ctrl+s":
+		if n := m.editor.Stash(); n != "" {
+			m.notice = n
+		}
+		return m, nil
+
+	case "delete":
+		m.editor.Delete()
 		return m, nil
 
 	case "ctrl+g":
@@ -321,11 +410,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "backspace":
-		if m.cursor > 0 {
-			runes := []rune(m.input)
-			m.input = string(runes[:m.cursor-1]) + string(runes[m.cursor:])
-			m.cursor--
-		}
+		m.editor.Backspace()
 		m.syncShellMode()
 		return m, nil
 
@@ -338,24 +423,28 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up":
-		if m.input == "" {
+		if m.editor.Text == "" {
 			m.scroll.Up(1, m.contentHeight(), m.transcriptHeight())
 		}
 		return m, nil
 
 	case "down":
-		if m.input == "" {
+		if m.editor.Text == "" {
 			m.scroll.Down(1)
 		}
+		return m, nil
+	}
+
+	// Newline chords insert instead of submitting (plan.md §6.2).
+	if NewlineKeys[key] {
+		m.editor.Insert("\n")
 		return m, nil
 	}
 
 	// Ordinary text input. Key.Text is the printable characters the key
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
-		runes := []rune(m.input)
-		m.input = string(runes[:m.cursor]) + txt + string(runes[m.cursor:])
-		m.cursor += len([]rune(txt))
+		m.editor.Insert(txt)
 		m.confirmQuit = false
 		m.syncShellMode()
 	}
@@ -364,7 +453,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // paletteOpen reports whether the composer is in slash mode.
 func (m *Model) paletteOpen() bool {
-	return strings.HasPrefix(m.input, "/") && !m.palette.Suppressed
+	return strings.HasPrefix(m.editor.Text, "/") && !m.palette.Suppressed
 }
 
 // paletteSuggestions is the currently ranked list.
@@ -372,12 +461,24 @@ func (m *Model) paletteSuggestions() []Suggestion {
 	if !m.paletteOpen() {
 		return nil
 	}
-	return RankCommands(strings.TrimPrefix(m.input, "/"), VisibleCommands())
+	return RankCommands(strings.TrimPrefix(m.editor.Text, "/"), VisibleCommands())
+}
+
+// handleWheel applies the momentum scrolling of §4.1.
+func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	now := time.Now()
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		m.scroll.WheelUp(now, m.contentHeight(), m.transcriptHeight())
+	case tea.MouseWheelDown:
+		m.scroll.WheelDown(now)
+	}
+	return m, nil
 }
 
 // syncShellMode tracks the `!` prefix that switches the composer to a shell.
 func (m *Model) syncShellMode() {
-	m.shellMode = strings.HasPrefix(m.input, "!")
+	m.shellMode = strings.HasPrefix(m.editor.Text, "!")
 }
 
 // handlePickerKey drives the inline model picker.
@@ -491,7 +592,8 @@ func (m *Model) loadModels() []ModelEntry {
 // runCommand executes a slash command. Unknown commands fall through to a
 // notice rather than being sent to the model, which would waste a turn.
 func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
-	m.input, m.cursor, m.palette.Selected = "", 0, 0
+	m.editor.Clear()
+	m.palette.Selected = 0
 
 	switch name {
 	case "quit":
@@ -513,6 +615,11 @@ func (m *Model) runCommand(name string) (tea.Model, tea.Cmd) {
 
 	case "model", "models":
 		m.openPicker()
+		return m, nil
+
+	case "terminal-setup":
+		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: terminalSetupText()})
+		m.scroll.FollowBottom()
 		return m, nil
 
 	case "version":
@@ -562,6 +669,22 @@ func helpText() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// terminalSetupText explains how to make Shift+Enter insert a newline. It needs
+// the kitty keyboard protocol, which several terminals gate behind a setting
+// (plan.md §6.2).
+func terminalSetupText() string {
+	return strings.Join([]string{
+		"Shift+Enter needs the kitty keyboard protocol.",
+		"",
+		"  tmux      set -g extended-keys on",
+		"  WezTerm   enable_kitty_keyboard = true",
+		"  kitty     supported out of the box",
+		"  foot      supported out of the box",
+		"",
+		"Without it, use Alt+Enter, or end a line with a backslash.",
+	}, "\n")
+}
+
 // escape is the layered cancel of plan.md §6.7.
 func (m *Model) escape() {
 	switch {
@@ -571,7 +694,7 @@ func (m *Model) escape() {
 		m.interrupt(true)
 	default:
 		m.scroll.FollowBottom()
-		m.input, m.cursor = "", 0
+		m.editor.Clear()
 		m.notice = "Input cleared - Ctrl+Z to restore"
 	}
 }
@@ -590,22 +713,22 @@ func (m *Model) interrupt(disarmPoke bool) {
 
 // send applies the §6.3 send model.
 func (m *Model) send(alternate bool) (tea.Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input)
+	text := strings.TrimSpace(m.editor.Text)
 	if text == "" {
 		return m, nil
 	}
 
-	switch SendActionFor(m.processing, m.queueMode, m.input, alternate) {
+	switch SendActionFor(m.processing, m.queueMode, m.editor.Text, alternate) {
 	case Queue:
 		m.pending = append(m.pending, PendingMessage{Kind: PendingQueued, Text: text})
-		m.input, m.cursor = "", 0
+		m.editor.Clear()
 		return m, nil
 
 	case Interleave:
 		m.agent.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
 		m.pending = append(m.pending, PendingMessage{Kind: PendingSent, Text: text})
 		m.notice = "⏭ Sending now (interleave)"
-		m.input, m.cursor = "", 0
+		m.editor.Clear()
 		return m, nil
 
 	default:
@@ -616,6 +739,10 @@ func (m *Model) send(alternate bool) (tea.Model, tea.Cmd) {
 
 // submit starts a turn.
 func (m *Model) submit(text string) {
+	if len(m.pastes) > 0 {
+		text = ExpandPastes(text, m.pastes)
+		m.pastes = nil
+	}
 	m.blocks = append(m.blocks, Block{
 		Kind:   BlockUser,
 		Text:   text,
@@ -623,7 +750,7 @@ func (m *Model) submit(text string) {
 	})
 	m.promptCount++
 	m.renumberPrompts()
-	m.input, m.cursor = "", 0
+	m.editor.Clear()
 	m.shellMode = false
 	m.scroll.FollowBottom()
 	m.notice = ""
@@ -676,6 +803,18 @@ func (m *Model) transcriptLines() []string {
 	return out
 }
 
+// applyWrapWidth sets the renderer's wrap width, reserving a column for the
+// scrollbar when the previous frame showed one (plan.md §3.5).
+func (m *Model) applyWrapWidth() {
+	width, _ := ContentWidth(m.width, false)
+	if m.scrollbarOn {
+		width--
+	}
+	if width != m.renderer.Width {
+		m.renderer.SetWidth(max(width, 1))
+	}
+}
+
 // stack builds the vertical layout request.
 func (m *Model) stack() Stack {
 	s := Stack{Available: m.height, ContentHeight: len(m.transcriptLines())}
@@ -697,8 +836,8 @@ func (m *Model) stack() Stack {
 
 func (m *Model) composerState() ComposerState {
 	return ComposerState{
-		Text:         m.input,
-		Cursor:       m.cursor,
+		Text:         m.editor.Text,
+		Cursor:       m.editor.Cursor,
 		PromptNumber: m.promptCount,
 		Processing:   m.processing,
 		QueueMode:    m.queueMode,
@@ -713,6 +852,12 @@ func (m *Model) View() tea.View {
 		v.AltScreen = true
 		return v
 	}
+
+	// The previous frame's scrollbar decision picks this frame's wrap width, so
+	// steady state wraps once. This is the feedback loop §3.6's hysteresis
+	// exists to damp: a visible bar narrows the wrap width, which changes the
+	// content height, which can change the decision.
+	m.applyWrapWidth()
 
 	res := m.stack().Resolve()
 	content := m.transcriptLines()
@@ -732,6 +877,18 @@ func (m *Model) View() tea.View {
 	if res.Scrolling {
 		for len(rows) < res.Transcript {
 			rows = append(rows, "")
+		}
+	}
+
+	// The scrollbar decision is hysteretic because it feeds back into layout:
+	// a visible bar narrows the wrap width, which changes the content height,
+	// which can change the decision (plan.md §3.6).
+	m.scrollbarOn = ScrollbarVisible(m.scrollbarOn, len(content), len(content), res.Transcript)
+	if m.scrollbarOn && res.Transcript > 0 {
+		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
+		for i := 0; i < res.Transcript && i < len(bar) && i < len(rows); i++ {
+			pad := max(m.width-Inset(false)-1-lipgloss.Width(rows[i]), 0)
+			rows[i] = rows[i] + strings.Repeat(" ", pad) + bar[i]
 		}
 	}
 
@@ -769,8 +926,15 @@ func (m *Model) View() tea.View {
 	}
 
 	v := tea.NewView(strings.Join(rows, "\n"))
-	// Alt-screen is a view property in Bubble Tea v2, not a program option.
+	// These are view properties in Bubble Tea v2, not program options.
 	v.AltScreen = true
+	// Cell motion is enough for the wheel and is better supported than all
+	// motion, which would flood the loop with movement events we ignore.
+	v.MouseMode = tea.MouseModeCellMotion
+	// Shift+Enter needs the kitty keyboard protocol to be distinguishable from
+	// a plain Enter. Terminals without it fall back to Alt+Enter or the
+	// trailing backslash (plan.md §6.2).
+	v.KeyboardEnhancements = tea.KeyboardEnhancements{ReportAlternateKeys: true}
 	return v
 }
 
@@ -788,7 +952,7 @@ func (m *Model) overlayPalette(rows []string) []string {
 	// The query is derived from the input rather than mirrored into state, so
 	// the two can never drift apart.
 	state := m.palette
-	state.Query = strings.TrimPrefix(m.input, "/")
+	state.Query = strings.TrimPrefix(m.editor.Text, "/")
 	overlay := m.renderer.RenderPalette(state, VisibleCommands())
 	if len(overlay) == 0 {
 		return rows

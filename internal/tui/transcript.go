@@ -376,6 +376,67 @@ func (r *Renderer) renderReasoning(b *Block) []string {
 	return out
 }
 
+// Scrollbar glyphs (plan.md §3.5).
+const (
+	ScrollbarThumbSingle = "•"
+	ScrollbarThumbTop    = "╷"
+	ScrollbarThumbBottom = "╵"
+	ScrollbarThumbMiddle = "│"
+)
+
+// RenderScrollbar returns one column of scrollbar cells for a viewport.
+//
+// The track is blank rather than drawn: a visible track competes with the
+// transcript for attention, and the thumb alone answers the only question
+// being asked — where am I.
+func (r *Renderer) RenderScrollbar(offset, contentHeight, viewport int, focused bool) []string {
+	if viewport <= 0 {
+		return nil
+	}
+	out := make([]string, viewport)
+	for i := range out {
+		out[i] = " "
+	}
+	if contentHeight <= viewport {
+		return out
+	}
+
+	color := theme.RGB(136, 148, 172)
+	if focused {
+		color = theme.RGB(188, 208, 240)
+	}
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(color)))
+
+	// Thumb size is proportional, with a floor of one cell so it never
+	// vanishes on a very long transcript.
+	thumb := max(viewport*viewport/contentHeight, 1)
+	maxOffset := contentHeight - viewport
+	// Offset counts from the bottom, so invert it for a top-down track.
+	fromTop := maxOffset - clamp(offset, 0, maxOffset)
+	top := 0
+	if maxOffset > 0 {
+		top = fromTop * (viewport - thumb) / maxOffset
+	}
+
+	for i := 0; i < thumb; i++ {
+		row := top + i
+		if row < 0 || row >= viewport {
+			continue
+		}
+		switch {
+		case thumb == 1:
+			out[row] = style.Render(ScrollbarThumbSingle)
+		case i == 0:
+			out[row] = style.Render(ScrollbarThumbTop)
+		case i == thumb-1:
+			out[row] = style.Render(ScrollbarThumbBottom)
+		default:
+			out[row] = style.Render(ScrollbarThumbMiddle)
+		}
+	}
+	return out
+}
+
 // humanTokens formats a token count for the §9.5 badge.
 func humanTokens(n int) string {
 	switch {

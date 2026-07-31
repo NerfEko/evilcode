@@ -1,0 +1,40 @@
+ Line 5 of a deliberately long answer.
+ Line 6 of a deliberately long answer.
+ Line 7 of a deliberately long answer.
+ Line 8 of a deliberately long answer.
+ Line 9 of a deliberately long answer.
+ Line 10 of a deliberately long answer.
+ Line 11 of a deliberately long answer.
+ Line 12 of a deliberately long answer.
+ Line 13 of a deliberately long answer.
+ Line 14 of a deliberately long answer.
+ Line 15 of a deliberately long answer.                                                                                                    ╷
+ Line 16 of a deliberately long answer.                                                                                                    │
+ Line 17 of a deliberately long answer.                                                                                                    │
+ Line 18 of a deliberately long answer.                                                                                                    │
+ Line 19 of a deliberately long answer.                                                                                                    │
+ Line 20 of a deliberately long answer.                                                                                                    │
+ Line 21 of a deliberately long answer.                                                                                                    │
+ Line 22 of a deliberately long answer.                                                                                                    │
+ Line 23 of a deliberately long answer.                                                                                                    │
+ Line 24 of a deliberately long answer.                                                                                                    │
+ Line 25 of a deliberately long answer.                                                                                                    │
+ Line 26 of a deliberately long answer.                                                                                                    │
+ Line 27 of a deliberately long answer.                                                                                                    │
+ Line 28 of a deliberately long answer.                                                                                                    │
+ Line 29 of a deliberately long answer.                                                                                                    │
+ Line 30 of a deliberately long answer.                                                                                                    │
+ Line 31 of a deliberately long answer.                                                                                                    │
+ Line 32 of a deliberately long answer.                                                                                                    │
+ Line 33 of a deliberately long answer.                                                                                                    │
+ Line 34 of a deliberately long answer.                                                                                                    │
+ Line 35 of a deliberately long answer.                                                                                                    │
+ Line 36 of a deliberately long answer.                                                                                                    │
+ Line 37 of a deliberately long answer.                                                                                                    │
+ Line 38 of a deliberately long answer.                                                                                                    │
+ Line 39 of a deliberately long answer.                                                                                                    │
+ Line 40 of a deliberately long answer.                                                                                                    │
+                                                                                                                                           ╵
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   Ctrl+Enter to queue

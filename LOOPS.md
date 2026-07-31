@@ -308,3 +308,33 @@ title longer than its box pushed the right border off screen, so `BoxTitled` tru
 
 Verified: 13 picker tests, including one that asserts every box row is the same cell
 width, since a ragged right border is the classic box-drawing bug. PNG looked at.
+
+## 2026-07-30 P1.16–P1.19 — composer input, scrolling, interrupt, welcome
+
+Done: `internal/tui/input.go` (the readline `Editor`, newline paths, paste rules) plus
+wiring for mouse wheel, the scrollbar, and `/terminal-setup`.
+
+All three newline paths of §6.2 work. The trailing-backslash fallback is parity-based —
+an odd number of trailing backslashes escapes the Enter, an even number does not, so `\`
+continues a line and `\\` is a literal backslash that still submits. Verified live under
+the probe: typing `line one \` then Enter inserts a newline, consumes the backslash, and
+shows the one-shot `/terminal-setup` tip exactly once.
+
+Paste never inspects the clipboard for images (§6.6): on Wayland a multi-MIME clipboard
+is routinely misidentified, and a stray attachment is worse than a missing one. A bare
+Enter within 150ms of a paste is swallowed rather than submitting. Pastes of five lines
+or more collapse to a placeholder and are restored on send by replacing the *last*
+occurrence — two pastes of the same size share a placeholder string, and replacing the
+first each time would give both the same content.
+
+The scrollbar exposed the feedback loop §3.6 exists for. It first rendered nothing
+visible: rows already filled the width, so the bar was appended past the right edge. The
+fix is what the spec says — the transcript wraps one column narrower when the bar shows,
+and the *previous* frame's decision picks this frame's wrap width, so steady state wraps
+once instead of oscillating.
+
+Verified: 24 input tests; `go test ./...` green; 12 goldens green including a new
+packed→scrolling scenario. PNGs looked at for the scrolled transcript and the newline
+continuation.
+
+Codex verdict on every commit so far: n/a (CLI absent, DEVIATIONS.md P0.3).
