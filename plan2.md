@@ -427,7 +427,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   (`if todos, terr := ...; terr == nil`), so a daemon or headless session silently has no
   todo tool and auto-poke reads empty state. Fix: log it at minimum; fail the build if the
   namespace was explicitly configured.  ⟨fable⟩
-- [ ] **H5.20** Verify H5: a conflict clears after a re-read and re-fires on the next write;
+- [x] **H5.20** Verify H5: a conflict clears after a re-read and re-fires on the next write;
   `!ls` either runs or is not offered; a corrupt session line is reported with its number
   rather than skipped; a repo-pinned model actually loads. Tag `harden-5`.
 - [x] **H5.23** `internal/tui/swarmwidget.go:213` → `internal/attachcmd/attach.go:133` — `/summon`

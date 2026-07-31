@@ -3919,3 +3919,29 @@ Verified: `go build ./... && go vet ./... && go test ./...` green across
 every package, including `internal/daemon`, whose existing tests exercise
 `Client.Send`/`Client.Recv` and were unaffected by the new `SetDeadline`
 method sitting beside them.
+
+## 2026-07-31 H5.20 — Verify H5
+
+Every H5 task is now `[x]`: H5.1-H5.4 predate this sweep, H5.5 through
+H5.19 and H5.21 through H5.23 were fixed in this session (H1.3's checkbox
+was also corrected along the way — the fix already existed, only the
+tracking was wrong).
+
+Verification, per the phase's own checklist:
+- **A conflict clears after a re-read and re-fires on the next write**:
+  `TestRereadingClearsTheConflict` (`internal/daemon/registry_test.go`, H5.1)
+  passes.
+- **`!ls` either runs or is not offered**: `TestShellModeIsNotAdvertised`
+  (`internal/tui/shellmode_repro_test.go`, H5.2 — the mode was deleted rather
+  than wired up) passes.
+- **A corrupt session line is reported with its number rather than skipped**:
+  `TestReadErrorsOnMidLogCorruption` (`internal/session/session_test.go`,
+  H5.13) passes.
+- **A repo-pinned model actually loads**:
+  `TestBuildResolvesAgainstTheRepoPinnedModel` (`internal/wiring/overrides_test.go`,
+  H5.18) passes.
+
+`go build ./... && go vet ./... && go test -race ./...` is green across
+every package — the phase's `-race` requirement, not just a plain `go test`.
+
+Tag `harden-5`.
