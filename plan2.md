@@ -395,7 +395,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   crash detection (compounding H5.10) and briefly runs a second writer on the live log.
   Fix: append the `saved`/`unsaved` meta directly, or add a close path that does not write
   the marker.  ⟨fable⟩
-- [ ] **H5.12** `internal/session/store.go:160,102` — `Close` returns early on metadata or
+- [x] **H5.12** `internal/session/store.go:160,102` — `Close` returns early on metadata or
   flush failure and can leave the descriptor open; a metadata-write failure during creation
   returns while leaving the new store live. Fix: always close, return `errors.Join`.
   ⟨codex⟩

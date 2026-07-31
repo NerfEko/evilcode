@@ -3457,3 +3457,30 @@ event that didn't happen.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test
 ./...` green.
+
+## 2026-07-31 H5.12 — Close and closeFile leaked the descriptor on a write error
+
+`Close` (`store.go:364`) wrote the `MetaCleanExit` marker and returned early
+on any error from that write, never reaching `closeFile`. `closeFile` itself
+(`store.go:377`) had the same shape one level down: if `s.w.Flush()` failed,
+it returned before `s.file.Close()`. Either failure left the fd open for the
+life of the process — a metadata write or flush error didn't just fail to
+mark a clean exit, it leaked the descriptor on top. (The creation path
+around the old line 102, `CreateNamed`'s `WriteMeta` failure, already closed
+`f` on error — that half of the reported bug had already been fixed by a
+prior commit; only `Close`/`closeFile` still had it.)
+
+Reproduce: `TestCloseAlwaysReleasesTheDescriptor` in `session_test.go` —
+`dup2`s the store's fd onto an open `/dev/full`, so the meta write inside
+`Close` fails with `ENOSPC`, then checks `/proc/self/fd/<n>` no longer
+resolves after `Close` returns. Failed before the fix: the entry was still
+present, proving the fd stayed open.
+
+Fix: both functions now always run every step and combine errors with
+`errors.Join` instead of returning on the first one. `Close` calls
+`closeFile()` unconditionally rather than short-circuiting on the meta-write
+error; `closeFile` runs `s.w.Flush()` and `s.file.Close()` unconditionally
+rather than skipping the close on a flush error.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test
+./...` green.

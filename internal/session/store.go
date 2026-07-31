@@ -361,11 +361,13 @@ func (s *Store) reopenLocked() error {
 
 // Close flushes and marks a clean exit, which is how crash detection tells a
 // killed session from a finished one (plan.md §18).
+//
+// The descriptor is released even if the marker write fails: an early return
+// here used to skip closeFile entirely, leaking the fd for the life of the
+// process on top of whatever the meta-write error already reported (H5.12).
 func (s *Store) Close() error {
-	if err := s.WriteMeta(Meta{Kind: MetaCleanExit}); err != nil {
-		return err
-	}
-	return s.closeFile()
+	metaErr := s.WriteMeta(Meta{Kind: MetaCleanExit})
+	return errors.Join(metaErr, s.closeFile())
 }
 
 // closeFile flushes and releases the descriptor without a lifecycle marker.
@@ -377,10 +379,11 @@ func (s *Store) Close() error {
 func (s *Store) closeFile() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.w.Flush(); err != nil {
-		return err
-	}
-	return s.file.Close()
+	// Both run regardless of the other's outcome: a flush failure used to
+	// return before file.Close(), leaking the descriptor (H5.12).
+	flushErr := s.w.Flush()
+	closeErr := s.file.Close()
+	return errors.Join(flushErr, closeErr)
 }
 
 // Info summarizes a session file for the resume list.

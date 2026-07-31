@@ -2,9 +2,11 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"evilcode/internal/provider"
@@ -126,6 +128,42 @@ func TestCrashAfterResumeIsDetected(t *testing.T) {
 	}
 	if !info.Crashed {
 		t.Error("a crash after resume must not be masked by an earlier clean-exit marker")
+	}
+}
+
+// TestCloseAlwaysReleasesTheDescriptor forces the clean-exit meta-write inside
+// Close to fail (by pointing the store's fd at /dev/full, so the write
+// syscall returns ENOSPC) and checks the descriptor is still released. Before
+// H5.12, Close returned on that error without ever reaching closeFile, so the
+// fd stayed open — checkable on Linux via /proc/self/fd.
+func TestCloseAlwaysReleasesTheDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("/dev/full unavailable: %v", err)
+	}
+	defer full.Close()
+
+	fd := int(st.file.Fd())
+	if err := syscall.Dup2(int(full.Fd()), fd); err != nil {
+		t.Fatalf("dup2: %v", err)
+	}
+	procPath := fmt.Sprintf("/proc/self/fd/%d", fd)
+	if _, err := os.Lstat(procPath); err != nil {
+		t.Skipf("no /proc/self/fd support: %v", err)
+	}
+
+	if err := st.Close(); err == nil {
+		t.Fatal("want an error from a write that hit /dev/full")
+	}
+
+	if _, err := os.Lstat(procPath); err == nil {
+		t.Errorf("fd %d still open after Close failed on the meta write — descriptor leaked", fd)
 	}
 }
 
