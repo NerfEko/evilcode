@@ -2152,3 +2152,33 @@ the test passes against the broken code.
 
 Verified: both caps hold under 16 and 36 concurrent spawns; `go test ./...
 -race` green.
+
+## 2026-07-31 H2.12 — Picking a free name is not claiming it
+
+`Create` listed the existing sessions, picked a name none of them held, and then
+opened it — without `O_EXCL`. Two creators list at the same time, both see the
+same name free, and both append to one log. Two conversations interleaved in one
+file, each store believing it owns it. The daemon spawning workers makes that
+ordinary rather than exotic.
+
+Sixteen concurrent creators, twice in a row:
+
+```
+two sessions were created as "wisp" — they share one log
+two sessions were created as "owl" — they share one log
+```
+
+`CreateNamed` claims one name with `O_CREATE|O_EXCL`, and `Create` retries on
+collision with the loser marking the name taken. Bounded at 64 attempts,
+because a run of collisions means the creature table is full rather than that
+another draw would help.
+
+Deterministic mode keeps the old behaviour deliberately: goldens depend on every
+run producing `dracula`, so an existing file is reopened rather than refused.
+That is the one place two stores over one log is the intended outcome.
+
+Done ahead of H2.5, which needs it: a worker's name cannot be allocated before
+its resources if allocating a name is not an atomic act in the first place.
+
+Verified: sixteen concurrent creators, sixteen distinct sessions, five runs;
+`go test ./... -race` green.

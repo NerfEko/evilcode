@@ -213,7 +213,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   `Start` with no recheck, so two concurrent callers launch two servers and the loser is
   overwritten in `clients` and leaks until exit. Fix: per-language singleflight, close any
   loser.  ⟨both⟩
-- [ ] **H2.12** `internal/session/store.go:95` — creation picks a free generated name and
+- [x] **H2.12** `internal/session/store.go:95` — creation picks a free generated name and
   then opens without `O_EXCL`; concurrent creators can select and append to the same log.
   Fix: `O_CREATE|O_EXCL`, retry on collision.  ⟨codex⟩
 - [ ] **H2.13** `internal/tools/tools.go:106` `RunBatch` — a goroutine is created for every

@@ -22,25 +22,26 @@
 
 7. **Self-update.** `evilcode update` pulls from forgejo and updates itself.
 
-8. **Markdown links.** `.md` files render as links; clicking opens a side-by-side
-   full markdown renderer view of the file, scrollable, Esc to close.
+8. **Quick-view side-by-side system.** A new quick-view system, separate from
+   `/diff`: clicking something opens a side-by-side view you can scroll through
+   until you're done, then Esc closes. Three triggers:
+   - **`.md` links.** `.md` files render as links; clicking opens the file in a full
+     markdown renderer.
+   - **`read` / `write`.** Clicking a `read` or `write` opens a side-by-side diff or
+     the file itself.
+   - **Bash summary line.** The grey text after a bash command currently just repeats
+     the command, renders on top of widgets, and breaks alignment. It should be a
+     summary of the command instead, and clicking it opens a side-by-side
+     terminal-style view — e.g. `rm -rf` shows as `> rm -rf` with the output beneath
+     it, like a real terminal.
 
-9. **Quick view for read/write.** Clicking a `write` or `read` opens a side-by-side
-   diff or file view; Esc closes. This is a quick-view system separate from `/diff`.
+9. **Visual identity.** Divert the look away from jcode. Brainstorm changes that
+   give evilcode its own visual identity without dropping features, write them to
+   `looks.md`, and I'll pick the ones I like.
 
-10. **Bash command summary line.** The grey text after a bash command just repeats
-    the command, renders on top of widgets, and breaks alignment. It should be a
-    summary of the command instead. Make it clickable to open a side-by-side
-    terminal-style view — e.g. `rm -rf` shows as `> rm -rf` with the output beneath
-    it, like a real terminal; Esc closes.
+10. **`/login`.** A command to input an Ollama Cloud API key.
 
-11. **Visual identity.** Divert the look away from jcode. Brainstorm changes that
-    give evilcode its own visual identity without dropping features, write them to
-    `looks.md`, and I'll pick the ones I like.
-
-12. **`/login`.** A command to input an Ollama Cloud API key.
-
-13. **[x] `planfiles.md`.** Read `plan.md` and `plan2.md`, create a `planfiles.md`
+11. **[x] `planfiles.md`.** Read `plan.md` and `plan2.md`, create a `planfiles.md`
     that describes how to author plan files with the same layout and quirks — dense,
     not bloated, with the loop confirmed at the top (write, fix, checkbox in
     `plan.md`, `LOOPS.md`, `README.md`, commit, codex review, next problem).

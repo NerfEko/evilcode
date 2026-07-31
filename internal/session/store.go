@@ -90,20 +90,59 @@ func Open(dataDir, name string) (*Store, error) {
 // Create opens a new session with a generated creature name (plan.md §2.2).
 // Under EVILCODE_DETERMINISTIC the name is fixed, which is what makes golden
 // frames reproducible (invariant 5).
+//
+// The name is claimed with O_EXCL and a collision is retried. Listing the
+// existing sessions and then opening the free name it found is two operations:
+// two creators list together, both see the same name free, and both append to
+// one log — two conversations interleaved in one file, each store believing it
+// owns it. The daemon spawning workers makes that ordinary rather than exotic.
 func Create(dataDir string) (*Store, error) {
-	name := "dracula"
-	if os.Getenv("EVILCODE_DETERMINISTIC") != "1" {
-		existing, _ := List(dataDir)
-		taken := make(map[string]bool, len(existing))
-		for _, s := range existing {
-			taken[s.Name] = true
-		}
-		name = core.PickName(core.Creatures, core.SeedFrom(time.Now().String()), taken)
+	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
+		return CreateNamed(dataDir, "dracula")
 	}
-	st, err := Open(dataDir, name)
+	taken := map[string]bool{}
+	existing, _ := List(dataDir)
+	for _, s := range existing {
+		taken[s.Name] = true
+	}
+	// Bounded: the creature table is finite, and a run of collisions means the
+	// table is full rather than that another attempt would help.
+	for attempt := range 64 {
+		name := core.PickName(core.Creatures,
+			core.SeedFrom(fmt.Sprintf("%s/%d", time.Now(), attempt)), taken)
+		st, err := CreateNamed(dataDir, name)
+		if err == nil {
+			return st, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		taken[name] = true
+	}
+	return nil, fmt.Errorf("no free session name after 64 attempts")
+}
+
+// CreateNamed claims one specific session name, failing if it is already taken.
+//
+// Under EVILCODE_DETERMINISTIC the name repeats by design, so an existing file
+// is reopened rather than refused — goldens depend on the same session name
+// every run, and refusing would break every replay.
+func CreateNamed(dataDir, name string) (*Store, error) {
+	dir := Dir(dataDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, name+".jsonl")
+
+	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY | os.O_APPEND
+	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, err
 	}
+	st := &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}
 	cwd, _ := os.Getwd()
 	return st, st.WriteMeta(Meta{Kind: MetaStart, Cwd: cwd})
 }
