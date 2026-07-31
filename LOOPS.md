@@ -970,3 +970,43 @@ workspace that does not compile and that nobody can easily undo.
 
 Diagrams render inline rather than in the §3.1 diagram pane; DEVIATIONS.md #7
 says why.
+
+## 2026-07-31 P5 (partial) — Graphics, LSP, advisor, and the self-dev loop
+
+Landed: terminal graphics with a mermaid path that shells out to `mmdc` rather
+than rendering diagrams here (§5 is explicit that evilcode does not write a
+diagram renderer); a real LSP client and the `lsp` tool; the §21 advisor; shell
+completions for bash, zsh and fish; `evilcode dictate`; `/productivity`;
+`/overnight`; and `/selfdev` with `/rebuild` and `/reload`.
+
+The LSP client speaks only the six operations the tool exposes. Rename computes
+every file in memory and writes nothing until all of them have succeeded —
+"atomic" in the sense that actually matters, because a rename that writes three
+files and fails on the fourth leaves a workspace that does not compile and that
+nobody can easily undo. Verified against real gopls: `clamp` → `clampOffset`
+across the declaration and its doc comment, two edits, with a DiffStat.
+
+The advisor is written so silence is the easy answer, yields whenever auto-poke
+already has the floor, and refuses to repeat itself. An advisor that comments
+every turn is the second driver §21 says it must not become.
+
+Overnight is entirely breakers, and one of them changed shape under test:
+`ShouldContinue` now disarms the loop itself instead of trusting its caller to.
+A breaker that answers "stop" while staying armed can be re-entered by whatever
+calls it next, which is not a breaker at all.
+
+`/rebuild` runs the tests *before* restarting. Restarting into a binary that
+does not pass its own tests is how a self-developing program locks itself out of
+its own repository.
+
+The `selfdev` skill is the loop rather than a copy of it in a Go string, and it
+carries the two lessons that have cost the most time here: look at the PNG
+rather than trusting a test to see layout, and commit fixture fixes, because the
+probe resets `testdata/` from git before every run.
+
+Not done: the harmonica panel slide-in (§5 makes it conditional on the panels
+feeling dead, and they do not), the final polish audit, and three of the five
+Phase 5 verifications — mermaid-in-kitty, image paste, and a live `/selfdev`
+task. All three need a terminal or an API key this machine does not have, not
+code; DEVIATIONS #7 says exactly what would close them. `phase-5` is deliberately
+not tagged.

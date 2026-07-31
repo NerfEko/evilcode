@@ -1045,7 +1045,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] **Advisor** per §21.
 - [x] Shell completions: generated bash/zsh/fish completion scripts (`evilcode completions <shell>`) covering subcommands, flags, model names, session names.
 - [x] `/productivity` (stats dashboard → PNG via ansirender). `/overnight` (supervised long-run loop over todos with hard budget caps — breakers prerequisite). `evilcode dictate` (configured STT command → composer).
-- [ ] Panel slide-in via harmonica (only if panels feel dead without it).
+- [x] Panel slide-in via harmonica (only if panels feel dead without it).
 - [x] **`/selfdev` — graduation**: evilcode opens a session on its own repo with a skill encoding §0.2 (build → test → probe → PNG check → commit → codex review); `/rebuild` = build+test+restart; `/reload` = re-exec preserving session (exec + `--resume`). From here evilcode develops itself and the external agent retires.
 - [ ] Final polish audit: run every probe scenario, look at every PNG, cut anything reading as clutter, sweep the lexicon rule (§2.1).
 - [ ] Verify: mermaid renders as an image in kitty; a pasted image displays; `/productivity` emits a PNG; an `lsp` rename lands atomically; a `/selfdev` session completes one real task end-to-end. Tag `phase-5`.

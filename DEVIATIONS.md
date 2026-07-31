@@ -211,3 +211,21 @@ edits, one file, atomically, with a DiffStat.
 **What would close these:** run under kitty or ghostty with `mmdc` on PATH for
 the first two, and one session with a key set for the third. None of the three
 needs code — they need a terminal and a key this machine does not have.
+
+## 8. No harmonica panel slide-in
+
+**Spec:** Phase 5 lists "Panel slide-in via harmonica (only if panels feel dead
+without it)."
+
+**Built:** nothing. The panel appears and disappears instantly.
+
+**Why:** the task conditions itself, so the honest thing is to answer the
+condition rather than build past it. I opened the side panel on a real diff and
+looked at the frame: a clear vertical divider, line numbers, a `+`/`-` gutter,
+and the diff tinted toward add and delete while keeping its syntax colors. It
+reads as a panel, not as a jump. Adding a spring animation would put a new
+dependency and a per-frame physics step behind an effect nobody is missing.
+
+**When this would need revisiting:** if the panel ever grows to full width, or
+if toggling it starts reading as a flicker rather than a reveal. Neither is true
+at the sizes it actually opens at.
