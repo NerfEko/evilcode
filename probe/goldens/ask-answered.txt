@@ -1,13 +1,13 @@
- evilcode · v0.1.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
+ evilcode · v0.1.0                                                                                                  ╭──────────────────────╮
+ session: Dracula 🧛                                                                                                │ Context 406/200k     │
+ /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                             ╰──────────────────────╯
  skills: /commit /selfdev
  <repo> (main)
-
- 1› add a retry gate
-
- One decision first.
+                                                                                                          ╭────────────────────────────────╮
+ 1› ad                                                                                                    │ 💡 Ctrl+R searches your prompt │
+                                                                                                          │ history                        │
+ One decision first.  ╰────────────────────────────────╯
 
    ✓ ask · 7 tok
 

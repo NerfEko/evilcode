@@ -1,13 +1,13 @@
- evilcode · v0.1.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
+ evilcode · v0.1.0                                                                                                  ╭──────────────────────╮
+ session: Dracula 🧛                                                                                                │ Context 238/200k     │
+ /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                             ╰──────────────────────╯
  skills: /commit /selfdev
  <repo> (main)
-
- 1› what does the config package do
-
- Yes — that function parses the config and returns the defaults when the file is absent. It never returns a nil map, so callers can index it
+                                                                                                          ╭────────────────────────────────╮
+ 1› wh                                                                                                    │ 💡 Ctrl+R searches your prompt │
+                                                                                                          │ history                        │
+ Yes — that function parses the config and returns the defaults when the file is absent.                  ╰────────────────────────────────╯
  safely.
  💡 Ctrl+R searches your prompt history
  2>

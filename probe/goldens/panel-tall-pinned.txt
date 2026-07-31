@@ -1,13 +1,13 @@
- evilcode · v0.1.0                                                    │ testdata/big.go
- session: Dracula 🧛                                                  │ ┌─ diff
- /model to switch · local:mock · mock-large                           │ │  package testdata
- ● ollama-local  ○ ollama-cloud  ● mock                               │ │
+ evilcode · v0.1.0                           ╭──────────────────────╮ │ testdata/big.go
+ session: Dracula 🧛                         │ Context 408/200k     │ │ ┌─ diff
+ /model to switch · local:mock · mock-large  │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │ │  package testdata
+ ● ollama-local  ○ ollama-cloud  ● mock      ╰──────────────────────╯ │ │
  skills: /commit /selfdev                                             │ │ -// big is a probe fixture for the side panel: a file long enough
  <repo> (main)                       │ │ -// does not fit the panel, which is where a panel that cannot scr
-                                                                      │ │ -// first half and silently drops the rest.
- 1› renumber them                                                     │ │ -//
-                                                                      │ │ -// Committed in the state BEFORE the scenario's write, for the sa
- Renumbering all of them.                                             │ │ ... 25 more changes ...
+                                   ╭────────────────────────────────╮ │ │ -// first half and silently drops the rest.
+ 1│ 💡 Ctrl+R searches your prompt │                                  │ │ -//
+                                   │ history                        │ │ │ -// Committed in the state BEFORE the scenario's write, for the sa
+ Renumbering all                   ╰────────────────────────────────╯ │ │ ... 25 more changes ...
                                                                       │ │ +func india(a int) int    { return a * 9 }
    ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ +func juliet(a int) int   { return a * 10 }
                                                                       │ │ +func kilo(a int) int     { return a * 11 }

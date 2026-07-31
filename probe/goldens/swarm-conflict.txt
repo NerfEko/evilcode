@@ -1,20 +1,20 @@
- evilcode · v0.1.0
- server: Dracula 🧛 · client: Bat 🦇
- /model to switch · socket:daemon · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- <repo>
-
- 1› look at the clamp
-
+ evilcode · v0.1.0                           ╭──────────────────────╮
+ server: Dracula 🧛 · client: Bat 🦇         │ Context 428/200k     │
+ /model to switch│ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ● mock      ╰──────────────────────╯
+ /mnt/cachyos-home/e               ╭────────────────────────────────╮
+                                   │ 💡 Ctrl+R searches your prompt │
+ 1│ history                        │
+                                   ╰────────────────────────────────╯
  Let me look at the clamp.
 
    ✓ read testdata/clamp.go · 151 tok
 
  It clamps with > where it wants >=. Summoning help.
-                                             ╭──────────────────────╮
-   👉 Summoned dracula-2                     │ Context 428/200k     │
-   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
-                                             ╰──────────────────────╯
+
+   👉 Summoned dracula-2
+   fix the clamp
+
    Its result will arrive as a message.
 
  2› anything else?
@@ -39,14 +39,14 @@
 
 
 --- pane 1 ---
- evilcode · v0.1.0
- server: Dracula 🧛 · client: Serpent 🐉
- /model to switch · socket:daemon · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- <repo>
-
- 1› look at the clamp
-
+ evilcode · v0.1.0                            ╭──────────────────────╮
+ server: Dracula 🧛 · client: Serpent 🐉      │ Context 428/200k     │
+ /model to switch · socket:daemon · mock-large│ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ● mock       ╰──────────────────────╯
+ /mnt/cachyos-home/ek               ╭────────────────────────────────╮
+                                    │ 💡 Ctrl+R searches your prompt │
+ 1│ history                        │
+                                    ╰────────────────────────────────╯
  Let me look at the clamp.
 
    ✓ read testdata/clamp.go · 151 tok

@@ -220,3 +220,52 @@ Unicode 6.0, and rendered correctly in the probe's font stack.
 
 **When this would need revisiting:** immediately, if you would rather they were
 something else — this is a taste call and it is yours, not mine.
+
+## 9. Widgets overlay text and can be dismissed, rather than living only in blank space
+
+**Spec:** §8.3 docks widgets into "negative space" — the blank columns beside the
+transcript — and never over text.
+
+**Built:** widgets prefer clear space and fall back to sitting *over* prose, with
+a click on a box hiding it for the session and `Alt+I` bringing them all back.
+
+**Why:** prose wraps to the full measure, so on a 140-column terminal a paragraph
+leaves no margin at all. Honouring "blank space only" meant boxes appeared beside
+tool rows and lists and never beside an actual answer — which is most of the
+screen most of the time. The alternative considered was capping the prose measure
+at 96 columns to manufacture a permanent margin, but that changes how every
+message reads in order to serve the chrome. Overlaying is the smaller cost, and
+it is only acceptable *because* dismissal exists: a box that can cover your text
+has to be swattable.
+
+**When this would need revisiting:** if the prose measure is ever capped for
+readability on its own merits, the fallback becomes rare and the dismissal
+affordance could go back to being optional.
+
+## 10. Left-preferring widgets dock on the right
+
+**Spec:** §8.3 gives six widget kinds a left-margin preference — UsageLimits,
+KvCache, Compaction, BackgroundTasks, SwarmStatus, AmbientMode — and says left
+widgets exist only in centered mode.
+
+**Built:** the preference is recorded and then falls back to the right margin.
+
+**Why:** `CenteredCap` is 96 columns, so at a 140-column terminal the left margin
+is 22 cells — narrower than `WidgetMinWidth` of 24. A left-margin painter would
+be dead code at every width anyone actually runs, and honouring the preference
+literally meant those six kinds could never render at all. `centered` was also
+hardcoded `false` at the call site, so in practice none of them had ever
+appeared.
+
+**When this would need revisiting:** raise `CenteredCap` above ~124 and a real
+left margin exists; the `Side` on each anchor is already tracked for it.
+
+## 11. Widget shrinking with hysteresis is not implemented
+
+**Spec:** §8.3 says a pinned widget shrinks with hysteresis before it hides.
+
+**Built:** it holds its slot, and now overlays rather than hiding.
+
+**Why:** widget width is derived from content, so shrinking means re-rendering
+each kind at a narrower measure — a second rendering path per widget. Overlay
+plus dismissal covers the case shrinking was for, at a fraction of the surface.

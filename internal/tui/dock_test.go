@@ -50,12 +50,35 @@ func TestDockPlacesIntoBlankMargin(t *testing.T) {
 	}
 }
 
-func TestDockRefusesWhenTextFillsTheRow(t *testing.T) {
+func TestDockPlacesOverTextWhenThereIsNoMargin(t *testing.T) {
+	// Widgets overlay prose rather than waiting for a gap. Requiring clear
+	// columns meant boxes only appeared beside short rows — tool calls, lists —
+	// and never beside a paragraph, because prose wraps to the full measure.
+	// They arrive after a delay and can be dismissed, so covering text is the
+	// better trade against never being visible.
 	d := NewDock()
 	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98, 98, 98, 98,
 		98, 98, 98, 98, 98, 98, 98, 98, 98, 98)
-	if got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false); len(got) != 0 {
-		t.Errorf("placements = %+v, want none when there is no margin", got)
+	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false)
+	if len(got) != 1 {
+		t.Fatalf("placements = %+v, want the widget placed over the text", got)
+	}
+}
+
+func TestDockPrefersAClearSlotToCoveringText(t *testing.T) {
+	// Overlay is the fallback, not the preference: given a choice, a widget
+	// still takes the margin.
+	d := NewDock()
+	rows := rowsOfWidth(98, 98, 98, 98, 98, 98, 98,
+		10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
+
+	got := d.Layout([]Widget{widget(WidgetTodos, 3)}, rows, 100, 0, false)
+	if len(got) != 1 {
+		t.Fatal("expected a placement")
+	}
+	if got[0].Row < 7 {
+		t.Errorf("placed at row %d, over the wide text, when clear rows were available",
+			got[0].Row)
 	}
 }
 
@@ -112,9 +135,9 @@ func TestDockScrollsWithTheText(t *testing.T) {
 	}
 }
 
-func TestDockHidesInPlaceRatherThanJumping(t *testing.T) {
-	// When a wide line slides under a widget it hides rather than re-homing,
-	// and only moves after the slot has been unusable for a long time.
+func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
+	// The anchor is the point: a widget keeps the same row as content changes
+	// beneath it, rather than being re-placed every frame.
 	d := NewDock()
 	open := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
@@ -125,15 +148,16 @@ func TestDockHidesInPlaceRatherThanJumping(t *testing.T) {
 		t.Fatal("expected a placement")
 	}
 
-	// A wide line covers the slot.
+	// A wide line slides under it. It now overlays rather than hiding, but it
+	// must not move.
 	blocked := append([]string(nil), open...)
 	for i := first[0].Row; i < first[0].Row+3; i++ {
 		blocked[i] = strings.Repeat("x", 98)
 	}
 
 	got := d.Layout(w, blocked, 100, 0, false)
-	if len(got) != 0 {
-		t.Errorf("widget should hide in place, not move to %+v", got)
+	if len(got) != 1 || got[0].Row != first[0].Row {
+		t.Errorf("widget moved to %+v, want it held at row %d", got, first[0].Row)
 	}
 
 	// Once the line passes, it comes back to the same slot.
@@ -144,36 +168,44 @@ func TestDockHidesInPlaceRatherThanJumping(t *testing.T) {
 }
 
 func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
+	// Hysteresis now guards the one case left that can actually displace a
+	// widget: another widget taking its rows. Width no longer blocks anything,
+	// because boxes overlay text.
 	d := NewDock()
-	open := make([]string, 40)
-	for i := range open {
-		open[i] = strings.Repeat("x", 10)
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
 	}
-	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, open, 100, 0, false)
+	low := []Widget{widget(WidgetTips, 3)}
+	first := d.Layout(low, rows, 100, 0, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 
-	blocked := append([]string(nil), open...)
-	for i := first[0].Row; i < first[0].Row+3; i++ {
-		blocked[i] = strings.Repeat("x", 98)
-	}
-
-	// Just under the threshold: still hidden, not moved.
+	// A higher-priority widget now claims the same rows first.
+	both := []Widget{widget(WidgetTodos, 3), widget(WidgetTips, 3)}
 	for i := 0; i < RehomeFrames-1; i++ {
-		if got := d.Layout(w, blocked, 100, 0, false); len(got) != 0 {
-			t.Fatalf("frame %d re-homed early to %+v", i, got)
+		got := d.Layout(both, rows, 100, 0, false)
+		for _, p := range got {
+			if p.Kind == WidgetTips && p.Row != first[0].Row {
+				t.Fatalf("frame %d: tips jumped to row %d rather than holding %d",
+					i, p.Row, first[0].Row)
+			}
 		}
 	}
-	// Past it: allowed to find a new home.
-	got := d.Layout(w, blocked, 100, 0, false)
-	if len(got) != 1 {
-		t.Fatal("expected a re-home once the slot was unusable for long enough")
+
+	// Past the threshold it is allowed to find a new home.
+	var moved bool
+	for i := 0; i < 3 && !moved; i++ {
+		for _, p := range d.Layout(both, rows, 100, 0, false) {
+			if p.Kind == WidgetTips && p.Row != first[0].Row {
+				moved = true
+			}
+		}
 	}
-	if got[0].Row == first[0].Row {
-		t.Error("re-homed to the same blocked row")
+	if !moved {
+		t.Error("tips never re-homed after the slot stayed taken")
 	}
 }
 
@@ -203,8 +235,11 @@ func TestDockNeverOverlapsWidgets(t *testing.T) {
 	}
 }
 
-func TestLeftWidgetsNeedCenteredMode(t *testing.T) {
-	// Only centered mode has a left margin to dock into.
+func TestLeftWidgetsFallBackToTheRightMargin(t *testing.T) {
+	// Honouring the left preference meant six widget kinds that could never
+	// render at all: the centered left margin is 22 cells at 140 columns, under
+	// WidgetMinWidth of 24. Falling back to the right is the difference between
+	// showing and not existing (see DEVIATIONS).
 	d := NewDock()
 	rows := make([]string, 40)
 	for i := range rows {
@@ -214,8 +249,12 @@ func TestLeftWidgetsNeedCenteredMode(t *testing.T) {
 	if left.Kind.PreferredSide() != SideLeft {
 		t.Fatal("BackgroundTasks should prefer the left margin")
 	}
-	if got := d.Layout([]Widget{left}, rows, 100, 0, false); len(got) != 0 {
-		t.Errorf("a left widget docked in left-aligned mode: %+v", got)
+	got := d.Layout([]Widget{left}, rows, 100, 0, false)
+	if len(got) != 1 {
+		t.Fatalf("a left-preferring widget did not dock at all: %+v", got)
+	}
+	if got[0].Col+got[0].Width != 100 {
+		t.Errorf("right edge at %d, want the frame edge", got[0].Col+got[0].Width)
 	}
 }
 
@@ -489,5 +528,79 @@ func TestSidePanelEmptySaysSo(t *testing.T) {
 	rows := plainLines(r.RenderSidePanel(PanelContent{}, DiffPinned, 40, 6, false))
 	if !strings.Contains(strings.Join(rows, "\n"), "nothing pinned") {
 		t.Errorf("rows = %v", rows)
+	}
+}
+
+func TestWidgetReturnsToTheSameSlotAfterAGap(t *testing.T) {
+	// A widget whose content empties for a frame — no todos, no background
+	// tasks — used to keep a stale anchor, fail `fits` on return, and then hide
+	// for RehomeFrames (~10s at the 80ms tick) before reappearing somewhere
+	// else. That is the "it vanishes and comes back in a different place"
+	// report.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	first := d.Layout(w, rows, 100, 0, false)
+	if len(first) != 1 {
+		t.Fatal("expected a placement")
+	}
+
+	// Gone for a frame.
+	if got := d.Layout(nil, rows, 100, 0, false); len(got) != 0 {
+		t.Fatalf("an empty list placed %+v", got)
+	}
+
+	back := d.Layout(w, rows, 100, 0, false)
+	if len(back) != 1 {
+		t.Fatal("the widget did not come back")
+	}
+	if back[0].Row != first[0].Row {
+		t.Errorf("came back at row %d, want its original %d", back[0].Row, first[0].Row)
+	}
+}
+
+func TestWidgetRehomesImmediatelyWhenItScrollsOffTheTop(t *testing.T) {
+	// Scrolling with the content and staying visible used to be in conflict:
+	// once the anchor scrolled above the viewport the row went negative, `fits`
+	// failed, and hide-in-place held it invisible instead of re-placing it.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	if got := d.Layout(w, rows, 100, 0, false); len(got) != 1 {
+		t.Fatal("expected a placement")
+	}
+	// The content it was riding has scrolled well above the viewport.
+	got := d.Layout(w, rows, 100, 500, false)
+	if len(got) != 1 {
+		t.Error("the widget disappeared instead of re-homing after scrolling off")
+	}
+}
+
+func TestWidgetSurvivesTheScrollbarAppearing(t *testing.T) {
+	// The dock runs before the scrollbar is painted and reserves its column, so
+	// a bar appearing mid-session must not push a widget off the edge.
+	d := NewDock()
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	wide := d.Layout(w, rows, 100, 0, false)
+	narrow := d.Layout(w, rows, 100-ScrollbarReserve, 0, false)
+	if len(wide) != 1 || len(narrow) != 1 {
+		t.Fatal("expected placements at both widths")
+	}
+	if narrow[0].Col+narrow[0].Width > 100-ScrollbarReserve {
+		t.Errorf("widget right edge at %d, past the reserved width",
+			narrow[0].Col+narrow[0].Width)
 	}
 }

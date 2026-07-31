@@ -31,7 +31,7 @@ func TestPaintWidgetUsesOneColumn(t *testing.T) {
 		"",
 	}
 	lines := []string{"╭──╮", "│ab│", "│cd│", "│ef│", "╰──╯"}
-	paintWidget(rows, lines, 0, 60, len(rows), 140)
+	paintWidget(rows, lines, 0, 60, len(rows))
 
 	cols := widgetColumns(rows, "╭│╰")
 	if len(cols) != 5 {
@@ -44,28 +44,29 @@ func TestPaintWidgetUsesOneColumn(t *testing.T) {
 	}
 }
 
-func TestPaintWidgetClearsTheWidestRow(t *testing.T) {
-	// A row wider than the requested column pushes the whole box right, rather
-	// than the box overlapping that one row's text.
+func TestPaintWidgetOverlaysAWideRow(t *testing.T) {
+	// Widgets sit over text rather than being pushed aside by it. Requiring
+	// clear columns meant boxes only ever appeared beside short rows and never
+	// beside a paragraph, because prose wraps to the full measure.
 	rows := []string{"", strings.Repeat("x", 70), ""}
-	paintWidget(rows, []string{"╭╮", "││", "╰╯"}, 0, 20, len(rows), 140)
+	paintWidget(rows, []string{"╭╮", "││", "╰╯"}, 0, 20, len(rows))
 
 	col := widgetColumns(rows, "╭")[0]
-	if col < 70+WidgetGap {
-		t.Errorf("box starts at %d, overlapping a %d-cell row", col, 70)
+	if col != 20 {
+		t.Errorf("box starts at %d, want the column it was placed at", col)
 	}
 }
 
-func TestPaintWidgetDropsABoxThatNoLongerFits(t *testing.T) {
-	// Drawing past the right edge makes the terminal wrap the line, which
-	// pushes every row below it down — the exact jump invariant 4 forbids.
+func TestPaintWidgetNeverExceedsItsColumnPlusBox(t *testing.T) {
+	// A row wider than the frame wraps, which pushes every row below it down —
+	// the jump invariant 4 forbids. Cutting at the column is what prevents it.
 	rows := []string{strings.Repeat("x", 130), strings.Repeat("x", 130)}
-	before := append([]string(nil), rows...)
-	paintWidget(rows, []string{"╭────────╮", "╰────────╯"}, 0, 100, len(rows), 140)
+	box := []string{"╭────────╮", "╰────────╯"}
+	paintWidget(rows, box, 0, 100, len(rows))
 
-	for i := range rows {
-		if rows[i] != before[i] {
-			t.Errorf("row %d was drawn over: %q", i, rows[i])
+	for i, row := range rows {
+		if got := lipgloss.Width(row); got != 100+lipgloss.Width(box[i]) {
+			t.Errorf("row %d is %d cells, want the column plus the box", i, got)
 		}
 	}
 }
@@ -73,7 +74,7 @@ func TestPaintWidgetDropsABoxThatNoLongerFits(t *testing.T) {
 func TestPaintWidgetSkipsRowsPastTheLimit(t *testing.T) {
 	// The composer and status line own their rows outright.
 	rows := []string{"", "", ""}
-	paintWidget(rows, []string{"╭╮", "││", "╰╯"}, 1, 10, 2, 140)
+	paintWidget(rows, []string{"╭╮", "││", "╰╯"}, 1, 10, 2)
 
 	if strings.Contains(rows[2], "╰") {
 		t.Errorf("a widget line landed past the transcript region: %q", rows[2])

@@ -1,21 +1,21 @@
- evilcode · v0.1.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit /selfdev
- <repo> (main)
-
+ evilcode · v0.1.0                                                                                      ╭──────────────────────────────────╮
+ session: Dracula 🧛                                                                                    │ Todos 1/4 ●●○○ · 100%            │
+ /model to switch · local:mock · mock-large                                                             │   ● Wire the refresh path        │
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                 │   ⊳ Add the retry gate (blocked) │
+ skills: /commit /selfdev                                                                               │   ○ Write the integration        │
+ <repo> (main)                                                         │   +1 done                        │
+                                                                                                        ╰──────────────────────────────────╯
  1› wire the auth flow
 
  Tracking the work.
-                                                                                                        ╭──────────────────────────────────╮
-   ✓ todo · 23 tok                                                                                      │ Todos 1/4 ●●○○ · 100%            │
-   ↳ 4 added  (1/4)                                                                                     │   ● Wire the refresh path        │
-     + Read the OAuth callback handler                                                                  │   ⊳ Add the retry gate (blocked) │
-     + Wire the refresh path                                                                            │   ○ Write the integration        │
-     + Add the retry gate                                                                               │   +1 done                        │
-     + Write the integration test                                                                       ╰──────────────────────────────────╯
-
+                                                                                                                    ╭──────────────────────╮
+   ✓ todo · 23 tok                                                                                                  │ Context 122/200k     │
+   ↳ 4 added  (1/4)                                                                                                 │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+     + Read the OAuth callback handler                                                                              ╰──────────────────────╯
+     + Wire the refresh path                                                                              ╭────────────────────────────────╮
+     + Add the retry gate                                                                                 │ 💡 Ctrl+R searches your prompt │
+     + Write the integration test                                                                         │ history                        │
+                                                                                                          ╰────────────────────────────────╯
  Tracked. Working through the refresh path next.
 
  Done.

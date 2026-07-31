@@ -1,11 +1,11 @@
- evilcode · v0.1.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
- skills: /commit /selfdev
- <repo> (main)
-
- 1› I like tabs
+ evilcode · v0.1.0                                                                                                  ╭──────────────────────╮
+ session: Dracula 🧛                                                                                                │ Context 228/200k     │
+ /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ● mock                                                                             ╰──────────────────────╯
+ skills: /commit /selfdev                                                                                 ╭────────────────────────────────╮
+ <repo> (main)                                                           │ 💡 Ctrl+R searches your prompt │
+                                                                                                          │ history                        │
+ 1› I                                                                                                     ╰────────────────────────────────╯
 
  Noted.
 

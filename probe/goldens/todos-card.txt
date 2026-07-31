@@ -6,14 +6,14 @@
  1› wire the auth flow                                                                                                                     │
                                                                                                                                            │
  Tracking the work.                                                                                                                        │
-                                                                                                                                           │
-   ✓ todo · 23 tok                                                                                                                         │
-   ↳ 4 added  (1/4)                                                                                                                        │
-     + Read the OAuth callback handler                                                                                                     │
-     + Wire the refresh path                                                                                                               │
-     + Add the retry gate                                                                                                                  │
-     + Write the integration test                                                                                                          │
-                                                                                                                                           │
+                                                                                                                  ╭──────────────────────╮ │
+   ✓ todo · 23 tok                                                                                                │ Context 122/200k     │ │
+   ↳ 4 added  (1/4)                                                                                               │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │
+     + Read the OAuth callback handler                                                                            ╰──────────────────────╯ │
+     + Wire the refresh path                                                                            ╭────────────────────────────────╮ │
+     + Add the retry gate                                                                               │ 💡 Ctrl+R searches your prompt │ │
+     + Write the integration test                                                                       │ history                        │ │
+                                                                                                        ╰────────────────────────────────╯ │
  Tracked. Working through the refresh path next.                                                                                           │
                                                                                                                                            │
  Done.                                                                                                                                     │
@@ -25,12 +25,12 @@
    ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.           │
  Understands user intent 87%                                                                                                               │
    User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before                                         │
-                    work starts                                                                                                            │
- auth flow  ●●○○                                                                                                                           │
-   Closed feedback loop 92% · Ownership 88%                                                                                                │
-   Feedback · go test ./internal/auth/...                                                                                                  │
-   ● Wire the refresh path                                                                                                                 │
-   ⊳ Add the retry gate (blocked)                                                                                                          │
+                    work starts                                                                   ╭──────────────────────────────────────╮ │
+ auth flow  ●●○○                                                                                  │ ⚡ mock-large                        │ │
+   Closed feedback loop 92% · Ownership 88%                                                       │ 1 sessions · dracula                 │ │
+   Feedback · go test ./internal/auth/...                                                         │ …os-home/eko/projects/evilcode  main │ │
+   ● Wire the refresh path                                                                        │ ☁ mock                               │ │
+   ⊳ Add the retry gate (blocked)                                                                 ╰──────────────────────────────────────╯ │
    ○ Write the integration test                                                                                                            │
    ✓ Read the OAuth callback handler · 75→100%                                                                                             │
                                                                                                                                            ╵

@@ -1201,3 +1201,53 @@ What this loop actually taught: a golden proves a frame has not *changed*, never
 that it is *right*. Every one of these had a passing golden that had faithfully
 recorded the wrong thing. Looking is not optional, and looking at 140 columns is
 not looking at what a user has.
+
+## 2026-07-31 — Widgets that stay put (plan item 1)
+
+The report was "the popups on the right shouldn't disappear, they should stay and
+scroll with the content". The cause was not in the docking logic at all — it was
+pipeline order. `dockWidgets` ran *last*, after the scrollbar had padded every
+row to full width, after the side panel had been appended, after the centering
+inset had been prepended — and then measured those rows against `chatWidth`. Free
+width was ≤ 0 on essentially every row, so no slot could ever be found and no
+anchor could ever be held. The dock was losing a race it entered last.
+
+That is why the earlier attempt at this failed and was reverted: it taught
+`FreeWidth` to ignore "unpainted" padding, which treats the symptom. The rows
+genuinely *were* that wide. They should not have been what the dock measured.
+
+Three changes had to land together, and either alone reproduces the revert:
+docking moved before the decorations; `FreeWidth` measures painted width via
+`TrimRight(row, " ")`; and the painter cuts each row at the widget's column
+instead of appending past it. The trim discriminator needs no ANSI parsing
+because the escape ordering already encodes the answer — glamour writes padding
+*after* its styled content so those rows really do end in plain spaces, while the
+user prompt band pads *inside* its style so its row ends with the reset and the
+trim is a no-op. Background-painted padding is genuinely occupied and survives.
+
+Four more bugs in the same path: the painter silently declined to draw when it
+thought the box would overflow, while the dock had already reset `BadFrames` — so
+that widget was invisible *forever* with no re-home. `Dock.Forget` had zero
+callers, so a widget whose content emptied kept a stale anchor and came back ~10s
+later somewhere else. `centered` was hardcoded `false`, so six widget kinds could
+never dock. And `SwarmStatusWidget` was added to the list twice, two entries
+sharing one anchor.
+
+Anchor lifecycle now splits its failure modes, which is what stops "scroll with
+the content" and "stay visible" contradicting each other: a widget whose anchor
+scrolled out of the viewport re-homes immediately with no aging, because it was
+not on screen and re-homing cannot read as a jump; only a widget covered by
+*another widget* ages, and only if it has actually been seen. That last flag had
+to become sticky — my first version cleared it when hiding, so hide-in-place
+lasted exactly one frame and the widget re-homed on the next tick anyway.
+
+The deliberate design change, agreed first: widgets now overlay prose rather than
+waiting for blank space, with a click to dismiss and `Alt+I` to restore. Prose
+wraps to the full measure, so "blank space only" meant boxes appeared beside tool
+rows and never beside an actual answer. The alternative was capping the prose
+measure to manufacture a margin, which changes how every message reads to serve
+the chrome. DEVIATIONS #9–11.
+
+Verified live rather than only in the probe: a real streaming answer with the
+Context widget sampled every three seconds across a dozen frames, still there
+every time. The probe's settle-then-capture cycle cannot see that class of bug.

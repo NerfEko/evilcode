@@ -105,6 +105,14 @@ type Model struct {
 	// caller re-execs into it after the program exits.
 	resumeTarget string
 
+	// hiddenWidgets are the ones dismissed by clicking them. Session-scoped:
+	// a box you swatted away should stay away until you restart, but it is not
+	// worth persisting to config.
+	hiddenWidgets map[WidgetKind]bool
+
+	// placements is the last frame's widget geometry, for hit-testing clicks.
+	placements []Placement
+
 	// dock places widgets in the transcript's negative space, and widgetsOn
 	// is the Alt+I toggle.
 	dock      *Dock
@@ -265,21 +273,22 @@ type Model struct {
 func NewModel(a *agent.Agent, h HeaderState) *Model {
 	p := theme.Dracula()
 	return &Model{
-		agent:        a,
-		renderer:     NewRenderer(p, 80),
-		header:       h,
-		started:      time.Now(),
-		streamingIdx: -1,
-		reasoningIdx: -1,
-		dock:         NewDock(),
-		widgetsOn:    true,
-		thinking:     ThinkingCurrent,
-		diffMode:     DiffInline,
-		panelRatio:   50,
-		showHints:    true,
-		overscroll:   Overscroll{Mode: OverscrollPull},
-		artVariant:   PickVariant(h.SessionName),
-		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
+		agent:         a,
+		renderer:      NewRenderer(p, 80),
+		header:        h,
+		started:       time.Now(),
+		streamingIdx:  -1,
+		reasoningIdx:  -1,
+		dock:          NewDock(),
+		widgetsOn:     true,
+		hiddenWidgets: map[WidgetKind]bool{},
+		thinking:      ThinkingCurrent,
+		diffMode:      DiffInline,
+		panelRatio:    50,
+		showHints:     true,
+		overscroll:    Overscroll{Mode: OverscrollPull},
+		artVariant:    PickVariant(h.SessionName),
+		decorate:      os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 	}
 }
 
@@ -431,6 +440,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseClickMsg:
+		if m.dismissWidgetAt(msg.Mouse()) {
+			return m, nil
+		}
 
 	case tea.PasteMsg:
 		// Bracketed paste never inspects the clipboard for images: on Wayland
@@ -962,16 +976,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.notice = fmt.Sprintf("Side panel: %d%%", m.panelRatio)
 		return m, nil
 
-	case "alt+i":
-		m.widgetsOn = !m.widgetsOn
-		m.dock.Reset()
-		if m.widgetsOn {
-			m.notice = "Info widgets: ON"
-		} else {
-			m.notice = "Info widgets: OFF"
-		}
-		return m, nil
-
 	case "ctrl+up", "alt+up":
 		// Pending messages come back for editing before prompt history does:
 		// something you just staged is more likely what you meant to reach
@@ -1095,6 +1099,11 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 		m.notice = map[bool]string{true: "Centered layout", false: "Left-aligned layout"}[m.centered]
 	case ActionInfoWidgets:
 		m.widgetsOn = !m.widgetsOn
+		// Turning them back on restores anything dismissed by clicking, which
+		// is what makes this the way out of having swatted one away.
+		if m.widgetsOn {
+			clear(m.hiddenWidgets)
+		}
 		m.dock.Reset()
 		m.notice = map[bool]string{true: "Info widgets: ON", false: "Info widgets: OFF"}[m.widgetsOn]
 	case ActionTodoCard:
@@ -2113,6 +2122,13 @@ func (m *Model) View() tea.View {
 	// a visible bar narrows the wrap width, which changes the content height,
 	// which can change the decision (plan.md §3.6).
 	m.scrollbarOn = ScrollbarVisible(m.scrollbarOn, len(content), len(content), res.Transcript)
+
+	// Widgets dock here — before the scrollbar, the side panel and the centering
+	// inset are painted into these rows. Docking last meant measuring rows that
+	// were already full width and concluding there was nowhere to go, which is
+	// why the boxes vanished (plan.md §8.3).
+	rows = m.dockWidgets(rows, res.Transcript, start)
+
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
 		for i := 0; i < res.Transcript && i < len(bar) && i < len(rows); i++ {
@@ -2179,10 +2195,6 @@ func (m *Model) View() tea.View {
 	for i, row := range rows {
 		rows[i] = inset + row
 	}
-
-	// Widgets dock into the blank space beside the transcript, so they cost no
-	// layout height at all — they live where the text is not (plan.md §8.3).
-	rows = m.dockWidgets(rows, res.Transcript, len(content))
 
 	// Now that docking has run, the strip knows whether the widget got a slot.
 	// Feeding it here — after the fact, through the hysteresis — is what stops
@@ -2419,7 +2431,9 @@ func (m *Model) factStack() FactStack {
 func (m *Model) activeWidgets() []Widget {
 	var out []Widget
 	add := func(w Widget) {
-		if len(w.Lines) > 0 {
+		// Dismissed widgets are dropped here rather than at paint time, so a
+		// hidden box does not silently reserve rows another widget could use.
+		if len(w.Lines) > 0 && !m.hiddenWidgets[w.Kind] {
 			out = append(out, w)
 		}
 	}
@@ -2455,9 +2469,10 @@ func (m *Model) activeWidgets() []Widget {
 	if m.swarm != nil {
 		add(m.renderer.SwarmStatusWidget(m.swarm, time.Since(m.started)))
 	}
-	if m.swarm != nil {
-		add(m.renderer.SwarmStatusWidget(m.swarm, time.Since(m.started)))
-	}
+	// GitStatusWidget (widgets.go) is still not added: it needs staged/unstaged
+	// counts, and nothing polls `git status` today. Adding a poller is a new
+	// data path rather than part of making widgets stay put, and a widget
+	// showing 0/0/0 would be worse than one that is absent.
 	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
 		add(m.renderer.TipsWidget(tip))
 	}
@@ -2483,7 +2498,7 @@ func (m *Model) contextMax() int {
 //
 // Widgets are suppressed entirely while the welcome art is showing: an empty
 // screen decorated with status boxes is busier than the thing it decorates.
-func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []string {
+func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop int) []string {
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
 		return rows
 	}
@@ -2494,25 +2509,39 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []s
 		region = region[:transcriptRows]
 	}
 
-	placements := m.dock.Layout(m.activeWidgets(), region, m.chatWidth(),
-		max(contentLines-transcriptRows-m.scroll.Offset, 0), false)
-	if len(placements) == 0 {
-		return rows
+	// One list, measured and painted. It used to be built twice per frame, and
+	// it is time-dependent — tips rotate, spinners advance — so the list Layout
+	// placed could differ from the map painted, leaving a reserved slot blank.
+	widgets := m.activeWidgets()
+
+	// Neither the scrollbar nor the centering inset has been painted yet, but
+	// both will be, so both are reserved here. Measuring one width and painting
+	// against another is what let the painter drop boxes the dock believed it
+	// had placed — and leaving out the inset cost the box its right corner.
+	usable := m.chatWidth() - Inset(m.centered)
+	if m.scrollbarOn {
+		usable -= ScrollbarReserve
 	}
 
-	byKind := map[WidgetKind]Widget{}
-	for _, w := range m.activeWidgets() {
+	placements := m.dock.Layout(widgets, region, usable, scrollTop, m.centered)
+
+	byKind := make(map[WidgetKind]Widget, len(widgets))
+	for _, w := range widgets {
 		byKind[w.Kind] = w
 	}
 
 	m.swarmDocked = false
 	for _, p := range placements {
+		if m.hiddenWidgets[p.Kind] {
+			continue
+		}
 		if p.Kind == WidgetSwarmStatus {
 			m.swarmDocked = true
 		}
 		paintWidget(rows, m.renderer.RenderWidget(byKind[p.Kind]),
-			p.Row, p.Col, min(transcriptRows, len(rows)), m.width)
+			p.Row, p.Col, min(transcriptRows, len(rows)))
 	}
+	m.placements = placements
 	return rows
 }
 
@@ -2525,30 +2554,29 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []s
 //
 // A box that no longer fits is dropped rather than drawn past the right edge,
 // where the terminal would wrap it and push the whole frame down.
-func paintWidget(rows, lines []string, top, col, limit, frameWidth int) {
-	inRange := func(i int) bool {
-		row := top + i
-		return row >= 0 && row < limit
-	}
-
-	width := 0
-	for i := range lines {
-		if !inRange(i) {
-			continue
-		}
-		col = max(col, lipgloss.Width(rows[top+i])+WidgetGap)
-		width = max(width, lipgloss.Width(lines[i]))
-	}
-	if frameWidth > 0 && col+width > frameWidth {
-		return
-	}
-
+// paintWidget writes a widget's box into the frame at a fixed column.
+//
+// The box overlays whatever is underneath: each row is cut at the widget's
+// column and the box written there. glamour pads every paragraph out to the
+// wrap width, so a painter that appended produced rows far wider than the
+// terminal, which then wrapped and tore the frame apart — the symptom that
+// looked like "the widget vanished".
+//
+// It no longer recomputes the column or refuses to draw. Layout owns that
+// decision now, and a painter that silently declined left the dock believing it
+// had placed a widget that was never on screen and would never be re-homed.
+func paintWidget(rows, lines []string, top, col, limit int) {
 	for i, line := range lines {
-		if !inRange(i) {
+		row := top + i
+		if row < 0 || row >= limit || row >= len(rows) {
 			continue
 		}
-		row := top + i
-		rows[row] += strings.Repeat(" ", max(col-lipgloss.Width(rows[row]), 0)) + line
+		// Cut the row at the widget's column, then pad back out to it. Cutting
+		// rather than trimming is what makes this an overlay: a row longer than
+		// col would otherwise push the box further right, which is the
+		// appending behaviour that used to send boxes past the frame edge.
+		base := truncateCells(rows[row], col)
+		rows[row] = base + strings.Repeat(" ", max(col-lipgloss.Width(base), 0)) + line
 	}
 }
 
@@ -2616,4 +2644,26 @@ func (m *Model) observeStreamed(text string) {
 	if secs := time.Since(m.streamStart).Seconds(); secs > 0.2 {
 		m.status.TokensPerSecond = float64(estimate) / secs
 	}
+}
+
+// dismissWidgetAt hides the docked widget under a click, and reports whether one
+// was there.
+//
+// Widgets can cover prose now, so a way to swat one away is part of the deal
+// rather than a nicety. Dismissal lasts the session: a box you dismissed should
+// not return on the next tick, but it is not worth writing to config either.
+func (m *Model) dismissWidgetAt(mouse tea.Mouse) bool {
+	if !m.widgetsOn || len(m.placements) == 0 {
+		return false
+	}
+	// Placements are in transcript-region coordinates, and the region starts at
+	// the top of the frame, so the mouse row maps straight through.
+	kind, ok := m.dock.Hit(m.placements, mouse.X-Inset(m.centered), mouse.Y)
+	if !ok {
+		return false
+	}
+	m.hiddenWidgets[kind] = true
+	m.dock.Forget(kind)
+	m.notice = "Hidden · Alt+I brings the widgets back"
+	return true
 }
