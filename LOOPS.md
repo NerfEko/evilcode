@@ -3253,3 +3253,34 @@ read but not the write, validate `Open` but not `Rewind`, order the bind but not
 the removal. A fix that names a mechanism is a claim about every place that
 mechanism occurs, and the only way to find out whether the claim holds is to go
 looking — which is what the review did and I had not.
+
+## 2026-07-31 H1.3 — Fixed already, checked wrong
+
+Assigned to re-do H1.3: strip `ToolCalls` from `commitPartial`'s partial
+message, the other door H1.2 didn't cover. `git log` found it already done —
+commit `ab1656d` added `msg.ToolCalls = nil` and
+`TestInterruptedPartialDropsUnrunToolCalls`, both still present and unchanged
+on disk.
+
+Verified the fix still holds rather than trusting the log: reverted the
+`msg.ToolCalls = nil` line, reran the existing test.
+
+```
+cancel_test.go:136: tool call "call_9" (blocker) has no result message
+```
+
+Failed exactly as H1.3 predicts. Restored the line; `git diff` against HEAD
+came back empty — the fix in the tree is byte-for-byte what `ab1656d` wrote.
+Only caller of `commitPartial` is the interrupt path in `Run`, so there's no
+second call site to check.
+
+What was actually broken: `ab1656d` checked the wrong plan2.md checkbox. §0.3
+"Reading a task" carries a fenced-code illustration reading
+`- [ ] **H1.3** ... stepOvernight ...` as a formatting example, not a real
+task. That line got flipped to `[x]`; the real H1.3 entry at line 115
+(`commitPartial`) stayed `[ ]`, reading as still open. Left the example line
+alone — it's not a tracked task and touching it is out of scope — and checked
+the real one.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green, no code
+changes needed since the fix already matched the task exactly.

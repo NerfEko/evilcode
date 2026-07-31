@@ -112,7 +112,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   and the JSONL then hold assistant `tool_calls` with no adjacent results; strict
   OpenAI-compatible endpoints reject the next request with 400. Fix: append a result
   (real, or a cancellation stub) for **every** call in the batch before returning.  ⟨both⟩
-- [ ] **H1.3** `internal/agent/agent.go:384,438` `commitPartial` — same class, other path:
+- [x] **H1.3** `internal/agent/agent.go:384,438` `commitPartial` — same class, other path:
   it checks Content/Reasoning for emptiness and then appends the whole message including
   `msg.ToolCalls`. Fix: strip `ToolCalls`, or emit `[Skipped: interrupted]` stubs the way
   safe point C already does. Do H1.2 and H1.3 as one mechanism, two commits.  ⟨fable⟩
