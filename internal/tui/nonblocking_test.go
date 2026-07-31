@@ -69,6 +69,48 @@ func TestPastingDoesNotBlockTheUpdateLoop(t *testing.T) {
 	}
 }
 
+// H5.23: /summon dialed the daemon and waited for it to answer straight
+// inside Update, with no read deadline — a daemon that accepts the
+// connection and then stalls froze the whole interface with no way to type
+// past it, the same class as H3.13.
+func TestSummonDoesNotBlockTheUpdateLoop(t *testing.T) {
+	m := newTestModel(t)
+	unblock := make(chan struct{})
+	m.WithSwarm(&SwarmState{}, func(task string) (string, error) {
+		<-unblock // simulates a daemon that accepted the connection and stalled
+		return "raven", nil
+	})
+
+	done := make(chan struct{})
+	var cmd func() any
+	go func() {
+		defer close(done)
+		if c := m.summonCommand("wire the auth flow"); c != nil {
+			cmd = func() any { return c() }
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("summonCommand blocked the update loop on the daemon call")
+	}
+	if cmd == nil {
+		t.Fatal("no command was returned to make the daemon call")
+	}
+
+	// Only now does the simulated daemon answer, off the update loop.
+	close(unblock)
+	msg, ok := cmd().(summonResult)
+	if !ok {
+		t.Fatalf("the command produced %T", cmd())
+	}
+	m.applySummonResult(msg)
+	if !strings.Contains(m.blocks[len(m.blocks)-1].Text, "raven") {
+		t.Errorf("blocks = %v, want the summon result to land once the daemon answers", m.blocks)
+	}
+}
+
 // A stale search result must not replace what the user has typed since.
 func TestASearchResultForAnOldQueryIsIgnored(t *testing.T) {
 	m := newTestModel(t)

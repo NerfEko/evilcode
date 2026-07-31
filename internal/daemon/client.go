@@ -40,6 +40,20 @@ func DialPath(path string) (*Client, error) {
 // Close hangs up.
 func (c *Client) Close() error { return c.conn.Close() }
 
+// SetDeadline bounds every Send and Recv from now on. A zero d clears it.
+//
+// A daemon that accepts the connection and then stalls — wedged, overloaded,
+// whatever the reason — otherwise leaves Recv blocked forever, and for a
+// caller on the UI's update loop that means the whole interface freezes with
+// no way to type past it.
+func (c *Client) SetDeadline(d time.Duration) error {
+	var t time.Time
+	if d > 0 {
+		t = time.Now().Add(d)
+	}
+	return c.conn.SetDeadline(t)
+}
+
 // Send writes one frame. It is safe to call from any goroutine.
 func (c *Client) Send(msg ClientMsg) error {
 	c.mu.Lock()

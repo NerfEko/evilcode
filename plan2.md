@@ -430,7 +430,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [ ] **H5.20** Verify H5: a conflict clears after a re-read and re-fires on the next write;
   `!ls` either runs or is not offered; a corrupt session line is reported with its number
   rather than skipped; a repo-pinned model actually loads. Tag `harden-5`.
-- [ ] **H5.23** `internal/tui/swarmwidget.go:213` → `internal/attachcmd/attach.go:133` — `/summon`
+- [x] **H5.23** `internal/tui/swarmwidget.go:213` → `internal/attachcmd/attach.go:133` — `/summon`
   dials the daemon socket and does a synchronous send/receive, with no read deadline, from
   inside `Update`. Same class as H3.13: a daemon that accepts the connection and then stalls
   freezes the whole interface with no way to type past it. Fix: a `tea.Cmd` with a deadline.

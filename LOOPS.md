@@ -3878,3 +3878,44 @@ by exactly the unanswered call.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green across
 every package.
+
+## 2026-07-31 H5.23 — /summon had the same shape as H3.13, one review later
+
+`summonCommand` already had the right return type — `tea.Cmd` — but called
+`m.summon(task)` synchronously before returning it, so the dial, the send,
+and the blocking `Recv()` loop all ran straight inside `Update`. Worse than
+H3.13's picker fetch (which at least had a five-second client timeout):
+`attachcmd.summon`'s connection had no read deadline at all, so a daemon that
+accepted the connection and then stalled — wedged, overloaded, mid-crash —
+froze the whole interface with no way to type past it, forever, not just for
+five seconds.
+
+Fix, two parts. `daemon.Client` gets `SetDeadline(d time.Duration)`, a thin
+wrapper over the underlying `net.Conn`'s deadline (a zero `d` clears it);
+`attachcmd.summon` calls it right after dialing, bounding the whole
+send-then-receive exchange at a new `SummonTimeout` (30s, matching the LSP
+client's `RequestTimeout` for the same kind of "give the other side generous
+but not infinite time" call). `summonCommand` moved the actual call into the
+closure it returns, the same shape H3.13 already established for the model
+picker: a new `summonResult{task, name, err}` message type carries the
+outcome back, `Model.applySummonResult` (dispatched from `Update`'s switch,
+right beside `modelsLoaded` and `semanticHits`) applies it — the notice or
+block that used to appear synchronously now appears once the daemon actually
+answers, with `m.notice = "summoning…"` shown immediately so the command
+doesn't look like it did nothing in the meantime.
+
+Reproduce: `TestSummonDoesNotBlockTheUpdateLoop` in
+`internal/tui/nonblocking_test.go`, same pattern as H3.13's
+`TestOpeningTheModelPickerDoesNotBlock` — a fake `SummonFunc` that blocks on a
+channel until the test closes it (simulating a stalled daemon), calling
+`summonCommand` on a separate goroutine and asserting it returns within a
+second regardless. Confirmed it fails (times out) against a synchronous
+`summonCommand` body reverted by hand back into the file (the type
+declarations `summonResult`/`applySummonResult` had to stay for the test to
+compile at all — the fastest way to isolate just the ordering bug rather than
+the whole feature).
+
+Verified: `go build ./... && go vet ./... && go test ./...` green across
+every package, including `internal/daemon`, whose existing tests exercise
+`Client.Send`/`Client.Recv` and were unaffected by the new `SetDeadline`
+method sitting beside them.

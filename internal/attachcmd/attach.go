@@ -125,6 +125,10 @@ func Run(args []string) error {
 	return tui.RunModel(m)
 }
 
+// SummonTimeout bounds a /summon round trip. A daemon that accepts the
+// connection and then stalls must not hang the caller forever — see H5.23.
+const SummonTimeout = 30 * time.Second
+
 // summon opens its own connection to spawn a worker.
 //
 // A second connection rather than the attached one: the attached connection is
@@ -136,6 +140,9 @@ func summon(path, task string) (string, error) {
 		return "", err
 	}
 	defer c.Close()
+	if err := c.SetDeadline(SummonTimeout); err != nil {
+		return "", err
+	}
 
 	if err := c.Send(daemon.ClientMsg{Kind: daemon.MsgSpawn, Task: task}); err != nil {
 		return "", err

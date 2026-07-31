@@ -199,7 +199,19 @@ func (m *Model) WithSwarm(s *SwarmState, summon SummonFunc) *Model {
 	return m
 }
 
+// summonResult carries a /summon round trip back into the update loop.
+type summonResult struct {
+	task string
+	name string
+	err  error
+}
+
 // summonCommand implements `/summon <task>` (plan.md §20).
+//
+// m.summon dials the daemon and waits for it to spawn the worker — a network
+// round trip that used to run straight inside Update, freezing every frame
+// until the daemon answered, with no read deadline to even bound the wait
+// (H5.23). It runs in the returned tea.Cmd now, off the update loop.
 func (m *Model) summonCommand(task string) tea.Cmd {
 	if m.summon == nil {
 		m.notice = "no daemon to summon into — start one with `evilcode serve`"
@@ -210,18 +222,26 @@ func (m *Model) summonCommand(task string) tea.Cmd {
 		return nil
 	}
 
-	name, err := m.summon(task)
-	if err != nil {
-		m.notice = "could not summon: " + err.Error()
-		return nil
+	m.notice = "summoning…"
+	return func() tea.Msg {
+		name, err := m.summon(task)
+		return summonResult{task: task, name: name, err: err}
+	}
+}
+
+// applySummonResult reports how a /summon call landed, once the daemon
+// answers.
+func (m *Model) applySummonResult(r summonResult) {
+	if r.err != nil {
+		m.notice = "could not summon: " + r.err.Error()
+		return
 	}
 	// A block rather than a notice: summoning is an action whose result arrives
 	// later, and a flash that disappears leaves nothing to tie that result back
 	// to when it does.
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: fmt.Sprintf(
-		"👉 Summoned %s\n%s\n\nIts result will arrive as a message.", name, task)})
+		"👉 Summoned %s\n%s\n\nIts result will arrive as a message.", r.name, r.task)})
 	m.scroll.FollowBottom()
-	return nil
 }
 
 // agentsCommand implements `/agents`.

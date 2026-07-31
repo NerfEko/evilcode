@@ -441,6 +441,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applySemanticHits(msg)
 		return m, nil
 
+	case summonResult:
+		m.applySummonResult(msg)
+		return m, nil
+
 	case rebuildResult:
 		if msg.err != nil {
 			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: msg.err.Error()})
