@@ -121,6 +121,12 @@ type Session struct {
 	// starting while close waits replaces the channel close is waiting on, and
 	// the store shuts under a turn that is still running.
 	closing bool
+
+	// running is the turn reservation. Agent.Running() is set by the turn
+	// goroutine and so is false for the first instants after a start, which let
+	// two clients both see an idle session and both launch against one
+	// conversation. Taken here, before the goroutine exists.
+	running bool
 }
 
 // NewServer builds a server. It does not listen until Serve is called.
@@ -546,18 +552,20 @@ func (sess *Session) snapshot(cwd string) *Snapshot {
 // which is what makes two attached clients usable at once rather than a race.
 func (sess *Session) Input(text string) {
 	a := sess.built.Agent
-	if a.Running() {
-		a.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
-		return
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done, ok := sess.beginTurn(cancel)
 	if !ok {
 		cancel()
+		// Busy, closing, or beaten to it: the text becomes an interjection into
+		// the turn that is running rather than a second turn. Reserving and
+		// checking were two operations before, so two clients could both see an
+		// idle session and both launch against one conversation.
+		a.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
 		return
 	}
 	go func() {
 		defer close(done)
+		defer sess.endTurn()
 		defer cancel()
 		_ = a.Run(ctx, text)
 	}()
@@ -575,16 +583,24 @@ func (sess *Session) beginTurn(cancel context.CancelFunc) (chan struct{}, bool) 
 	done := make(chan struct{})
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if sess.closing {
+	if sess.closing || sess.running {
 		return nil, false
 	}
-	// Cancel whatever this replaces. Normally already finished — Input checks
-	// Running first — and cancelling a finished turn only releases its context.
+	// The previous turn is finished — running says so — and cancelling a
+	// finished turn only releases its context.
 	if sess.cancel != nil {
 		sess.cancel()
 	}
+	sess.running = true
 	sess.cancel, sess.turnDone = cancel, done
 	return done, true
+}
+
+// endTurn releases the session's turn reservation.
+func (sess *Session) endTurn() {
+	sess.mu.Lock()
+	sess.running = false
+	sess.mu.Unlock()
 }
 
 // cancelTurn stops the current turn, if there is one.

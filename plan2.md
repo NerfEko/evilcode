@@ -177,7 +177,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   across input, interrupt, close, and worker paths with no consistent locking. Two attached
   clients, or an interrupt racing a new turn, can cancel the wrong turn. Fix: touch
   `cancel` only under `sess.mu`, and cancel the previous one before overwriting.  ⟨both⟩
-- [ ] **H2.2** `internal/daemon/server.go:486` — `Running()` and turn start are separate
+- [x] **H2.2** `internal/daemon/server.go:486` — `Running()` and turn start are separate
   operations, so two clients can both see idle and both launch. Fix: reserve the session
   under its mutex before spawning; return busy otherwise.  ⟨codex⟩
 - [ ] **H2.3** `internal/agent/agent.go:344` `Loop` — no atomic rejection of an

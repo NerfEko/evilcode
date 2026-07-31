@@ -2011,3 +2011,33 @@ The test is not in this commit. What it exercises after this fix are races
 H2.9, and the test lands with the one that finally makes it pass. The evidence
 for this task is that no daemon field appears in the race report any more; what
 is left is a different bug that the same test happens to find.
+
+## 2026-07-31 H2.2 — Checking idle and becoming busy were two moments
+
+`Input` asked `a.Running()` and then started a turn. `Running` is set by the
+turn's own goroutine, so between the check and the goroutine actually reaching
+that line the session still reports idle — long enough for a second client to
+check, see idle, and launch a second `Run` against one conversation.
+
+Reproduced deterministically by racing the reservation itself rather than the
+agent: sixteen goroutines released at once, all sixteen claiming they had
+started a turn.
+
+```
+16 of 16 racers each started a turn on one session, want 1
+```
+
+Sixteen of sixteen, not a rare interleaving.
+
+`beginTurn` now takes the reservation under the same lock that holds `cancel`,
+before any goroutine exists, and `endTurn` releases it when the run returns.
+Input's loser no longer drops the text: it becomes an interjection into the turn
+that is running, which is what the code always intended and what the check-then-
+launch shape only approximated.
+
+`Running()` stays what it is — a fact about the agent, useful for the UI. The
+reservation is a fact about the session, and the difference between those two is
+the bug.
+
+Verified: sixteen racers, one winner, across three runs with -race; the session
+accepts a turn again after `endTurn`.

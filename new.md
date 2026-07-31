@@ -4,7 +4,7 @@
 
 3. needs commands that give automatic prompts like /review /bugfix /describe
 
-4. missing alot of commands like /btw /stats
+4. missing alot of commands like /btw /stats /init (needs a agents.md system too)
 
 5. the widgets sometimes appear and get covered by some text then disappear, widgets should not be flashing in and out, they should appear on top, but never appear next to model text output, they can appear next to tool calls or thinking blocks but they should only scroll with the main output, they shouldnt scroll inside thinking blocks and they shouldnt disappear.
 
@@ -21,3 +21,5 @@
 11. we need to divert looks away from jcode look. come up with ways to make changes that give evilcode its own visual identity without removing features and write a looks.md with as many changes as you can think of and ill pick the ones i like
 
 12. needs a /login that lets you input ollama cloud api key
+
+13. read the plan.md and plan2.md create a planfiles.md file that describes how to make plan files that work the same way, with the same layout and quirks. they should be dense, but not bloated, confirm the loop at the top (write, fix, loops.md readme.md checkbox in plan.md, commit, codex review, next problem)
