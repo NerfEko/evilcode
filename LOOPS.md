@@ -4055,3 +4055,21 @@ the invariant holds across all. The quick-view-over-pinned-/diff case is covered
 `TestQuickViewIsTransientAndDoesNotTouchDiffState`.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green. Tagged `feat-1`.
+
+## 2026-07-31 F2.1 — bash row prints the command once
+
+Done: bash's `Intent` was `shortCmd(a.Cmd)` — the command truncated to 48 — while the
+row's `ToolTarget` is the same `cmd` arg truncated to 60. The dedupe guard
+`!strings.Contains(intent, target)` cannot hold when a 48-char intent is asked to contain a
+60-char target, so for any command >60 chars the guard passed and `renderTool` printed the
+command twice. Fix at the root: bash's Intent is now `bashIntent(exit, out)` —
+`exit <code> · <bytes> out`, information the row does not already have. Reuses the existing
+`humanBytes` (fs.go). The guard is left as-is; a guard that suppresses a field that should
+never have been set is still a wasted computation.
+
+Reproduction (⟨fix⟩, fail-then-pass): `TestBashRowDuplicatedCommandIsTheBug` — with the old
+intent (command truncated to 48) and a >60-char command, the shared prefix appears twice in
+the rendered row (the bug). `TestBashRowShowsCommandOnce` — with the new summary intent, the
+command appears exactly once.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green.

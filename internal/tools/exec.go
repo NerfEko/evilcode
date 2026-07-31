@@ -220,13 +220,13 @@ func (e *Exec) bashTool() Tool {
 				// model needs the output to act on it.
 				return Result{
 					Output: out,
-					Intent: shortCmd(a.Cmd),
+					Intent: bashIntent(exitStatus(runErr), out),
 				}, fmt.Errorf("exit status %s", exitStatus(runErr))
 			}
 			if strings.TrimSpace(out) == "" {
 				out = "(no output)"
 			}
-			return Result{Output: out, Intent: shortCmd(a.Cmd)}, nil
+			return Result{Output: out, Intent: bashIntent("0", out)}, nil
 		},
 	}
 }
@@ -328,6 +328,17 @@ func shortCmd(cmd string) string {
 		return cmd[:47] + "…"
 	}
 	return cmd
+}
+
+// bashIntent is the bash tool row's intent: the exit status and the captured
+// output size. It deliberately is *not* the command — the command is already
+// the row's target (toolTarget reads the `cmd` arg). Repeating it as the intent
+// made the row print the command twice, because the dedupe guard in applyEvent
+// (`!strings.Contains(intent, target)`) cannot hold when a 48-char intent is
+// asked to contain a 60-char target. The intent carries information the row
+// does not already have instead (§F2.1).
+func bashIntent(exit string, out string) string {
+	return fmt.Sprintf("exit %s · %s out", exit, humanBytes(int64(len(out))))
 }
 
 type grepArgs struct {
