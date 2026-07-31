@@ -1,9 +1,10 @@
 # evilcode
 
-[![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8.svg?logo=go&logoColor=white)](https://go.dev)
-[![Platform](https://img.shields.io/badge/platform-linux-333.svg?logo=linux&logoColor=white)](#requirements)
-[![Ollama](https://img.shields.io/badge/ollama-cloud%20%26%20local-000.svg)](https://ollama.com)
+![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white)
+![Built with Charm](https://img.shields.io/badge/built%20with-Charm-FF5F87?style=for-the-badge)
+![Ollama](https://img.shields.io/badge/ollama-cloud%20%26%20local-000000?style=for-the-badge&logo=ollama&logoColor=white)
+![Linux](https://img.shields.io/badge/linux-only-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 
 A terminal coding agent. Agentic tool-calling loop, a TUI built on the Charm stack,
 and first-class support for Ollama Cloud alongside anything that speaks the OpenAI API.
