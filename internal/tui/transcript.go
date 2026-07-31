@@ -101,6 +101,13 @@ type Renderer struct {
 	// inside its own space. Zero means DefaultThinkingLines.
 	ThinkingLines int
 
+	// narrow is a cached clone for rendering into a sub-region such as the
+	// session preview. It needs its own Markdown: copying a Renderer shares the
+	// glamour pointer, so prose kept wrapping at the outer width and the clone
+	// truncated it instead of re-wrapping.
+	narrow      *Renderer
+	narrowWidth int
+
 	// Graphics and ImagesOn decide whether an image block reserves rows for a
 	// picture or falls back to a one-line placeholder.
 	Graphics graphics.Protocol
@@ -154,6 +161,27 @@ func (r *Renderer) Lines(b *Block) []string {
 
 func (b *Block) cacheContentKey() string {
 	return fmt.Sprintf("%d|%d|%d|%v|%s|%s", b.Kind, b.Number, b.Decay, b.Collapsed, b.Text, b.Diff)
+}
+
+// AtWidth returns a renderer that lays out into a narrower region, reusing the
+// clone across frames so a preview does not build a glamour renderer per key.
+//
+// The clone needs its own Markdown: copying a Renderer shares the glamour
+// pointer, so prose kept wrapping at the outer width and the narrower renderer
+// truncated it rather than re-wrapping it.
+func (r *Renderer) AtWidth(width int) *Renderer {
+	if width < 1 {
+		width = 1
+	}
+	if r.narrow != nil && r.narrowWidth == width {
+		return r.narrow
+	}
+	clone := *r
+	clone.Width = width
+	clone.Markdown = NewMarkdown(width, r.Palette.Prose)
+	clone.narrow, clone.narrowWidth = nil, 0
+	r.narrow, r.narrowWidth = &clone, width
+	return &clone
 }
 
 func (r *Renderer) render(b *Block) []string {

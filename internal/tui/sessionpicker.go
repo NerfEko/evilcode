@@ -34,6 +34,11 @@ type SessionRow struct {
 	// Here flags a session started in this working directory.
 	Here bool
 
+	// Preview is the session's recent conversation, rendered as the transcript
+	// would show it. Filled lazily for the selected row only — reading a JSONL
+	// per arrow key would make the picker crawl.
+	Preview []Block
+
 	// Recalled is the remembered summary that matched, set when this row came
 	// from semantic search rather than from the literal filter.
 	Recalled string
@@ -259,6 +264,13 @@ func humanAge(t time.Time) string {
 }
 
 // sessionPreview draws the right column.
+// sessionPreview draws the right column: what the session actually contains,
+// rendered the way the transcript renders it.
+//
+// It used to show the name, the message count, the modified age and the title —
+// every one of which is already on the row beside it, and the title was always
+// empty because nothing ever wrote it. A preview that previews nothing is worse
+// than no preview, because it takes 60% of the screen to say so.
 func (r *Renderer) sessionPreview(rows []SessionRow, selected, width, height int) []string {
 	border := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.RGB(130, 130, 160))))
@@ -266,39 +278,53 @@ func (r *Renderer) sessionPreview(rows []SessionRow, selected, width, height int
 
 	title := " Preview "
 	top := "╭" + title + strings.Repeat("─", max(width-lipgloss.Width(title)-2, 0)) + "╮"
-
 	out := []string{border.Render(top)}
+
+	// Always close the box, even with nothing to show. Returning early left a
+	// top border hanging with no sides and no bottom.
+	closeBox := func() []string {
+		for len(out) < height-1 {
+			out = append(out, border.Render("│"))
+		}
+		return append(out, border.Render("╰"+strings.Repeat("─", max(width-2, 0))+"╯"))
+	}
 	if len(rows) == 0 {
-		return out
+		return closeBox()
 	}
 
 	row := rows[clamp(selected, 0, len(rows)-1)]
-	body := []string{
-		lipgloss.NewStyle().Bold(true).Render(row.Info.Emoji + " " + row.Info.Name),
-		"",
-		dim.Render(fmt.Sprintf("%d messages", row.Info.Messages)),
-		dim.Render("modified " + humanAge(row.Info.Modified)),
-	}
-	if row.Info.Title != "" {
-		body = append(body, "", dim.Render(row.Info.Title))
-	}
+	head := lipgloss.NewStyle().Bold(true).Render(row.Info.Emoji+" "+row.Info.Name) +
+		dim.Render(fmt.Sprintf("  %d messages · %s",
+			row.Info.Messages, humanAge(row.Info.Modified)))
+	body := []string{head}
 	if row.Info.Crashed {
-		body = append(body, "", lipgloss.NewStyle().
+		body = append(body, lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(220, 100, 100)))).
 			Render("reason: no clean exit was recorded"))
 	}
+	body = append(body, "")
+
+	// The conversation, rendered through the transcript's own renderer at the
+	// preview's width, then tailed: the most recent context is what tells you
+	// whether this is the session you meant.
+	inner := max(width-4, 20)
+	sub := r.AtWidth(inner)
+	var convo []string
+	for i := range row.Preview {
+		convo = append(convo, sub.render(&row.Preview[i])...)
+	}
+	if fits := height - 2 - len(body); fits > 0 && len(convo) > fits {
+		convo = convo[len(convo)-fits:]
+	}
+	body = append(body, convo...)
 
 	for _, line := range body {
 		if len(out) >= height-1 {
 			break
 		}
-		out = append(out, border.Render("│")+" "+truncateCells(line, max(width-4, 8)))
+		out = append(out, border.Render("│")+" "+truncateCells(line, inner))
 	}
-	for len(out) < height-1 {
-		out = append(out, border.Render("│"))
-	}
-	out = append(out, border.Render("╰"+strings.Repeat("─", max(width-2, 0))+"╯"))
-	return out
+	return closeBox()
 }
 
 // overlayConfirm draws the centered confirmation modal of §5.4.

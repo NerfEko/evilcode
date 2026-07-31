@@ -1281,3 +1281,30 @@ taste, and the existing Oklab scorer puts it at 70.3 against dracula's 66.9 —
 worth having as an objective check rather than trusting that it looked fine.
 
 DEVIATIONS #12.
+
+## 2026-07-31 — /resume previews (plan item 3)
+
+The preview pane showed the session name, the message count, the modified age
+and the title — every one of which is already on the row beside it, and the title
+was always empty because `MetaTitle` was read by the store and written by
+nothing. A preview that previews nothing, taking 60% of the screen to do it.
+
+It now renders the session's recent conversation through the transcript's own
+renderer, so a preview looks like the thing it is previewing. That needed
+`rebuildFromMessages` split into a `BlocksFromMessages` that touches no model
+state, which the picker and the resume path now share.
+
+The test caught a real bug I would not have seen in the frame: cloning a
+`Renderer` and setting a narrower `Width` shares the glamour pointer, so prose
+kept wrapping at the *outer* width and the clone truncated it mid-sentence rather
+than re-wrapping. Clones now get their own Markdown, cached per width so arrowing
+through the picker does not build a glamour renderer per keystroke. Reads are
+lazy and cached on the row for the same reason.
+
+`MetaTitle` is written now, derived per §5.4: the in-progress todo's group, then
+the plan's stated intention, then the todo content, falling back to the first
+prompt for a session with no list. Empty-`Preview` versus nil distinguishes
+"loaded and empty" from "not loaded", or an empty session is re-read every frame.
+
+Also fixed: the box returned a top border with no sides and no bottom when there
+were no sessions at all.

@@ -105,6 +105,10 @@ type Model struct {
 	// caller re-execs into it after the program exits.
 	resumeTarget string
 
+	// sessionTitle is the last title written, so an unchanged one is not
+	// re-appended to the log every turn.
+	sessionTitle string
+
 	// hiddenWidgets are the ones dismissed by clicking them. Session-scoped:
 	// a box you swatted away should stay away until you restart, but it is not
 	// worth persisting to config.

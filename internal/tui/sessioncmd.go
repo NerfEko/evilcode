@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -62,9 +63,11 @@ func (m *Model) handleSessionKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 
 	case "up", "k":
 		m.sessions.Selected = max(m.sessions.Selected-1, 0)
+		m.loadPreview()
 
 	case "down", "j":
 		m.sessions.Selected = min(m.sessions.Selected+1, max(len(rows)-1, 0))
+		m.loadPreview()
 
 	case " ", "space":
 		if len(rows) > 0 {
@@ -133,6 +136,7 @@ func (m *Model) openSessions() {
 		})
 	}
 	m.sessionsOpen = true
+	m.loadPreview()
 }
 
 // runRewind lists rewind points, or collapses back to one.
@@ -201,31 +205,47 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 
 // rebuildFromMessages repopulates the transcript from a message list, which a
 // rewind and a resume both need.
-func (m *Model) rebuildFromMessages(msgs []provider.Message) {
+// BlocksFromMessages turns a conversation into transcript blocks.
+//
+// Free of model state so the session picker can render a preview through the
+// same path the transcript uses — a preview that looks like the thing it is
+// previewing costs nothing extra when the renderer is already there.
+func BlocksFromMessages(msgs []provider.Message) []Block {
+	var out []Block
+	prompts := 0
 	for _, msg := range msgs {
 		switch msg.Role {
 		case provider.RoleUser:
 			// A harness continuation persists as user-role but renders as a
 			// system line (plan.md §12.4).
 			if todo.IsAutomated(msg.Content) {
-				m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: msg.Content})
+				out = append(out, Block{Kind: BlockNotice, Text: msg.Content})
 				continue
 			}
-			m.promptCount++
-			m.blocks = append(m.blocks, Block{
-				Kind: BlockUser, Text: msg.Content, Number: m.promptCount,
-			})
+			prompts++
+			out = append(out, Block{Kind: BlockUser, Text: msg.Content, Number: prompts})
 
 		case provider.RoleAssistant:
 			if strings.TrimSpace(msg.Content) != "" {
-				m.blocks = append(m.blocks, Block{Kind: BlockAssistant, Text: msg.Content})
+				out = append(out, Block{Kind: BlockAssistant, Text: msg.Content})
 			}
 
 		case provider.RoleTool:
-			m.blocks = append(m.blocks, Block{
+			out = append(out, Block{
 				Kind: BlockTool, ToolName: msg.ToolName, Failed: msg.IsError,
 			})
 		}
+	}
+	return out
+}
+
+func (m *Model) rebuildFromMessages(msgs []provider.Message) {
+	for _, b := range BlocksFromMessages(msgs) {
+		if b.Kind == BlockUser {
+			m.promptCount++
+			b.Number = m.promptCount
+		}
+		m.blocks = append(m.blocks, b)
 	}
 	m.renumberPrompts()
 }
@@ -273,4 +293,95 @@ func (m *Model) recallSessions() {
 			m.sessions.Semantic[h.Session] = memory.Truncate(h.Text, 60)
 		}
 	}
+}
+
+// PreviewMessages is how much of a session's tail the picker renders. Enough to
+// recognise it, few enough that a long session is not fully parsed to draw a box.
+const PreviewMessages = 12
+
+// loadPreview fills the selected row's preview, once.
+//
+// Lazy and cached: reading a JSONL on every arrow key would make the picker
+// crawl on a store with any history in it, and the rows outlive the keystroke.
+func (m *Model) loadPreview() {
+	rows := m.sessions.Filtered()
+	if len(rows) == 0 || m.dataDir == "" {
+		return
+	}
+	sel := rows[clamp(m.sessions.Selected, 0, len(rows)-1)]
+	if sel.Preview != nil {
+		return
+	}
+
+	msgs, err := session.Messages(filepath.Join(session.Dir(m.dataDir), sel.Info.Name+".jsonl"))
+	if err != nil {
+		return
+	}
+	if len(msgs) > PreviewMessages {
+		msgs = msgs[len(msgs)-PreviewMessages:]
+	}
+	blocks := BlocksFromMessages(msgs)
+	if blocks == nil {
+		// Distinguish "loaded and empty" from "not loaded yet", or an empty
+		// session is re-read on every frame.
+		blocks = []Block{}
+	}
+	for i := range m.sessions.Rows {
+		if m.sessions.Rows[i].Info.Name == sel.Info.Name {
+			m.sessions.Rows[i].Preview = blocks
+		}
+	}
+}
+
+// TitleMaxLen keeps a derived session title to something a picker row can carry.
+const TitleMaxLen = 60
+
+// updateSessionTitle records what this session is about, so the picker is
+// labelled by the work rather than by a creature name (plan.md §5.4).
+//
+// The plan derives it from the in-progress todo's group, then the plan's stated
+// user intention, then the todo content — the list is labelled by what the agent
+// understood you wanted. It falls back to the first prompt, which is what a
+// session without a todo list has to offer.
+//
+// MetaTitle was read by the store and written by nothing, so every title was
+// empty and the whole §5.4 titling feature was invisible.
+func (m *Model) updateSessionTitle() {
+	if m.store == nil {
+		return
+	}
+	title := m.deriveTitle()
+	if title == "" || title == m.sessionTitle {
+		return
+	}
+	m.sessionTitle = title
+	_ = m.store.WriteMeta(session.Meta{Kind: session.MetaTitle, Note: title})
+}
+
+// deriveTitle picks the best available description of the current work.
+func (m *Model) deriveTitle() string {
+	if m.todos != nil {
+		for _, it := range m.todos.Items() {
+			if it.Status == todo.StatusInProgress {
+				if it.Group != nil && strings.TrimSpace(*it.Group) != "" {
+					return truncateCells(oneLine(*it.Group), TitleMaxLen)
+				}
+				return truncateCells(oneLine(it.Content), TitleMaxLen)
+			}
+		}
+		if intent := m.todos.Plan().UserIntention; intent != nil &&
+			strings.TrimSpace(*intent) != "" {
+			return truncateCells(oneLine(*intent), TitleMaxLen)
+		}
+		if items := m.todos.Items(); len(items) > 0 {
+			return truncateCells(oneLine(items[0].Content), TitleMaxLen)
+		}
+	}
+	// No list yet: the first thing asked for is the best available label.
+	for _, b := range m.blocks {
+		if b.Kind == BlockUser && strings.TrimSpace(b.Text) != "" {
+			return truncateCells(oneLine(b.Text), TitleMaxLen)
+		}
+	}
+	return ""
 }
