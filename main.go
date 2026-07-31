@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"evilcode/internal/probecmd"
+	"evilcode/internal/runcmd"
 )
 
 const usage = `evilcode — personal AI coding agent harness
@@ -42,7 +43,14 @@ func run(args []string) error {
 	switch sub {
 	case "probe":
 		return probecmd.Run(args)
-	case "tui", "run", "serve", "attach", "dictate":
+	case "run":
+		code, err := runcmd.Run(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "evilcode:", err)
+		}
+		os.Exit(code)
+		return nil
+	case "tui", "serve", "attach", "dictate":
 		return fmt.Errorf("%q is not implemented yet — see plan.md for the phase that lands it", sub)
 	case "help", "-h", "--help":
 		fmt.Print(usage)

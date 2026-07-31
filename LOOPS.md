@@ -135,3 +135,85 @@ Verified: 20 tests, including the partial-config regression above, explicit `fal
 still winning, providers replacing rather than merging, `SplitModelRef` taking the last
 `@` (model names can contain one), and validation rejecting duplicate/unnamed/unknown-kind
 providers before anything tries to use them.
+
+## 2026-07-30 P1.3 — tools
+
+Done: `internal/tools` — read/write/edit/glob/grep/bash, a plain slice rather than a
+registry, with bounded-concurrency batch execution and DiffStat.
+
+`Run` returns a `Result` struct rather than §17's bare `(string, error)`: the spec also
+requires edit and write to "compute DiffStat and return the diff for §9.3 rendering",
+which a string cannot carry. Output still goes to the model; the diff and stat are
+display metadata it never pays for.
+
+Diffs use `go-udiff`, already in the module graph via the Charm stack. §1.5's rule is
+against *adding* a diff dependency, and this adds none.
+
+Notable choices: paths resolve through `EvalSymlinks` before the containment check, so a
+symlink cannot walk out of the workspace; `edit` refuses an ambiguous match and writes
+nothing; the not-found message pushes toward re-reading, since a bare "not found" is
+what starts edit-retry loops; `glob` skips `node_modules` and friends at the directory
+level; ripgrep is shelled out to, never reimplemented, and its exit-1 "no matches" is
+treated as an answer rather than a fault.
+
+Verified: 33 tests. One real bug caught: `bash` with a timeout hung for the full command
+duration because killing bash does not close the output pipes a grandchild still holds —
+`sleep 10` under a 100ms timeout took the whole 10s. Fixed with `cmd.WaitDelay`.
+
+Note: ripgrep is not installed on this machine, so the grep tool reports that and the
+grep tests skip. The degradation path is what got exercised; the happy path needs `rg`.
+
+## 2026-07-30 P1.4 — agent core
+
+Done: `internal/agent` — events, the loop, safe-point interleave drain, retries, context
+assembly, AGENTS.md/CLAUDE.md discovery, and the post-turn hook seam.
+
+The loop is a plain function, not an actor system. Safe points are implemented as
+specced: B (stream ended, no tool calls), C (urgent only, every remaining call stubbed
+`[Skipped: user interrupted]` because the wire format requires tool_use/tool_result
+adjacency), D (after all results, the default). Interrupts group by source so a system
+nudge never merges into a user's sentence.
+
+Retry policy distinguishes retryable from terminal via `provider.HTTPError`: a 401 is
+deterministic and must not be re-sent, while a transport error is explicitly retryable.
+
+Verified: 27 tests. Notable — partial output survives an interrupt as a real assistant
+message; a failing tool still gets a result message with the error text in it; a 401 is
+tried exactly once; `MaxSteps` stops a model that never stops calling tools; the
+conversation cannot be mutated through a returned slice; the system prompt is asserted
+to stay under ~700 tokens; and `TestAgentDoesNotImportBubbletea` enforces invariant 1 by
+inspecting the package's own imports, since retrofitting it later would be a rewrite.
+
+## 2026-07-30 P1.5 — sessions, names, prompt history
+
+Done: `internal/core` (creature/modifier tables, §2.2) and `internal/session` (JSONL
+store, resume, fork, crash detection, prompt history §6.1).
+
+The name tables are guarded by the invariant-7 test: single codepoint, no ZWJ, no VS16,
+no skin-tone modifier, and nothing from Unicode 13+. That last check failed against the
+spec's own table, which contains two Unicode 13 glyphs — swapped, logged in
+DEVIATIONS.md P1.5. Table extended from 24 to 40 creatures as §2.2 asks.
+
+Crash detection is a clean-exit marker written by `Close`; a session file without one is
+reported as crashed. A truncated final JSON line — what a `kill -9` leaves — is skipped
+rather than failing the read, since recovering what survived is the point of resuming.
+
+Prompt history is shared across sessions so Up-arrow recall reaches prior ones, caps at
+1000 after dedupe, compacts at 2000 via write-to-temp-and-rename, and refuses prompts
+over 10k chars. Search is free-form fuzzy (matches anywhere), deliberately looser than
+the anchored slash-palette scorer, and rewards adjacency and word starts.
+
+Verified: 21 session tests + 10 name tests.
+
+## 2026-07-30 P1.6 — evilcode run
+
+Done: `internal/runcmd` — headless one-shot. Text deltas go to stdout raw; tool rows,
+notices and errors go to stderr, so `evilcode run -q` pipes cleanly. Exit codes: 0 ok,
+1 error, 130 interrupted. Ctrl+C cancels the turn rather than killing the process, so
+partial output and the session file both survive.
+
+Verified by running it: the `tools` scenario reads a real file from this repo and
+renders `✓ read internal/config/config.go · 2.9k tok`; the `tools-batch` scenario runs
+three calls concurrently and renders the failing one with its full error. This is the
+first proof of invariant 1 paying off — a second frontend over the same event stream,
+with the agent core unchanged.

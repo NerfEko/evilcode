@@ -974,10 +974,10 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 
 - [x] Provider interface + `ollama.go` + `openai.go` + `mock.go` (§16). Tests: NDJSON/SSE parsing fixtures, tool-call accumulation, whole-buffered tool calls.
 - [x] Config (§16, §1.4 paths): TOML load, env overrides, provider registry, `default_model`, `-m` flag.
-- [ ] Tools: read/write/edit (classic mode)/glob/grep/bash + batch concurrency + DiffStat (§17).
-- [ ] Agent core: events, loop, safe-point interleave drain (mechanism only — UI in P2), retries, context assembly, AGENTS.md/CLAUDE.md (§15).
-- [ ] Sessions: JSONL store, creature names, `--resume <name>`, simple resume list (§18). Prompt-history recording (§6.1).
-- [ ] `evilcode run "prompt"`: headless one-shot printing events (deltas raw; tool lines `✓ read foo.go · 1.2k tok`); exit code by outcome.
+- [x] Tools: read/write/edit (classic mode)/glob/grep/bash + batch concurrency + DiffStat (§17).
+- [x] Agent core: events, loop, safe-point interleave drain (mechanism only — UI in P2), retries, context assembly, AGENTS.md/CLAUDE.md (§15).
+- [x] Sessions: JSONL store, creature names, `--resume <name>`, simple resume list (§18). Prompt-history recording (§6.1).
+- [x] `evilcode run "prompt"`: headless one-shot printing events (deltas raw; tool lines `✓ read foo.go · 1.2k tok`); exit code by outcome.
 - [ ] TUI skeleton: layout stack + **packed-vs-scrolling** (§3.2) + left inset (§3.4).
 - [ ] Transcript: message blocks, render caching, user-prompt bands + rainbow numbers (§9.6, §7.7), tool rows (§9.5), error rows (§9.8).
 - [ ] Markdown: glamour style JSON (§9.1) + custom code blocks with streaming chrome (§9.2).

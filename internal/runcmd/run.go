@@ -1,0 +1,265 @@
+// Package runcmd implements `evilcode run`: a headless one-shot turn that
+// prints the event stream (plan.md Phase 1). It exists as much to prove the
+// invariant-1 boundary as to be useful — the TUI and the daemon consume this
+// same stream.
+package runcmd
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"evilcode/internal/agent"
+	"evilcode/internal/config"
+	"evilcode/internal/session"
+	"evilcode/internal/tools"
+)
+
+// Exit codes, so a script can tell what happened without parsing output.
+const (
+	ExitOK          = 0
+	ExitError       = 1
+	ExitInterrupted = 130
+)
+
+// Run executes one headless turn and returns a process exit code.
+func Run(args []string) (int, error) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	model := fs.String("m", "", "model reference, e.g. qwen3-coder:480b-cloud@ollama-cloud")
+	resume := fs.String("resume", "", "resume a named session")
+	quiet := fs.Bool("q", false, "print only the model's text, no tool or usage lines")
+	noTools := fs.Bool("no-tools", false, "run without any tools")
+	if err := fs.Parse(args); err != nil {
+		return ExitError, err
+	}
+
+	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if prompt == "" {
+		// Reading from a pipe makes `evilcode run` composable with the shell.
+		if stat, err := os.Stdin.Stat(); err == nil && stat.Mode()&os.ModeCharDevice == 0 {
+			piped, _ := io.ReadAll(os.Stdin)
+			prompt = strings.TrimSpace(string(piped))
+		}
+	}
+	if prompt == "" {
+		return ExitError, fmt.Errorf(`usage: evilcode run [-m model] [-q] "prompt"`)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return ExitError, err
+	}
+	prov, modelName, err := cfg.Resolve(*model)
+	if err != nil {
+		return ExitError, err
+	}
+
+	cwd, _ := os.Getwd()
+	dataDir := config.DataDir()
+
+	var store *session.Store
+	var priorMessages int
+	if *resume != "" {
+		st, msgs, err := session.Resume(dataDir, *resume)
+		if err != nil {
+			return ExitError, err
+		}
+		store, priorMessages = st, len(msgs)
+	} else {
+		if store, err = session.Create(dataDir); err != nil {
+			return ExitError, err
+		}
+	}
+	defer store.Close()
+
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
+	if *resume != "" {
+		_, msgs, err := session.Resume(dataDir, *resume)
+		if err != nil {
+			return ExitError, err
+		}
+		conv.Append(msgs...)
+	}
+
+	var ts tools.Set
+	if !*noTools {
+		ts = append(tools.NewFS(cwd).Tools(), tools.NewExec(cwd).Tools()...)
+	}
+
+	a := agent.New(store.Name, prov, modelName, ts, conv)
+	a.NumCtx = cfg.ModelOverrides(*model).ContextWindow
+	defer a.Close()
+
+	// Ctrl+C cancels the turn rather than killing the process, so partial
+	// output and the session file both survive.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() {
+		<-sig
+		cancel()
+	}()
+
+	if priorMessages > 0 && !*quiet {
+		fmt.Fprintf(os.Stderr, "resumed %s (%d messages)\n", store.Name, priorMessages)
+	}
+
+	code := printEvents(a, store, *quiet)
+	runErr := a.Run(ctx, prompt)
+	exit := <-code
+
+	if runErr != nil && exit == ExitOK {
+		exit = ExitError
+	}
+	return exit, runErr
+}
+
+// printEvents consumes the stream in a goroutine and reports the exit code once
+// the turn ends. The stream is the only thing it knows about the agent.
+func printEvents(a *agent.Agent, store *session.Store, quiet bool) <-chan int {
+	out := make(chan int, 1)
+	go func() {
+		exit := ExitOK
+		atLineStart := true
+
+		newline := func() {
+			if !atLineStart {
+				fmt.Println()
+				atLineStart = true
+			}
+		}
+
+		for e := range a.Events() {
+			switch e.Kind {
+			case agent.EventTextDelta:
+				fmt.Print(e.Text)
+				atLineStart = strings.HasSuffix(e.Text, "\n")
+
+			case agent.EventToolResult:
+				if quiet {
+					continue
+				}
+				newline()
+				fmt.Fprintln(os.Stderr, toolLine(e))
+
+			case agent.EventNotice:
+				if quiet {
+					continue
+				}
+				newline()
+				fmt.Fprintf(os.Stderr, "· %s\n", e.Text)
+
+			case agent.EventError:
+				newline()
+				fmt.Fprintf(os.Stderr, "✗ %v\n", e.Err)
+				exit = ExitError
+
+			case agent.EventTokenUsage:
+				if quiet {
+					continue
+				}
+				if store != nil {
+					store.WriteMeta(session.Meta{
+						Kind: session.MetaTokens, TokensIn: e.Usage.In, TokensOut: e.Usage.Out,
+					})
+				}
+
+			case agent.EventTurnEnd:
+				newline()
+				switch e.Reason {
+				case agent.EndInterrupted:
+					fmt.Fprintln(os.Stderr, "· interrupted")
+					exit = ExitInterrupted
+				case agent.EndError:
+					exit = ExitError
+				case agent.EndMaxSteps:
+					exit = ExitError
+				}
+				out <- exit
+				return
+			}
+		}
+		out <- exit
+	}()
+	return out
+}
+
+// toolLine renders a completed call the way §9.5 describes:
+//
+//	✓ read src/main.go · load entry point · 1.2k tok (+8 -5)
+func toolLine(e agent.Event) string {
+	icon := "✓"
+	if e.IsError() {
+		icon = "✗"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s %s", icon, e.Call.Name)
+	target := toolTarget(e.Call.Args)
+	if target != "" {
+		fmt.Fprintf(&b, " %s", target)
+	}
+	// The intent is only worth a column when it says something the name and
+	// target do not already say.
+	if e.Intent != "" && !strings.Contains(e.Intent, target) {
+		fmt.Fprintf(&b, " · %s", e.Intent)
+	}
+	if n := approxTokens(e.Output); n > 0 {
+		fmt.Fprintf(&b, " · %s tok", humanCount(n))
+	}
+	if e.DiffStat != nil {
+		fmt.Fprintf(&b, " (+%d -%d)", e.DiffStat.Added, e.DiffStat.Removed)
+	}
+	if e.IsError() {
+		// An error is always shown in full: a tool row you cannot diagnose is
+		// worse than no row (plan.md §9.5).
+		fmt.Fprintf(&b, "\n    %v", e.Err)
+	}
+	return b.String()
+}
+
+// toolTarget pulls the one argument worth showing beside the tool name: the
+// file a call touches, the pattern it searches for, the command it runs.
+func toolTarget(raw json.RawMessage) string {
+	var args map[string]any
+	if json.Unmarshal(raw, &args) != nil {
+		return ""
+	}
+	for _, key := range []string{"path", "pattern", "cmd", "query"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			return shorten(v)
+		}
+	}
+	return ""
+}
+
+func shorten(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if len(s) > 60 {
+		return s[:59] + "…"
+	}
+	return s
+}
+
+// approxTokens is the usual four-bytes-per-token rule of thumb. It is only ever
+// shown as a badge, so an estimate is honest enough.
+func approxTokens(s string) int { return len(s) / 4 }
+
+func humanCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprint(n)
+	}
+}

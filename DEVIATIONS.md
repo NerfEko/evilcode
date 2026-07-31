@@ -53,6 +53,25 @@ layout checks are unaffected — only the glyph artwork is missing, and
 PNG is never a mystery. Golden frames are plain text (§14), so none of this
 affects test reproducibility.
 
+## 2026-07-30 — P1.5 two §2.2 name-table emoji swapped
+
+**Spec conflict, not a judgment call**: invariant 7 forbids Unicode 13+ codepoints
+("single widely-supported codepoints only"), but the §2.2 tables contain two of them:
+
+| entry | spec glyph | codepoint | assigned | shipped instead |
+|---|---|---|---|---|
+| creature `talon` | 🪶 | U+1FAB6 | Unicode 13.0 | 🦅 U+1F985 (9.0) |
+| modifier `tomb` | 🪦 | U+1FAA6 | Unicode 13.0 | 🏛 U+1F3DB (7.0) |
+
+The invariant wins because its stated reason — wide font support — is the actual goal,
+and it is not theoretical: this repo's own `evilcode probe fonts` diagnostic reports
+Unicode 13 glyphs as undrawable on font sets that handle the rest of the vocabulary
+fine. `talon 🦅` also reads better than a feather did.
+
+Names are unchanged; only the glyphs moved. The creature table was extended from the
+spec's 24 to the requested ~40 using pre-Unicode-13 single codepoints throughout, and
+`TestEmojiPredateUnicode13` now fails the build if a later one is added.
+
 ## 2026-07-30 — P0.3 codex review step not active (continued)
 
 **To enable**: `npm install -g @openai/codex && codex login`, then per commit:
