@@ -85,9 +85,17 @@ func Run(args []string) error {
 		return err
 	}
 
+	keymap, problems := tui.NewKeymap(cfg.Keybindings)
+	for _, p := range problems {
+		// A bad binding is reported rather than silently dropped: a rebind that
+		// does nothing is worse than one that says why.
+		fmt.Fprintln(os.Stderr, "evilcode: "+p)
+	}
+
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd)).
 		WithTodos(todos, poke).
-		WithHistory(prompts)
+		WithHistory(prompts).
+		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints)
 
 	overrides := cfg.ModelOverrides(*model)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits)

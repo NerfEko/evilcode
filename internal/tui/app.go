@@ -65,8 +65,9 @@ type Model struct {
 	promptCount int
 
 	// streamingIdx points at the assistant block currently being appended to,
-	// or -1 when nothing is streaming.
+	// or -1 when nothing is streaming. reasoningIdx is its thinking twin.
 	streamingIdx int
+	reasoningIdx int
 
 	pending []PendingMessage
 
@@ -110,6 +111,15 @@ type Model struct {
 	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
 	entryAnim EntryAnimation
 
+	// keymap resolves chords, and hotkeys drives the rare-chord and near-miss
+	// feedback of §6.8.
+	keymap    *Keymap
+	hotkeys   *HotkeyUsage
+	showHints bool
+
+	// thinking is the reasoning display mode (§9.7).
+	thinking ThinkingMode
+
 	// artVariant is chosen once per process so the welcome animation stays the
 	// same one for a session, and decorate gates all decorative animation.
 	artVariant Variant
@@ -150,8 +160,11 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		header:       h,
 		started:      time.Now(),
 		streamingIdx: -1,
+		reasoningIdx: -1,
 		dock:         NewDock(),
 		widgetsOn:    true,
+		thinking:     ThinkingCurrent,
+		showHints:    true,
 		overscroll:   Overscroll{Mode: OverscrollPull},
 		artVariant:   PickVariant(h.SessionName),
 		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
@@ -172,6 +185,12 @@ func (m *Model) Asker() tools.Asker {
 			return nil, ctx.Err()
 		}
 	})
+}
+
+// WithKeymap attaches the resolved keymap and hotkey usage tracking.
+func (m *Model) WithKeymap(km *Keymap, usage *HotkeyUsage, hints bool) *Model {
+	m.keymap, m.hotkeys, m.showHints = km, usage, hints
+	return m
 }
 
 // WithHistory attaches the cross-session prompt history.
@@ -275,6 +294,15 @@ func (m *Model) applyEvent(e agent.Event) {
 
 	case agent.EventReasoningDelta:
 		m.status.Phase = PhaseThinking
+		if m.thinking == ThinkingOff {
+			break
+		}
+		if m.reasoningIdx < 0 {
+			m.blocks = append(m.blocks, Block{Kind: BlockReasoning, Streaming: true})
+			m.reasoningIdx = len(m.blocks) - 1
+		}
+		m.blocks[m.reasoningIdx].Text += e.Text
+		m.followIfPinned()
 
 	case agent.EventToolStart:
 		m.status.Phase = PhaseRunningTool
@@ -345,6 +373,39 @@ func (m *Model) finishStreaming() {
 		m.blocks[m.streamingIdx].Streaming = false
 	}
 	m.streamingIdx = -1
+
+	if m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) {
+		m.blocks[m.reasoningIdx].Streaming = false
+		m.blocks[m.reasoningIdx].Collapsed = true
+	}
+	m.reasoningIdx = -1
+	m.collectReasoning()
+}
+
+// collectReasoning drops thinking traces that have scrolled safely out of view.
+//
+// It never runs while the reader has scrolled up: removing content someone may
+// be reading is worse than holding a little more memory (plan.md §4.6).
+func (m *Model) collectReasoning() {
+	if m.thinking != ThinkingCurrent || m.scroll.Paused {
+		return
+	}
+	viewport := m.transcriptHeight()
+	total := m.contentHeight()
+
+	kept := m.blocks[:0]
+	for i := range m.blocks {
+		b := m.blocks[i]
+		if b.Kind == BlockReasoning && i < len(m.blocks)-1 {
+			lines := len(m.renderer.Lines(&m.blocks[i]))
+			if total-lines > viewport+2 {
+				total -= lines
+				continue
+			}
+		}
+		kept = append(kept, b)
+	}
+	m.blocks = kept
 }
 
 // followIfPinned keeps the view at the bottom unless the reader scrolled up.
@@ -434,6 +495,17 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.editor.Clear()
 			m.palette.Selected = 0
 			return m, nil
+		}
+	}
+
+	// Configurable bindings are resolved before the fixed keys, so a rebind
+	// genuinely takes the chord away from its default (plan.md §11).
+	if m.keymap != nil {
+		if b, ok := m.keymap.Lookup(key); ok {
+			if handled, model, cmd := m.runAction(b.Action); handled {
+				m.noteHotkey(key, b.Desc)
+				return model, cmd
+			}
 		}
 	}
 
@@ -637,6 +709,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// An unhandled modified chord is a deliberate press that did nothing; say
+	// so rather than swallowing it (plan.md §6.8). Checked after the text
+	// resolution below would have claimed it, so AltGr symbols still type.
+	if txt := msg.Key().Text; txt == "" && IsModifiedChord(key) {
+		m.noteNearMiss(key)
+		return m, nil
+	}
+
 	// Ordinary text input. Key.Text is the printable characters the key
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
@@ -663,6 +743,162 @@ func (m *Model) paletteSuggestions() []Suggestion {
 		return nil
 	}
 	return RankCommands(strings.TrimPrefix(m.editor.Text, "/"), VisibleCommands())
+}
+
+// runAction executes a bound action. The bool reports whether it was handled,
+// so an action the current context does not support falls through to the fixed
+// keys rather than being swallowed.
+func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
+	switch a {
+	case ActionScrollUp:
+		m.scroll.Up(1, m.contentHeight(), m.transcriptHeight())
+	case ActionScrollDown:
+		m.scroll.Down(1)
+	case ActionPageUp:
+		m.scroll.Up(PageLines, m.contentHeight(), m.transcriptHeight())
+	case ActionPageDown:
+		m.scroll.Down(PageLines)
+	case ActionPrevPrompt:
+		m.jumpPrompt(-1)
+	case ActionNextPrompt:
+		m.jumpPrompt(1)
+	case ActionScrollBookmark:
+		if n := m.scroll.ToggleBookmark(); n != "" {
+			m.notice = n
+		}
+	case ActionCenteredToggle:
+		m.centered = !m.centered
+		m.renderer.Centered = m.centered
+		m.dock.Reset()
+		m.applyWrapWidth()
+		m.notice = map[bool]string{true: "Centered layout", false: "Left-aligned layout"}[m.centered]
+	case ActionInfoWidgets:
+		m.widgetsOn = !m.widgetsOn
+		m.dock.Reset()
+		m.notice = map[bool]string{true: "Info widgets: ON", false: "Info widgets: OFF"}[m.widgetsOn]
+	case ActionTodoCard:
+		m.showTodoCard = !m.showTodoCard
+	case ActionTypingLock:
+		m.typingLock = !m.typingLock
+		if m.typingLock {
+			m.notice = "Typing scroll lock: ON - typing stays at current chat position"
+		} else {
+			m.notice = "Typing scroll lock: OFF - typing follows chat bottom"
+		}
+	case ActionQueueMode:
+		m.queueMode = !m.queueMode
+		if m.queueMode {
+			m.notice = "Queue mode: messages wait until response completes"
+		} else {
+			m.notice = "Immediate mode: messages send next (no interrupt)"
+		}
+	case ActionAutoPoke:
+		if m.poke == nil {
+			return false, m, nil
+		}
+		m.poke.SetEnabled(!m.poke.Enabled())
+		m.notice = map[bool]string{true: "Auto-poke ON", false: "Auto-poke OFF"}[m.poke.Enabled()]
+	case ActionHistorySearch:
+		m.history.Open(m.editor.Text, m.editor.Cursor)
+	case ActionThinkingDisplay:
+		m.thinking = m.thinking.Next()
+		m.notice = "Thinking display: " + string(m.thinking)
+	case ActionRetrievePending:
+		return m.retrievePending()
+	default:
+		return false, m, nil
+	}
+	return true, m, nil
+}
+
+// retrievePending pulls staged messages back for editing (plan.md §6.4).
+func (m *Model) retrievePending() (bool, tea.Model, tea.Cmd) {
+	if m.editor.Text != "" {
+		return false, m, nil
+	}
+	if len(m.pending) > 0 {
+		var texts []string
+		for _, p := range drainPendingForEdit(m.pending) {
+			texts = append(texts, p.Text)
+		}
+		n := len(m.pending)
+		m.pending = nil
+		m.editor.Text = strings.Join(texts, "\n\n")
+		m.editor.Cursor = len([]rune(m.editor.Text))
+		m.notice = fmt.Sprintf("Retrieved %d pending message(s) for editing", n)
+		return true, m, nil
+	}
+	if m.prompts != nil {
+		if all := m.prompts.All(); len(all) > 0 {
+			m.editor.Text = all[len(all)-1]
+			m.editor.Cursor = len([]rune(m.editor.Text))
+			return true, m, nil
+		}
+	}
+	return false, m, nil
+}
+
+// jumpPrompt moves the view to the next or previous user prompt.
+func (m *Model) jumpPrompt(dir int) {
+	var rows []int
+	line := 0
+	for i := range m.blocks {
+		if m.blocks[i].Kind == BlockUser {
+			rows = append(rows, line)
+		}
+		line += len(m.renderer.Lines(&m.blocks[i])) + 1
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	viewport := m.transcriptHeight()
+	total := m.contentHeight()
+	current := total - viewport - m.scroll.Offset
+
+	if dir < 0 {
+		for i := len(rows) - 1; i >= 0; i-- {
+			if rows[i] < current-1 {
+				m.scroll.Offset = clamp(total-viewport-rows[i], 0, Max(total, viewport))
+				m.scroll.Paused = m.scroll.Offset > 0
+				return
+			}
+		}
+		return
+	}
+	for _, r := range rows {
+		if r > current+1 {
+			m.scroll.Offset = clamp(total-viewport-r, 0, Max(total, viewport))
+			m.scroll.Paused = m.scroll.Offset > 0
+			return
+		}
+	}
+	m.scroll.FollowBottom()
+}
+
+// noteHotkey shows the one-line explanation for a chord the user rarely uses.
+func (m *Model) noteHotkey(key, desc string) {
+	if !m.showHints || m.hotkeys == nil || desc == "" {
+		return
+	}
+	if m.hotkeys.Record(key, time.Now()) {
+		m.notice = m.renderer.RenderHotkeyHint(key, desc)
+	}
+}
+
+// noteNearMiss explains an unhandled modified chord instead of swallowing it.
+func (m *Model) noteNearMiss(key string) {
+	if !m.showHints || m.keymap == nil || m.hotkeys == nil {
+		return
+	}
+	if !IsModifiedChord(key) {
+		return
+	}
+	if !m.hotkeys.AllowNearMiss(key, time.Now()) {
+		return
+	}
+	nearest, found := m.keymap.NearestBinding(key)
+	m.notice = m.renderer.RenderNearMiss(key, nearest, found)
 }
 
 // handleWheel applies the momentum scrolling of §4.1.

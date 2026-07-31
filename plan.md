@@ -1007,7 +1007,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Send model: SendAction, queue mode, interleave staging + pending rows + Ctrl+Up retrieval (§6.3, §6.4). Write `docs/soft-interrupt.md`.
 - [x] Ctrl+R history search overlay (§5.2).
 - [x] Esc layered cancel with poke-disarm semantics (§6.7).
-- [ ] Full keymap + configurable bindings + hotkey feedback/near-miss (§11, §6.8).
+- [x] Full keymap + configurable bindings + hotkey feedback/near-miss (§11, §6.8).
 - [x] Command registry completion: `/help` overlay + anti-drift + `/help <cmd>`, argument completion, remaining P2 commands (§5.5, §13).
 - [x] Widget dock engine + anchoring/hysteresis (§8.3); widgets: Todos, ContextUsage, ModelInfo, GitStatus, BackgroundTasks, Tips (§8.4, §8.5, §8.9).
 - [x] Right fact stack (§8.6). Elastic overscroll (§4.4). Typing scroll lock (§4.5).
@@ -1015,7 +1015,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Theme engine: roles, palettes (dracula/nosferatu/gloom/daywalker), two-pass substitution, literals file + tests (§7.1–7.4).
 - [x] Harmony scoring + generation + `/theme score|generate` + calibration tests (§7.5).
 - [x] Prompt-entry animation (§10.2). Idle art: subpixel renderer + `eye` + `blackhole` (§10.1).
-- [ ] Reasoning display modes + GC (§9.7, §4.6).
+- [x] Reasoning display modes + GC (§9.7, §4.6).
 - [ ] Diff modes cycle + side panel + file-diff view (§9.4, §3.1, Ctrl+1..4).
 - [ ] Session picker full UI (§5.4) + `/fork /transfer /save /rename` + title derivation (§18). `/checkpoint` + collapse-and-report `/rewind` (§18).
 - [ ] Skills system + MCP client (§15, §17) + header mcp/skills lines.

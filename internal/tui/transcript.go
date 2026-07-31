@@ -53,6 +53,10 @@ type Block struct {
 	// Streaming marks the tail block, which re-renders every frame.
 	Streaming bool
 
+	// Collapsed folds a finished reasoning trace to a single summary row on
+	// replay, so old thinking does not dominate the transcript (§9.7).
+	Collapsed bool
+
 	// cache holds the rendered lines, keyed by the width they were made for.
 	cache      []string
 	cacheWidth int
@@ -110,7 +114,7 @@ func (r *Renderer) Lines(b *Block) []string {
 }
 
 func (b *Block) cacheContentKey() string {
-	return fmt.Sprintf("%d|%d|%s|%s", b.Kind, b.Number, b.Text, b.Diff)
+	return fmt.Sprintf("%d|%d|%v|%s|%s", b.Kind, b.Number, b.Collapsed, b.Text, b.Diff)
 }
 
 func (r *Renderer) render(b *Block) []string {
@@ -402,6 +406,10 @@ func (r *Renderer) renderNotice(b *Block) []string {
 // renderReasoning draws streamed thinking as dim italic (§9.7).
 func (r *Renderer) renderReasoning(b *Block) []string {
 	style := rgbStyle(0x64, 0x64, 0x64).Italic(true)
+	if b.Collapsed {
+		lines := len(strings.Split(strings.TrimRight(b.Text, "\n"), "\n"))
+		return []string{"  " + style.Render(fmt.Sprintf("▸ thought (%d lines)", lines))}
+	}
 	var out []string
 	for _, line := range wrapPlain(b.Text, max(r.Width-2, 8)) {
 		out = append(out, "  "+style.Render(line))
@@ -543,4 +551,31 @@ func truncateCells(s string, width int) string {
 func dropCells(s string, width int) string {
 	head := truncateCells(s, width)
 	return s[len(head):]
+}
+
+// ThinkingMode is how reasoning traces are displayed (plan.md §9.7).
+type ThinkingMode string
+
+const (
+	// ThinkingOff discards traces entirely.
+	ThinkingOff ThinkingMode = "off"
+
+	// ThinkingFull keeps every trace in the transcript.
+	ThinkingFull ThinkingMode = "full"
+
+	// ThinkingCurrent keeps the live trace and garbage-collects older ones once
+	// they are provably above the viewport.
+	ThinkingCurrent ThinkingMode = "current"
+)
+
+// Next cycles the mode, for the Alt+T binding.
+func (t ThinkingMode) Next() ThinkingMode {
+	switch t {
+	case ThinkingOff:
+		return ThinkingCurrent
+	case ThinkingCurrent:
+		return ThinkingFull
+	default:
+		return ThinkingOff
+	}
 }

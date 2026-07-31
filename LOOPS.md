@@ -609,3 +609,26 @@ disappearing. That is also what makes the golden stable.
 
 Verified: art tests plus the existing entry-animation suite. PNG looked at — the
 blackhole's disk, horizon, and lens ring all read correctly under the hue wave.
+
+## 2026-07-31 P2.20–P2.21 — keymap, hotkey feedback, reasoning modes
+
+Done: `internal/tui/keymap.go` (19 rebindable actions, config overrides, near-miss
+suggestions, usage tracking) and the three thinking-display modes with their GC.
+
+An override replaces an action's keys rather than adding to them. Rebinding is usually
+done to get a chord *back* from evilcode, and merging would leave the old one still
+captured. Collisions and unknown action names are reported rather than silently dropped —
+a rebind that does nothing is worse than one that says why.
+
+Near-miss feedback required a fix the test found: sharing only modifiers is not
+similarity. "You pressed Ctrl+Shift+G, did you mean Ctrl+G?" is useful; "you pressed
+Ctrl+Alt+Shift+F19, did you mean Ctrl+Shift+J?" is noise that happens to share two
+modifiers. A matching base key is now required, with shared modifiers breaking ties.
+
+Reasoning GC never runs while the reader has scrolled up. Removing content someone may be
+mid-sentence in is worse than holding a little more memory, which is exactly what §4.6
+says and the one rule that makes the optimization safe.
+
+Verified: 20 keymap/reasoning tests, including that rare-chord hints stop after four
+uses, reappear after 45 days, survive a restart, and that near-miss hints are capped per
+chord and per interval.
