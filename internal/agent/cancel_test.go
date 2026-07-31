@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -274,4 +275,34 @@ func TestPersistedTranscriptOfACancelledTurnIsWellFormed(t *testing.T) {
 		t.Fatal("nothing was persisted, so the test proves nothing")
 	}
 	assertToolCallsAnswered(t, persisted)
+}
+
+// H2.3: nothing stopped two turns running on one agent. They share the
+// conversation, the tool set and the event sequence, so the result is one
+// transcript interleaved from two turns — which is exactly what the duplicated
+// overnight step produced before H1.12 was fixed.
+func TestOneTurnAtATimePerAgent(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	blocker := tools.Tool{
+		Name: "blocker", Desc: "holds the turn open",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			return tools.Result{Output: "done"}, nil
+		},
+	}
+
+	a := newTestAgent(t, &twoToolProvider{}, tools.Set{blocker})
+	go func() { _ = a.Run(context.Background(), "first") }()
+	<-entered
+
+	if err := a.Run(context.Background(), "second"); !errors.Is(err, ErrBusy) {
+		t.Errorf("a second turn on a busy agent returned %v, want ErrBusy", err)
+	}
+	close(release)
 }

@@ -278,11 +278,14 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 		return a.Forward(ctx, userInput)
 	}
 	if strings.TrimSpace(userInput) != "" {
+		msg := provider.Message{Role: provider.RoleUser, Content: userInput}
 		a.mu.Lock()
 		a.prompt = userInput
-		a.mu.Unlock()
-		msg := provider.Message{Role: provider.RoleUser, Content: userInput}
+		// Attach writes pendingImages under the lock; the swap has to take it
+		// too. Safe until now only because the TUI happened to attach before
+		// starting the run goroutine.
 		msg.Images, a.pendingImages = a.pendingImages, nil
+		a.mu.Unlock()
 		a.Conv.Append(msg)
 		a.recall(ctx, userInput)
 	}
@@ -340,9 +343,22 @@ func (a *Agent) noteContext(n int) {
 	a.mu.Unlock()
 }
 
+// ErrBusy is returned by Loop when a turn is already running on this agent.
+var ErrBusy = errors.New("a turn is already running on this session")
+
 // Loop is the agent loop proper (plan.md §15).
+//
+// One turn at a time, atomically. Two loops share one conversation, one tool
+// set and one event sequence, and the result is a transcript interleaved from
+// two turns — which is what the duplicated overnight step (H1.12) produced
+// before it was fixed. Callers are expected to check before starting; this is
+// the backstop for the ones that check and race.
 func (a *Agent) Loop(ctx context.Context) error {
 	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return ErrBusy
+	}
 	a.running = true
 	a.mu.Unlock()
 	defer func() {

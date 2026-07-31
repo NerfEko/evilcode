@@ -2041,3 +2041,40 @@ the bug.
 
 Verified: sixteen racers, one winner, across three runs with -race; the session
 accepts a turn again after `endTurn`.
+
+## 2026-07-31 H2.3/H2.9 — The backstop that would have caught H1.12
+
+Nothing at the agent rejected a second turn. Two loops share one conversation,
+one tool set and one event sequence, and what comes out is a single transcript
+interleaved from two turns. H1.12 was producing exactly that in the overnight
+loop, and it was fixed at the call site because there was nothing underneath it.
+
+`Loop` now takes the running flag atomically and returns `ErrBusy` if it is
+already set. Callers are still expected to check first — the daemon reserves
+under its own lock (H2.2), the TUI checks `m.processing` — and this is what
+catches the ones that check and then race.
+
+H2.9 rides along because it is the same lock. `Run` swapped `pendingImages`
+without holding `a.mu` while `Attach` writes it under the lock. Safe only
+because the TUI happened to attach before starting the run goroutine, which is
+a fact about today's caller rather than about the code.
+
+The evidence is the race report from H2.1's test, which was held back for
+exactly this. Sixteen concurrent inputs against one session, before:
+
+```
+Read at 0x00c000188888 by goroutine 36:
+  evilcode/internal/agent.(*Agent).Run() agent.go:285      ← pendingImages
+  evilcode/internal/agent.(*Agent).newEvent() events.go:120 ← a.seq++
+```
+
+After: zero races across three runs, and the test lands here rather than with
+the commit whose name it carries.
+
+`a.seq++` (H2.8) stopped appearing because there is only one turn now, but that
+is not the same as being fixed: the daemon's `deliverConflicts` calls `Notice`
+from the pump goroutine while the turn emits from its own. That path is still
+open and stays its own task.
+
+Verified: a second `Run` against a held-open turn returns `ErrBusy`; the daemon
+race test is clean; `go test ./... -race` green.

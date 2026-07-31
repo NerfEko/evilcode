@@ -180,7 +180,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H2.2** `internal/daemon/server.go:486` — `Running()` and turn start are separate
   operations, so two clients can both see idle and both launch. Fix: reserve the session
   under its mutex before spawning; return busy otherwise.  ⟨codex⟩
-- [ ] **H2.3** `internal/agent/agent.go:344` `Loop` — no atomic rejection of an
+- [x] **H2.3** `internal/agent/agent.go:344` `Loop` — no atomic rejection of an
   already-running turn; concurrent loops mutate one conversation and tool state. Fix:
   single-flight guard, busy result if held. This is the backstop that would have contained
   H1.12.  ⟨codex⟩
@@ -203,7 +203,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [ ] **H2.8** `internal/agent/events.go:119` — `a.seq++` unsynchronized. The daemon's
   `deliverConflicts` calls `Notice` from the pump goroutine while `Loop` emits from the
   turn goroutine. Fix: `atomic.Int64`, or allocate under `a.mu`.  ⟨both⟩
-- [ ] **H2.9** `internal/agent/agent.go:97,266` — `Attach` mutates `pendingImages` under
+- [x] **H2.9** `internal/agent/agent.go:97,266` — `Attach` mutates `pendingImages` under
   `a.mu`; `Run` swaps it without. Safe today only because the TUI calls Attach before
   starting the run goroutine. Fix: take the lock around the swap.  ⟨fable⟩
 - [ ] **H2.10** `internal/wiring/wiring.go:115` — repo overrides are applied by mutating a
