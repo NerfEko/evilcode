@@ -1,0 +1,27 @@
+ evilcode · v0.1.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ● mock
+ <repo> (main)
+
+ 1› fix the clamp
+
+ Fixing the off-by-one.
+
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)
+ ┌─ diff
+ │  // clamp is a probe fixture: the mock provider's `diff` scenario edits this
+ │  // file, so the inline diff renderer has real code to highlight and tint.
+ │  func clamp(offset, max int) int {
+ │ -    if offset > max {
+ │ +    if offset >= max {
+ │          return max
+ │      }
+ │      return offset
+ └─ (+1 -1 total)
+
+ That was the clamp bug.
+
+ 💡 Ctrl+R searches your prompt history
+ 2>
+   Ctrl+Enter to queue

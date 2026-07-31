@@ -978,13 +978,13 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Agent core: events, loop, safe-point interleave drain (mechanism only — UI in P2), retries, context assembly, AGENTS.md/CLAUDE.md (§15).
 - [x] Sessions: JSONL store, creature names, `--resume <name>`, simple resume list (§18). Prompt-history recording (§6.1).
 - [x] `evilcode run "prompt"`: headless one-shot printing events (deltas raw; tool lines `✓ read foo.go · 1.2k tok`); exit code by outcome.
-- [ ] TUI skeleton: layout stack + **packed-vs-scrolling** (§3.2) + left inset (§3.4).
-- [ ] Transcript: message blocks, render caching, user-prompt bands + rainbow numbers (§9.6, §7.7), tool rows (§9.5), error rows (§9.8).
-- [ ] Markdown: glamour style JSON (§9.1) + custom code blocks with streaming chrome (§9.2).
-- [ ] Inline diffs with tint formula (§9.3).
+- [x] TUI skeleton: layout stack + **packed-vs-scrolling** (§3.2) + left inset (§3.4).
+- [x] Transcript: message blocks, render caching, user-prompt bands + rainbow numbers (§9.6, §7.7), tool rows (§9.5), error rows (§9.8).
+- [x] Markdown: glamour style JSON (§9.1) + custom code blocks with streaming chrome (§9.2).
+- [x] Inline diffs with tint formula (§9.3).
 - [ ] Composer: textarea, prompt glyphs, hint line, newline paths, `!` shell prefix, paste rules (§6.1, §6.2, §6.6).
-- [ ] Status line: full matrix incl. knight-rider bar + spinner discipline (§8.2, §8.1).
-- [ ] Header (§8.7, minus changelog box).
+- [x] Status line: full matrix incl. knight-rider bar + spinner discipline (§8.2, §8.1).
+- [x] Header (§8.7, minus changelog box).
 - [ ] Slash palette overlay: zero-height float, ranking, fuzzy recolor, suppression, P1 command subset (§5.1, §13).
 - [ ] Model picker (§5.3).
 - [ ] Scrolling: momentum + ease-out + tail-follow + keyboard nav + scrollbar with hysteresis + full-repaint-on-scroll (§4.1–4.3, §3.5–3.6, §4.7).

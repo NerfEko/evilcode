@@ -10,6 +10,7 @@ import (
 
 	"evilcode/internal/probecmd"
 	"evilcode/internal/runcmd"
+	"evilcode/internal/tuicmd"
 )
 
 const usage = `evilcode — personal AI coding agent harness
@@ -50,7 +51,9 @@ func run(args []string) error {
 		}
 		os.Exit(code)
 		return nil
-	case "tui", "serve", "attach", "dictate":
+	case "tui":
+		return tuicmd.Run(args)
+	case "serve", "attach", "dictate":
 		return fmt.Errorf("%q is not implemented yet — see plan.md for the phase that lands it", sub)
 	case "help", "-h", "--help":
 		fmt.Print(usage)

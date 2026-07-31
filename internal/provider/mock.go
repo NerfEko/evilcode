@@ -226,7 +226,7 @@ var mockScenarios = map[string][][]Chunk{
 		{
 			{Text: "Fixing the off-by-one."},
 			call("call_1", "edit", map[string]any{
-				"path": "internal/scroll/scroll.go",
+				"path": "testdata/clamp.go",
 				"old":  "if offset > max {",
 				"new":  "if offset >= max {",
 			}),

@@ -217,3 +217,46 @@ renders `✓ read internal/config/config.go · 2.9k tok`; the `tools-batch` scen
 three calls concurrently and renders the failing one with its full error. This is the
 first proof of invariant 1 paying off — a second frontend over the same event stream,
 with the agent core unchanged.
+
+## 2026-07-30 P1.7–P1.13 — the TUI takes shape
+
+Done: `internal/theme` (roles, dracula palette, procedural color) and `internal/tui`
+(layout, scroll, transcript, markdown, highlighting, composer, status line, header,
+welcome, and the bubbletea model), plus `internal/tuicmd` wiring and `evilcode tui`.
+
+Structure first, as §3.2 asks: `Stack.Resolve` is the packed-vs-scrolling decision, and
+everything sits on it. While content fits, the transcript takes its exact content height
+so the conversation hugs the composer; on overflow it becomes a min-3 viewport. When even
+the fixed rows do not fit, the transcript collapses rather than pushing the composer off
+screen — losing history is recoverable, losing the input box is not.
+
+Scroll feel is implemented as pure logic and tested without a terminal: wheel momentum
+with velocity inferred from inter-notch timing, the tiered ease-out drain, tail-follow
+catch-up, and the scrollbar hysteresis of §3.6 — which has a test that feeds the decision
+back into itself to prove it reaches a fixed point instead of oscillating.
+
+Verified visually, which is the step that cannot be skipped. PNGs looked at: the welcome
+screen, a committed turn, and the diff scenario. Three real bugs found only by looking:
+
+1. Spaces vanished from typed input. Bubble Tea v2's `Key.String()` spells space as
+   `"space"`; the printable text is `Key.Text`.
+2. `edit` refused a file inside its own workspace. This repo is reachable by two paths
+   (`/home/...` and `/mnt/cachyos-home/...`), and a not-yet-existing path was compared
+   unresolved against a symlink-resolved root. Now the deepest existing ancestor is
+   resolved and the rest re-appended — which is the part an attacker could have pointed
+   elsewhere anyway. Regression test added; the escape tests still pass.
+3. The user-prompt band looked ragged in every PNG. `tmux capture-pane` strips trailing
+   spaces, erasing background-only cells at a line's end — exactly what the band and the
+   right fact stack depend on. Fixed with `-N` on the ANSI capture.
+
+Diffs are chroma-highlighted then tinted per §9.3's `(syntax*70 + diff*30)/100`, and a
+test asserts more than one foreground color survives inside an added line, so a future
+"simplification" to flat red/green fails the build.
+
+Goldens: `probe/scenarios/tui.txt` and `tui-diff.txt`. Two harness bugs fixed while
+adding them — quoted scenario arguments were being split on spaces (tmux then
+concatenated them without the spaces), and absolute repo paths leaked into goldens; both
+path forms are now scrubbed to `<repo>`.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green; `go test -tags probe
+./probe/...` green against 6 goldens.

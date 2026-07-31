@@ -2,6 +2,7 @@
 # probe.sh — tmux driver for the evilcode self-test rig (plan.md §14).
 #
 #   probe.sh boot [cmd...]     start a 140x40 pane running evilcode (default: probe hello)
+#                              PROBE_SCENARIO picks the mock provider's script
 #   probe.sh keys <k>...       send keys to the pane (tmux send-keys syntax)
 #   probe.sh frame <name>      capture probe/frames/<name>.txt (plain) and .ansi (styled)
 #   probe.sh png <name> [size] capture, then render probe/frames/<name>.png
@@ -51,12 +52,19 @@ require_session() {
     }
 }
 
+# reset_fixtures restores files the mock scenarios edit, so a probe run is
+# repeatable rather than succeeding only the first time.
+reset_fixtures() {
+    [[ -d "$REPO/testdata" ]] && git -C "$REPO" checkout -- testdata 2>/dev/null || true
+}
+
 cmd_boot() {
     [[ -x "$BIN" ]] || {
         echo "probe: $BIN missing; run: go build -o evilcode ./" >&2
         exit 1
     }
     cmd_kill
+    reset_fixtures
     mkdir -p "$FAKEHOME" "$FRAMES"
 
     local app=("$BIN" probe hello)
@@ -64,7 +72,8 @@ cmd_boot() {
 
     tm new-session -d -s evil -x "$COLS" -y "$ROWS" \
         "env HOME='$FAKEHOME' TERM=xterm-256color COLORTERM=truecolor \
-             EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock ${app[*]}"
+             EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
+             EVILCODE_SCENARIO='${PROBE_SCENARIO:-chat}' ${app[*]}"
     settle
 }
 
@@ -79,7 +88,7 @@ cmd_frame() {
     local name="${1:?usage: probe.sh frame <name>}"
     mkdir -p "$FRAMES"
     tm capture-pane -p -t evil >"$FRAMES/$name.txt"
-    tm capture-pane -e -p -t evil >"$FRAMES/$name.ansi"
+    tm capture-pane -e -p -N -t evil >"$FRAMES/$name.ansi"
     echo "$FRAMES/$name.txt"
 }
 

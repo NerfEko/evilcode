@@ -1,0 +1,11 @@
+# The TUI's core surfaces: welcome, a committed prompt band, and a streamed
+# answer. Boots on the mock provider's default `chat` script.
+
+boot tui
+capture tui-welcome
+
+keys "what does the config package do"
+capture tui-typed
+
+keys Enter
+capture tui-answer

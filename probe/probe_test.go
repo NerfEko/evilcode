@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,7 @@ func runProbe(t *testing.T, root string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(root, "probe", "probe.sh"), args...)
 	cmd.Dir = root
+	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("probe.sh %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -89,8 +91,11 @@ func runScenario(t *testing.T, root, file string) {
 		switch verb {
 		case "boot":
 			runProbe(t, root, append([]string{"boot"}, strings.Fields(rest)...)...)
+		case "scenario":
+			// Selects the mock provider's script for subsequent boots.
+			t.Setenv("PROBE_SCENARIO", rest)
 		case "keys":
-			runProbe(t, root, append([]string{"keys"}, strings.Fields(rest)...)...)
+			runProbe(t, root, append([]string{"keys"}, splitArgs(rest)...)...)
 		case "kill":
 			runProbe(t, root, "kill")
 		case "capture":
@@ -99,6 +104,53 @@ func runScenario(t *testing.T, root, file string) {
 			t.Fatalf("%s:%d: unknown verb %q", filepath.Base(file), lineNo+1, verb)
 		}
 	}
+}
+
+// splitArgs splits a scenario line into arguments, honoring double quotes so a
+// key sequence containing spaces stays one argument. Splitting on whitespace
+// would send "fix the clamp" as three separate key sequences, which tmux
+// concatenates without the spaces.
+func splitArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote, has := false, false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+			has = true
+		case r == ' ' && !inQuote:
+			if has {
+				out = append(out, cur.String())
+				cur.Reset()
+				has = false
+			}
+		default:
+			cur.WriteRune(r)
+			has = true
+		}
+	}
+	if has {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// scrub removes machine-specific text so a golden compares the same anywhere.
+// The repo can be reachable by more than one path (a symlinked or bind-mounted
+// home), and the TUI prints whichever one it was launched with, so both the
+// literal and the resolved form are replaced.
+func scrub(s, root string) string {
+	forms := []string{root}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != root {
+		forms = append(forms, resolved)
+	}
+	// Longest first, so a prefix does not shadow a longer match.
+	sort.Slice(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	for _, f := range forms {
+		s = strings.ReplaceAll(s, f, "<repo>")
+	}
+	return s
 }
 
 func checkGolden(t *testing.T, root, name string) {
@@ -115,7 +167,7 @@ func checkGolden(t *testing.T, root, name string) {
 	}
 	// tmux pads every pane row out to the full height; trailing blank rows carry
 	// no information and would make goldens churn on any pane-size change.
-	gotText := strings.TrimRight(string(got), "\n \t")
+	gotText := scrub(strings.TrimRight(string(got), "\n \t"), root)
 
 	goldenPath := filepath.Join(root, "probe", "goldens", name+".txt")
 	if os.Getenv("UPDATE_GOLDENS") == "1" {

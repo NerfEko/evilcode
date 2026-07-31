@@ -104,6 +104,35 @@ func TestSymlinkEscapeIsRefused(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReachableThroughSymlink(t *testing.T) {
+	// A workspace opened through a symlinked path must still accept its own
+	// files, including ones that do not exist yet. Comparing an unresolved
+	// path against a resolved root rejects everything.
+	real := t.TempDir()
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	f := NewFS(link)
+	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "a.txt"}); err != nil {
+		t.Errorf("reading an existing file through a symlinked root: %v", err)
+	}
+	// A file whose parent directories do not exist yet is the harder case.
+	if _, err := run(t, f.Tools(), "write", map[string]any{
+		"path": "new/deep/file.txt", "content": "hi",
+	}); err != nil {
+		t.Errorf("writing a new nested file through a symlinked root: %v", err)
+	}
+	// Escaping must still be refused.
+	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "../../etc/passwd"}); err == nil {
+		t.Error("escape through a symlinked root must still be refused")
+	}
+}
+
 func TestWriteCreatesAndReportsDiff(t *testing.T) {
 	f := tempFS(t, nil)
 	res, err := run(t, f.Tools(), "write", map[string]any{

@@ -48,27 +48,43 @@ func (f *FS) resolve(path string) (string, error) {
 	}
 	full = filepath.Clean(full)
 
-	// EvalSymlinks fails for a file that does not exist yet (write creates
-	// them), so fall back to checking the nearest existing ancestor.
-	checked := full
-	if resolved, err := filepath.EvalSymlinks(full); err == nil {
-		checked = resolved
-	} else {
-		dir := filepath.Dir(full)
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			checked = filepath.Join(resolved, filepath.Base(full))
-		}
-	}
-
+	// Both sides of the comparison must be resolved the same way, or a
+	// workspace reachable through a symlink (a home directory bind-mounted at
+	// two paths, say) rejects its own files.
 	root := f.Root
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
+	checked := resolveExisting(full)
+
 	rel, err := filepath.Rel(root, checked)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q is outside the workspace", path)
 	}
 	return full, nil
+}
+
+// resolveExisting resolves symlinks as far up the path as actually exists, then
+// re-appends the rest. A file being created does not exist yet, and neither may
+// its parent directories, so EvalSymlinks alone cannot answer where a path
+// really points — but the deepest existing ancestor can, and that is the part
+// an attacker could have pointed elsewhere.
+func resolveExisting(full string) string {
+	var missing []string
+	cur := full
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			parts := append([]string{resolved}, missing...)
+			return filepath.Join(parts...)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the root without finding anything that exists.
+			return full
+		}
+		missing = append([]string{filepath.Base(cur)}, missing...)
+		cur = parent
+	}
 }
 
 // rel renders a path relative to Root for display, so tool rows read

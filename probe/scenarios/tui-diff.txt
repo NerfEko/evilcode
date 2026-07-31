@@ -1,0 +1,8 @@
+# An edit that produces a diff, exercising the tool row (§9.5) and the inline
+# diff renderer with its syntax-highlight-then-tint body (§9.3).
+#
+scenario diff
+boot tui
+keys "fix the clamp"
+keys Enter
+capture tui-diff
