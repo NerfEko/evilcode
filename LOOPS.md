@@ -777,3 +777,41 @@ fallback, and the `/memory` status line says so by counting records with no
 embedding.
 
 Tagged `phase-3`.
+
+## 2026-07-31 P4.1 — Daemon, attach, run --remote
+
+`serve` holds N sessions and speaks NDJSON over a unix socket; `attach` is the
+ordinary TUI with the socket as its event source; `run --remote` submits into
+the daemon and prints the same stream a local run prints.
+
+The whole thing is small because invariant 1 already did the work. Two seams on
+the Agent carry attached mode — `Forward` diverts a turn instead of running the
+loop, `Inject` pushes remote events into the same channel — and the TUI is
+untouched. `internal/wiring` exists so the daemon is not a third copy of the
+session-construction steps `run` and the TUI already had.
+
+Three things the running program taught me that reading would not have.
+
+The first attach drew the whole conversation twice: the snapshot carries every
+completed message and the ring replay carried the deltas that produced them. A
+fresh attach now replays only the turn in flight, which is the only part the
+snapshot genuinely lacks — an assistant message is not committed to the
+conversation until its turn ends.
+
+The second was in the PNG, not the text: a docked widget rendered as three
+fragments at three different columns. Each of its lines was padded from its own
+row's width, so a line with prose under it started further right than its blank
+neighbours. One column for the whole box, taken from the widest row it covers,
+and a box that no longer fits is dropped rather than drawn past the right edge.
+That fix also un-broke four goldens that the widget-priority sort had started
+failing.
+
+The third was cheap and worth it anyway: an over-long socket path fails with the
+kernel's bare "invalid argument", which says nothing. It now names the 108-byte
+limit and what to do about it. The scratchpad path this session runs in is 96
+bytes, so I hit it on the first end-to-end attempt.
+
+Verified by hand as well as by test: a daemon on a short socket, `run --remote`
+answering through it, `attach` in tmux showing `server: Leech 🐛 · client:
+Spider 🕷`, and a prompt typed into the attached TUI reaching the daemon and
+streaming back.
