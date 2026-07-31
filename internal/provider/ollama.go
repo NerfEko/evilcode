@@ -197,11 +197,11 @@ func streamOllamaNDJSON(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		var resp ollamaChatResp
 		if err := json.Unmarshal(line, &resp); err != nil {
 			// A malformed line is worth surfacing rather than silently
-			// dropping: it usually means a proxy injected something.
-			if !send(Chunk{Err: fmt.Errorf("ollama: bad NDJSON line: %w", err)}) {
-				return
-			}
-			continue
+			// dropping: it usually means a proxy injected something. Terminal,
+			// because the consumer returns on the first error chunk — carrying
+			// on leaves this goroutine blocked on a send nobody will receive.
+			send(Chunk{Err: fmt.Errorf("ollama: bad NDJSON line: %w", err)})
+			return
 		}
 		if resp.Error != "" {
 			send(Chunk{Err: fmt.Errorf("ollama: %s", resp.Error)})

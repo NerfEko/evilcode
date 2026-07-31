@@ -245,7 +245,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 
 ## Phase H3 — Resource exhaustion and leaks
 
-- [ ] **H3.1** `internal/provider/openai.go:295` and `internal/provider/ollama.go:198` —
+- [x] **H3.1** `internal/provider/openai.go:295` and `internal/provider/ollama.go:198` —
   the stream producer sends a parse-error chunk and then `continue`s, but the consumer
   (`agent.streamOnce`) returns on the first `chunk.Err`. The producer blocks forever on the
   next unbuffered send, holding the response body, the connection, and its goroutine for

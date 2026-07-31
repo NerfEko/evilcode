@@ -2568,3 +2568,31 @@ name, which is intended behaviour. Both are written up where they happened
 rather than smoothed over.
 
 Tagged `harden-2`.
+
+# Phase H3 — Resource exhaustion and leaks
+
+## 2026-07-31 H3.1 — The producer kept talking to nobody
+
+Both stream producers emitted a parse-error chunk and then `continue`d reading.
+The consumer returns on the first chunk carrying an error, so the *next* send
+has no receiver: the goroutine blocks there for the rest of the turn, holding
+the response body and the connection open, while the retry it triggered opens
+another.
+
+The `resp.Error` branch two lines below already returns. The parse branch was
+the one that did not, in both providers, identically.
+
+```
+openai: the producer kept sending after the terminal error
+ollama: the producer kept sending after the terminal error
+```
+
+The test consumes the way the agent does — stop at the first error — and then
+checks the channel is closed. If the producer is still trying to send, the
+channel stays open and the read blocks, which is the leak made observable rather
+than inferred.
+
+Both branches now send and return.
+
+Verified: both providers close their stream after a malformed line, three runs;
+`go test ./... -race` green.

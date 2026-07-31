@@ -293,10 +293,13 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 
 		var resp oaiStreamResp
 		if err := json.Unmarshal([]byte(data), &resp); err != nil {
-			if !send(Chunk{Err: fmt.Errorf("openai: bad SSE payload: %w", err)}) {
-				return
-			}
-			continue
+			// Terminal, like every other error chunk: the consumer returns on
+			// the first one it sees, so continuing to read leaves this
+			// goroutine blocked on a send nobody will ever receive — holding
+			// the response body and the connection for the rest of the turn,
+			// while a retry opens another.
+			send(Chunk{Err: fmt.Errorf("openai: bad SSE payload: %w", err)})
+			return
 		}
 		if resp.Error != nil {
 			send(Chunk{Err: fmt.Errorf("openai: %s", resp.Error.Message)})
