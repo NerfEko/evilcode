@@ -419,10 +419,17 @@ func (sess *Session) finished() bool {
 // markFinished closes the done channel exactly once.
 func (sess *Session) markFinished() {
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.done != nil && !sess.closedDone {
+	first := sess.done != nil && !sess.closedDone
+	if first {
 		sess.closedDone = true
 		close(sess.done)
+	}
+	sess.mu.Unlock()
+
+	// Exactly once, and outside the session lock: the reservation this worker
+	// holds against MaxLiveWorkers is what lets the next one start.
+	if first && sess.Worker && sess.srv != nil {
+		sess.srv.swarm.finished()
 	}
 }
 

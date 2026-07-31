@@ -16,7 +16,17 @@ import (
 // which is the whole trick: it needs no separate execution path, and attaching
 // to one later to see what it is doing works for free.
 func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Session, error) {
-	return s.spawn(task, files, schema, nil)
+	// Reserved here too, with no spawner to charge it to: a worker started
+	// through this path is as live as any other, and a counter that cannot see
+	// it is a counter that admits one worker too many.
+	if err := s.swarm.reserve(""); err != nil {
+		return nil, err
+	}
+	sess, err := s.spawn(task, files, schema, nil)
+	if err != nil {
+		s.swarm.release("")
+	}
+	return sess, err
 }
 
 // spawn builds a worker and runs it. register, if set, is called after the

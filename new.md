@@ -4,8 +4,7 @@
    edges with no background, so they don't read as buttons. Add a background to
    complete the button look, and make the buttons selectable.
 
-2. **Idle art.** Remove the black hole — replace it with something else, or have
-   nothing at all.
+2. **Idle art.** Remove the black hole — replace it with something else like evilcode ascii art, or have nothing at all.
 
 3. **Auto-prompt commands.** Add commands that fire automatic prompts, e.g.
    `/review`, `/bugfix`, `/describe`.
@@ -21,7 +20,7 @@
 6. **jcode source.** Download it — it has quirky features we're missing (overscroll
    and others) that I want to implement.
 
-7. **Self-update.** `evilcode update` pulls from GitHub and updates itself.
+7. **Self-update.** `evilcode update` pulls from forgejo and updates itself.
 
 8. **Markdown links.** `.md` files render as links; clicking opens a side-by-side
    full markdown renderer view of the file, scrollable, Esc to close.
@@ -45,3 +44,4 @@
     that describes how to author plan files with the same layout and quirks — dense,
     not bloated, with the loop confirmed at the top (write, fix, checkbox in
     `plan.md`, `LOOPS.md`, `README.md`, commit, codex review, next problem).
+

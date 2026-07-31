@@ -39,8 +39,16 @@ type swarmState struct {
 	// schemas holds the JSON Schema a worker's final output must satisfy.
 	schemas map[string]json.RawMessage
 
-	// spawnCount is per-spawner, for the breaker.
+	// spawnCount is per-spawner, for the breaker. Cumulative on purpose: it
+	// bounds one session's total spawns, so waiting for workers to finish does
+	// not buy more of them.
 	spawnCount map[string]int
+
+	// live counts workers reserved and not yet finished. It is the admission
+	// counter rather than a scan of the session map, because a scan cannot see
+	// the workers other goroutines are in the middle of starting — which is
+	// exactly the window concurrent spawns exploit.
+	live int
 
 	// inbox holds messages waiting for a session's next safe point.
 	inbox map[string][]Message
@@ -73,22 +81,55 @@ func (s *Server) liveWorkers() int {
 	return n
 }
 
+// reserve admits one worker against both breakers, or refuses.
+//
+// Both counters move under one lock and before anything is built. Checking them
+// and then acting on the answer was two operations: concurrent spawns all read
+// the same count, all passed, and all started, so the breakers held only when
+// nothing was racing them — which is not when a swarm needs them.
+func (w *swarmState) reserve(spawner string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.live >= MaxLiveWorkers {
+		return fmt.Errorf(
+			"%d workers are already running, which is the limit; wait for one to finish", w.live)
+	}
+	if used := w.spawnCount[spawner]; spawner != "" && used >= MaxWorkersPerSession {
+		return fmt.Errorf(
+			"this session has spawned %d workers, which is the limit; do the rest yourself", used)
+	}
+	w.live++
+	if spawner != "" {
+		w.spawnCount[spawner]++
+	}
+	return nil
+}
+
+// release returns a reservation whose worker never started.
+func (w *swarmState) release(spawner string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.live > 0 {
+		w.live--
+	}
+	// spawnCount is cumulative, but a spawn that failed did not happen.
+	if spawner != "" && w.spawnCount[spawner] > 0 {
+		w.spawnCount[spawner]--
+	}
+}
+
+// finished returns the live half of a reservation when a worker ends.
+func (w *swarmState) finished() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.live > 0 {
+		w.live--
+	}
+}
+
 // SpawnFor starts a worker on behalf of a session and records where its result
 // should be reported.
 func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawMessage) (string, error) {
-	if n := s.liveWorkers(); n >= MaxLiveWorkers {
-		return "", fmt.Errorf(
-			"%d workers are already running, which is the limit; wait for one to finish", n)
-	}
-
-	s.swarm.mu.Lock()
-	used := s.swarm.spawnCount[spawner]
-	s.swarm.mu.Unlock()
-	if used >= MaxWorkersPerSession {
-		return "", fmt.Errorf(
-			"this session has spawned %d workers, which is the limit; do the rest yourself", used)
-	}
-
 	// A schema that does not compile is refused up front. Sending a worker off
 	// with an unusable contract means discovering it only when the worker
 	// finishes, after the tokens are already spent.
@@ -98,16 +139,20 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 		}
 	}
 
+	if err := s.swarm.reserve(spawner); err != nil {
+		return "", err
+	}
+
 	sess, err := s.spawn(task, files, schema, func(sess *Session) {
 		s.swarm.mu.Lock()
 		s.swarm.spawnedBy[sess.Name] = spawner
-		s.swarm.spawnCount[spawner]++
 		if len(schema) > 0 {
 			s.swarm.schemas[sess.Name] = schema
 		}
 		s.swarm.mu.Unlock()
 	})
 	if err != nil {
+		s.swarm.release(spawner)
 		return "", err
 	}
 	return sess.Name, nil

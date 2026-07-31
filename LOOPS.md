@@ -2116,3 +2116,39 @@ needs its callers re-read for exactly this.
 
 Verified: distinct sequence numbers across three -race runs; `go test ./...
 -race` green.
+
+## 2026-07-31 H2.4 — Both breakers were advisory
+
+`SpawnFor` read the live worker count, read the per-session spawn count, and
+then spawned. Three operations, nothing reserved between them: concurrent spawns
+all read the same numbers, all passed, and all started.
+
+```
+16 workers are live, past the 4 limit
+the session spawned 36 workers, past the 12 limit
+```
+
+Four times the global cap and three times the per-session one — not a rare
+interleaving but the ordinary outcome, because every racer sees the state as it
+was before any of them acted.
+
+`swarmState.reserve` now takes both decisions and both increments under one
+lock, before anything is built, and `release` rolls back a spawn that failed to
+start. The live count moved from a scan of the session map to a counter, because
+a scan cannot see the workers other goroutines are in the middle of starting —
+which is the entire window being exploited. `markFinished` returns the
+reservation exactly once, outside the session lock.
+
+`Spawn`, the direct path, reserves too, with no spawner to charge the
+per-session half to. A worker started that way is as live as any other, and a
+counter blind to it admits one worker too many.
+
+`liveWorkers()` stays a scan: it answers "what is actually running" for the UI
+and the existing tests, which is a different question from "may another start".
+
+The holder in the test is doing real work — the mock finishes in microseconds,
+so without keeping workers unfinished the live cap is never under pressure and
+the test passes against the broken code.
+
+Verified: both caps hold under 16 and 36 concurrent spawns; `go test ./...
+-race` green.

@@ -184,7 +184,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   already-running turn; concurrent loops mutate one conversation and tool state. Fix:
   single-flight guard, busy result if held. This is the backstop that would have contained
   H1.12.  ⟨codex⟩
-- [ ] **H2.4** `internal/daemon/hub.go:79` — global and per-session worker limits are
+- [x] **H2.4** `internal/daemon/hub.go:79` — global and per-session worker limits are
   checked without reserving, so concurrent spawns exceed both. Fix: reserve both counters
   under coordinated locking, roll back on failure.  ⟨both⟩
 - [ ] **H2.5** `internal/daemon/spawn.go:72` — worker-name collision resolution runs
