@@ -51,6 +51,13 @@ type Server struct {
 	// concurrent spawn does not settle on the same one.
 	reserved map[string]bool
 
+	// opening holds one channel per session being built, closed when the build
+	// finishes. Concurrent opens of one name wait on it instead of each
+	// building their own — the losers used to be discarded, and discarding a
+	// session closes its store, which appends a clean-exit marker to the log
+	// the winner is still writing to.
+	opening map[string]chan struct{}
+
 	// todos and bank are the swarm's shared state, owned here and handed to
 	// every session by reference. Opened per session they were N copies of one
 	// set of files, each writing the whole file back over the others.
@@ -284,18 +291,42 @@ func (s *Server) sessionInfo(name string) []SessionInfo {
 // An empty name creates a fresh session, which is what a client attaching
 // without arguments wants.
 func (s *Server) Open(name string) (*Session, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("the daemon is shutting down")
-	}
-	if name != "" {
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("the daemon is shutting down")
+		}
+		if name == "" {
+			// A fresh session has no name to collide on.
+			s.mu.Unlock()
+			break
+		}
 		if sess, ok := s.sessions[name]; ok {
 			s.mu.Unlock()
 			return sess, nil
 		}
+		if wait, building := s.opening[name]; building {
+			s.mu.Unlock()
+			<-wait
+			// Round again: the builder has either published it or failed, and
+			// this caller should see whichever happened.
+			continue
+		}
+		if s.opening == nil {
+			s.opening = map[string]chan struct{}{}
+		}
+		built := make(chan struct{})
+		s.opening[name] = built
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			delete(s.opening, name)
+			s.mu.Unlock()
+			close(built)
+		}()
+		break
 	}
-	s.mu.Unlock()
 
 	// Built outside the lock: resolving a model can touch the network, and
 	// holding the server lock across that would stall `list` for every client.

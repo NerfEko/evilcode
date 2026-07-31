@@ -197,7 +197,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   finished by `liveWorkers` while its retry burns tokens, and the retry can overlap the
   tail of the original run. Fix: `markFinished` only in `observe`/`reportWorkerResult`.
   ⟨fable⟩
-- [ ] **H2.7** `internal/daemon/server.go:242` — concurrent opens of one session build
+- [x] **H2.7** `internal/daemon/server.go:242` — concurrent opens of one session build
   duplicate stores outside the map lock; the loser writes lifecycle state to the shared log
   as it closes. Fix: per-session singleflight.  ⟨codex⟩
 - [x] **H2.8** `internal/agent/events.go:119` — `a.seq++` unsynchronized. The daemon's

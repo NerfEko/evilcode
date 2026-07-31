@@ -2277,3 +2277,31 @@ timing, which is why I am content to leave it unreproduced and say so here
 rather than quietly.
 
 Verified: `go test ./... -race` green.
+
+## 2026-07-31 H2.7 — The loser closed the winner's session
+
+`Open` built the session outside the map lock and only then checked whether
+another goroutine had won. That check was there and it worked — the duplicate
+object was discarded. What nobody noticed is what discarding it *does*: closing
+a session closes its store, and closing a store appends a clean-exit marker. To
+the same file the winner is still writing to.
+
+The first version of this test asserted on object identity and passed, which is
+the finding stated too literally. Asserting on the log instead:
+
+```
+the live session's log holds 7 clean-exit marker(s) written by discarded
+duplicates; crash detection now reads it as cleanly closed
+```
+
+Seven of eight racers each stamped "this session exited cleanly" into a
+conversation that had not started yet. That is H5.10's crash detection reading a
+crash as a clean exit, arriving from a completely different direction.
+
+`Open` now holds a per-name channel while it builds. Concurrent openers wait on
+it and then loop round to find either the published session or the failure,
+rather than building their own copy to throw away. A fresh session — empty name
+— skips it, having no name to collide on.
+
+Verified: eight concurrent opens produce one session and a log with no
+lifecycle markers in it, five runs with -race.
