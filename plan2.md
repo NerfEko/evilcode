@@ -340,7 +340,7 @@ different claim from "model output is trusted", and the first does not imply the
 - [x] **H4.7** `internal/lsp/ops.go:242` — rename applies server-supplied paths without
   confirming they stay inside the workspace. Fix: canonicalize each, reject any whose
   `filepath.Rel` escapes the client root.  ⟨codex⟩
-- [ ] **H4.8** Verify H4: an OSC 52 payload in a repo file and in a mock provider response
+- [x] **H4.8** Verify H4: an OSC 52 payload in a repo file and in a mock provider response
   both render inert; `--resume ../escape` is refused; a fresh session dir is `0700`; the
   daemon refuses a squatted runtime dir. Tag `harden-4`.
 

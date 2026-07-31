@@ -3045,3 +3045,38 @@ trusted precisely because phase one succeeded. Each path is now checked against
 the client root — resolved on both sides, so a workspace reached through a
 symlink does not reject its own files, which is the trap the filesystem tools
 already fell into once.
+
+## 2026-07-31 H4.8 — Verifying phase H4
+
+The phase's four named checks, each with a test that fails without its fix:
+
+- **An OSC 52 payload in a repo file and in a mock provider response both render
+  inert.** Both, through the transcript renderer, asserting on the frame rather
+  than on the sanitizer — the sanitizer being correct proves nothing about
+  whether it is reached.
+- **`--resume ../escape` is refused.** Seven escaping names across four entry
+  points.
+- **A fresh session directory is 0700.** And the log 0600, and the backup, which
+  holds strictly more than the log.
+- **The daemon refuses a squatted runtime dir.** World-writable, group-writable,
+  and a symlink elsewhere.
+
+The phase's premise is worth restating, because it is the reason these were
+findings rather than paranoia: *single-user, single-machine, no network
+listener* is true, and it means something narrower than it sounds. "The
+workspace is trusted" is a claim about the code you are editing. It is not a
+claim about a byte sequence inside a file in it, and it says nothing at all
+about what a model emits.
+
+Every H4 finding sits in that gap. A file that runs a clipboard write by being
+*displayed*. A session name that is a path. A socket directory that belongs to
+whoever created it first. A language server — a subprocess, answering with
+whatever it likes — naming files to edit.
+
+Two of the seven were mine to get wrong twice: H4.6's first test passed against
+the broken code because it staged the symlink before validation rather than
+after, and H4.1's first pass sanitized `Block.Text` while leaving the tool name,
+target, intent and diff to carry sequences through untouched. Both were caught
+by making the test fail on purpose rather than by reading the code again.
+
+Tagged `harden-4`.
