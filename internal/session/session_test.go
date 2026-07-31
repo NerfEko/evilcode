@@ -702,3 +702,86 @@ func TestMessagesTakesUndecodableFinalRecord(t *testing.T) {
 		t.Fatalf("expected only the surviving first message, got %+v", msgs)
 	}
 }
+
+// H5.22: a log can end with an assistant tool_call that has no adjacent
+// result — a crash or daemon shutdown mid-round, or corruption predating
+// H1.2/H1.3's live guarantee. Replaying it as-is reproduces the exact 400
+// those fixed, on the very next request after resume.
+func TestMessagesStubsAToolCallWithNoResultAtEndOfLog(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{
+		Role: provider.RoleAssistant, Content: "one sec",
+		ToolCalls: []provider.ToolCall{{ID: "c1", Name: "read", Args: json.RawMessage(`{}`)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No tool result: the process ended here, same shape as a crash mid-round.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Messages(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected a stubbed result appended, got %d messages: %+v", len(msgs), msgs)
+	}
+	stub := msgs[2]
+	if stub.Role != provider.RoleTool || stub.ToolCallID != "c1" {
+		t.Errorf("stub = %+v, want a tool result for c1", stub)
+	}
+}
+
+// A batch of several calls with only some answered must get exactly the
+// missing ones stubbed, in no particular order relative to the real result.
+func TestMessagesStubsOnlyTheUnansweredCallInABatch(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{
+		Role: provider.RoleAssistant, Content: "on it",
+		ToolCalls: []provider.ToolCall{
+			{ID: "c1", Name: "read", Args: json.RawMessage(`{}`)},
+			{ID: "c2", Name: "read", Args: json.RawMessage(`{}`)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{
+		Role: provider.RoleTool, Content: "package main", ToolCallID: "c1", ToolName: "read",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// c2's result never arrived.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := Messages(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3 (assistant, c1's real result, c2's stub): %+v", len(msgs), msgs)
+	}
+	byID := map[string]provider.Message{}
+	for _, m := range msgs[1:] {
+		byID[m.ToolCallID] = m
+	}
+	if byID["c1"].Content != "package main" {
+		t.Errorf("c1's real result was altered: %+v", byID["c1"])
+	}
+	if byID["c2"].Role != provider.RoleTool {
+		t.Errorf("c2 was not stubbed: %+v", byID["c2"])
+	}
+}

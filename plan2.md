@@ -435,7 +435,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   inside `Update`. Same class as H3.13: a daemon that accepts the connection and then stalls
   freezes the whole interface with no way to type past it. Fix: a `tea.Cmd` with a deadline.
   ⟨codex, reviewing H3⟩
-- [ ] **H5.22** `internal/session/store.go` `Messages` — replay does not check that every
+- [x] **H5.22** `internal/session/store.go` `Messages` — replay does not check that every
   assistant `tool_call` has an adjacent result, so a session whose log was already
   malformed before H1.2/H1.3 landed — or truncated by a crash or a daemon shutdown mid-round
   — still produces the 400 those tasks fixed. Fix: stub the unanswered calls on replay, the

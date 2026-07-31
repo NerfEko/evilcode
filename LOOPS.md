@@ -3836,3 +3836,45 @@ which is exactly why this bug survives review by inspection.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green across
 every package.
+
+## 2026-07-31 H5.22 — The invariant H1.2 guarantees live, replay didn't
+
+H1.2 and H1.3 made `runTools` and `commitPartial` guarantee that every
+assistant `tool_call` gets an adjacent result before the conversation moves
+on — live, in the running process. `session.Messages`, which replays a log
+back into a conversation on resume, never got the same guarantee. A log that
+ends with an assistant message's `tool_calls` and nothing after it — a crash
+mid-round, a daemon shutdown between the model's response and the tool
+batch finishing, or corruption that predates H1.2/H1.3 entirely — replays
+exactly as broken as it was written, and a strict OpenAI-compatible endpoint
+rejects the very next request with the same 400 those two tasks were fixing
+for the live path.
+
+Fix: `stubUnansweredToolCalls`, run over the fully-replayed message list
+before `Messages` returns it. For each assistant message with `ToolCalls`, it
+collects the `RoleTool` messages immediately following (the normal shape of
+a batch's results), then appends a stub — `[Skipped: no result recorded]`,
+role tool, matching `ToolCallID` — for any call in that batch that run didn't
+cover. A single forward pass building a new slice, not an in-place mutation
+of the one being ranged over, which would have iterated over stale indices
+once an insertion shifted everything after it.
+
+The stub text is a new constant (`stubMissingResult`) rather than reusing
+`agent.stubSkipped`: `session` doesn't import `agent` (only the other
+direction), and the two mean different things anyway — one is "the user
+interrupted this, live," the other is "this log never recorded an answer."
+Same shape, different word for a different cause.
+
+Reproduce: `TestMessagesStubsAToolCallWithNoResultAtEndOfLog` writes a real
+session ending in an assistant message with one tool_call and no result
+(simulating the crash-mid-round shape) and asserts `Messages` returns three
+messages, the third a stub for that call.
+`TestMessagesStubsOnlyTheUnansweredCallInABatch` covers the partial case — two
+calls, one real result, one missing — and asserts the real result survives
+untouched while only the missing one gets stubbed. Confirmed both fail
+against the pre-fix `Messages` (stashed `store.go`, reran, restored): the
+first returned 2 messages instead of 3, the second likewise came back short
+by exactly the unanswered call.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green across
+every package.

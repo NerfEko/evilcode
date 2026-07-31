@@ -556,7 +556,20 @@ func Read(path string) ([]Entry, error) {
 	return out, nil
 }
 
+// stubMissingResult marks a tool_call replayed with no matching result — the
+// log ended, or was already corrupt, before one was written. Same shape as
+// the stub runTools writes live for an interrupted call (agent.stubSkipped),
+// duplicated here rather than imported: session does not import agent.
+const stubMissingResult = "[Skipped: no result recorded]"
+
 // Messages replays a session file into a message list.
+//
+// A log can reach here with an assistant tool_call that has no adjacent
+// result — truncated by a crash or a daemon shutdown mid-round, or simply
+// malformed before H1.2/H1.3 started guaranteeing one live. Replaying it
+// as-is reproduces the exact 400 those fixed, on the very next request after
+// resume. Stubbing the gap here means every replay honors the invariant
+// regardless of how the log came to violate it.
 func Messages(path string) ([]provider.Message, error) {
 	entries, err := Read(path)
 	if err != nil {
@@ -576,7 +589,40 @@ func Messages(path string) ([]provider.Message, error) {
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return stubUnansweredToolCalls(out), nil
+}
+
+// stubUnansweredToolCalls fills in a tool result for every tool_call an
+// assistant message makes that the run immediately following it does not
+// answer.
+func stubUnansweredToolCalls(msgs []provider.Message) []provider.Message {
+	out := make([]provider.Message, 0, len(msgs))
+	i := 0
+	for i < len(msgs) {
+		m := msgs[i]
+		out = append(out, m)
+		i++
+		if m.Role != provider.RoleAssistant || len(m.ToolCalls) == 0 {
+			continue
+		}
+		answered := make(map[string]bool, len(m.ToolCalls))
+		for i < len(msgs) && msgs[i].Role == provider.RoleTool {
+			answered[msgs[i].ToolCallID] = true
+			out = append(out, msgs[i])
+			i++
+		}
+		for _, c := range m.ToolCalls {
+			if !answered[c.ID] {
+				out = append(out, provider.Message{
+					Role:       provider.RoleTool,
+					Content:    stubMissingResult,
+					ToolCallID: c.ID,
+					ToolName:   c.Name,
+				})
+			}
+		}
+	}
+	return out
 }
 
 // Resume loads a session for appending and returns its messages.
