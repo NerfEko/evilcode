@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -174,5 +175,59 @@ func TestAppendsRacingCompactAreNotLost(t *testing.T) {
 				"log nor its backup: it went to the orphaned inode (%d of %d racers)",
 				c, len(wrote), len(wrote))
 		}
+	}
+}
+
+// H1.8: rewind and compact write a `.bak` before destroying the primary log and
+// ignored whether that write succeeded, so the recovery copy could silently not
+// exist at the moment the original was replaced.
+func TestRewriteRefusesWithoutABackup(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		do   func(store *Store, dir string) error
+	}{
+		{"compact", func(store *Store, dir string) error {
+			_, err := store.Compact(dir, "summary")
+			return err
+		}},
+		{"rewind", func(store *Store, dir string) error {
+			_, err := store.Rewind(dir, 1)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := Create(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range []string{"one", "two"} {
+				if err := store.WriteMessage(provider.Message{Role: provider.RoleUser, Content: c}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := store.Path
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// A directory where the backup wants to be: the copy cannot be
+			// written, and nothing else about the rewrite is affected.
+			if err := os.Mkdir(path+".bak", 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := tc.do(store, dir); err == nil {
+				t.Error("the log was replaced without a backup being written")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Error("the log was modified even though the backup failed")
+			}
+		})
 	}
 }

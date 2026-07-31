@@ -85,6 +85,40 @@ func RewindPoints(path string) ([]RewindPoint, error) {
 	return out, nil
 }
 
+// backup copies a session log aside before it is destroyed.
+//
+// The copy is what makes a mistaken rewind or a bad compaction recoverable, so
+// a rewrite that could not write it does not proceed: the failure was ignored,
+// which meant the one case where the backup matters — the filesystem is in
+// trouble — was exactly the case where it was silently absent.
+//
+// Written through a temp file and synced, so an interrupted backup cannot
+// destroy the previous one and a rename that lands cannot precede its contents.
+func backup(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".bak.tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path+".bak")
+}
+
 // Rewind truncates a session back to an entry index and returns the resulting
 // messages.
 //
@@ -101,8 +135,8 @@ func Rewind(dataDir, name string, entryIndex int) ([]provider.Message, error) {
 		return nil, fmt.Errorf("rewind point %d is out of range", entryIndex)
 	}
 
-	if data, err := os.ReadFile(path); err == nil {
-		_ = os.WriteFile(path+".bak", data, 0o644)
+	if err := backup(path); err != nil {
+		return nil, err
 	}
 
 	kept := entries[:entryIndex]
@@ -282,8 +316,8 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 		return nil, err
 	}
 
-	if data, err := os.ReadFile(path); err == nil {
-		_ = os.WriteFile(path+".bak", data, 0o644)
+	if err := backup(path); err != nil {
+		return nil, err
 	}
 
 	var b strings.Builder

@@ -1724,3 +1724,36 @@ README gained a paragraph on session durability and one on atomic writes, since
 both are now behaviour a user can rely on rather than implementation detail.
 
 Verified: both reproductions pass, `go test ./... -race` green.
+
+## 2026-07-31 H1.8 — The safety net was optional
+
+Both rewrites copy the log to `.bak` before replacing it, and both wrote it like
+this:
+
+```go
+if data, err := os.ReadFile(path); err == nil {
+	_ = os.WriteFile(path+".bak", data, 0o644)
+}
+```
+
+Two discarded errors in three lines. The backup is what makes a mistaken rewind
+or a bad compaction recoverable, and the one situation where it matters — the
+filesystem is out of space, or read-only, or the path is occupied — is exactly
+the situation where it silently was not written and the primary was destroyed
+anyway.
+
+Reproduced by putting a directory where the backup wants to go, for both paths:
+
+```
+compact: the log was replaced without a backup being written
+         the log was modified even though the backup failed
+rewind:  same, both
+```
+
+`backup` now reads, writes a temp file, syncs, closes and renames, and any
+failure aborts the rewrite before the primary is touched. Temp-and-rename rather
+than writing `.bak` directly, because a half-written backup would have destroyed
+the previous good one on its way to failing.
+
+Verified: both subtests pass — the rewrite refuses and the log is byte-identical
+afterwards — and `go test ./... -race` is green.

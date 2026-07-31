@@ -136,7 +136,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   before the sink runs, so disk order can differ from memory order. Fix: sink and `Append`
   return errors, surface on the turn; serialize append-and-persist, or feed
   sequence-stamped records through one ordered writer.  ⟨codex⟩
-- [ ] **H1.8** `internal/session/checkpoint.go:104` — rewind and compact ignore
+- [x] **H1.8** `internal/session/checkpoint.go:104` — rewind and compact ignore
   backup-write failures before destructively replacing the primary log. Fix: require a
   written **and synced** backup before committing the replacement.  ⟨codex⟩
 - [ ] **H1.9** `internal/daemon/server.go:457` — session close cancels the turn and
