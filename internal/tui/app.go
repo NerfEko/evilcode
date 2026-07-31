@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -124,6 +125,16 @@ type Model struct {
 	// thinking is the reasoning display mode (§9.7).
 	thinking ThinkingMode
 
+	// Self-test state (§14): frame capture, layout overlays, and the
+	// anchor-stability recorder behind /smoothness.
+	recording      bool
+	screenshotMode bool
+	debugVisual    bool
+	recordSeq      int
+	lastFrameHash  uint64
+	smoothness     SmoothnessReport
+	anchorHashes   map[string]int
+
 	// diffMode cycles Off → Inline → Pinned → File (Alt+G, §9.3), and panel
 	// holds what the side pane is showing.
 	diffMode   DiffMode
@@ -162,6 +173,20 @@ type Model struct {
 	// todos is the session's todo state, for the inline card.
 	todos        *todo.Store
 	showTodoCard bool
+
+	// sideAnswer carries a finished `/btw` result from its goroutine into the
+	// render loop, so the side call never touches model state directly.
+	sideAnswer atomic.Pointer[sideAnswer]
+
+	// bg is the background-task registry, and bgDone carries completions from
+	// their goroutines into the render loop.
+	bg     *tools.Background
+	bgDone atomic.Pointer[bgCompletion]
+
+	// lastFrame is the most recent rendered frame, which `/screenshot` writes
+	// out. Capturing at render time is the only way to get exactly what the
+	// user is looking at.
+	lastFrame string
 
 	quitting     bool
 	confirmQuit  bool
@@ -215,6 +240,22 @@ func (m *Model) WithSessions(dataDir, cwd string, store *session.Store) *Model {
 	return m
 }
 
+// bgCompletion is a finished background task waiting to be announced.
+type bgCompletion struct {
+	Label  string
+	Failed bool
+}
+
+// WithBackground attaches the background-task registry.
+func (m *Model) WithBackground(bg *tools.Background) *Model {
+	m.bg = bg
+	bg.OnDone = func(t *tools.BackgroundTask) {
+		_, failed, _ := t.Snapshot()
+		m.bgDone.Store(&bgCompletion{Label: t.Label, Failed: failed})
+	}
+	return m
+}
+
 // WithKeymap attaches the resolved keymap and hotkey usage tracking.
 func (m *Model) WithKeymap(km *Keymap, usage *HotkeyUsage, hints bool) *Model {
 	m.keymap, m.hotkeys, m.showHints = km, usage, hints
@@ -262,6 +303,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if m.processing {
 			m.status.Elapsed = time.Since(m.turnAt)
+		}
+		m.takeSideAnswer()
+		if done := m.bgDone.Swap(nil); done != nil {
+			if done.Failed {
+				m.notice = "✗ background: " + done.Label + " failed"
+			} else {
+				m.notice = "✓ background: " + done.Label
+			}
 		}
 		// A pending question is picked up here rather than pushed, so the tool
 		// goroutine never touches model state.
@@ -1347,6 +1396,30 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "rewind":
 		return m.runRewind(arg)
 
+	case "compact":
+		return m.runCompact()
+
+	case "fix":
+		// A recovery prompt for when the model has stalled or lost the thread.
+		m.submitHidden("You seem to have stalled or lost track of the task. " +
+			"Re-read the most recent request and the current state of the files you were " +
+			"changing, say in one line what you believe is left to do, and continue. " +
+			"If something is blocking you, name it concretely instead of retrying.")
+		m.notice = "🔄 Asked the model to recover"
+		return m, nil
+
+	case "btw":
+		if arg == "" {
+			m.notice = "usage: /btw <question>"
+			return m, nil
+		}
+		// A side question answered without touching the main conversation, so
+		// asking it costs nothing in context (plan.md §13).
+		return m.runSideQuestion(arg)
+
+	case "screenshot":
+		return m.runScreenshot()
+
 	case "version":
 		m.notice = "evilcode " + m.header.Version
 		return m, nil
@@ -1784,7 +1857,10 @@ func (m *Model) View() tea.View {
 	rows = m.overlayPalette(rows, inset)
 	rows = m.overlayHistory(rows, inset)
 
-	v := tea.NewView(strings.Join(rows, "\n"))
+	frame := strings.Join(rows, "\n")
+	m.lastFrame = frame
+
+	v := tea.NewView(frame)
 	// These are view properties in Bubble Tea v2, not program options.
 	v.AltScreen = true
 	// Cell motion is enough for the wheel and is better supported than all
@@ -1982,6 +2058,14 @@ func (m *Model) activeWidgets() []Widget {
 		add(m.renderer.ContextWidget(m.status.TokensIn+m.status.TokensOut, m.contextMax()))
 	}
 	add(m.renderer.ModelInfoWidget(m.header, 1))
+	if m.bg != nil {
+		var tasks []BackgroundTask
+		for _, t := range m.bg.Tasks() {
+			done, failed, _ := t.Snapshot()
+			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed})
+		}
+		add(m.renderer.BackgroundTasksWidget(tasks, int(time.Since(m.started)/SpinnerInterval)))
+	}
 	if tip := TipAt(time.Since(m.started), m.width); tip != "" {
 		add(m.renderer.TipsWidget(tip))
 	}

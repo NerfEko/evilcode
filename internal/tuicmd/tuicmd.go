@@ -121,21 +121,23 @@ func Run(args []string) error {
 		mcpStatus = append(mcpStatus, tui.MCPStatus{Name: s.Name, Tools: s.Tools})
 	}
 
+	overrides := cfg.ModelOverrides(*model)
+	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
+		WithConfine(cfg.Features.ConfineToWorkspace)
+	execTools := tools.NewExec(cwd)
+
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
 		skills.Names(), mcpStatus)).
 		WithTodos(todos, poke).
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
-		WithSessions(dataDir, cwd, store)
+		WithSessions(dataDir, cwd, store).
+		WithBackground(execTools.Bg)
 	if prior > 0 {
 		m.RebuildFrom(conv.Messages())
 	}
 
-	overrides := cfg.ModelOverrides(*model)
-	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-		WithConfine(cfg.Features.ConfineToWorkspace)
-
-	ts := append(fsTools.Tools(), tools.NewExec(cwd).Tools()...)
+	ts := append(fsTools.Tools(), execTools.Tools()...)
 	ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))

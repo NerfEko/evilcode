@@ -72,6 +72,14 @@ var Commands = []Command{
 	{Name: "hotkeys", Help: "Show the keymap", Hidden: true},
 
 	{Name: "screenshot", Help: "Write the current frame to a PNG"},
+	{Name: "compact", Help: "Summarize the conversation into a fresh context",
+		Long: "Replaces the history with a dense summary produced by the smol role,\n" +
+			"and bumps the context epoch. This is the one sanctioned rewrite of the\n" +
+			"append-only rule."},
+	{Name: "fix", Help: "Nudge a stalled model back on track"},
+	{Name: "btw", Help: "Ask a side question without touching the conversation",
+		Long: "/btw <question>\n\nAnswered by the smol role in the side panel, so asking\n" +
+			"costs nothing in your main context."},
 }
 
 // VisibleCommands returns the commands the palette and help may offer.
@@ -121,7 +129,8 @@ var HelpSections = []HelpSection{
 	{"Working", []string{"plan", "todos", "poke"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
-	{"System", []string{"config", "terminal-setup", "screenshot", "cancel", "quit"}},
+	{"System", []string{"config", "theme", "terminal-setup", "screenshot",
+		"compact", "fix", "btw", "cancel", "quit"}},
 }
 
 // UncoveredCommands returns visible commands no section lists.

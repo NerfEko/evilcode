@@ -18,6 +18,9 @@ import (
 type Exec struct {
 	Root string
 
+	// Bg tracks detached commands.
+	Bg *Background
+
 	// Timeout bounds a single command. A model that runs an interactive
 	// program would otherwise hang the turn forever.
 	Timeout time.Duration
@@ -38,7 +41,7 @@ func NewExec(root string) *Exec {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root}
+	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root, Bg: &Background{}}
 }
 
 // Cwd reports the working directory subsequent commands will run in.
@@ -54,8 +57,70 @@ func (e *Exec) Tools() Set {
 }
 
 type bashArgs struct {
-	Cmd     string `json:"cmd"`
-	Timeout int    `json:"timeout,omitempty"`
+	Cmd        string `json:"cmd"`
+	Timeout    int    `json:"timeout,omitempty"`
+	Background bool   `json:"background,omitempty"`
+}
+
+// BackgroundTask is a command still running after its tool call returned.
+type BackgroundTask struct {
+	ID      int
+	Label   string
+	Started time.Time
+
+	mu     sync.Mutex
+	done   bool
+	failed bool
+	output string
+}
+
+// Snapshot returns the task's current state.
+func (t *BackgroundTask) Snapshot() (done, failed bool, output string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.done, t.failed, t.output
+}
+
+// Background tracks detached commands.
+//
+// The registry lives here rather than in the UI because a background task
+// outlives the tool call that started it, and the agent loop must be able to
+// report completion whether or not anything is watching (plan.md §17).
+type Background struct {
+	mu    sync.Mutex
+	next  int
+	tasks []*BackgroundTask
+
+	// OnDone is called when a task finishes, so the UI can raise a notice.
+	OnDone func(*BackgroundTask)
+}
+
+// Tasks returns the tracked tasks.
+func (b *Background) Tasks() []*BackgroundTask {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]*BackgroundTask(nil), b.tasks...)
+}
+
+// add registers a task.
+func (b *Background) add(label string) *BackgroundTask {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.next++
+	t := &BackgroundTask{ID: b.next, Label: label, Started: time.Now()}
+	b.tasks = append(b.tasks, t)
+	return t
+}
+
+// finish records a task's result and notifies.
+func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
+	t.mu.Lock()
+	t.done, t.failed, t.output = true, failed, output
+	t.mu.Unlock()
+
+	if b.OnDone != nil {
+		b.OnDone(t)
+	}
 }
 
 func (e *Exec) bashTool() Tool {
@@ -67,7 +132,9 @@ func (e *Exec) bashTool() Tool {
   "type": "object",
   "properties": {
     "cmd":     {"type": "string",  "description": "Shell command to run"},
-    "timeout": {"type": "integer", "description": "Timeout in seconds; defaults to 120"}
+    "timeout": {"type": "integer", "description": "Timeout in seconds; defaults to 120"},
+    "background": {"type": "boolean",
+                   "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."}
   },
   "required": ["cmd"]
 }`),
@@ -78,6 +145,10 @@ func (e *Exec) bashTool() Tool {
 			}
 			if strings.TrimSpace(a.Cmd) == "" {
 				return Result{}, fmt.Errorf("cmd is required")
+			}
+
+			if a.Background {
+				return e.runBackground(a.Cmd), nil
 			}
 
 			timeout := e.Timeout
@@ -135,6 +206,40 @@ func (e *Exec) bashTool() Tool {
 		},
 	}
 }
+
+// runBackground starts a detached command and returns immediately.
+//
+// It deliberately does not inherit the caller's context: the point is to
+// outlive the tool call. It gets a generous ceiling of its own instead, so a
+// runaway watcher still cannot run forever.
+func (e *Exec) runBackground(command string) Result {
+	task := e.Bg.add(shortCmd(command))
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), BackgroundTimeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		cmd.Dir = e.Cwd()
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		cmd.WaitDelay = 2 * time.Second
+
+		err := cmd.Run()
+		e.Bg.finish(task, Truncate(buf.String()), err != nil)
+	}()
+
+	return Result{
+		Output: fmt.Sprintf("started in the background as task %d; "+
+			"its result will be reported when it finishes", task.ID),
+		Intent: "bg: " + shortCmd(command),
+	}
+}
+
+// BackgroundTimeout is the ceiling on a detached command, so a runaway watcher
+// cannot outlive the session indefinitely.
+const BackgroundTimeout = 30 * time.Minute
 
 func exitStatus(err error) string {
 	var ee *exec.ExitError
