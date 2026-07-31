@@ -2362,3 +2362,32 @@ that is never applied passes the first test perfectly.
 
 Verified: fails before (the shared config takes the repo's model), passes after,
 `go test ./... -race` green.
+
+## 2026-07-31 H2.11 — Twelve gopls for one Go file
+
+`Manager.For` dropped the lock across `Start` and never rechecked. Concurrent
+callers each launched a server; the last one into the map won, and the rest kept
+running — a process, a pipe pair and two goroutines apiece — until the program
+exited.
+
+The first version of the test passed against the broken code, and the reason is
+worth keeping. Its fake launcher returned instantly, so the unguarded window was
+nanoseconds wide and the scheduler happened to serialize twelve goroutines
+through it. A real `gopls` takes seconds to start and index; the window is that
+whole time. Twenty milliseconds of sleep in the fake is not making the test
+easier to pass, it is making the fake resemble the thing it stands in for:
+
+```
+12 servers were started for one language; 11 of them leak
+callers were handed different clients for one language
+```
+
+A stub that is instant when the real thing is slow does not test the code, it
+tests the scheduler.
+
+`For` now holds a per-language channel across the launch. Late callers wait on
+it and then loop round to find the client or the failure the launcher recorded,
+which also means a failed start is shared rather than re-attempted twelve times.
+
+Verified: one server for twelve concurrent callers, all handed the same client,
+three runs with -race.

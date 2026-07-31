@@ -209,7 +209,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H2.10** `internal/wiring/wiring.go:115` — repo overrides are applied by mutating a
   **shared** config object, so one repo's settings leak into other daemon sessions and race
   concurrent builds. Fix: deep-copy per build, apply overrides to the copy only.  ⟨codex⟩
-- [ ] **H2.11** `internal/lsp/client.go:574` `Manager.For` — the lock is dropped across
+- [x] **H2.11** `internal/lsp/client.go:574` `Manager.For` — the lock is dropped across
   `Start` with no recheck, so two concurrent callers launch two servers and the loser is
   overwritten in `clients` and leaks until exit. Fix: per-language singleflight, close any
   loser.  ⟨both⟩

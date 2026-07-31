@@ -518,6 +518,15 @@ type Manager struct {
 	mu      sync.Mutex
 	clients map[string]*Client
 	failed  map[string]error
+
+	// starting holds one channel per language being launched, closed when the
+	// attempt finishes. Concurrent callers wait on it rather than each starting
+	// their own server — the losers used to be overwritten in clients and leak
+	// a process, a pipe pair and two goroutines apiece until exit.
+	starting map[string]chan struct{}
+
+	// start is the launcher, swappable so tests do not need a real server.
+	start func(ctx context.Context, name, root string, command []string) (*Client, error)
 }
 
 // DefaultCommands is the preconfigured server set. gopls is the only one the
@@ -552,33 +561,62 @@ func NewManager(root string, configured map[string][]string) *Manager {
 func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 	lang := LanguageID(path)
 
-	m.mu.Lock()
-	if c, ok := m.clients[lang]; ok {
+	var command []string
+	var launching chan struct{}
+	for {
+		m.mu.Lock()
+		if c, ok := m.clients[lang]; ok {
+			m.mu.Unlock()
+			return c, nil
+		}
+		// A server that failed to start is not retried on every call: the usual
+		// reason is that it is not installed, and re-running LookPath per tool
+		// call only slows the failure down.
+		if err, ok := m.failed[lang]; ok {
+			m.mu.Unlock()
+			return nil, err
+		}
+		if wait, busy := m.starting[lang]; busy {
+			m.mu.Unlock()
+			<-wait
+			// Round again: the launcher recorded either a client or a failure,
+			// and this caller should see whichever it was.
+			continue
+		}
+		var ok bool
+		command, ok = m.Commands[lang]
+		if !ok {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("no language server is configured for %s files", lang)
+		}
+		if m.starting == nil {
+			m.starting = map[string]chan struct{}{}
+		}
+		launching = make(chan struct{})
+		m.starting[lang] = launching
 		m.mu.Unlock()
-		return c, nil
-	}
-	// A server that failed to start is not retried on every call: the usual
-	// reason is that it is not installed, and re-running LookPath per tool call
-	// only slows the failure down.
-	if err, ok := m.failed[lang]; ok {
-		m.mu.Unlock()
-		return nil, err
-	}
-	command, ok := m.Commands[lang]
-	m.mu.Unlock()
-
-	if !ok {
-		return nil, fmt.Errorf("no language server is configured for %s files", lang)
+		break
 	}
 
-	c, err := Start(ctx, command[0], m.Root, command)
+	start := m.start
+	if start == nil {
+		start = Start
+	}
+	c, err := start(ctx, command[0], m.Root, command)
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	delete(m.starting, lang)
 	if err != nil {
 		m.failed[lang] = err
+	} else {
+		m.clients[lang] = c
+	}
+	m.mu.Unlock()
+	close(launching)
+
+	if err != nil {
 		return nil, err
 	}
-	m.clients[lang] = c
 	return c, nil
 }
 
