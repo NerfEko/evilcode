@@ -3161,3 +3161,28 @@ Verified: `TestStoreRenameKeepsIdentityAndBlobsInSync` — Name/Path match,
 old log gone, an image append lands beside the renamed log, old blob dir not
 re-created. `go build ./... && go vet ./... && go test ./...` and probe
 goldens green.
+
+## 2026-08-01 H5.4 — The retry that replayed the answer
+
+`stream` retried transient failures by calling `streamOnce` again. Each
+`streamOnce` emits `EventTextDelta`/`EventReasoningDelta` as chunks arrive, and
+the TUI appends them to one live streaming block keyed by `streamingIdx`. A
+retryable error that landed *after* deltas were already shown caused the retry
+to re-stream from the start of the response, and the TUI appended the second
+attempt to the same block — so the user watched the answer restart and the
+prefix came out twice ("HelloHello, world").
+
+Reproduce: `TestStreamDoesNotReplayVisibleDeltasOnRetry` — a provider that emits
+"Hello" then a retryable 503 mid-stream, then "Hello, world" on the second
+attempt. `textOf(evs)` was "HelloHello, world" before the fix.
+
+Fix: `streamOnce` now reports whether it emitted any visible content (text or
+reasoning delta). `stream` retries only when the failed attempt emitted
+nothing — i.e. the failure predated the first delta. A mid-stream failure
+keeps the partial (already shown) and surfaces the error rather than replaying
+it. The pre-delta retry path is unchanged, so a connection error on the initial
+request still retries as before.
+
+Verified: repro test passes (no replay); the existing flaky/retry tests still
+green (they fail before any delta, so retry still fires); `go build ./... &&
+go vet ./... && go test ./...` and probe goldens green.

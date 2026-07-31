@@ -554,7 +554,7 @@ func (a *Agent) stream(ctx context.Context) (provider.Message, error) {
 			}
 		}
 
-		msg, err := a.streamOnce(ctx)
+		msg, emitted, err := a.streamOnce(ctx)
 		if err == nil {
 			return msg, nil
 		}
@@ -562,7 +562,12 @@ func (a *Agent) stream(ctx context.Context) (provider.Message, error) {
 			// Cancellation is not a failure to retry; it is the user saying stop.
 			return msg, context.Canceled
 		}
-		if !retryable(err) {
+		// A retry re-streams from the start of the response. If the failed
+		// attempt already emitted visible deltas, retrying replays them — the
+		// TUI appends the second attempt to the same live block and the user
+		// watches the answer restart. Retry only before any content was
+		// shown; a mid-stream failure keeps the partial and surfaces the error.
+		if emitted || !retryable(err) {
 			return msg, err
 		}
 		lastErr = err
@@ -583,7 +588,7 @@ func retryable(err error) bool {
 	return true
 }
 
-func (a *Agent) streamOnce(ctx context.Context) (provider.Message, error) {
+func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) {
 	req := provider.Req{
 		Model:    a.Model,
 		Messages: a.Conv.Messages(),
@@ -594,25 +599,31 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, error) {
 	started := time.Now()
 	ch, err := a.Provider.ChatStream(ctx, req)
 	if err != nil {
-		return provider.Message{}, err
+		return provider.Message{}, false, err
 	}
 
 	msg := provider.Message{Role: provider.RoleAssistant}
 	var text, reasoning strings.Builder
+	// emitted tracks whether this attempt has shown any visible content. A
+	// retry after content was shown replays it, so the retry decision in
+	// stream depends on this.
+	var emitted bool
 
 	for chunk := range ch {
 		if chunk.Err != nil {
 			msg.Content, msg.Reasoning = text.String(), reasoning.String()
-			return msg, chunk.Err
+			return msg, emitted, chunk.Err
 		}
 		if chunk.Text != "" {
 			text.WriteString(chunk.Text)
+			emitted = true
 			e := a.newEvent(EventTextDelta)
 			e.Text = chunk.Text
 			a.emit(e)
 		}
 		if chunk.Reasoning != "" {
 			reasoning.WriteString(chunk.Reasoning)
+			emitted = true
 			e := a.newEvent(EventReasoningDelta)
 			e.Text = chunk.Reasoning
 			a.emit(e)
@@ -637,9 +648,9 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, error) {
 
 	msg.Content, msg.Reasoning = text.String(), reasoning.String()
 	if ctx.Err() != nil {
-		return msg, context.Canceled
+		return msg, emitted, context.Canceled
 	}
-	return msg, nil
+	return msg, emitted, nil
 }
 
 func toolDefs(ts tools.Set) []provider.ToolDef {

@@ -365,7 +365,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   target a path that no longer exists (appends still reach the renamed inode through the
   fd, so nothing is lost yet). Fix: update store identity with the rename, or enforce the
   notice the command already prints and refuse to rename the live session.  ⟨both⟩
-- [ ] **H5.4** `internal/agent/agent.go:469` — a stream retried after deltas were already
+- [x] **H5.4** `internal/agent/agent.go:469` — a stream retried after deltas were already
   emitted replays visible content and events. Fix: retry only before the first emitted
   delta, or buffer attempts until success.  ⟨codex⟩
 - [ ] **H5.5** `internal/provider/openai.go:245` — completed tool calls are emitted in
