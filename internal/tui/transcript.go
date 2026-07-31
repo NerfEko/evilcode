@@ -79,6 +79,12 @@ type Renderer struct {
 
 	// DiffMode decides whether diffs render inline or in the side panel.
 	DiffMode DiffMode
+
+	// ToolDetails shows the technical summary on a tool row. Off by default:
+	// the row already says what ran and how it went. An errored call shows its
+	// detail regardless, since a row you cannot diagnose is worse than no row
+	// (plan.md §9.5).
+	ToolDetails bool
 }
 
 // NewRenderer builds a renderer at the given width.

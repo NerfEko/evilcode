@@ -72,6 +72,16 @@ var Commands = []Command{
 	{Name: "hotkeys", Help: "Show the keymap", Hidden: true},
 
 	{Name: "screenshot", Help: "Write the current frame to a PNG"},
+	{Name: "screenshot-mode", Help: "Auto-capture every changed frame"},
+	{Name: "record", Help: "Start or stop recording frames"},
+	{Name: "debug-visual", Help: "Overlay layout boundaries"},
+	{Name: "smoothness", Help: "Report anchor stability"},
+	{Name: "onboarding-sim", Help: "Walk the welcome screens"},
+
+	{Name: "diff", Help: "Cycle diff mode"},
+	{Name: "alignment", Help: "Toggle centered layout"},
+	{Name: "thinking-display", Help: "Reasoning display: off|full|current"},
+	{Name: "tool-call-details", Help: "Toggle technical tool summaries"},
 	{Name: "compact", Help: "Summarize the conversation into a fresh context",
 		Long: "Replaces the history with a dense summary produced by the smol role,\n" +
 			"and bumps the context epoch. This is the one sanctioned rewrite of the\n" +

@@ -1330,6 +1330,77 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.scroll.FollowBottom()
 		return m, nil
 
+	case "screenshot-mode":
+		return m.runScreenshotMode()
+
+	case "record":
+		return m.runRecord()
+
+	case "debug-visual":
+		return m.runDebugVisual()
+
+	case "smoothness":
+		return m.runSmoothness(arg)
+
+	case "onboarding-sim":
+		for i, frame := range []int{0, 1, 2} {
+			m.blocks = append(m.blocks, Block{
+				Kind: BlockNotice,
+				Text: fmt.Sprintf("— welcome screen %d —\n%s", i+1,
+					strings.Join(plainRows(m.renderer.RenderWelcome(frame, nil)), "\n")),
+			})
+		}
+		m.scroll.FollowBottom()
+		return m, nil
+
+	case "diff":
+		m.diffMode = m.diffMode.Next()
+		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
+		m.applyWrapWidth()
+		m.notice = "Diff mode: " + m.diffMode.String()
+		return m, nil
+
+	case "alignment":
+		m.centered = !m.centered
+		m.renderer.Centered = m.centered
+		m.dock.Reset()
+		m.applyWrapWidth()
+		if m.centered {
+			m.notice = "Centered layout"
+		} else {
+			m.notice = "Left-aligned layout"
+		}
+		return m, nil
+
+	case "thinking-display":
+		switch strings.TrimSpace(arg) {
+		case "off":
+			m.thinking = ThinkingOff
+		case "full":
+			m.thinking = ThinkingFull
+		case "current":
+			m.thinking = ThinkingCurrent
+		default:
+			m.notice = "thinking-display is " + string(m.thinking) + " · off|full|current"
+			return m, nil
+		}
+		m.notice = "thinking-display: " + string(m.thinking)
+		return m, nil
+
+	case "tool-call-details":
+		m.renderer.ToolDetails = !m.renderer.ToolDetails
+		for i := range m.blocks {
+			if m.blocks[i].Kind == BlockTool {
+				m.blocks[i].cache = nil
+			}
+		}
+		if m.renderer.ToolDetails {
+			m.notice = "tool call details: ON"
+		} else {
+			m.notice = "tool call details: OFF"
+		}
+		return m, nil
+
 	case "theme", "color":
 		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: m.runTheme(arg)})
 		m.scroll.FollowBottom()

@@ -155,6 +155,16 @@ func (m *Model) runScreenshot() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// plainRows strips styling from a set of rows, for text the transcript embeds
+// rather than renders.
+func plainRows(rows []string) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = plainText(r)
+	}
+	return out
+}
+
 // SmoothnessReport is the objective form of "the screen never jumps"
 // (plan.md §13, §4). The motions are counted separately because they have
 // different causes: a mass reflow is one layout decision, while scattered
