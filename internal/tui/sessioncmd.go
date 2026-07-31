@@ -141,6 +141,13 @@ func (m *Model) openSessions() {
 
 // runRewind lists rewind points, or collapses back to one.
 func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
+	// Before anything else: a turn in flight keeps appending across the reset,
+	// and its messages land after the rewrite — attached to a conversation that
+	// has been truncated out from under them.
+	if m.processing {
+		m.notice = "⏳ Finish or interrupt the current turn first"
+		return m, nil
+	}
 	if m.store == nil {
 		m.notice = "no session to rewind"
 		return m, nil

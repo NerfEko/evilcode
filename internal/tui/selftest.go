@@ -36,6 +36,13 @@ type compactDone struct {
 // "📦 Compacting…" notice it set was never painted, because the same function
 // overwrote it before Bubbletea got control back.
 func (m *Model) runCompact() (tea.Model, tea.Cmd) {
+	// Before anything else: a turn in flight keeps appending across the reset,
+	// and its messages land after the rewrite — in a conversation that no
+	// longer holds what they were answering.
+	if m.processing {
+		m.notice = "⏳ Finish or interrupt the current turn first"
+		return m, nil
+	}
 	if m.compactor == nil || !m.compactor.Enabled() {
 		m.notice = "compaction is not configured for this session"
 		return m, nil

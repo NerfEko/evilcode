@@ -238,6 +238,12 @@ type Model struct {
 	// keepThinking leaves finished traces expanded (display.keep_thinking).
 	keepThinking bool
 
+	// queuedHidden is a harness prompt waiting for an interrupted turn to end.
+	// Sending it immediately raced the turn it had just cancelled, and since
+	// H2.3 the agent refuses the second one — silently, a hidden prompt having
+	// nobody to report to.
+	queuedHidden string
+
 	// hiddenPrompt is the text of an injected turn that must not be drawn as a
 	// user block, matched once when its turn starts.
 	hiddenPrompt string
@@ -664,6 +670,14 @@ func (m *Model) applyEvent(e agent.Event) {
 		// called twice, which counted every turn twice against the cap and
 		// could start two continuations on one agent.
 		m.stepOvernight(spent)
+
+		// A harness prompt that was queued behind an interrupted turn starts
+		// here, once that turn has actually ended.
+		if m.queuedHidden != "" && !m.processing {
+			prompt := m.queuedHidden
+			m.queuedHidden = ""
+			m.submitHidden(prompt)
+		}
 	}
 }
 
@@ -1535,13 +1549,19 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		if goal == "" {
 			goal = BarePlanGoal
 		}
+		prompt := fmt.Sprintf(PlanPrompt, goal)
 		if m.processing {
+			// Queued, not sent: the cancelled turn is still unwinding, and a
+			// second Run against the same agent is refused (H2.3) — silently,
+			// since a hidden prompt has nobody to report to. It starts when the
+			// turn it interrupted actually ends.
 			m.notice = "👉 Interrupting and planning..."
+			m.queuedHidden = prompt
 			m.interrupt(false)
-		} else {
-			m.notice = "🧭 Planning " + truncateCells(goal, 40) + "... (plan-only; no edits)"
+			return m, nil
 		}
-		m.submitHidden(fmt.Sprintf(PlanPrompt, goal))
+		m.notice = "🧭 Planning " + truncateCells(goal, 40) + "... (plan-only; no edits)"
+		m.submitHidden(prompt)
 		return m, nil
 
 	case "poke":

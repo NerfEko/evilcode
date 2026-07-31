@@ -228,11 +228,11 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   `Reply` never arrives, its goroutine blocks until the user interrupts. The code comment
   claiming the batch bounds this is wrong. Fix: queue, or answer-with-nil the displaced
   request immediately.  ⟨both⟩
-- [ ] **H2.16** `internal/tui/app.go:1741`, `selftest.go:38`, `sessioncmd.go:143` —
+- [x] **H2.16** `internal/tui/app.go:1741`, `selftest.go:38`, `sessioncmd.go:143` —
   `/compact` and `/rewind` do not check `m.processing`; an in-flight turn keeps appending
   across `Conv.Reset`, and its messages land after the rewrite. Fix: refuse while
   processing, or cancel and await `TurnEnd` first.  ⟨both⟩
-- [ ] **H2.17** `internal/tui/app.go:1531` `/plan` — cancels the active turn and launches a
+- [x] **H2.17** `internal/tui/app.go:1531` `/plan` — cancels the active turn and launches a
   hidden run immediately, without awaiting the cancelled turn's end. Fix: queue the prompt,
   start on the matching `TurnEnd`.  ⟨codex⟩
 - [ ] **H2.18** `internal/tui/images.go:225` — concurrent mermaid renders share one atomic

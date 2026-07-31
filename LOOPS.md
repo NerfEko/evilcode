@@ -2477,3 +2477,32 @@ it is several is the bug.
 
 Verified: three parallel `cd` calls each land where they meant to, three runs;
 `go test ./... -race` green.
+
+## 2026-07-31 H2.16/H2.17 — Three commands that did not wait
+
+All three rewrite or replace the conversation while a turn may still be writing
+to it, and all three are in the TUI, so they go together.
+
+**`/compact` and `/rewind`** did not look at `m.processing` at all. A turn in
+flight keeps appending across `Conv.Reset`, and its messages land *after* the
+rewrite — attached to a conversation that has been truncated or summarized out
+from under them. Both now refuse first, before any of their other checks, which
+is also what makes the refusal testable: the reproduction hit "compaction is not
+configured" and "no session to rewind" before ever reaching the question.
+
+**`/plan`** cancelled the running turn and submitted its own in the next
+statement, without waiting for the cancelled one to end. That was a race before
+this phase. It is worse *because of* this phase: H2.3 refuses the second turn,
+and `submitHidden` discards the error, so `/plan` during a turn would have
+silently done nothing at all. The prompt is queued now and starts on the
+matching `TurnEnd`.
+
+That is the third time in H2 that adding a guard turned a race into a silent
+no-op somewhere else. The pattern is worth stating plainly: a guard does not
+fix a caller, it reclassifies the caller's bug. Anything that ignored an error
+because the error was impossible needs re-reading the moment it becomes
+possible.
+
+Verified: both commands refuse mid-turn and change nothing; a `/plan` issued
+during a turn is queued and starts when that turn ends; `go test ./... -race`
+green.
