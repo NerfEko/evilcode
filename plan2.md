@@ -116,7 +116,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   it checks Content/Reasoning for emptiness and then appends the whole message including
   `msg.ToolCalls`. Fix: strip `ToolCalls`, or emit `[Skipped: interrupted]` stubs the way
   safe point C already does. Do H1.2 and H1.3 as one mechanism, two commits.  ⟨fable⟩
-- [ ] **H1.4** `internal/lsp/ops.go:299` — LSP character positions are **UTF-16 code
+- [x] **H1.4** `internal/lsp/ops.go:299` — LSP character positions are **UTF-16 code
   units**; the edit path slices Go strings with them as **byte offsets**. Every rename or
   edit through the LSP tool corrupts any file containing non-ASCII, and can split a UTF-8
   sequence. Fix: convert every LSP position UTF-16→byte with validation. Reproduce: rename
@@ -430,6 +430,13 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
 - [ ] **H5.20** Verify H5: a conflict clears after a re-read and re-fires on the next write;
   `!ls` either runs or is not offered; a corrupt session line is reported with its number
   rather than skipped; a repo-pinned model actually loads. Tag `harden-5`.
+- [ ] **H5.21** `internal/lsp/ops.go` `docPosition` — the outbound direction of H1.4.
+  The `lsp` tool takes a 1-based column "as read prints it" and sends it as a protocol
+  character, which is a UTF-16 code unit: on a line with non-ASCII text to the left of the
+  symbol, the server is pointed at the wrong token, so `definition`, `references`, `hover`
+  and `rename` act on the wrong thing or fail. Cannot corrupt a file the way H1.4 could —
+  the server answers about something else rather than the edit landing wrong. Fix: convert
+  rune column → UTF-16 unit against the line text at the boundary.  ⟨found while fixing H1.4⟩
 
 ---
 

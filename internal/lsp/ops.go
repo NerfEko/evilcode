@@ -269,6 +269,39 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 	return res, nil
 }
 
+// utf16ToByte converts a protocol character offset into a byte index into line.
+//
+// LSP positions are counted in UTF-16 code units unless a server negotiates
+// otherwise, and evilcode negotiates nothing — so `é` is one unit and two
+// bytes, `🔥` is two units and four. Using the number as a byte index shifts
+// every edit on a line with non-ASCII text to its left, and can slice a UTF-8
+// sequence in half.
+func utf16ToByte(line string, char int) (int, error) {
+	if char < 0 {
+		return 0, fmt.Errorf("character offset %d is negative", char)
+	}
+	units := 0
+	for i, r := range line {
+		if units == char {
+			return i, nil
+		}
+		if r > 0xFFFF {
+			units += 2
+		} else {
+			units++
+		}
+		if units > char {
+			// The offset landed between the halves of a surrogate pair, which
+			// names no position in the text.
+			return 0, fmt.Errorf("character offset %d falls inside a character", char)
+		}
+	}
+	if units == char {
+		return len(line), nil
+	}
+	return 0, fmt.Errorf("character offset %d is past the end of the line", char)
+}
+
 // ApplyEdits applies a file's edits to its text.
 //
 // Edits are applied last-first so that earlier offsets stay valid: the protocol
@@ -296,12 +329,17 @@ func ApplyEdits(text string, edits []TextEdit) (string, error) {
 
 		startLine := lines[e.Range.Start.Line]
 		endLine := lines[e.Range.End.Line]
-		if e.Range.Start.Character > len(startLine) || e.Range.End.Character > len(endLine) {
-			return "", fmt.Errorf("edit column is past the end of its line")
+		startByte, err := utf16ToByte(startLine, e.Range.Start.Character)
+		if err != nil {
+			return "", fmt.Errorf("edit at line %d: %w", e.Range.Start.Line+1, err)
+		}
+		endByte, err := utf16ToByte(endLine, e.Range.End.Character)
+		if err != nil {
+			return "", fmt.Errorf("edit ending at line %d: %w", e.Range.End.Line+1, err)
 		}
 
-		head := startLine[:e.Range.Start.Character]
-		tail := endLine[e.Range.End.Character:]
+		head := startLine[:startByte]
+		tail := endLine[endByte:]
 		merged := head + e.NewText + tail
 
 		rest := append([]string{merged}, lines[e.Range.End.Line+1:]...)

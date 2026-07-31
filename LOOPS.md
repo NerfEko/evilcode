@@ -1546,3 +1546,39 @@ than the symptom: every `tool_call` in the conversation has a result message
 with its ID. Both interrupt paths are now checked against it.
 
 Verified: reproduction passes, partial text still kept, `go test ./...` green.
+
+## 2026-07-31 H1.4 — Counting in the wrong units
+
+`ApplyEdits` sliced Go strings with the protocol's `Character` offsets. Those are
+UTF-16 code units — `é` is one unit and two bytes, `🔥` is two units and four —
+so every edit on a line with non-ASCII text to its left landed at the wrong byte,
+and an offset in the middle of a multi-byte sequence cut it in half. This is the
+one finding in H1 that damages files rather than state, and it was single-source.
+
+Three reproductions, all of them corrupting:
+
+```
+"x := \"héllo\";renamedd := 1"   want "x := \"héllo\"; renamed := 1"
+"x := \"🔥\"renamedld := 1"      want "x := \"🔥\"; renamed := 1"
+"vr := 1"                        want "v := 1"
+```
+
+The last one is the ugly case: the replaced range itself started at a valid byte
+and ended inside `ä`, so the surviving text is not the identifier that was there
+and not the one that was asked for.
+
+`utf16ToByte` converts and validates. Bounds checking moved into it, which is
+strictly better than the old `> len(line)` test — that one compared a unit count
+against a byte count and would accept an offset past the line's end whenever the
+line held non-ASCII. An offset landing between the halves of a surrogate pair is
+an error rather than a guess, and because rename computes every file before
+writing any, an error there stops the whole rename instead of half-applying it.
+
+The outbound direction is wrong too and is not fixed here: `docPosition` sends
+the model's 1-based column as a protocol character, so a symbol with non-ASCII
+earlier on its line is looked up at the wrong position. It cannot corrupt a file
+— the server just answers about something else — so it is logged as **H5.21**
+rather than folded into this commit.
+
+Verified: four reproductions pass, existing ASCII edit tests unchanged,
+`go test ./...` green.
