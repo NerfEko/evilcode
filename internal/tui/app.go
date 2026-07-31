@@ -1432,6 +1432,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "memory":
 		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
 
+	case "productivity":
+		return m, m.productivityCommand()
+
 	case "advisor":
 		return m, m.advisorCommand(strings.TrimSpace(m.commandArg))
 

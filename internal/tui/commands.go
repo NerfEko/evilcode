@@ -34,6 +34,7 @@ var Commands = []Command{
 	{Name: "todos", Help: "Toggle the todo card"},
 	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
 	{Name: "poke", Help: "Auto-poke on/off/status"},
+	{Name: "productivity", Help: "What you have been doing, as a dashboard"},
 	{Name: "advisor", Help: "Second-opinion model on/off/status"},
 	{Name: "lsp", Help: "Language server status"},
 
@@ -152,7 +153,7 @@ var HelpSections = []HelpSection{
 	{"Models", []string{"model", "models"}},
 	{"Working", []string{"plan", "todos", "poke", "memory"}},
 	{"Swarm", []string{"summon", "agents"}},
-	{"Analysis", []string{"lsp", "advisor"}},
+	{"Analysis", []string{"lsp", "advisor", "productivity"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "terminal-setup", "screenshot",

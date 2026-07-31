@@ -118,7 +118,13 @@ type Config struct {
 	Display      Display           `toml:"display"`
 	Features     Features          `toml:"features"`
 	Keybindings  map[string]string `toml:"keybindings"`
-	MCP          []MCPServer       `toml:"mcp"`
+
+	// Dictate is the speech-to-text command `evilcode dictate` runs. A command
+	// rather than a bundled engine: STT setups are personal — a local
+	// whisper.cpp, a cloud key, a wrapper script — and evilcode has no business
+	// having an opinion about which.
+	Dictate []string    `toml:"dictate"`
+	MCP     []MCPServer `toml:"mcp"`
 
 	// LSP maps a language id to the command that serves it, overriding the
 	// built-in defaults (plan.md §17). `lsp.go = ["gopls"]`.

@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"evilcode/internal/attachcmd"
+	"evilcode/internal/completions"
 	"evilcode/internal/probecmd"
 	"evilcode/internal/runcmd"
 	"evilcode/internal/servecmd"
@@ -24,8 +25,10 @@ subcommands:
   run        headless one-shot: evilcode run "prompt"
   serve      background daemon hosting sessions
   attach     attach a TUI to a running daemon session
+  completions print a shell completion script: bash | zsh | fish
   probe      self-test rig; see 'evilcode probe -h'
   dictate    speech-to-text into the composer
+  completions generate a shell completion script (bash, zsh, fish)
 
 Run 'evilcode <subcommand> -h' for subcommand flags.
 `
@@ -59,8 +62,14 @@ func run(args []string) error {
 		return servecmd.Run(args)
 	case "attach":
 		return attachcmd.Run(args)
+	case "completions":
+		return completions.RunCompletions(args)
+	case "__complete":
+		// Hidden: the completion scripts call it, people do not. Listing it in
+		// the usage would put plumbing in front of every reader.
+		return completions.RunComplete(args)
 	case "dictate":
-		return fmt.Errorf("%q is not implemented yet — see plan.md for the phase that lands it", sub)
+		return completions.RunDictate(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil

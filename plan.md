@@ -1043,7 +1043,7 @@ A second, cheap model (the `smol` role) watches the conversation: after each tur
 - [x] Mermaid: ```` ```mermaid ```` → shell to `mmdc` → PNG → kitty inline/side panel; absent → styled source + `↻ mermaid (render requires mmdc)`. **Do not write a renderer.** Diagram pane position/zoom/pan keys (§11, §3.1).
 - [x] **`lsp` tool** (gopls first) per §17. `/lsp status`.
 - [x] **Advisor** per §21.
-- [ ] Shell completions: generated bash/zsh/fish completion scripts (`evilcode completions <shell>`) covering subcommands, flags, model names, session names.
+- [x] Shell completions: generated bash/zsh/fish completion scripts (`evilcode completions <shell>`) covering subcommands, flags, model names, session names.
 - [ ] `/productivity` (stats dashboard → PNG via ansirender). `/overnight` (supervised long-run loop over todos with hard budget caps — breakers prerequisite). `evilcode dictate` (configured STT command → composer).
 - [ ] Panel slide-in via harmonica (only if panels feel dead without it).
 - [ ] **`/selfdev` — graduation**: evilcode opens a session on its own repo with a skill encoding §0.2 (build → test → probe → PNG check → commit → codex review); `/rebuild` = build+test+restart; `/reload` = re-exec preserving session (exec + `--resume`). From here evilcode develops itself and the external agent retires.
