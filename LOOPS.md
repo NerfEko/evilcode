@@ -1421,3 +1421,31 @@ on use. It was agreed up front, which made it feel settled, but the first real
 session with it was the first honest test and it failed immediately. A design
 decision that can be checked by looking should be checked by looking before it
 lands, not after.
+
+## 2026-07-31 — Scroll slack: the view only moves one way
+
+Suggested from use: when a thinking trace collapses, don't pull the conversation
+back down to close the gap — leave the empty space and let new content fill it.
+
+That is exactly right, and it is invariant 4 ("prefer stays put") applied to the
+one place the transcript was still jumping. Concretely: with a tail-anchored
+window, collapsing a nine-line trace to one moves every line *above* it down
+eight rows on screen, right as the answer starts arriving — a jump in the
+opposite direction from the one the reader is already tracking.
+
+`Scroll` now carries slack: a shrink while following the tail is banked rather
+than applied, the window is measured against content-plus-slack so the text holds
+its position, and the gap renders as blank rows below. New content spends the
+gap before scrolling resumes. A reader who has scrolled up is anchored to content
+rather than to the bottom, so no slack is held for them — a gap there would just
+be a hole in their view.
+
+Two bugs of my own on the way in, both caught by running it rather than by
+reading it. Slack extends the *window*, not the content, so an unclamped start
+ran past the last line and panicked on the slice — the TUI died on the first
+keystroke. And slack accumulates across turns, so uncapped it eventually scrolled
+the conversation off the top entirely; it is capped at half the viewport, because
+a gap larger than that is a blank screen rather than breathing room.
+
+Verified live: the prompt row settles at 8 and stays at 8 through a full turn
+including the collapse, where it used to drop.

@@ -55,7 +55,54 @@ type Scroll struct {
 	// bookmark holds a saved position for Ctrl+G, and whether one is set.
 	bookmark    int
 	hasBookmark bool
+
+	// slack holds the height the transcript has lost but not yet given back.
+	//
+	// A collapsing thinking trace removes eight or nine lines at the instant the
+	// answer starts. Following the tail exactly would haul the whole
+	// conversation back *down* the screen to close the gap — a jump in the
+	// opposite direction from the one the reader was already tracking, right as
+	// text starts arriving. Instead the gap is kept as empty space below the
+	// text and spent as new content arrives, so the view only ever moves one
+	// way (plan.md invariant 4: prefer "stays put").
+	slack int
+
+	// lastHeight is the content height last observed, for detecting a shrink.
+	lastHeight int
 }
+
+// Observe records the transcript's height, converting any shrink into slack.
+//
+// Only while following the tail: a reader who has scrolled up is anchored to
+// content rather than to the bottom, so there is no downward haul to prevent
+// and holding a gap would just be a hole in their view.
+func (s *Scroll) Observe(contentHeight, viewportHeight int) {
+	if s.lastHeight == 0 {
+		s.lastHeight = contentHeight
+		return
+	}
+	switch {
+	case contentHeight < s.lastHeight && !s.Paused:
+		s.slack += s.lastHeight - contentHeight
+	case contentHeight > s.lastHeight:
+		// New content spends the gap before it starts scrolling again.
+		if s.slack > 0 {
+			s.slack = max(s.slack-(contentHeight-s.lastHeight), 0)
+		}
+	}
+	// Capped at half the viewport. Shrinks accumulate across turns, and an
+	// uncapped gap eventually scrolls the conversation off the top entirely —
+	// a blank screen is not "a little breathing room".
+	s.slack = min(s.slack, max(viewportHeight/2, 0))
+	s.lastHeight = contentHeight
+}
+
+// Slack is the unclaimed height held below the text.
+func (s *Scroll) Slack() int { return s.slack }
+
+// ClearSlack drops the gap outright, for anything that repaints from scratch —
+// a clear, a compaction, a theme change.
+func (s *Scroll) ClearSlack() { s.slack, s.lastHeight = 0, 0 }
 
 // Max is the largest valid offset for the given content and viewport heights.
 func Max(contentHeight, viewportHeight int) int {

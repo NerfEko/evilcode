@@ -1504,6 +1504,7 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "clear", "cls":
 		m.blocks = nil
+		m.scroll.ClearSlack()
 		m.promptCount = 0
 		m.scroll.FollowBottom()
 		m.notice = ""
@@ -2144,13 +2145,30 @@ func (m *Model) View() tea.View {
 	res := m.stack().Resolve()
 	content := m.transcriptLines()
 
+	// A shrink becomes slack rather than a downward haul: when a thinking trace
+	// collapses, the gap it leaves is kept below the text and spent by whatever
+	// arrives next, so the view only ever moves one way (invariant 4).
+	m.scroll.Observe(len(content), res.Transcript)
+
 	// Window the transcript to its resolved height, honoring the scroll offset.
-	start := max(len(content)-res.Transcript-m.scroll.Offset, 0)
+	// The window is measured against the content *plus* any slack, which is what
+	// holds the text where it was instead of pulling it back down.
+	// Clamped to the content: slack extends the *window*, not the content, so
+	// without this the start can run past the last line and the slice panics.
+	start := clamp(len(content)+m.scroll.Slack()-res.Transcript-m.scroll.Offset,
+		0, len(content))
 	end := min(start+res.Transcript, len(content))
 	if end < start {
 		end = start
 	}
 	visible := content[start:end]
+
+	// The slack itself is blank rows below the text. They are real rows, so the
+	// dock and the scrollbar see a stable region rather than one that shrinks
+	// and regrows under them.
+	if gap := min(m.scroll.Slack(), res.Transcript-len(visible)); gap > 0 {
+		visible = append(append([]string(nil), visible...), make([]string, gap)...)
+	}
 
 	var rows []string
 	rows = append(rows, visible...)

@@ -196,6 +196,7 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	m.blocks = nil
+	m.scroll.ClearSlack()
 	m.promptCount = 0
 	m.rebuildFromMessages(kept)
 	m.notice = fmt.Sprintf("Rewound to point %d · a summary of what was pruned was kept", n)
@@ -253,6 +254,7 @@ func (m *Model) rebuildFromMessages(msgs []provider.Message) {
 // RebuildFrom repopulates the transcript when resuming a session.
 func (m *Model) RebuildFrom(msgs []provider.Message) {
 	m.blocks = nil
+	m.scroll.ClearSlack()
 	m.promptCount = 0
 	m.rebuildFromMessages(msgs)
 }

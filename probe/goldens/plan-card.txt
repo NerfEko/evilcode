@@ -1,4 +1,3 @@
- evilcode · v0.1.0
  session: Dracula 🧛
  /model to switch · local:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ● mock
@@ -19,6 +18,7 @@
  │ Validation                                                                                       │
  │ The test above, plus one manual cold start.                                                      │
  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 
  🧭 Planning wire the auth flow... (plan-only; no edits)
  1>
