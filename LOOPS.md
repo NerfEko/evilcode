@@ -3375,3 +3375,29 @@ duplicating the boundary logic or slicing raw.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test
 ./...` green (995 tests).
+
+## 2026-07-31 H5.9 — rewind collapse summary misattributed a kept message as discarded
+
+`runRewind` (`sessioncmd.go:186`) computed `discarded := before[len(kept):]`
+where `before` came from `Conv.Messages()`, which prepends a system message
+at index 0 (`context.go:99`), and `kept` came from `Store.Rewind` →
+`session.Messages(path)`, which never includes one (`store.go:508`). The two
+slices were off by one, so the boundary landed a message early and folded a
+message that was actually kept into the "discarded" report.
+
+Reproduce: `TestRewindCollapseSummaryDoesNotMisattributeAKeptMessage` in
+`internal/tui/rewind_test.go` — a session with a user prompt, a tool result,
+a second user prompt, and an assistant reply; rewind to the second prompt so
+only the first prompt and its tool result are kept. Failed before the fix:
+collapse summary reported "1 tool call(s)" pruned when the tool result was
+actually kept — `"...contained 1 prompt(s) and 1 tool call(s)..."`.
+
+Root cause confirmed at the report's site — no caller-side fix needed, since
+`runRewind` is the only place that pairs these two message lists.
+
+Fix: strip the leading system message from `before` right after fetching it
+(`sessioncmd.go:186`), so both slices index the same on-disk messages before
+the `before[len(kept):]` boundary is taken.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test
+./...` green.

@@ -184,6 +184,12 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 	target := points[n-1]
 
 	before := m.agent.Conv.Messages()
+	// Conv.Messages() prepends the system message; the on-disk log (and thus
+	// kept, below) never has one. Strip it so both slices index the same
+	// messages, or the boundary below is off by one.
+	if len(before) > 0 && before[0].Role == provider.RoleSystem {
+		before = before[1:]
+	}
 	kept, err := m.store.Rewind(m.dataDir, target.Entry)
 	if err != nil {
 		m.notice = err.Error()
