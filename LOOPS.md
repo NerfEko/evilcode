@@ -2447,3 +2447,33 @@ everything, for the end of a turn.
 Verified: two questions in one round are both answered in order, removing a
 queued one leaves the visible one alone, cancelling releases all three; `go test
 ./... -race` green.
+
+## 2026-07-31 H2.14 — Three shells, one working directory
+
+`bash` carries its working directory between calls, which is the point: a `cd`
+should still hold on the next command, the way it does for a person. It does
+that by reading the directory at the start of a call and writing it back at the
+end. Run in parallel, three calls all start where the *previous round* left off,
+and the last to finish decides where the next round begins.
+
+```
+call 1 failed: exit status 1
+bash: line 1: cd: two: No such file or directory
+```
+
+Three calls that each step down one directory, and the second one cannot find a
+directory that is plainly there — because it started somewhere it did not
+expect. When the paths happen to resolve, there is no error at all: the command
+runs in the wrong directory and reports success.
+
+Foreground execution is serialized on its own lock, taken *before* the timeout
+starts so a queued command does not spend its budget waiting for the shell.
+Background commands are untouched — they carry no directory state and detaching
+is what they are for.
+
+One lock for the whole shell rather than anything cleverer. A tool that carries
+a working directory is a single conversation with a single shell, and pretending
+it is several is the bug.
+
+Verified: three parallel `cd` calls each land where they meant to, three runs;
+`go test ./... -race` green.

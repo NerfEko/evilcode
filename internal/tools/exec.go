@@ -29,6 +29,20 @@ type Exec struct {
 	// a human shell user expects within a turn.
 	mu  sync.Mutex
 	cwd string
+
+	// run serializes foreground commands.
+	//
+	// A stateful shell cannot run in parallel with itself: each call reads the
+	// working directory at the start and writes it back at the end, so parallel
+	// calls all begin where the previous round left off and the last to finish
+	// decides where the next round begins. Every `cd` but one is lost, and a
+	// call that expected to be somewhere else does its work in the wrong place
+	// while reporting success.
+	//
+	// ponytail: one lock for the whole shell, not per-directory. A tool that
+	// carries a working directory is a single conversation with a single shell,
+	// and pretending otherwise is what this is fixing.
+	run sync.Mutex
 }
 
 // DefaultTimeout is the per-command wall clock budget.
@@ -155,6 +169,12 @@ func (e *Exec) bashTool() Tool {
 			if a.Timeout > 0 {
 				timeout = time.Duration(a.Timeout) * time.Second
 			}
+
+			// Taken before the timeout starts: a command must not spend its
+			// budget waiting for the shell to be free.
+			e.run.Lock()
+			defer e.run.Unlock()
+
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 

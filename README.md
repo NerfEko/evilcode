@@ -176,18 +176,28 @@ rewrote a file it had read, delivered between turns rather than mid-thought.
 `/summon` start headless workers whose results are validated against a JSON Schema the
 spawner supplies, so nobody has to parse prose.
 
+The shared plan and todo list span the swarm: one store per namespace, held by
+reference, so every worker sees the same items rather than a private half that the
+last writer overwrites. A session runs one turn at a time — a second client that
+arrives mid-turn interleaves into the running turn rather than launching a second run
+against one conversation — and worker counts stay within their caps under concurrent
+`/summon`. Repo overrides are applied to a per-build copy of the config, so one
+repository's pinned model or roles never leak into another session's.
+
 ### Tools
 
 `read`, `write`, `edit`, `glob`, `grep`, `bash`, `ask`, `todo`, git helpers, and MCP
-servers adapted into the same interface. Batches run with bounded concurrency.
+servers adapted into the same interface. Batches dispatch through a fixed worker pool
+with a cap on both concurrency and total size.
 
 `edit` has a hash-anchored mode: `read` prints a short content hash beside each line,
 and an edit names the anchor instead of reproducing surrounding context. Stale anchors
 are refused rather than fuzzily matched.
 
 The `lsp` tool covers diagnostics, definition, references, hover, symbols and rename,
-with gopls preconfigured. A rename computes every touched file in memory before
-anything reaches disk, so it cannot half-apply.
+with gopls preconfigured. One server is launched per language and shared by every
+caller, so concurrent calls do not spawn duplicates. A rename computes every touched
+file in memory before anything reaches disk, so it cannot half-apply.
 
 `write` and `edit` replace a file through a same-directory temp file and a rename, so
 nothing else ever reads a half-written version, and two edits to one file in the same
@@ -203,8 +213,9 @@ between pictures and placeholders.
 ### Unattended and self-hosted work
 
 `/overnight` works the todo list with nobody watching, bounded by turns, tokens, wall
-clock, and consecutive turns that fail to move the list. It stops on its own and says
-which limit stopped it.
+clock, and consecutive turns that fail to move the list. The token budget accumulates
+across turns rather than resetting, so it stops on real cost. It stops on its own and
+says which limit stopped it.
 
 `/selfdev` opens a session on this repository with a skill describing the development
 loop. `/rebuild` builds, tests and restarts into the new binary. It runs the tests

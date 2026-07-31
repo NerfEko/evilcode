@@ -220,7 +220,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   model-supplied call *before* the semaphore applies, so a pathological call list exhausts
   memory and the scheduler regardless of the concurrency cap. Fix: cap batch size, dispatch
   through a fixed worker pool.  ⟨codex⟩
-- [ ] **H2.14** `internal/tools/exec.go:167` — parallel stateful shell calls snapshot the
+- [x] **H2.14** `internal/tools/exec.go:167` — parallel stateful shell calls snapshot the
   same working directory; last finisher wins and the others' `cd` is lost. Fix: serialize
   stateful execution.  ⟨codex⟩
 - [x] **H2.15** `internal/tools/ask.go:128` — `PendingAsk` is a single slot with no queue,
