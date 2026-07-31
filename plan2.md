@@ -187,7 +187,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H2.4** `internal/daemon/hub.go:79` — global and per-session worker limits are
   checked without reserving, so concurrent spawns exceed both. Fix: reserve both counters
   under coordinated locking, roll back on failure.  ⟨both⟩
-- [ ] **H2.5** `internal/daemon/spawn.go:72` — worker-name collision resolution runs
+- [x] **H2.5** `internal/daemon/spawn.go:72` — worker-name collision resolution runs
   *after* the store and agent are built, so a suffixed worker can still be holding the
   original session log and identity. Fix: allocate the unique name before creating any
   resource.  ⟨codex⟩

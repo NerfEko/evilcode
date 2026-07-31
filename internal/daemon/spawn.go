@@ -3,10 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	"evilcode/internal/config"
+	"evilcode/internal/session"
 	"evilcode/internal/wiring"
 )
 
@@ -50,17 +54,25 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		return nil, fmt.Errorf("the daemon is shutting down")
 	}
 
-	todos, bank := s.shared()
-	built, err := wiring.Build(s.Cfg, wiring.Options{
-		Model: s.Model, Cwd: s.Cwd,
-		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
-	})
+	// The name and its log are settled before anything is built under them.
+	store, err := s.claimName()
 	if err != nil {
 		return nil, err
 	}
 
+	todos, bank := s.shared()
+	built, err := wiring.Build(s.Cfg, wiring.Options{
+		Model: s.Model, Cwd: s.Cwd, Store: store,
+		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
+	})
+	if err != nil {
+		store.Close()
+		s.releaseName(store.Name)
+		return nil, err
+	}
+
 	sess := &Session{
-		Name:    built.Store.Name,
+		Name:    store.Name,
 		Model:   built.Model,
 		Task:    task,
 		Worker:  true,
@@ -75,16 +87,16 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	// A worker can message and spawn like any other session. Bounded, though:
 	// MaxLiveWorkers and MaxWorkersPerSession are what stop a worker that
 	// decides delegation is going well from recursing (§12.6).
+	//
+	// Bound to the settled name: built before the name was final, these tools
+	// spoke as whatever session the worker had collided with, so its messages
+	// arrived from the wrong sender and its spawns were charged to the wrong
+	// account.
 	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
 
 	s.mu.Lock()
-	// Names collide: EVILCODE_DETERMINISTIC pins every new session to the same
-	// one (invariant 5), and even without it the creature table is finite. An
-	// unqualified insert here silently replaced the session a client was
-	// attached to with a worker, which is how `/summon` reported summoning the
-	// session that summoned it.
-	sess.Name = s.uniqueName(sess.Name)
 	s.sessions[sess.Name] = sess
+	delete(s.reserved, sess.Name)
 	s.mu.Unlock()
 
 	if register != nil {
@@ -112,21 +124,71 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	return sess, nil
 }
 
+// claimName settles a worker's name and its log before anything is built under
+// it.
+//
+// Both halves have to happen here. The daemon map decides what the name means
+// to clients; the O_EXCL create decides what it means on disk. Allocating the
+// name after the store existed left a renamed worker holding the log — and the
+// identity its own swarm tools spoke with — of whatever it collided with.
+func (s *Server) claimName() (*session.Store, error) {
+	base := session.PickFreeName(config.DataDir())
+	for range 64 {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("the daemon is shutting down")
+		}
+		if s.reserved == nil {
+			s.reserved = map[string]bool{}
+		}
+		name := s.uniqueName(base)
+		s.reserved[name] = true
+		s.mu.Unlock()
+
+		st, err := session.CreateNamed(config.DataDir(), name)
+		if err == nil {
+			return st, nil
+		}
+		s.releaseName(name)
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("no free session name")
+}
+
+// releaseName drops a reservation whose session was never built.
+func (s *Server) releaseName(name string) {
+	s.mu.Lock()
+	delete(s.reserved, name)
+	s.mu.Unlock()
+}
+
 // uniqueName returns a name no live session holds. The caller must hold s.mu.
 //
 // The suffix rather than a rename of the file on disk: the JSONL session keeps
 // the name it was created with, and only the daemon's live map needs the two to
 // be distinguishable.
 func (s *Server) uniqueName(name string) string {
-	if _, taken := s.sessions[name]; !taken {
+	if !s.nameTaken(name) {
 		return name
 	}
 	for n := 2; ; n++ {
 		candidate := fmt.Sprintf("%s-%d", name, n)
-		if _, taken := s.sessions[candidate]; !taken {
+		if !s.nameTaken(candidate) {
 			return candidate
 		}
 	}
+}
+
+// nameTaken reports whether a name belongs to a live session or to one still
+// being built. The caller must hold s.mu.
+func (s *Server) nameTaken(name string) bool {
+	if _, live := s.sessions[name]; live {
+		return true
+	}
+	return s.reserved[name]
 }
 
 // WorkerTimeout bounds a spawned worker. Every auto-started loop needs a

@@ -47,6 +47,10 @@ type Server struct {
 	listener net.Listener
 	closed   bool
 
+	// reserved holds names claimed by a session still being built, so a
+	// concurrent spawn does not settle on the same one.
+	reserved map[string]bool
+
 	// todos and bank are the swarm's shared state, owned here and handed to
 	// every session by reference. Opened per session they were N copies of one
 	// set of files, each writing the whole file back over the others.

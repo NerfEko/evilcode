@@ -2182,3 +2182,34 @@ its resources if allocating a name is not an atomic act in the first place.
 
 Verified: sixteen concurrent creators, sixteen distinct sessions, five runs;
 `go test ./... -race` green.
+
+## 2026-07-31 H2.5 — The worker was renamed but not moved
+
+Name collision was resolved *after* the store and the agent were built, and only
+in the daemon's map. The renamed worker kept the session log it had been built
+with, and its swarm tools kept the identity they had been bound with — so it
+wrote into another session's file and sent messages as another session.
+
+The reproduction needed `EVILCODE_DETERMINISTIC=1`, where every session is
+created under the same name and the collision is the normal case rather than a
+rarity:
+
+```
+the worker is called "dracula-2" but writes to the session log of "dracula"
+the worker's log is .../sessions/dracula.jsonl, which is not its own
+the worker and the session it collided with share one log
+```
+
+`claimName` now settles both halves before anything is built: the daemon map
+decides what the name means to clients, `session.CreateNamed` decides what it
+means on disk, and a `reserved` set covers the gap between claiming a name and
+inserting the finished session, so a concurrent spawn cannot settle on the same
+one. `wiring.Build` takes the store rather than creating one, and the swarm
+tools are bound after the name is final.
+
+This is why H2.12 came first. Settling a name before building is only worth
+anything if claiming a name is atomic; otherwise the daemon's map agrees while
+the filesystem does not.
+
+Verified: a suffixed worker owns its own log and identity, and the session it
+collided with keeps its own; `go test ./... -race` green.

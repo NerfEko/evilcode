@@ -122,6 +122,24 @@ func Create(dataDir string) (*Store, error) {
 	return nil, fmt.Errorf("no free session name after 64 attempts")
 }
 
+// PickFreeName proposes a session name nothing on disk holds.
+//
+// It claims nothing — CreateNamed does that, exclusively. This exists for the
+// daemon, which has to settle a worker's name before it builds anything under
+// it: a name allocated afterwards leaves the worker holding the log of whatever
+// it collided with.
+func PickFreeName(dataDir string) string {
+	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
+		return "dracula"
+	}
+	existing, _ := List(dataDir)
+	taken := make(map[string]bool, len(existing))
+	for _, s := range existing {
+		taken[s.Name] = true
+	}
+	return core.PickName(core.Creatures, core.SeedFrom(time.Now().String()), taken)
+}
+
 // CreateNamed claims one specific session name, failing if it is already taken.
 //
 // Under EVILCODE_DETERMINISTIC the name repeats by design, so an existing file

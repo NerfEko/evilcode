@@ -29,6 +29,12 @@ type Options struct {
 	// Resume names an existing session; empty creates a new one.
 	Resume string
 
+	// Store, when set, is the session log to use — already created and named by
+	// the caller. The daemon needs this: a worker's name has to be settled
+	// before anything is built under it, and Build creating its own store is
+	// what left a renamed worker writing to another session's log.
+	Store *session.Store
+
 	// Cwd is the workspace root. Empty means the process's directory.
 	Cwd string
 
@@ -107,13 +113,16 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 
 	var store *session.Store
 	var prior []provider.Message
-	if opts.Resume != "" {
+	switch {
+	case opts.Store != nil:
+		store = opts.Store
+	case opts.Resume != "":
 		st, msgs, rerr := session.Resume(dataDir, opts.Resume)
 		if rerr != nil {
 			return nil, rerr
 		}
 		store, prior = st, msgs
-	} else {
+	default:
 		if store, err = session.Create(dataDir); err != nil {
 			return nil, err
 		}
