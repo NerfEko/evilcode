@@ -188,7 +188,10 @@ func (s *Server) reportWorkerResult(worker *Session) bool {
 				// end, so nothing would ever drain the queue. The retry has to
 				// drive another loop itself — and exactly one, which is what
 				// `retried` bounds (plan.md §12.6).
+				worker.mu.Lock()
 				worker.retried = true
+				worker.retrying = true
+				worker.mu.Unlock()
 				worker.built.Agent.Interject(agent.Interrupt{
 					Source: agent.SourceSystem,
 					Text: fmt.Sprintf("Your final message did not match the requested schema: %v\n"+
@@ -197,7 +200,16 @@ func (s *Server) reportWorkerResult(worker *Session) bool {
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), WorkerTimeout)
 					defer cancel()
-					_ = worker.built.Agent.Loop(ctx)
+					err := worker.built.Agent.Loop(ctx)
+					worker.mu.Lock()
+					worker.retrying = false
+					worker.mu.Unlock()
+					// The turn end is what normally finishes a worker. A retry
+					// that could not run at all emits none, so it finishes here
+					// rather than leaving a slot held for the daemon's life.
+					if err != nil {
+						worker.markFinished()
+					}
 				}()
 				return false
 			}

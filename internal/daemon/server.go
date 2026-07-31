@@ -97,6 +97,12 @@ type Session struct {
 	// against the schema. Asking forever is the loop §12.6 exists to prevent.
 	retried bool
 
+	// retrying is true while that second attempt is in flight. The spawn
+	// goroutine used to call markFinished as soon as Run returned, which freed
+	// the worker's slot under MaxLiveWorkers while the retry was still
+	// spending tokens — and let the retry overlap the tail of the original run.
+	retrying bool
+
 	// done is closed when a worker's task ends. The spawn breaker counts what
 	// is not yet closed, which is why it exists at all: a worker's turn starts
 	// on a goroutine, so Running() is false for the first instants after Spawn.

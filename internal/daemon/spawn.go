@@ -115,11 +115,14 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		defer close(done)
 		defer sess.endTurn()
 		defer cancel()
-		_ = sess.built.Agent.Run(ctx, WorkerPrompt(task, files, schema))
-		// A worker that errors out never emits a turn end, so the breaker's
-		// count would never come back down. Closing here too makes "the Run
-		// returned" the definition of finished.
-		sess.markFinished()
+		// Finishing belongs to the turn end, which observe sees: a worker asked
+		// to retry its output against the schema is not finished, and marking
+		// it here freed its slot under MaxLiveWorkers while the retry was still
+		// spending tokens. Only a Run that failed outright — no turn end, so
+		// nothing else will ever finish it — is marked from here.
+		if err := sess.built.Agent.Run(ctx, WorkerPrompt(task, files, schema)); err != nil {
+			sess.markFinished()
+		}
 	}()
 	return sess, nil
 }

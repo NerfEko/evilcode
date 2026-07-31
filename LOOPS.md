@@ -2237,3 +2237,43 @@ that ignored the error was correct only while the error was impossible.
 
 Verified: a refused turn appends nothing and its prompt is nowhere in the
 conversation; `go test ./... -race` green.
+
+## 2026-07-31 H2.6 — Finished, except for the part still running
+
+The spawn goroutine called `markFinished()` as soon as `Run` returned. But
+`reportWorkerResult` returns `false` to mean exactly *not finished*, and then
+drives a second `Loop` for the schema retry. So a worker under retry was counted
+finished: its slot under `MaxLiveWorkers` was handed to the next spawn while it
+was still spending tokens, and the retry could overlap the tail of the original
+run.
+
+Finishing now belongs to the turn end, which `observe` already owns. The spawn
+goroutine marks only a `Run` that *failed* — no turn end was emitted, so nothing
+else will ever finish it, which is the case the original comment was worried
+about and the only one it was right about.
+
+**On the reproduction, honestly.** I could not make this fail deterministically,
+and two attempts are worth recording because both were wrong in instructive
+ways.
+
+The first waited for `retried` to be set and then checked `finished()`. It
+passed against the broken code: by the time the test observed the flag, the
+whole retry had already completed. A window microseconds wide is not observable
+by polling for it.
+
+The second subscribed to the worker's event stream and checked at the retry's
+own `TurnStart`. It failed against the *fixed* code — which looked like a
+finding until I read it properly. The subscription channel is buffered 256 deep,
+so receiving a `TurnStart` says the event happened at some point, not that it is
+happening now. Against an instant mock the retry had finished before the test
+read its start. A test that reports the past as the present is not a slow test,
+it is a wrong one.
+
+What is tested is the rule the fix rests on: arming a retry reports `false` and
+leaves the worker unfinished, and the worker finishes when the retry's turn
+ends. The window itself is closed by construction — the spawn goroutine no
+longer has an opinion about finishing a worker whose turn ended — rather than by
+timing, which is why I am content to leave it unreproduced and say so here
+rather than quietly.
+
+Verified: `go test ./... -race` green.

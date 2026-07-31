@@ -191,7 +191,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   *after* the store and agent are built, so a suffixed worker can still be holding the
   original session log and identity. Fix: allocate the unique name before creating any
   resource.  ⟨codex⟩
-- [ ] **H2.6** `internal/daemon/spawn.go:88` — the spawn goroutine calls `markFinished()`
+- [x] **H2.6** `internal/daemon/spawn.go:88` — the spawn goroutine calls `markFinished()`
   as soon as `Run` returns, but `reportWorkerResult`'s schema-retry path returns `false`
   precisely to mean *not finished* and then starts a second `Loop`. The worker is counted
   finished by `liveWorkers` while its retry burns tokens, and the retry can overlap the
