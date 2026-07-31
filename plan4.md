@@ -533,19 +533,72 @@ retried is out of scope; knowing it is gone is not.
 
 ## §9 Skills
 
-### §9.1 A skill is a directory
+The starting position, measured on this machine rather than assumed: `~/.agents/skills`
+holds **17 skills** and evilcode can see **none** of them, for two unrelated reasons that
+both have to be fixed before any of §9.4–§9.6 is worth building. `~/.claude/skills` is
+likewise invisible. What evilcode does see is two files in `.evilcode/skills/`, and
+`~/.config/evilcode/skills/` does not exist.
 
-Today a skill is one `.md` file, so a skill cannot ship the script it tells the model to
-run. Required: `skills/<name>/SKILL.md` with YAML front matter, the directory being the
-skill's own working material; the flat `<name>.md` form keeps working.
+### §9.1 The skills evilcode can see are the skills on the machine
 
-### §9.2 A skill can narrow the tool set
+`SkillDirs` searches `<repo>/.evilcode/skills` and `<configDir>/skills`. Nothing else.
+`~/.agents/skills` is where this machine's skill library actually lives, and
+`~/.claude/skills` is where a second one does.
+
+Required search order, nearest first, first name wins so a repo can shadow a global:
+
+1. `<repo>/.evilcode/skills`
+2. `<repo>/.agents/skills`
+3. `~/.config/evilcode/skills`
+4. `~/.agents/skills`
+5. `~/.claude/skills`
+
+There is precedent and it is already in the codebase: `internal/agent/context.go` searches
+cwd → git root → config dir for `AGENTS.md` *and* `CLAUDE.md`, because the convention is
+shared and refusing to read the neighbour's file helps nobody. Skills are the same
+situation and got the narrower answer.
+
+A skill found in more than one directory is loaded once, from the nearest, and `/skills`
+says which directory each came from — otherwise shadowing is invisible and debugging it
+means guessing.
+
+### §9.2 A skill is a directory
+
+Every skill in `~/.agents/skills` is `<name>/SKILL.md`, most with sibling material —
+`agent-architect/references/`, and seven others with subdirectories. `LoadSkills` indexes
+top-level `*.md` and would find nothing in any of them even once §9.1 lands.
+
+Required: `<name>/SKILL.md` is a skill, named for its directory, with the directory as its
+own working material — a skill can ship the script it tells the model to run, and the
+`skill` tool's result names the directory so the model can read what is beside it. The flat
+`<name>.md` form keeps working; `.evilcode/skills/selfdev.md` is one and must not break.
+
+### §9.3 Front matter is parsed, not pattern-matched
+
+`skillSummary` finds a description by `CutPrefix(line, "description:")` on each line of the
+front matter. Against the real files that is wrong twice:
+
+- `agent-architect/SKILL.md` opens `description: >` with the text folded across the four
+  following indented lines. Current code returns `>` as the description — a skill index
+  entry that says nothing, in the prompt, forever.
+- A description spanning lines with no folding marker keeps only the first.
+
+Required: parse the front-matter block as YAML rather than scanning it for a prefix, and
+handle at least `description:` inline, `>` folded and `|` literal. It is a small block at
+the head of a file; the naive scan was cheap and is wrong on the majority of skills that
+actually exist here.
+
+Verify against `~/.agents/skills/agent-architect/SKILL.md` specifically. It is the file that
+breaks the current parser.
+
+### §9.4 A skill can narrow the tool set
 
 Front matter `allowed-tools:` restricts the tool set for the turns after that skill is
-loaded. A review skill that cannot write files is a meaningfully different thing from a
-review skill that asks nicely.
+loaded. `~/.agents/skills/agent-browser/SKILL.md` already declares one and evilcode ignores
+it. A review skill that cannot write files is a meaningfully different thing from a review
+skill that asks nicely.
 
-### §9.3 A skill arrives when it is relevant
+### §9.5 A skill arrives when it is relevant
 
 Every skill's name and one-liner sits in the system prompt, which is cache-stable — the
 reason it was built that way — and stops scaling somewhere around thirty skills. Required,
@@ -554,9 +607,10 @@ once §5 lands: skills are embedded alongside memories and a strong match inject
 
 The index stays in the prompt. The trade is explicit and belongs in `DEVIATIONS.md`: a
 per-turn injection costs prompt-cache stability, so it is gated behind a config key and off
-by default until the skill count justifies it.
+by default until the skill count justifies it. Note that §9.1 alone takes this machine from
+2 skills to 19, which is most of the way to the point where the index stops being free.
 
-### §9.4 Skills reload without a restart
+### §9.6 Skills reload without a restart
 
 `LoadSkills` runs once at startup. Editing a skill mid-session requires a restart, which is
 exactly what makes skills annoying to author. `/skills reload`, and re-read a body whose

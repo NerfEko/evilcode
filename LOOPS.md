@@ -2964,3 +2964,43 @@ whoever wants it.
 
 Verified: seven escaping names refused across four entry points, directory and
 log and backup all owner-only; `go test ./... -race` green.
+
+## 2026-07-31 H4.4/H4.5 — Who owns the directory, and who owns the socket
+
+**The fallback runtime directory was taken on trust.** When `$XDG_RUNTIME_DIR`
+is unset the socket goes to a predictable path under `TMPDIR`, and
+`MkdirAll(0700)` does nothing whatsoever to a directory that already exists.
+Someone who creates it first — world-writable, or as a symlink to somewhere they
+control — owns the directory the socket is bound in. That socket carries a live
+shell.
+
+```
+a world-writable runtime directory was accepted; anything that can reach the
+socket in it can run commands as this user
+a group-writable ... accepted
+a symlink somewhere else ... accepted
+```
+
+`CheckRuntimeDir` uses `Lstat`, not `Stat`, because a symlink is precisely the
+case being refused — `Stat` would follow it and report on the target, which is
+the attacker's own tidy 0700 directory.
+
+Peer credentials are checked on accept too. The socket is owner-only, so this
+should never fire; it is here because the mode is one mistake away from not
+being owner-only, and the thing on the other side can run commands as this user.
+A second answer to "who is that" is cheap when the first answer is a file
+permission.
+
+**The stale-socket cleanup raced itself.** Dial, and if nothing answers,
+`os.Remove` and bind. Two daemons starting together both fail the dial, and the
+second removes the socket the first has just bound — daemon one still running,
+unreachable, with nothing to say why.
+
+Inverted: bind first, and only reach for the path if binding fails with
+`EADDRINUSE`. Then dial to find out whether the occupant is alive, and remove
+only if it is not. The removal now happens when the only explanation is a dead
+daemon's leftovers, rather than whenever a dial happened to fail.
+
+Verified: three squatted-directory shapes refused and a proper one accepted; a
+second daemon refuses to start and the first stays reachable; `go test ./...
+-race` green.

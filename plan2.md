@@ -324,12 +324,12 @@ different claim from "model output is trusted", and the first does not imply the
 - [x] **H4.3** `internal/session/store.go:78` — session directories are `0755` and logs
   `0644`, so every prompt, tool output, and anything a model echoed is world-readable. Fix:
   `0700` directories, `0600` files, including temp and backup files.  ⟨codex⟩
-- [ ] **H4.4** `internal/daemon/protocol.go:33` — the `/tmp/evilcode-$UID` fallback (used
+- [x] **H4.4** `internal/daemon/protocol.go:33` — the `/tmp/evilcode-$UID` fallback (used
   when `XDG_RUNTIME_DIR` is unset) does not verify ownership, mode, or symlink status, so a
   pre-existing attacker-created directory permits socket impersonation. `MkdirAll(0700)`
   does not fix an existing directory. Fix: `Lstat`, require current-user ownership and
   `0700`, reject symlinks, verify peer credentials on accept.  ⟨both⟩
-- [ ] **H4.5** `internal/daemon/server.go:117` — TOCTOU in stale-socket cleanup: two daemons
+- [x] **H4.5** `internal/daemon/server.go:117` — TOCTOU in stale-socket cleanup: two daemons
   starting together can both fail the liveness dial, and the second's `os.Remove` unlinks
   the first's freshly bound socket, leaving daemon one running and unreachable. Fix: bind
   first, remove-and-retry only on `EADDRINUSE` after the dial check.  ⟨fable⟩

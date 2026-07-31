@@ -34,6 +34,42 @@ func SocketPath() string {
 	return filepath.Join(dir, SocketName)
 }
 
+// CheckRuntimeDir verifies a directory is fit to hold the daemon's socket.
+//
+// MkdirAll(0700) creates a private directory; it does nothing at all to one
+// that already exists. When $XDG_RUNTIME_DIR is unset the fallback path under
+// TMPDIR is predictable, so an attacker who creates it first — world-writable,
+// or as a symlink pointing somewhere they control — owns the directory the
+// socket is bound in. The socket carries a live shell: anything that can
+// connect runs commands as this user.
+//
+// Lstat rather than Stat, because a symlink is exactly the case being refused.
+func CheckRuntimeDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		// Nothing there is fine: it will be created 0700, owned by us.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to put the daemon socket there", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf(
+			"%s is mode %v, writable or readable beyond its owner; "+
+				"the daemon socket in it would be reachable by others", dir, perm)
+	}
+	if err := checkOwner(dir, info); err != nil {
+		return err
+	}
+	return nil
+}
+
 // MaxSocketPath is the kernel's cap on a unix socket path.
 //
 // sockaddr_un.sun_path is 108 bytes on Linux, and exceeding it fails with a

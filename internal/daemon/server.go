@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"evilcode/internal/agent"
@@ -169,18 +171,35 @@ func (s *Server) Listen() error {
 	if err := CheckSocketPath(s.Path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+	dir := filepath.Dir(s.Path)
+	if err := CheckRuntimeDir(dir); err != nil {
 		return err
 	}
-	if conn, err := net.Dial("unix", s.Path); err == nil {
-		conn.Close()
-		return fmt.Errorf("a daemon is already listening on %s", s.Path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
-	os.Remove(s.Path)
 
+	// Bind first, and only clear the path if binding fails because something
+	// is already there. Dialling and then unconditionally removing was a race
+	// with itself: two daemons starting together both fail the dial, and the
+	// second unlinks the socket the first has just bound — leaving daemon one
+	// running and unreachable, with nothing to indicate why.
 	ln, err := net.Listen("unix", s.Path)
 	if err != nil {
-		return err
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return err
+		}
+		if conn, derr := net.Dial("unix", s.Path); derr == nil {
+			conn.Close()
+			return fmt.Errorf("a daemon is already listening on %s", s.Path)
+		}
+		// Nothing answered: the socket is a leftover from a daemon that died.
+		if rerr := os.Remove(s.Path); rerr != nil {
+			return fmt.Errorf("removing the stale socket %s: %w", s.Path, rerr)
+		}
+		if ln, err = net.Listen("unix", s.Path); err != nil {
+			return err
+		}
 	}
 	// The socket carries a live shell: anything that can connect can run
 	// commands as this user. Owner-only is not defense in depth here, it is the
@@ -215,6 +234,11 @@ func (s *Server) Serve(ctx context.Context) error {
 				return nil
 			}
 			return err
+		}
+		if err := checkPeer(conn); err != nil {
+			fmt.Fprintln(os.Stderr, "evilcode: refusing connection:", err)
+			conn.Close()
+			continue
 		}
 		go s.handle(ctx, conn)
 	}
