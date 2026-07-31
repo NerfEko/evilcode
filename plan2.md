@@ -216,7 +216,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H2.12** `internal/session/store.go:95` — creation picks a free generated name and
   then opens without `O_EXCL`; concurrent creators can select and append to the same log.
   Fix: `O_CREATE|O_EXCL`, retry on collision.  ⟨codex⟩
-- [ ] **H2.13** `internal/tools/tools.go:106` `RunBatch` — a goroutine is created for every
+- [x] **H2.13** `internal/tools/tools.go:106` `RunBatch` — a goroutine is created for every
   model-supplied call *before* the semaphore applies, so a pathological call list exhausts
   memory and the scheduler regardless of the concurrency cap. Fix: cap batch size, dispatch
   through a fixed worker pool.  ⟨codex⟩

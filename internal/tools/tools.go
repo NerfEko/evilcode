@@ -95,28 +95,64 @@ type Outcome struct {
 // thrash the machine for no gain.
 const MaxConcurrent = 8
 
+// MaxBatch bounds how many calls one round may contain. The list comes from the
+// model, so its length is not a fact about the machine: a run of degenerate
+// output can ask for thousands, and every one of them is answered.
+const MaxBatch = 64
+
 // RunBatch executes calls concurrently and returns outcomes in the original
 // order, so the transcript reads in the order the model asked rather than the
 // order things happened to finish.
+//
+// A fixed pool rather than a goroutine per call. The semaphore bounded how many
+// tools *ran*, which is what it was for, but the goroutines were created before
+// it had any say — so a five-thousand-call round cost five thousand stacks and
+// the scheduler that goes with them, whatever the concurrency cap said.
 func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 	out := make([]Outcome, len(calls))
-	sem := make(chan struct{}, MaxConcurrent)
-	var wg sync.WaitGroup
 
-	for i, call := range calls {
-		wg.Add(1)
-		go func(i int, call Call) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				out[i] = Outcome{Call: call, Err: ctx.Err()}
-				return
-			}
-			out[i] = s.RunOne(ctx, call)
-		}(i, call)
+	// Anything past the cap is refused rather than dropped: an unanswered
+	// tool_use is a transcript the provider rejects (H1.2).
+	runnable := len(calls)
+	if runnable > MaxBatch {
+		runnable = MaxBatch
+		for i := MaxBatch; i < len(calls); i++ {
+			out[i] = Outcome{Call: calls[i], Err: fmt.Errorf(
+				"this round asked for %d tool calls; %d is the limit. "+
+					"Ask for fewer at a time", len(calls), MaxBatch)}
+		}
 	}
+
+	workers := min(MaxConcurrent, runnable)
+	queue := make(chan int)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range queue {
+				if ctx.Err() != nil {
+					out[i] = Outcome{Call: calls[i], Err: ctx.Err()}
+					continue
+				}
+				out[i] = s.RunOne(ctx, calls[i])
+			}
+		}()
+	}
+	for i := range runnable {
+		select {
+		case queue <- i:
+		case <-ctx.Done():
+			// Everything still unsent is answered here rather than left blank.
+			for ; i < runnable; i++ {
+				out[i] = Outcome{Call: calls[i], Err: ctx.Err()}
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	close(queue)
 	wg.Wait()
 	return out
 }

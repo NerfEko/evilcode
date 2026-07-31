@@ -2391,3 +2391,33 @@ which also means a failed start is shared rather than re-attempted twelve times.
 
 Verified: one server for twelve concurrent callers, all handed the same client,
 three runs with -race.
+
+## 2026-07-31 H2.13 — The cap bounded the work, not the goroutines
+
+`RunBatch` started a goroutine for every call in the list and *then* let them
+queue on the semaphore. The cap did what it was written to do — eight tools run
+at once — but the list comes from the model, and its length is not a fact about
+the machine.
+
+```
+a 5000-call batch put 5001 goroutines in flight; the cap is 8
+```
+
+Getting that number took two attempts. The first test sampled goroutine counts
+while a fast tool ran and caught 33, which is a failure that reads like noise.
+Holding every tool open until the count is taken is what turns it into the
+actual figure, and 5001 is a different kind of claim than 33.
+
+Now a fixed pool of `min(MaxConcurrent, len(calls))` workers pulling from a
+channel, so the goroutine count is the cap rather than the request. The batch
+itself is capped at 64, with everything past it answered by an error explaining
+the limit rather than dropped — an unanswered `tool_use` is the transcript H1.2
+exists to prevent, and it would be careless to reintroduce it here while
+defending against a different problem.
+
+Cancellation answers every call too, for the same reason: the dispatch loop
+fills in the tail it never sent rather than leaving blanks.
+
+Verified: goroutines in flight stay at the cap for a 5,000-call batch, calls
+past 64 come back refused, a cancelled batch answers all 32; `go test ./...
+-race` green.
