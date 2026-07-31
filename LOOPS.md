@@ -1927,7 +1927,7 @@ reasons. The tokens were read from the status line *after* it had been reset to
 "the most any single turn spent" even with a real number.
 
 ```
-Tokens = 1000 after three 1000-track turns, want 3000
+Tokens = 1000 after three 1000-token turns, want 3000
 stopped for "reached the 40-turn cap" after spending 100001 of a 400000 budget
 overnight recorded 0 tokens for a 1000-token turn
 ```
@@ -1941,3 +1941,42 @@ The turn's cost is now read before the reset and passed in, and accumulates.
 
 Verified: all four reproductions fail before and pass after; `go test ./...
 -race` green.
+
+## 2026-07-31 H1.14 — Verifying phase H1
+
+Each item in the phase's verification list, and what actually stands behind it:
+
+- **compact → append → resume round-trips** — `TestAppendAfterCompactSurvivesResume`
+  and its rewind twin, plus `TestAppendsRacingCompactAreNotLost`, which is the
+  stronger one: it catches the loss through the backup rather than through
+  ordering.
+- **a cancelled turn's transcript replays against a strict endpoint** — added
+  here. The existing tests checked the *conversation*; this one checks what was
+  handed to the persistence sink, which is what a resume rebuilds from. The
+  in-memory check would pass on a build that persisted nothing at all.
+- **an LSP rename on a non-ASCII file is byte-exact** — `TestApplyEditsUsesUTF16Offsets`
+  covers the edit application, which is where the corruption was. The `Rename`
+  round trip through a live server is not tested here: it needs gopls, and the
+  server's answer is the input to the part that was broken, not the broken part.
+- **concurrent edits to one file in one batch both land** —
+  `TestConcurrentEditsToOneFileBothLand`, five attempts, and it failed on the
+  first attempt before the fix.
+- **overnight stops at its budget** — `TestOvernightBudgetBreakerActuallyFires`,
+  which spends a quarter of the budget per turn and asserts on *which* breaker
+  stopped it. Asserting only that it stopped would have passed against the
+  broken code, where the turn cap did all the work.
+
+One more finding folded in from the codex review of H1.9: a turn starting while
+`close` was waiting replaced the channel `close` was waiting on, so the store
+could shut under a live turn. Sessions now refuse new turns once closing has
+begun.
+
+`go build ./... && go vet ./... && go test ./... -race` green. Tagged `harden-1`.
+
+Four of the fourteen tasks came back from review needing a second pass, all of
+them the same shape: the fix was right and its boundary was one step too narrow.
+Reopening after the rewrite but not during it. Reading cancellation off the
+round instead of off each call. Locking a path spelling instead of a file.
+Waiting for a turn without preventing the next one. Worth carrying into H2,
+where the boundaries are all concurrency and there is no reason to think that
+gets easier.

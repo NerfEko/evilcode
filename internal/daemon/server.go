@@ -116,6 +116,11 @@ type Session struct {
 	// writes — the partial answer, the stubs for the tools it abandoned — and
 	// closing the store first sends all of it nowhere.
 	turnDone chan struct{}
+
+	// closing refuses new turns once close has begun. Without it a turn
+	// starting while close waits replaces the channel close is waiting on, and
+	// the store shuts under a turn that is still running.
+	closing bool
 }
 
 // NewServer builds a server. It does not listen until Serve is called.
@@ -494,6 +499,7 @@ func (sess *Session) unsubscribe(ch chan ServerMsg) {
 
 func (sess *Session) close() {
 	sess.mu.Lock()
+	sess.closing = true
 	cancel, done := sess.cancel, sess.turnDone
 	sess.mu.Unlock()
 
@@ -547,6 +553,11 @@ func (sess *Session) Input(text string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	sess.mu.Lock()
+	if sess.closing {
+		sess.mu.Unlock()
+		cancel()
+		return
+	}
 	sess.cancel, sess.turnDone = cancel, done
 	sess.mu.Unlock()
 	go func() {

@@ -164,7 +164,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   never fires. Invariant 6 (`plan.md` §1.3) says every auto-continuation path has a working
   breaker; this one is decorative. Fix: capture tokens before reset, add to the running
   total, test that the breaker trips.  ⟨codex⟩
-- [ ] **H1.14** Verify H1: compact → append → resume round-trips; a cancelled turn's
+- [x] **H1.14** Verify H1: compact → append → resume round-trips; a cancelled turn's
   transcript replays against a strict endpoint; an LSP rename on a non-ASCII file is
   byte-exact; concurrent edits to one file in one batch both land; overnight stops at its
   budget. Tag `harden-1`.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"evilcode/internal/provider"
@@ -227,4 +228,50 @@ func (p *mixedProvider) ChatStream(ctx context.Context, req provider.Req) (<-cha
 	}
 	close(ch)
 	return ch, nil
+}
+
+// H1.14: the invariant that actually matters is the one on disk. The
+// conversation is rebuilt from the persisted messages on every resume, so a
+// transcript with an unanswered call is a 400 waiting for whoever resumes it,
+// long after the interrupt that caused it is forgotten.
+func TestPersistedTranscriptOfACancelledTurnIsWellFormed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{}, 2)
+	blocker := tools.Tool{
+		Name: "blocker", Desc: "waits for cancellation",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+			entered <- struct{}{}
+			<-ctx.Done()
+			return tools.Result{}, ctx.Err()
+		},
+	}
+
+	a := newTestAgent(t, &twoToolProvider{}, tools.Set{blocker})
+	var persisted []provider.Message
+	var mu sync.Mutex
+	a.Conv.Persist(func(m provider.Message) error {
+		mu.Lock()
+		defer mu.Unlock()
+		persisted = append(persisted, m)
+		return nil
+	})
+
+	if _, err := collect(t, a, func() error {
+		go func() {
+			<-entered
+			<-entered
+			cancel()
+		}()
+		return a.Run(ctx, "go")
+	}); err != nil {
+		t.Fatalf("an interrupt is not an error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(persisted) == 0 {
+		t.Fatal("nothing was persisted, so the test proves nothing")
+	}
+	assertToolCallsAnswered(t, persisted)
 }
