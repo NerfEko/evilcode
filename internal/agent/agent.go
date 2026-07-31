@@ -428,6 +428,12 @@ func (a *Agent) Loop(ctx context.Context) error {
 }
 
 func (a *Agent) endTurn(reason EndReason) {
+	// A transcript that is behind the conversation is invisible until someone
+	// resumes and finds the session short. Every turn ends here, so this is the
+	// one place that cannot be forgotten.
+	if err := a.Conv.PersistErr(); err != nil {
+		a.Notice(LevelError, "This turn was not fully written to the session file: %v", err)
+	}
 	e := a.newEvent(EventTurnEnd)
 	e.Reason = reason
 	a.emit(e)

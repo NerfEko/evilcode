@@ -29,7 +29,18 @@ type Conversation struct {
 	// "resume = replay" — and a frontend that forgets to write is a session
 	// that silently resumes empty. Every message goes through Append, so this
 	// is the one place that cannot be forgotten.
-	onAppend func(provider.Message)
+	onAppend func(provider.Message) error
+
+	// sinkMu orders the sink. It is taken while mu is held and released after
+	// the write, so two concurrent appends reach disk in the order they reached
+	// memory — without holding the conversation lock across a disk write, which
+	// would stall every reader.
+	sinkMu sync.Mutex
+
+	// persistErr keeps the first write failure so a turn can report it, under
+	// sinkMu. A transcript that is quietly behind the conversation is the kind
+	// of loss nobody notices until a resume comes back short.
+	persistErr error
 }
 
 // NewConversation starts a conversation with a fixed system prompt.
@@ -41,7 +52,7 @@ func NewConversation(system string) *Conversation {
 //
 // Replay is deliberately not persisted: a resumed session appends the messages
 // it just read, and writing them again would double the file on every resume.
-func (c *Conversation) Persist(sink func(provider.Message)) {
+func (c *Conversation) Persist(sink func(provider.Message) error) {
 	c.mu.Lock()
 	c.onAppend = sink
 	c.mu.Unlock()
@@ -52,15 +63,35 @@ func (c *Conversation) Append(msgs ...provider.Message) {
 	c.mu.Lock()
 	c.messages = append(c.messages, msgs...)
 	sink := c.onAppend
+	if sink == nil {
+		c.mu.Unlock()
+		return
+	}
+	// Claim the sink's turn before releasing the conversation, so writes reach
+	// disk in the order they reached memory. The write itself happens outside
+	// the conversation lock: holding that across a disk write would stall every
+	// reader.
+	c.sinkMu.Lock()
+	defer c.sinkMu.Unlock()
 	c.mu.Unlock()
 
-	// Outside the lock: the sink writes to a file, and holding the
-	// conversation lock across a disk write would stall every reader.
-	if sink != nil {
-		for _, m := range msgs {
-			sink(m)
+	for _, m := range msgs {
+		if err := sink(m); err != nil && c.persistErr == nil {
+			c.persistErr = err
 		}
 	}
+}
+
+// PersistErr returns the first write failure since the last call and clears it,
+// so a turn reports a broken transcript once rather than once per message.
+func (c *Conversation) PersistErr() error {
+	// Guarded by sinkMu rather than mu: mu is held while sinkMu is taken, and
+	// guarding it the other way round would invert the order and deadlock.
+	c.sinkMu.Lock()
+	defer c.sinkMu.Unlock()
+	err := c.persistErr
+	c.persistErr = nil
+	return err
 }
 
 // Messages returns the full list to send, system prompt first. The slice is a

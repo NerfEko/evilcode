@@ -102,7 +102,7 @@ func Run(args []string) error {
 	// The JSONL file is the source of truth (§18), so every message goes to it
 	// as it lands. Registered after any replay, or a resume would rewrite what
 	// it had just read.
-	conv.Persist(func(m provider.Message) { store.WriteMessage(m) })
+	conv.Persist(func(m provider.Message) error { return store.WriteMessage(m) })
 
 	todos, err := todo.NewStore(dataDir, store.Name)
 	if err != nil {

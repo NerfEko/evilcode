@@ -120,7 +120,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	conv.Append(prior...)
 	// Registered *after* the replay: a resumed session appends what it just
 	// read, and persisting that would double the file on every resume.
-	conv.Persist(func(m provider.Message) { store.WriteMessage(m) })
+	conv.Persist(func(m provider.Message) error { return store.WriteMessage(m) })
 
 	// Overrides are looked up by the *resolved* model, not the flag: a session
 	// relying on default_model would otherwise silently get none of them.

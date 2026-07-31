@@ -128,7 +128,7 @@ func Run(args []string) (int, error) {
 
 	// Every message reaches the JSONL file as it lands, which is what makes
 	// `-resume` replay anything at all (§18).
-	conv.Persist(func(m provider.Message) { store.WriteMessage(m) })
+	conv.Persist(func(m provider.Message) error { return store.WriteMessage(m) })
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	a.NumCtx = overrides.ContextWindow

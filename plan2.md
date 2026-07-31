@@ -130,7 +130,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   to one file in one batch both `strings.Count` against the same `before`; one is silently
   lost. Fix: per-canonical-path mutex, revalidate immediately before the replace from
   H1.5.  ⟨both⟩
-- [ ] **H1.7** `internal/agent/context.go:44,51` — the persistence sink cannot return an
+- [x] **H1.7** `internal/agent/context.go:44,51` — the persistence sink cannot return an
   error, so disk-full and closed-store failures leave the durable transcript behind the
   in-memory conversation with nothing surfaced; and the conversation lock is released
   before the sink runs, so disk order can differ from memory order. Fix: sink and `Append`

@@ -56,6 +56,11 @@ evilcode run --remote "..."   # submit into a running daemon
 `evilcode run` writes the model's text to stdout and everything else to stderr, so it
 composes with other tools. It exits 130 on interrupt.
 
+Sessions are the source of truth: every message is written as it lands, `/compact` and
+`/rewind` rewrite the log atomically and the live session follows the rewrite, and a
+turn that could not be fully written says so rather than leaving a session that comes
+back short on resume.
+
 ## Configuration
 
 `~/.config/evilcode/config.toml`, or wherever `$EVILCODE_CONFIG` points. Every key has
@@ -179,6 +184,10 @@ are refused rather than fuzzily matched.
 The `lsp` tool covers diagnostics, definition, references, hover, symbols and rename,
 with gopls preconfigured. A rename computes every touched file in memory before
 anything reaches disk, so it cannot half-apply.
+
+`write` and `edit` replace a file through a same-directory temp file and a rename, so
+nothing else ever reads a half-written version, and two edits to one file in the same
+batch are serialized rather than both computing against the original.
 
 ### Graphics
 

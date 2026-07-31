@@ -950,7 +950,7 @@ func TestConversationPersistsEveryAppend(t *testing.T) {
 	// conversation and said nothing was wrong.
 	conv := NewConversation("system")
 	var written []provider.Message
-	conv.Persist(func(m provider.Message) { written = append(written, m) })
+	conv.Persist(func(m provider.Message) error { written = append(written, m); return nil })
 
 	conv.Append(provider.Message{Role: provider.RoleUser, Content: "one"})
 	conv.Append(
@@ -973,7 +973,7 @@ func TestConversationDoesNotPersistBeforeTheSinkIsSet(t *testing.T) {
 	conv.Append(provider.Message{Role: provider.RoleUser, Content: "replayed"})
 
 	var written []provider.Message
-	conv.Persist(func(m provider.Message) { written = append(written, m) })
+	conv.Persist(func(m provider.Message) error { written = append(written, m); return nil })
 	conv.Append(provider.Message{Role: provider.RoleUser, Content: "new"})
 
 	if len(written) != 1 || written[0].Content != "new" {

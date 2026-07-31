@@ -1685,3 +1685,42 @@ than swept.
 
 Verified: five attempts, both edits land every time; `go test ./... -race`
 green.
+
+## 2026-07-31 H1.7 — The sink could not say no, and did not keep its place
+
+Two faults in one seam, both about what `Conversation.Append` does after the
+message is in memory.
+
+The sink's signature had no error return, so `store.WriteMessage`'s failure was
+discarded at all three wiring points. A full disk or a closed store leaves the
+durable transcript behind the live conversation with nothing said, and the
+session looks perfectly healthy until someone resumes it and finds it short.
+
+The lock was also released before the sink ran, so two appends could reach
+memory in one order and disk in the other. That one reproduces immediately —
+200 concurrent appends, twice in a row:
+
+```
+disk order diverges from memory order at 5: disk "m006", memory "m019"
+disk order diverges from memory order at 2: disk "m055", memory "m023"
+```
+
+Ordering is fixed by claiming a second lock, `sinkMu`, *while* the conversation
+lock is held and releasing it after the write. The write still happens outside
+the conversation lock — holding that across a disk write would stall every
+reader, which is why it was written that way in the first place — but the order
+is now decided while the memory order is being decided.
+
+That ordering forced where the error lives. `persistErr` is guarded by `sinkMu`,
+not by `mu`: `mu` is held while `sinkMu` is taken, so guarding it the other way
+round inverts the lock order and deadlocks. The first version of this fix did
+exactly that and was rewritten before it ran.
+
+`PersistErr` reads and clears, and `endTurn` reports it — every turn ends there,
+including the interrupted and errored ones, so it is the one place that cannot
+be missed. One notice per turn rather than one per message.
+
+README gained a paragraph on session durability and one on atomic writes, since
+both are now behaviour a user can rely on rather than implementation detail.
+
+Verified: both reproductions pass, `go test ./... -race` green.
