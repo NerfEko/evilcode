@@ -1853,3 +1853,41 @@ Also reported and not acted on: `Append` holds `sinkMu` across an arbitrary
 sink, so a sink that re-entered `Conversation` would deadlock against another
 append. Every sink in the tree is `store.WriteMessage`, and a re-entrant one
 would be a different bug; noted rather than defended against.
+
+## 2026-07-31 H1.11 — A transaction that was four transactions
+
+`Apply` mutated live state throughout and then wrote four files one after
+another, returning on the first failure. Anything after that point never
+reached disk, everything before it did, and memory kept serving the version that
+was never fully written.
+
+Reproduced by making the todo directory read-only after one successful write —
+the same shape as a full disk, and unlike deleting the files it leaves on disk
+exactly what a restart would replay:
+
+```
+the store serves 2 items, a restart replays 1: the failed write is live in
+memory and absent from disk
+```
+
+Two halves to the fix.
+
+On disk, every file is staged and synced *before* any of them is renamed. The
+failure that actually happens — no space, no permission, a bad path — now
+happens while the previous state is still the state on disk. Four renames are
+not one atomic operation and this does not pretend otherwise; what changed is
+what it takes to break it. Before: a full disk. After: the filesystem failing
+between two metadata updates.
+
+Staging also fixed something nobody reported. The temp path was `path + ".tmp"`,
+shared by every store writing into that directory — the same collision H1.10
+names in passing. `os.CreateTemp` gives each stage its own name.
+
+In memory, `Apply` snapshots the four fields it touches and restores them if the
+save fails. A clone threaded through the transaction would be cleaner, and would
+mean rewriting every gate that reads what has been applied so far; the snapshot
+buys the same guarantee — what the store serves is what a restart would replay —
+for a tenth of the change.
+
+Verified: memory and disk agree after the failed write, `go test ./... -race`
+green.

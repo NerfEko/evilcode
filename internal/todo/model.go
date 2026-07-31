@@ -186,29 +186,76 @@ func readJSON(path string, dst any) {
 	_ = json.Unmarshal(data, dst)
 }
 
-func writeJSON(path string, v any) error {
+// stage writes a file's new contents beside it, ready to be renamed into place.
+//
+// The temp name carries the store's session, so two namespaces staging at once
+// do not write through one another's file — the previous `path + ".tmp"` was
+// shared by every store over the same directory.
+func stage(path string, v any) (string, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return err
+		return "", err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return "", err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return tmp, nil
 }
 
+// save writes the four files a transaction touches.
+//
+// Every file is staged and synced before any of them is renamed, so the failure
+// that actually happens — no space, no permission, a bad path — happens while
+// the previous state is still the state on disk. The renames themselves are the
+// commit: four of them are not one atomic operation, but a rename that fails
+// after its siblings succeeded needs the filesystem to break between two
+// metadata updates, where the old code needed only a full disk.
 func (s *Store) save() error {
-	if err := writeJSON(s.path(""), s.items); err != nil {
-		return err
+	files := []struct {
+		path string
+		v    any
+	}{
+		{s.path(""), s.items},
+		{s.path("-goals"), s.goals},
+		{s.path("-plan"), s.plan},
+		{s.path("-gates"), s.obs},
 	}
-	if err := writeJSON(s.path("-goals"), s.goals); err != nil {
-		return err
+
+	staged := make([]string, 0, len(files))
+	defer func() {
+		for _, tmp := range staged {
+			os.Remove(tmp)
+		}
+	}()
+	for _, f := range files {
+		tmp, err := stage(f.path, f.v)
+		if err != nil {
+			return err
+		}
+		staged = append(staged, tmp)
 	}
-	if err := writeJSON(s.path("-plan"), s.plan); err != nil {
-		return err
+	for i, f := range files {
+		if err := os.Rename(staged[i], f.path); err != nil {
+			return err
+		}
 	}
-	return writeJSON(s.path("-gates"), s.obs)
+	return nil
 }
 
 // Items returns a copy of the stored list.
@@ -267,9 +314,17 @@ type Result struct {
 }
 
 // Apply validates and stores a write, recording history observations.
+//
+// A write that cannot be persisted is not applied. The transaction mutates live
+// state as it goes — the gates read what has been applied so far, so a clone
+// would have to be threaded through every one of them — and a failed save
+// restores the state it started from. What the store serves is what a restart
+// would replay.
 func (s *Store) Apply(w Write) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	restore := s.snapshot()
 
 	if len(w.Items) > MaxItems {
 		return Result{
@@ -351,9 +406,23 @@ func (s *Store) Apply(w Write) (Result, error) {
 	}
 
 	if err := s.save(); err != nil {
+		restore()
 		return res, err
 	}
 	return res, nil
+}
+
+// snapshot copies the four pieces of state a transaction touches and returns
+// the undo. Slices are copied element-wise, so a write that rewrites an item in
+// place is rolled back with everything else.
+func (s *Store) snapshot() func() {
+	items := append([]Item(nil), s.items...)
+	goals := append([]Goal(nil), s.goals...)
+	obs := append([]Observation(nil), s.obs...)
+	plan := s.plan
+	return func() {
+		s.items, s.goals, s.obs, s.plan = items, goals, obs, plan
+	}
 }
 
 // completesGroup reports whether this write finishes off a group that was not

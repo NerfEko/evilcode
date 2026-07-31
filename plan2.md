@@ -150,7 +150,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   memory IDs allocated from stale snapshots. The §20 shared plan does not share. Fix: one
   store per namespace, owned at server scope and shared by reference — the session
   registry already works this way.  ⟨both⟩
-- [ ] **H1.11** `internal/todo/model.go:323` — a todo transaction mutates live state and
+- [x] **H1.11** `internal/todo/model.go:323` — a todo transaction mutates live state and
   then writes four files sequentially; any failure leaves memory and disk disagreeing.
   Fix: apply to a clone, stage and sync every file, commit atomically, then publish.
   ⟨codex⟩
