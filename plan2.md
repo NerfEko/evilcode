@@ -298,7 +298,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   `recallSessions` — synchronous network calls (5s model list, embed call) inside `Update`
   freeze the whole UI. Both are acknowledged in comments. Fix: convert to `tea.Cmd`.
   ⟨fable⟩
-- [ ] **H3.14** Verify H3: a malformed SSE frame mid-stream leaves no goroutine behind
+- [x] **H3.14** Verify H3: a malformed SSE frame mid-stream leaves no goroutine behind
   (`goleak` or a runtime count); `read` on a 2 GB file refuses instead of dying; 20 session
   switches leave one MCP server set; a `bash` timeout leaves no orphan grandchildren.
   Tag `harden-3`.

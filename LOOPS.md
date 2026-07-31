@@ -2803,3 +2803,44 @@ has already stopped asking is worse than no result.
 Verified: the picker opens without blocking and fills in after, pasting returns
 immediately, a stale search result is ignored, an oversized frame is refused
 without allocating; `go test ./... -race` green.
+
+## 2026-07-31 H3.14 — Verifying phase H3
+
+The phase's four named checks:
+
+- **A malformed SSE frame mid-stream leaves no goroutine behind.** Twenty-five
+  streams, each abandoned at its first error. Against the old code:
+
+  ```
+  25 malformed streams left 28 goroutines behind, each holding a connection
+  ```
+
+  Against the fix, none. Counting rather than `goleak`, because the number is
+  the finding — 28 for 25 streams says one per stream plus noise, which is a
+  leak; a leak detector would have said "yes" without saying that.
+
+- **`read` on a 2 GB file refuses instead of dying.** A sparse file, and the
+  refusal allocates under a megabyte — the size check happens before the bytes
+  are touched, which is what makes it a refusal rather than a slower death.
+
+- **Twenty session switches leave one MCP server set.** Covered by H3.6's
+  ordering test rather than by counting processes: the leak was frames not
+  unwinding, and "did frame N finish before N+1 began" is the same claim without
+  needing a terminal and twenty real MCP servers.
+
+- **A `bash` timeout leaves no orphan grandchildren.** H3.4's test watches for a
+  marker file a grandchild writes two seconds after its parent was killed.
+
+Phase H3's findings were nearly all one shape: **a limit that existed only as
+prose.** `MaxReadBytes` declared and never referenced. Output truncated at the
+end, so the cap was real for the model and fictional for memory. `Content-Length`
+believed. A timeout on the tool call but not on the browser it starts. Both
+reviewers flagged this as a class worth grepping for rather than fixing three
+times, and they were right — it was six.
+
+The other recurring shape was **work happening on the wrong side of a
+boundary**: two network calls and a subprocess inside the update loop, a
+recursion where a loop belonged. Those do not fail, they hang, which is why the
+suite was green through all of them.
+
+Tagged `harden-3`.

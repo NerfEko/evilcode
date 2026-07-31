@@ -60,3 +60,33 @@ func TestAPagedReadOfALargeFileWorks(t *testing.T) {
 		t.Errorf("a 20-line window returned %d lines", lines)
 	}
 }
+
+// H3.14: a read of a very large file refuses instead of dying.
+//
+// A real multi-gigabyte file is not something a test should write, so this uses
+// a sparse one: the size is what read checks, and the bytes are never touched
+// on the refusing path — which is the whole point of checking the size first.
+func TestReadOfAHugeFileRefusesWithoutLoadingIt(t *testing.T) {
+	f := tempFS(t, nil)
+	path := filepath.Join(f.Root, "huge.bin")
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = 2 << 30 // 2 GiB, sparse
+	if err := file.Truncate(size); err != nil {
+		file.Close()
+		t.Skipf("this filesystem will not make a sparse file: %v", err)
+	}
+	file.Close()
+
+	grew := allocatedDuring(t, func() {
+		if _, err := run(t, f.Tools(), "read", map[string]any{"path": "huge.bin"}); err == nil {
+			t.Error("a 2 GiB file was accepted")
+		}
+	})
+	if grew > 1<<20 {
+		t.Errorf("refusing the read still allocated %s", humanBytes(int64(grew)))
+	}
+}
