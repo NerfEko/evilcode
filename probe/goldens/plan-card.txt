@@ -7,8 +7,8 @@
 
  Here is the plan.
  ╭────────────────────────────────────── ⛭ Wire the auth flow ──────────────────────────────────────╮               ╭──────────────────────╮
- │ Goal                                                                                             │               │ Context 436/200.0k   │
- │ Make the refresh path survive a cold start.                                                      │               │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+ │ Goal                                                                                             │               │ Context 436/200k     │
+ │ Make the refresh path survive a cold start.                                                      │               │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  │                                                                                                  │               ╰──────────────────────╯
  │ Approach                                                                                         │
  │ 1. Read the callback handler                                                                     │

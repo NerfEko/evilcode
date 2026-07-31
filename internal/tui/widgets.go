@@ -92,9 +92,13 @@ func (r *Renderer) ContextWidget(used, total int) Widget {
 		Kind: WidgetContextUsage,
 		Lines: []string{
 			label.Render("Context ") +
-				counts.Render(fmt.Sprintf("%s/%s", humanTokens(used), humanTokens(total))),
+				counts.Render(fmt.Sprintf("%s/%s", humanTokens(used), roundTokens(total))),
+			// Used, not remaining. The bar beside it fills as context is
+			// consumed, so a "remaining" number next to it read as its opposite
+			// — 428 tokens of 200k showed as 99%, directly contradicting both
+			// the bar and the composer's own reading of the same two numbers.
 			SegmentedBar(used, total, 10) +
-				label.Render(fmt.Sprintf(" %d%%", int(remaining*100))),
+				label.Render(fmt.Sprintf(" %d%%", used*100/total)),
 		},
 	}
 }

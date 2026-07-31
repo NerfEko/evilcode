@@ -12,8 +12,8 @@
 
  It clamps with > where it wants >=. Summoning help.
                                              ╭──────────────────────╮
-   👉 Summoned dracula-2                     │ Context 330/200.0k   │
-   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+   👉 Summoned dracula-2                     │ Context 330/200k     │
+   fix the clamp                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
                                              ╰──────────────────────╯
    Its result will arrive as a message.
  💡 Ctrl+R searches your prompt history

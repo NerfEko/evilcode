@@ -9,8 +9,8 @@
 
  Fixing the off-by-one.
                                                                                                                     ╭──────────────────────╮
-   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                                                                         │ Context 386/200.0k   │
- ┌─ diff                                                                                                            │ ▱▱▱▱▱▱▱▱▱▱ 99%       │
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                                                                         │ Context 386/200k     │
+ ┌─ diff                                                                                                            │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  │  // makes every scenario's edit fail with "old string not found", and the                                        ╰──────────────────────╯
  │  // goldens then bake in the failure — which is exactly what happened once.                      ╭──────────────────────────────────────╮
  │  func clamp(offset, max int) int {                                                               │ ⚡ mock-large                        │

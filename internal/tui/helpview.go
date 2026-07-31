@@ -12,6 +12,21 @@ import (
 // RenderHelp draws the full-screen help overlay (plan.md §5.5). The scroll
 // percentage lives in the title, which keeps the footer free for the keys that
 // actually do something.
+// helpFooter picks the longest key summary that fits the box, so a narrow
+// terminal loses detail rather than losing the border.
+func helpFooter(width int) string {
+	for _, f := range []string{
+		" Esc to close · j/k scroll · Space page · /help <cmd> for details ",
+		" Esc close · j/k scroll · /help <cmd> ",
+		" Esc · j/k ",
+	} {
+		if lipgloss.Width(f) <= width {
+			return f
+		}
+	}
+	return ""
+}
+
 func (r *Renderer) RenderHelp(scroll, width, height int) []string {
 	accent := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
@@ -71,6 +86,10 @@ func (r *Renderer) RenderHelp(scroll, width, height int) []string {
 
 	out := []string{border.Render(top)}
 	for _, line := range visible {
+		// Truncated to the box, not merely padded to it. A help line longer
+		// than the terminal does not clip — it wraps, and every row below it
+		// shifts, which tears the box apart on any narrow screen.
+		line = truncateCells(line, inner)
 		pad := max(inner-lipgloss.Width(line), 0)
 		out = append(out, border.Render("│")+" "+line+strings.Repeat(" ", pad)+" "+border.Render("│"))
 	}
@@ -78,7 +97,7 @@ func (r *Renderer) RenderHelp(scroll, width, height int) []string {
 		out = append(out, border.Render("│")+strings.Repeat(" ", inner+2)+border.Render("│"))
 	}
 
-	footer := " Esc to close · j/k scroll · Space page · /help <cmd> for details "
+	footer := helpFooter(inner + 2)
 	bottom := "└" + footer + strings.Repeat("─", max(inner+2-lipgloss.Width(footer), 0)) + "┘"
 	out = append(out, border.Render(bottom))
 	return out

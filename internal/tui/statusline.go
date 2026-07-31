@@ -171,7 +171,7 @@ const KnightRiderCells = 3
 
 // knightRider draws the running-tool indicator of §8.2:
 //
-//	·●· bash ·●·  · reading foo.go · 4s · ⌥B bg
+//	·●· bash ·●·  · reading foo.go · 4s · Alt+B bg
 //
 // The two bars mirror each other, which is what makes it read as a single
 // sweeping object rather than two independent animations.
@@ -222,7 +222,9 @@ func (r *Renderer) knightRider(s StatusState) string {
 	}
 
 	out.WriteString(dim.Render(" · " + formatElapsed(s.Elapsed)))
-	out.WriteString(rgbStyle(100, 100, 100).Render(" · ⌥B bg"))
+	// Alt+B, not ⌥B: the binding is alt+b, evilcode is Linux-only (§1), and the
+	// Mac option glyph is neither on this keyboard nor in §9.5's inventory.
+	out.WriteString(rgbStyle(100, 100, 100).Render(" · Alt+B bg"))
 	return out.String()
 }
 

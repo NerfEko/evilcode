@@ -358,7 +358,7 @@ func TestStatusLinePhases(t *testing.T) {
 			"running tool",
 			StatusState{Phase: PhaseRunningTool, ToolName: "bash",
 				ToolIntent: "reading foo.go", Elapsed: 4 * time.Second},
-			[]string{"bash", "reading foo.go", "4s", "⌥B bg"},
+			[]string{"bash", "reading foo.go", "4s", "Alt+B bg"},
 		},
 		{
 			"batch",

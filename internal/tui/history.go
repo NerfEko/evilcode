@@ -81,8 +81,13 @@ func (r *Renderer) RenderHistorySearch(h *HistorySearch) []string {
 	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(paletteTeal)))
 
 	header := dim.Render("(history search) ") +
-		gold.Render(h.Query) + gold.Render("█") +
-		dim.Render("  ↑↓ select · ↵ insert · Esc cancel")
+		gold.Render(h.Query) + gold.Render("█")
+	// The key hints are the part worth dropping when the terminal is narrow:
+	// the query you are typing is not.
+	if hints := "  ↑↓ select · ↵ insert · Esc cancel"; lipgloss.Width(header)+
+		lipgloss.Width(hints) <= r.Width {
+		header += dim.Render(hints)
+	}
 
 	out := []string{header}
 

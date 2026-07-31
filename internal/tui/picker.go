@@ -60,6 +60,21 @@ type PickerState struct {
 	Height int
 }
 
+// pickerHint picks the longest key summary that fits.
+func pickerHint(width int) string {
+	for _, hint := range []string{
+		"keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite",
+		"keys: Ctrl+O default · Ctrl+N favorite · Shift+Tab next favorite",
+		"Ctrl+O default · Ctrl+N favorite",
+		"Ctrl+O · Ctrl+N",
+	} {
+		if lipgloss.Width(hint) <= width {
+			return hint
+		}
+	}
+	return ""
+}
+
 // DefaultPickerHeight is the visible row count.
 const DefaultPickerHeight = 10
 
@@ -93,9 +108,12 @@ func (r *Renderer) RenderPicker(s PickerState) []string {
 		height = DefaultPickerHeight
 	}
 
+	// Shortened rather than truncated when the terminal is narrow: a hint cut
+	// mid-word teaches nothing, and this line is 91 cells at full length —
+	// wider than an 80-column terminal, where it used to overflow the frame.
 	hint := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.RGB(120, 120, 150)))).Italic(true).
-		Render("keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite")
+		Render(pickerHint(r.Width))
 
 	var body []string
 	body = append(body, r.pickerHeader(s, len(entries)))
@@ -302,6 +320,11 @@ func (r *Renderer) roundedBox(content []string) []string {
 	out := make([]string, 0, len(content)+2)
 	out = append(out, border.Render("╭"+strings.Repeat("─", inner+2)+"╮"))
 	for _, l := range content {
+		// The border is capped to the terminal, so the content has to be too.
+		// Padding a line that is already too long leaves it too long, and a row
+		// wider than the screen wraps rather than clipping — which shifts every
+		// row under it and breaks the box open.
+		l = truncateCells(l, inner)
 		pad := max(inner-lipgloss.Width(l), 0)
 		out = append(out, border.Render("│")+fill.Render(" "+l+strings.Repeat(" ", pad)+" ")+border.Render("│"))
 	}

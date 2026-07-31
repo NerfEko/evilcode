@@ -8,7 +8,7 @@
  1› add a retry gate
 
  One decision first.
- ●·· ask ··● · 0s · ⌥B bg
+ ●·· ask ··● · 0s · Alt+B bg
  ╭──────────────────────────────────────────────────────────────────────╮
  │ Should the retry gate back off exponentially or on a fixed interval? │
  │                                                                      │
