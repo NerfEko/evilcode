@@ -874,3 +874,17 @@ frame. Two `Alt+G` presses intermittently registered as one, and the golden was
 regenerated around whichever happened that run. It now needs three consecutive
 identical samples. The suite went from 8s to 16s, and from intermittently wrong
 to green on three consecutive runs.
+
+## 2026-07-31 P4.4 — Phase 4 verified
+
+All three criteria, against a live daemon on the mock provider.
+
+Attach, run a turn, close the socket, reattach: the snapshot comes back with all
+four messages, so a killed terminal costs nothing. The conflict notice is in
+`probe/goldens/swarm-conflict.txt` — `⚠ dracula-2 modified testdata/clamp.go
+which you read at turn 0` — in both panes, because it is the session's news and
+not one client's. And `/summon` with a `{file, changed}` schema came back
+`✓ worker spider finished "fix the clamp": {"file":"testdata/clamp.go",
+"changed":true}`, validated rather than parsed.
+
+Tagged `phase-4`.
