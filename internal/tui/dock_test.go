@@ -172,10 +172,31 @@ func TestDockHoldsItsSlotAsTextStreamsUnder(t *testing.T) {
 	}
 }
 
-func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
-	// Hysteresis now guards the one case left that can actually displace a
-	// widget: another widget taking its rows. Width no longer blocks anything,
-	// because boxes overlay text.
+func TestDockPlacesAtMostOneWidget(t *testing.T) {
+	// F2.3: at most one widget is on screen, and zero is fine. Offer several
+	// candidates that all fit and assert the dock places exactly one — never
+	// two, never the wall of boxes the multi-widget layout used to produce.
+	d := NewDock()
+	rows := make([]string, 60)
+	for i := range rows {
+		rows[i] = strings.Repeat("x", 10)
+	}
+	got := layoutDock(d, []Widget{
+		widget(WidgetTodos, 3),
+		widget(WidgetContextUsage, 3),
+		widget(WidgetModelInfo, 3),
+	}, rows, 100, 0, 999, false)
+
+	if len(got) != 1 {
+		t.Fatalf("placements = %d, want exactly 1 (one slot, zero is fine, never several)", len(got))
+	}
+}
+
+func TestDockSecondCandidateGetsNoSlotWhileFirstHolds(t *testing.T) {
+	// With one slot, a higher-priority widget that holds its rows leaves no room
+	// for a second candidate: it is not placed at all (not re-homed elsewhere).
+	// The cross-widget rehome hysteresis tested here previously is gone by design
+	// — F2.5's salience score is what rotates the slot between candidates.
 	d := NewDock()
 	rows := make([]string, 40)
 	for i := range rows {
@@ -188,54 +209,14 @@ func TestDockRehomesOnlyAfterSustainedBlocking(t *testing.T) {
 		t.Fatal("expected a placement")
 	}
 
-	// A higher-priority widget now claims the same rows first.
 	both := []Widget{widget(WidgetTodos, 3), widget(WidgetTips, 3)}
-	for i := 0; i < RehomeFrames-1; i++ {
+	for i := 0; i < RehomeFrames+2; i++ {
 		got := layoutDock(d, both, rows, 100, 0, 999, false)
-		for _, p := range got {
-			if p.Kind == WidgetTips && p.Row != first[0].Row {
-				t.Fatalf("frame %d: tips jumped to row %d rather than holding %d",
-					i, p.Row, first[0].Row)
-			}
+		if len(got) != 1 {
+			t.Fatalf("frame %d: placed %d widgets, want 1 (one slot)", i, len(got))
 		}
-	}
-
-	// Past the threshold it is allowed to find a new home.
-	var moved bool
-	for i := 0; i < 3 && !moved; i++ {
-		for _, p := range layoutDock(d, both, rows, 100, 0, 999, false) {
-			if p.Kind == WidgetTips && p.Row != first[0].Row {
-				moved = true
-			}
-		}
-	}
-	if !moved {
-		t.Error("tips never re-homed after the slot stayed taken")
-	}
-}
-
-func TestDockNeverOverlapsWidgets(t *testing.T) {
-	d := NewDock()
-	rows := make([]string, 60)
-	for i := range rows {
-		rows[i] = strings.Repeat("x", 10)
-	}
-	got := layoutDock(d, []Widget{
-		widget(WidgetTodos, 3),
-		widget(WidgetContextUsage, 3),
-		widget(WidgetModelInfo, 3),
-	}, rows, 100, 0, 999, false)
-
-	if len(got) < 2 {
-		t.Fatalf("placements = %d, want several", len(got))
-	}
-	used := map[int]WidgetKind{}
-	for _, p := range got {
-		for r := p.Row; r < p.Row+p.Height; r++ {
-			if prev, taken := used[r]; taken {
-				t.Fatalf("row %d claimed by both %v and %v", r, prev, p.Kind)
-			}
-			used[r] = p.Kind
+		if got[0].Kind != WidgetTodos {
+			t.Fatalf("frame %d: slot held by %v, want the higher-priority WidgetTodos", i, got[0].Kind)
 		}
 	}
 }

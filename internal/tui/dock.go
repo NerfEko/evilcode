@@ -260,15 +260,15 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 		return true
 	}
 
-	// occupied tracks rows already claimed, so two widgets never overlap each
-	// other. Text underneath is fair game — see the overlay note below.
-	occupied := make([]bool, len(rows))
+	// At most one widget is placed (§2.5: rule 5). Zero is a legitimate
+	// outcome — there is no fallback placement, no pinning a box somewhere bad
+	// just to have one. With one widget there is no second widget to overlap,
+	// so the cross-widget `occupied` tracker is gone.
 	var out []Placement
 
 	place := func(w Widget, a *anchor, row, height int) Placement {
 		a.everPlaced = true
 		a.BadFrames = 0
-		claim(occupied, row, height)
 		return Placement{
 			Kind: w.Kind, Row: row, Col: totalWidth - w.Width(),
 			Width: w.Width(), Height: height,
@@ -298,7 +298,7 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 				// through without aging. This is what lets a widget scroll with
 				// the text *and* stay visible, which used to be in conflict.
 
-			case fits(free, occupied, row, height, w.Width()) && dockable(row, height):
+			case fits(free, row, height, w.Width()) && dockable(row, height):
 				// Still in the settled region and still fits: hold the slot.
 				// Settled rows do not change, so this is the common case.
 				out = append(out, place(w, a, row, height))
@@ -315,7 +315,7 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 			}
 		}
 
-		row, ok := findSlot(free, occupied, owner, dockable, height, w.Width())
+		row, ok := findSlot(free, owner, dockable, height, w.Width())
 		if !ok {
 			continue
 		}
@@ -326,22 +326,28 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 		a.ContentTop, a.Side = row+scrollTop, side
 		out = append(out, place(w, a, row, height))
 	}
+	// One slot: keep only the first placement. The widget that holds the slot
+	// is chosen by list order today; F2.5's salience score reorders that list so
+	// the slot rotates and urgency preempts.
+	if len(out) > 1 {
+		out = out[:1]
+	}
 	return out
 }
 
-// fits reports whether a widget can sit at row: the rows are free of other
-// widgets, and the text there leaves enough clear columns.
+// fits reports whether a widget can sit at row: the rows are in range and the
+// text there leaves enough clear columns.
 //
 // Overlaying text was tried and reverted. It made widgets appear constantly —
 // there is always *somewhere* to put a box if you are willing to cover prose —
 // and a box sitting over a paragraph is harder to read past than a missing box
 // is to live without.
-func fits(free []int, occupied []bool, row, height, width int) bool {
-	if row < 0 || row+height > len(occupied) {
+func fits(free []int, row, height, width int) bool {
+	if row < 0 || row+height > len(free) {
 		return false
 	}
 	for i := row; i < row+height; i++ {
-		if occupied[i] || free[i] < width+WidgetGap {
+		if free[i] < width+WidgetGap {
 			return false
 		}
 	}
@@ -358,22 +364,16 @@ func fits(free []int, occupied []bool, row, height, width int) bool {
 // guarantees it will (§2.3). The settled-region check (dockable) and fits'
 // instantaneous free-width test are enough: a settled row does not change, so
 // the width it has now is the width it keeps.
-func findSlot(free []int, occupied []bool, owner []int, dockable func(row, height int) bool, height, width int) (int, bool) {
-	for row := 0; row+height <= len(occupied); row++ {
+func findSlot(free []int, owner []int, dockable func(row, height int) bool, height, width int) (int, bool) {
+	for row := 0; row+height <= len(free); row++ {
 		if !dockable(row, height) {
 			continue
 		}
-		if fits(free, occupied, row, height, width) {
+		if fits(free, row, height, width) {
 			return row, true
 		}
 	}
 	return 0, false
-}
-
-func claim(occupied []bool, row, height int) {
-	for i := row; i < row+height && i < len(occupied); i++ {
-		occupied[i] = true
-	}
 }
 
 // Forget drops a widget's anchor, so a widget dismissed by clicking does not

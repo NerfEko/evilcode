@@ -4109,3 +4109,26 @@ prose.
 
 Verified: `go build ./... && go vet ./... && go test ./...` green;
 `go test -tags probe -count=1 ./probe/...` green (goldens unchanged).
+
+## 2026-07-31 F2.3 — cap widgets to one, drop cross-widget occupied tracking
+
+Done: `Layout` now places at most one widget (§2.5 rule 5); `out` is truncated to its
+first placement. Zero is a legitimate outcome — no fallback, no pinning a box somewhere
+bad. With one widget there is no second widget to overlap, so the `occupied` tracker and
+`claim` are deleted, and `fits`/`findSlot` drop the `occupied` parameter. The widget that
+holds the slot is still chosen by list (sorted kind) order today; F2.5's salience score
+reorders that list so the slot rotates and urgency preempts.
+
+`m.swarmDocked` stays truthful: true iff the one placed widget is `WidgetSwarmStatus`.
+With static priority it is usually false (SwarmStatus is low-ranked); F2.5 is what keeps
+it from being permanently false, as the plan notes — no change here.
+
+Reproduction (⟨fix⟩): rewrote the two dock tests that asserted removed multi-widget
+behavior. `TestDockPlacesAtMostOneWidget` — several fitting candidates yield exactly one
+placement. `TestDockSecondCandidatesGetNoSlotWhileFirstHolds` — a higher-priority widget
+holds the single slot across RehomeFrames+2 frames; the second candidate is never placed
+elsewhere (the cross-widget rehome is gone by design). All other dock tests unchanged
+via the `layoutDock` legacy helper.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green;
+`go test -tags probe -count=1 ./probe/...` green.
