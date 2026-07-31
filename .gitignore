@@ -1,0 +1,5 @@
+evilcode
+probe/frames/
+shots/
+*.png
+!testdata/**/*.png
