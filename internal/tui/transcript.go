@@ -76,11 +76,14 @@ type Renderer struct {
 
 	// Animate gates decorative color.
 	Animate bool
+
+	// DiffMode decides whether diffs render inline or in the side panel.
+	DiffMode DiffMode
 }
 
 // NewRenderer builds a renderer at the given width.
 func NewRenderer(p *theme.Palette, width int) *Renderer {
-	return &Renderer{Palette: p, Markdown: NewMarkdown(width), Width: width, Animate: true}
+	return &Renderer{Palette: p, Markdown: NewMarkdown(width), Width: width, Animate: true, DiffMode: DiffInline}
 }
 
 // SetWidth updates the wrap width, dropping caches that were built for the old
@@ -286,7 +289,7 @@ func (r *Renderer) renderTool(b *Block) []string {
 	}
 
 	out := []string{b2.String()}
-	if b.Diff != "" {
+	if b.Diff != "" && r.DiffMode == DiffInline {
 		out = append(out, r.renderDiffLang(b.Diff, langFromPath(b.ToolTarget))...)
 	}
 	return out

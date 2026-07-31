@@ -124,6 +124,13 @@ type Model struct {
 	// thinking is the reasoning display mode (§9.7).
 	thinking ThinkingMode
 
+	// diffMode cycles Off → Inline → Pinned → File (Alt+G, §9.3), and panel
+	// holds what the side pane is showing.
+	diffMode   DiffMode
+	panel      PanelContent
+	panelOpen  bool
+	panelRatio int
+
 	// sessions is the full-screen picker, and dataDir is where session state
 	// lives so the picker can act on it.
 	sessions     SessionPickerState
@@ -176,6 +183,8 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		dock:         NewDock(),
 		widgetsOn:    true,
 		thinking:     ThinkingCurrent,
+		diffMode:     DiffInline,
+		panelRatio:   50,
 		showHints:    true,
 		overscroll:   Overscroll{Mode: OverscrollPull},
 		artVariant:   PickVariant(h.SessionName),
@@ -346,6 +355,18 @@ func (m *Model) applyEvent(e agent.Event) {
 		if e.DiffStat != nil {
 			b.HasDiff = true
 			b.Added, b.Removed = e.DiffStat.Added, e.DiffStat.Removed
+		}
+		// The panel always holds the newest diff, whether or not it is visible,
+		// so toggling to it later shows something rather than nothing.
+		//
+		// The block keeps its diff too: whether the transcript draws it is the
+		// renderer's call, which is what lets Alt+G re-render history instead
+		// of only affecting what arrives next.
+		if e.Diff != "" {
+			m.panel = PanelContent{Title: b.ToolTarget, Path: b.ToolTarget, Diff: e.Diff}
+			if m.diffMode.UsesPanel() {
+				m.panelOpen = true
+			}
 		}
 		m.blocks = append(m.blocks, b)
 		if e.IsError() {
@@ -664,6 +685,29 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice = "Typing scroll lock: OFF - typing follows chat bottom"
 		}
+		return m, nil
+
+	case "alt+g":
+		m.diffMode = m.diffMode.Next()
+		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
+		m.dock.Reset()
+		m.applyWrapWidth()
+		m.notice = "Diff mode: " + m.diffMode.String()
+		return m, nil
+
+	case "alt+m":
+		m.panelOpen = !m.panelOpen
+		m.dock.Reset()
+		m.applyWrapWidth()
+		return m, nil
+
+	case "ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4":
+		// Ctrl+1..4 snap the split to quarters (§11).
+		m.panelRatio = 25 * (int(key[len(key)-1] - '0'))
+		m.panelOpen = true
+		m.dock.Reset()
+		m.applyWrapWidth()
+		m.notice = fmt.Sprintf("Side panel: %d%%", m.panelRatio)
 		return m, nil
 
 	case "alt+i":
@@ -1535,6 +1579,17 @@ func (m *Model) transcriptLines() []string {
 	out = append(out, "")
 	animT, animating := m.entryAnim.Progress(time.Now())
 
+	// The renderer needs the current mode, and changing it invalidates every
+	// cached block that drew a diff.
+	if m.renderer.DiffMode != m.diffMode {
+		m.renderer.DiffMode = m.diffMode
+		for i := range m.blocks {
+			if m.blocks[i].Diff != "" {
+				m.blocks[i].cache = nil
+			}
+		}
+	}
+
 	for i := range m.blocks {
 		lines := m.renderer.Lines(&m.blocks[i])
 		if animating && i == m.entryAnim.Block {
@@ -1568,7 +1623,7 @@ func (m *Model) transcriptLines() []string {
 // applyWrapWidth sets the renderer's wrap width, reserving a column for the
 // scrollbar when the previous frame showed one (plan.md §3.5).
 func (m *Model) applyWrapWidth() {
-	width, _ := ContentWidth(m.width, m.centered)
+	width, _ := ContentWidth(m.chatWidth(), m.centered)
 	if m.scrollbarOn {
 		width--
 	}
@@ -1704,6 +1759,10 @@ func (m *Model) View() tea.View {
 			m.factStack(), m.overscroll.Remaining(now)))
 	}
 
+	// Carve the side pane off the right before anything else measures width
+	// (plan.md §3.1).
+	rows = m.attachSidePanel(rows, res.Transcript)
+
 	// Centering is literal left padding rather than per-line centering, which
 	// keeps copy and column math sane (plan.md Phase 2). It is applied before
 	// docking so widgets measure the real frame, not the pre-padded one.
@@ -1837,6 +1896,34 @@ func sameSubject(a, b BlockKind) bool {
 	return toolish(a) && toolish(b)
 }
 
+// chatWidth is the width left for the chat column once the side pane is carved
+// off (plan.md §3.1).
+func (m *Model) chatWidth() int {
+	chat, _ := Horizontal{
+		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.panelOpen,
+	}.Split()
+	return chat
+}
+
+// attachSidePanel paints the pane to the right of the transcript rows.
+func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
+	chat, side := Horizontal{
+		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.panelOpen,
+	}.Split()
+	if side == 0 {
+		return rows
+	}
+
+	height := max(len(rows), transcriptRows)
+	panel := m.renderer.RenderSidePanel(m.panel, m.diffMode, side, height, false)
+
+	for i := 0; i < len(rows) && i < len(panel); i++ {
+		pad := max(chat-lipgloss.Width(rows[i]), 0)
+		rows[i] = rows[i] + strings.Repeat(" ", pad) + panel[i]
+	}
+	return rows
+}
+
 // idleArt renders the welcome art, sized to the space actually available so it
 // never pushes the composer off a short terminal.
 //
@@ -1925,7 +2012,7 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, contentLines int) []s
 		region = region[:transcriptRows]
 	}
 
-	placements := m.dock.Layout(m.activeWidgets(), region, m.width,
+	placements := m.dock.Layout(m.activeWidgets(), region, m.chatWidth(),
 		max(contentLines-transcriptRows-m.scroll.Offset, 0), false)
 	if len(placements) == 0 {
 		return rows

@@ -655,3 +655,19 @@ Sessions now record the directory they started in, so the picker can flag `▸ h
 
 Verified: 9 new session tests. PNG looked at — search bar, 40/60 split, `◀ current` and
 `▸ here` badges, and the crash reason in the preview pane.
+
+## 2026-07-31 P2.23 — diff modes and the side panel
+
+Done: `internal/tui/sidepanel.go` wired into the layout — Alt+G cycles Off → Inline →
+Pinned → File, Ctrl+1..4 sets the width, Alt+M toggles the pane.
+
+A diff belongs in exactly one place. When the panel owns it the inline copy is
+suppressed, because the same information rendered twice competes with itself for the
+same glance.
+
+The file view's gutter follows §9.4 exactly: a deleted line gets a *blank* number,
+because it does not exist in the new file. Numbering it would imply a line the reader
+could go look at.
+
+Verified: PNG looked at with the panel open — syntax highlighting survives the diff tint
+in the panel as it does inline, and the transcript reflows to the narrower column.
