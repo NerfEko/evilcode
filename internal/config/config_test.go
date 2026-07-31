@@ -32,7 +32,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 
 func TestDefaultModelFollowsCloudKey(t *testing.T) {
 	t.Setenv(EnvOllamaKey, "")
-	if got := Default().DefaultModel; got != "qwen3-coder:30b@ollama-local" {
+	if got := Default().DefaultModel; got != "glm-5.2:cloud@ollama-local" {
 		t.Errorf("without a key, default = %q, want the local model", got)
 	}
 	t.Setenv(EnvOllamaKey, "sk-test")

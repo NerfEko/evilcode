@@ -87,7 +87,15 @@ func Run(args []string) (int, error) {
 	defer store.Close()
 
 	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
-	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
+	// Skills reach headless too. Without this a `run` cannot load a skill at
+	// all, which is how the selfdev verification discovered the gap: the model
+	// was told to load a skill and correctly reported it had no such tool.
+	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
+	var promptSkills []agent.Skill
+	for _, sk := range skills.Index() {
+		promptSkills = append(promptSkills, agent.Skill{Name: sk.Name, Desc: sk.Desc, Path: sk.Path})
+	}
+	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
 	if *resume != "" {
 		_, msgs, err := session.Resume(dataDir, *resume)
 		if err != nil {
@@ -111,6 +119,9 @@ func Run(args []string) (int, error) {
 			WithConfine(cfg.Features.ConfineToWorkspace).Tools(),
 			tools.NewExec(cwd).Tools()...)
 		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+		if len(promptSkills) > 0 {
+			ts = append(ts, tools.NewSkillTool(skills))
+		}
 		// Headless has nobody to ask, so `ask` is deliberately absent rather
 		// than present and always failing.
 	}

@@ -182,72 +182,25 @@ large to read at 16 rows. That is a real limit, not a hypothetical one — it is
 just not the common case, and the zoom keys are worth building against a real
 diagram rather than an imagined one.
 
-## 7. Three Phase 5 verifications could not be run on this machine
+## 7. Kitty image display is verified by protocol, not by eye
 
-**Spec:** the Phase 5 gate asks for five checks: mermaid renders as an image in
-kitty, a pasted image displays, `/productivity` emits a PNG, an `lsp` rename
-lands atomically, and a `/selfdev` session completes one real task end to end.
+**Spec:** the Phase 5 gate asks that mermaid render as an image in kitty and
+that a pasted image display.
 
-**Verified:** `/productivity` emits a PNG — rendered through the same ANSI→PNG
-path the probe rig uses, and looked at. And the `lsp` rename, against a real
-gopls: `clamp` → `clampOffset` across the declaration and its doc comment, two
-edits, one file, atomically, with a DiffStat.
+**Verified:** `mmdc` was installed and a real diagram rendered — a 12.6 KB PNG
+that was looked at. The kitty transmission was then checked against the
+protocol: `a=T,f=100,c=40,r=20,i=7`, base64 PNG, chunked with `m=1` and a final
+`m=0`, every chunk terminated, plus a matching delete sequence. The
+absent-renderer path was captured in the probe as well.
 
-**Not verified here, and why:**
+**Not verified:** that a kitty-protocol terminal draws those pixels. This
+session runs under tmux against xterm-256color, and the probe's ANSI→PNG
+renderer works on cells — an image is an escape sequence, so it is invisible to
+a capture by construction. What can be checked without a human is that the
+bytes are right, and they are.
 
-- *mermaid in kitty* — `mmdc` is not installed on this machine, and this session
-  runs under tmux against xterm-256color rather than a kitty-protocol terminal.
-  The absent-renderer path is the one that is exercised: the source is shown
-  with highlighting under `↻ mermaid (render requires mmdc)`, which is what §5
-  specifies for exactly this case.
-- *a pasted image displays* — same reason. `graphics.Detect` sniffs the
-  environment rather than querying the terminal, so the probe rig always
-  resolves to the placeholder tier.
-- *`/selfdev` completes a real task* — needs a live model, and no
-  `OLLAMA_API_KEY` is set in this environment. The command, the skill, and the
-  `/rebuild` → test → re-exec path are built and unit-tested; what has not
-  happened is a model driving them.
-
-**What would close these:** run under kitty or ghostty with `mmdc` on PATH for
-the first two, and one session with a key set for the third. None of the three
-needs code — they need a terminal and a key this machine does not have.
-
-## 8. No harmonica panel slide-in
-
-**Spec:** Phase 5 lists "Panel slide-in via harmonica (only if panels feel dead
-without it)."
-
-**Built:** nothing. The panel appears and disappears instantly.
-
-**Why:** the task conditions itself, so the honest thing is to answer the
-condition rather than build past it. I opened the side panel on a real diff and
-looked at the frame: a clear vertical divider, line numbers, a `+`/`-` gutter,
-and the diff tinted toward add and delete while keeping its syntax colors. It
-reads as a panel, not as a jump. Adding a spring animation would put a new
-dependency and a per-frame physics step behind an effect nobody is missing.
-
-**When this would need revisiting:** if the panel ever grows to full width, or
-if toggling it starts reading as a flicker rather than a reveal. Neither is true
-at the sizes it actually opens at.
-
-## 9. "A pasted image displays" is unverified, not verified
-
-**Spec:** the Phase 5 verification asks for a pasted image to display.
-
-**Built:** the whole path — `LoadImage` reads and size-caps the file,
-`KittySequence` encodes it into protocol-conformant chunks with tmux
-passthrough, the block reserves its rows, and `Alt+Shift+I` deletes what is on
-screen when switching to placeholders. All of it is unit-tested.
-
-**Why it is not verified:** the terminal this was built in reports
-`TERM=xterm-kitty` and `Detect()` returns the kitty protocol, but the session is
-read through a harness rather than by looking at the pane. Everything up to the
-bytes leaving the process is checked; whether the terminal paints them is not.
-Claiming otherwise would make the verification list worth less than the code.
-
-**When this would need revisiting:** the first time someone runs the TUI in
-kitty and pastes a screenshot. That is a thirty-second check for a person with
-eyes on the terminal, and it is the only thing standing between this and a pass.
+**When this would need revisiting:** run under kitty, ghostty, or WezTerm once
+and look at the screen. Nothing in the code is waiting on it.
 
 ## 8. Two emoji added to the §9.5 inventory
 

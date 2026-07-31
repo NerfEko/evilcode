@@ -152,10 +152,12 @@ func Default() *Config {
 		},
 		Features: Features{AutoPoke: true, Memory: true},
 	}
-	// Without a key, cloud is unreachable; fall back so a bare install still
-	// works against a local daemon.
+	// Without a key, ollama.com is unreachable directly — but a local Ollama
+	// daemon proxies the same cloud models, so the fallback keeps the model and
+	// changes only the route. Falling back to a different model instead meant
+	// falling back to one that is usually not even pulled.
 	if os.Getenv(EnvOllamaKey) == "" {
-		c.DefaultModel = "qwen3-coder:30b@ollama-local"
+		c.DefaultModel = "glm-5.2:cloud@ollama-local"
 	}
 	return c
 }

@@ -1058,3 +1058,55 @@ verify the PNG, the escape sequence, and the placement geometry, and not the
 pixels the terminal paints. Recording that as unverified rather than passed.
 
 Tagged `phase-5`.
+
+## 2026-07-31 P5 — Graduation
+
+The three verifications I had written off as impossible on this machine turned
+out to be two-thirds possible, which is its own lesson: "cannot verify here" was
+a guess, not a finding.
+
+`mmdc` installs from npm; puppeteer needed its browser fetched separately, and
+then again as `chrome-headless-shell`, which is what mmdc actually launches. A
+real diagram rendered — and rendering it caught a real bug. `RenderMermaid`
+trimmed its source before keying the cache while `CachedMermaid` did not, so
+every lookup missed and every frame relaunched a browser for a diagram already
+sitting in the cache.
+
+Kitty display cannot be seen from a tmux capture — an image is an escape
+sequence, so the ANSI→PNG renderer is blind to it by construction. What *can* be
+checked without a human is that the bytes are right, so they are: transmission
+header, chunking, terminators, delete sequence. DEVIATIONS #7 says plainly what
+a terminal would still add.
+
+`/selfdev` ran for real. The local Ollama daemon proxies cloud models, so
+`glm-5.2:cloud` was reachable all along — the "no API key" I had reported was
+true and irrelevant. The model read the file, found the test it had been asked
+to write already existed, reasoned about the name collision rather than
+duplicating it, made the minimal correct change, ran the suite, and reported
+accurately including what it had *not* done. It also reported that it had no
+skill tool — which was true, and a real gap: headless `run` never registered
+one, so a `run` could not load a skill at all. Fixed and re-verified.
+
+The polish audit found the worst-reading bug of the phase. The attach path draws
+prompts a client did not type, so an attached session can see what another
+client asked. That check had no notion of a *hidden* prompt, so `/plan`,
+auto-poke, overnight and selfdev were each dumping their full instruction text
+into the transcript as a user message. The plan-card golden had been showing a
+screenful of injected prompt above the card and nobody noticed, because the card
+below it looked right. Looking at the PNG is what caught it.
+
+Lexicon swept: every piece of flavor in the codebase is on §2.1's approved list.
+Two emoji I had introduced are not in §9.5's inventory and are recorded as
+additions pending sign-off; where an approved one fit, it was used instead —
+`/overnight` is `⏳`, not the `🌙` it started as.
+
+Harmonica panel slide-in: not built, deliberately. §5 makes it conditional on
+the panels feeling dead without it, and they do not — the side panel is spliced
+over a finished frame and reads as instant. Motion there would cost invariant 3
+for an animation nobody asked about.
+
+`testdata/clamp.go` bit a third time: the diff golden had re-baked its own
+failure after a regeneration raced my manual probe sessions. Regenerated alone,
+it shows a real diff with tint and a DiffStat.
+
+Every task in plan.md is checked. Phase 5 tagged.
