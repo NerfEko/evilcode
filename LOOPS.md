@@ -1167,3 +1167,37 @@ The queue binding still shows while a turn is actually running.
 immediately — the probe restores testdata from git before every run, so an
 untracked fixture stays rewritten and every later run sees no diff at all. That
 trap has now been walked into three times and caught by habit once.
+
+## 2026-07-31 — The polish audit, done properly
+
+The audit line had been checked off on the strength of a few frames. Six bugs
+then turned up in an afternoon of real use, which is what a checkmark earned
+that way is worth. Doing it properly meant rendering all 33 goldens, looking at
+every one, and scanning them programmatically for the defects an eye skips.
+
+Three more, all of which had been on screen the whole time:
+
+The context widget printed the *remaining* fraction beside a bar that fills as
+context is consumed, so 428 tokens of 200k read as **99%** — the opposite of the
+truth, and contradicting the composer hint directly beneath it. Two readings of
+the same two numbers, disagreeing, in one frame.
+
+A whole class of overflow bugs, structurally invisible to the probe because it
+runs at 140 columns. The model picker's key hint is 91 cells wide; the help box
+padded its lines without truncating them; `roundedBox` capped its *border* to the
+terminal while letting content run past it. An overflowing row does not clip —
+the terminal wraps it, every row below shifts, and the frame tears open. There is
+now a test that renders every overlay down to 40 columns, which is how the last
+three of those were found rather than the first one.
+
+And `⌥B` in the background-task hint: the Mac option glyph, for a binding that is
+`alt+b`, in a program that is Linux-only by §1. It came from the spec's own
+sketch in §8.2, copied without asking whether it was right.
+
+The programmatic scan — overwide rows, raw escapes, `%!` verbs, `<nil>`,
+stray decimals — now reports clean across all 33.
+
+What this loop actually taught: a golden proves a frame has not *changed*, never
+that it is *right*. Every one of these had a passing golden that had faithfully
+recorded the wrong thing. Looking is not optional, and looking at 140 columns is
+not looking at what a user has.
