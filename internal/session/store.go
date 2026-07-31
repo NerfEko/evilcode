@@ -365,6 +365,16 @@ func (s *Store) Close() error {
 	if err := s.WriteMeta(Meta{Kind: MetaCleanExit}); err != nil {
 		return err
 	}
+	return s.closeFile()
+}
+
+// closeFile flushes and releases the descriptor without a lifecycle marker.
+//
+// For a caller that opened the store only as a side channel — Save appending
+// a saved/unsaved line while the real session may still be open elsewhere —
+// a clean_exit here would be a lie: the live session hasn't exited, and the
+// marker would falsely clear crash detection (H5.11).
+func (s *Store) closeFile() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.w.Flush(); err != nil {

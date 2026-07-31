@@ -249,7 +249,10 @@ func Save(dataDir, name string, pinned bool) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	// Not st.Close(): this is a side channel onto a log the real session may
+	// still hold open, and Close's clean_exit marker would falsely mark a
+	// live session as having exited cleanly (H5.11).
+	defer st.closeFile()
 	kind := MetaSaved
 	if !pinned {
 		kind = MetaUnsaved

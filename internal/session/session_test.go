@@ -517,6 +517,29 @@ func TestSaveMarksTheSession(t *testing.T) {
 	}
 }
 
+func TestSaveDoesNotMaskACrash(t *testing.T) {
+	dir := t.TempDir()
+	st, _ := Open(dir, "bat")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "x"})
+	// No Close: the session is still open elsewhere, same as a real pin/unpin
+	// issued from the TUI mid-turn.
+
+	if err := Save(dir, "bat", true); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := Describe(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Saved {
+		t.Error("session should be pinned")
+	}
+	if !info.Crashed {
+		t.Error("pinning a still-open session must not fake a clean exit")
+	}
+}
+
 func TestRenameRefusesCollisionsAndBadNames(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"bat", "wolf"} {

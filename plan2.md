@@ -390,7 +390,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   `clean_exit` as proof the latest run exited cleanly, so a crash after a resume reports
   clean. Fix: derive status from the final lifecycle marker; append an explicit open marker
   on resume.  ⟨codex⟩
-- [ ] **H5.11** `internal/session/checkpoint.go:166` `Save` — pin/unpin opens the session
+- [x] **H5.11** `internal/session/checkpoint.go:166` `Save` — pin/unpin opens the session
   and `defer st.Close()`, and `Close` appends `MetaCleanExit`. Pinning therefore falsifies
   crash detection (compounding H5.10) and briefly runs a second writer on the live log.
   Fix: append the `saved`/`unsaved` meta directly, or add a close path that does not write

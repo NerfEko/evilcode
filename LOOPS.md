@@ -3432,3 +3432,28 @@ the normal open/resume/close lifecycle.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test
 ./...` green.
+
+## 2026-07-31 H5.11 — pin/unpin's side-channel Store faked a clean exit
+
+`Save` (`checkpoint.go:247`) opened the session's `*Store` only to append a
+`saved`/`unsaved` marker, then `defer st.Close()`'d it. `Close` appends
+`MetaCleanExit` as part of its normal shutdown contract — so every pin/unpin
+wrote a bogus `clean_exit` into the log, even while the real session was
+still open elsewhere (e.g. mid-turn in the TUI). That falsified crash
+detection exactly the way H5.10's fix called out as a known gap: pinning a
+crashed-and-still-running session made `Describe` report it clean, and
+briefly put a second writer on the live log.
+
+Reproduce: `TestSaveDoesNotMaskACrash` in `session_test.go` — open a session,
+write a message, do not `Close` (simulating it's still live), then `Save`
+(pin) it. Failed before the fix: `Describe` reported `Crashed: false` purely
+from the pin.
+
+Fix: split `Store.Close` (`store.go:364`) into the `MetaCleanExit` write plus
+a new unexported `closeFile`, which only flushes and releases the descriptor.
+`Save` now defers `st.closeFile()` instead of `st.Close()`, so the pin/unpin
+marker gets written and the file gets released without asserting a lifecycle
+event that didn't happen.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test
+./...` green.
