@@ -502,7 +502,11 @@ func (r *Renderer) renderReasoning(b *Block) []string {
 	style := rgbStyle(0x64, 0x64, 0x64).Italic(true)
 	if b.Collapsed {
 		lines := len(strings.Split(strings.TrimRight(b.Text, "\n"), "\n"))
-		return []string{"  " + style.Render(fmt.Sprintf("▸ thought (%d lines)", lines))}
+		noun := "lines"
+		if lines == 1 {
+			noun = "line"
+		}
+		return []string{"  " + style.Render(fmt.Sprintf("▸ thought (%d %s)", lines, noun))}
 	}
 
 	// TrimRight, or a trace ending in a newline spends one of its few rows on

@@ -1449,3 +1449,15 @@ a gap larger than that is a blank screen rather than breathing room.
 
 Verified live: the prompt row settles at 8 and stays at 8 through a full turn
 including the collapse, where it used to drop.
+
+**Follow-up, from use again:** the gap was still sitting there after a reply
+finished. The cause was that slack *accumulated* — `+=` on every shrink — and a
+single turn collapses several traces when the model thinks, calls a tool, and
+thinks again. The sum outgrew anything a reply could fill, so the hole stayed.
+
+The first fix I reached for was dropping the remainder at turn end, which was
+wrong and was rejected as such: the gap exists so the answer can fill it, and
+discarding it just moves the jump to a different moment. It holds the largest
+single collapse now rather than their sum — one trace's worth, which is exactly
+what the reply is expected to fill, and does. Live against deepseek: a 40-word
+answer after a long think leaves no gap at all.

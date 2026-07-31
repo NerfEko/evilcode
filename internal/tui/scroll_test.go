@@ -79,16 +79,29 @@ func TestClearSlackResetsForARepaint(t *testing.T) {
 	}
 }
 
-func TestSlackIsCappedToHalfTheViewport(t *testing.T) {
-	// Shrinks accumulate across turns. Uncapped, the gap eventually scrolls the
-	// conversation off the top entirely — which is a blank screen, not a little
-	// breathing room.
+func TestSlackHoldsOneCollapseNotTheirSum(t *testing.T) {
+	// A turn can collapse several traces — think, call a tool, think again.
+	// Summing them grew the gap past anything a reply could fill, which is the
+	// "giant blank space after it finishes" report. One trace's worth is what
+	// the answer is expected to fill, and does.
 	var s Scroll
-	s.Observe(1000, 20)
-	for i := 0; i < 20; i++ {
-		s.Observe(1000-(i+1)*10, 20)
+	s.Observe(1000, 60)
+	s.Observe(994, 60) // a six-line trace collapses
+	s.Observe(988, 60) // and another
+	s.Observe(982, 60) // and another
+
+	if got := s.Slack(); got != 6 {
+		t.Errorf("slack = %d, want the largest single collapse, not the sum", got)
 	}
-	if got := s.Slack(); got > 10 {
-		t.Errorf("slack = %d, want it capped at half of a 20-row viewport", got)
+}
+
+func TestSlackIsCappedWellBelowTheViewport(t *testing.T) {
+	// Backstop: the gap is scaffolding, so anything approaching half the screen
+	// is a hole rather than breathing room.
+	var s Scroll
+	s.Observe(1000, 21)
+	s.Observe(900, 21)
+	if got := s.Slack(); got > 7 {
+		t.Errorf("slack = %d, want it capped for a 21-row viewport", got)
 	}
 }

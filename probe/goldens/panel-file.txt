@@ -1,17 +1,17 @@
- 1› fix the clamp                                                     │ testdata/clamp.go
-                                                                      │   8 │ // makes every scenario's edit fail with "old string not found
- Fixing the off-by-one.                                               │   9 │ // goldens then bake in the failure — which is exactly what ha
-                                                                      │  10 │ func clamp(offset, max int) int {
-   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                           │     │-    if offset > max {
-                                                                      │  11 │+    if offset >= max {
- That was the clamp bug.                                              │  12 │         return max
-                                             ╭──────────────────────╮ │  13 │     }
-                                             │ Context 386/200k     │ │  14 │     return offset
+ skills: /commit /selfdev                                             │ testdata/clamp.go
+ <repo> (main)                       │   8 │ // makes every scenario's edit fail with "old string not found
+                                                                      │   9 │ // goldens then bake in the failure — which is exactly what ha
+ 1› fix the clamp                                                     │  10 │ func clamp(offset, max int) int {
+                                                                      │     │-    if offset > max {
+ Fixing the off-by-one.                                               │  11 │+    if offset >= max {
+                                                                      │  12 │         return max
+   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                           │  13 │     }
+                                                                      │  14 │     return offset
+ That was the clamp bug.                                              │
+                                             ╭──────────────────────╮ │
+                                             │ Context 386/200k     │ │
                                              │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │
                                              ╰──────────────────────╯ │
-                                                                      │
-                                                                      │
-                                                                      │
  💡 Ctrl+R searches your prompt history                               │
  Diff mode: file                                                      │
  2>                                                                   │

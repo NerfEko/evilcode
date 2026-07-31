@@ -1,17 +1,17 @@
- 1› renumber them                                                     │ testdata/big.go
-                                                                      │ ┌─ diff
- Renumbering all of them.                                             │ │  package testdata
-                                                                      │ │
-   ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ -// big is a probe fixture for the side panel: a file long enough
-                                                                      │ │ -// does not fit the panel, which is where a panel that cannot scr
- All fifteen now multiply.                                            │ │ -// first half and silently drops the rest.
-                                             ╭──────────────────────╮ │ │ -//
-                                             │ Context 408/200k     │ │ │ -// Committed in the state BEFORE the scenario's write, for the sa
-                                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │ │ ... 25 more changes ...
-                                             ╰──────────────────────╯ │ │ +func india(a int) int    { return a * 9 }
-                                                                      │ │ +func juliet(a int) int   { return a * 10 }
-                                                                      │ │ +func kilo(a int) int     { return a * 11 }
-                                                                      │ │ +func lima(a int) int     { return a * 12 }
+ skills: /commit /selfdev                                             │ testdata/big.go
+ <repo> (main)                       │ ┌─ diff
+                                                                      │ │  package testdata
+ 1› renumber them                                                     │ │
+                                                                      │ │ -// big is a probe fixture for the side panel: a file long enough
+ Renumbering all of them.                                             │ │ -// does not fit the panel, which is where a panel that cannot scr
+                                                                      │ │ -// first half and silently drops the rest.
+   ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ -//
+                                                                      │ │ -// Committed in the state BEFORE the scenario's write, for the sa
+ All fifteen now multiply.                                            │ │ ... 25 more changes ...
+                                             ╭──────────────────────╮ │ │ +func india(a int) int    { return a * 9 }
+                                             │ Context 408/200k     │ │ │ +func juliet(a int) int   { return a * 10 }
+                                             │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │ │ +func kilo(a int) int     { return a * 11 }
+                                             ╰──────────────────────╯ │ │ +func lima(a int) int     { return a * 12 }
  💡 Ctrl+R searches your prompt history                               │ │ +func mike(a int) int     { return a * 13 }
  Diff mode: pinned                                                    │ │ +func november(a int) int { return a * 14 }
  2>                                                                   │ │ +func oscar(a int) int    { return a * 15 }

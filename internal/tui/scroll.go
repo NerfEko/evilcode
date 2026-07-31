@@ -83,17 +83,22 @@ func (s *Scroll) Observe(contentHeight, viewportHeight int) {
 	}
 	switch {
 	case contentHeight < s.lastHeight && !s.Paused:
-		s.slack += s.lastHeight - contentHeight
+		// The largest single collapse, not the sum of them. A turn can collapse
+		// several traces — think, call a tool, think again — and summing meant
+		// the gap grew past anything a reply could fill, leaving a hole on
+		// screen for good. One trace's worth is what the answer is expected to
+		// fill, and it does.
+		s.slack = max(s.slack, s.lastHeight-contentHeight)
 	case contentHeight > s.lastHeight:
 		// New content spends the gap before it starts scrolling again.
 		if s.slack > 0 {
 			s.slack = max(s.slack-(contentHeight-s.lastHeight), 0)
 		}
 	}
-	// Capped at half the viewport. Shrinks accumulate across turns, and an
-	// uncapped gap eventually scrolls the conversation off the top entirely —
-	// a blank screen is not "a little breathing room".
-	s.slack = min(s.slack, max(viewportHeight/2, 0))
+	// Capped well below the viewport as a backstop. The gap is scaffolding the
+	// reply fills, so anything approaching half the screen is a hole rather
+	// than breathing room.
+	s.slack = min(s.slack, max(viewportHeight/3, 0))
 	s.lastHeight = contentHeight
 }
 
