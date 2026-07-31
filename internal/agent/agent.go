@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"evilcode/internal/provider"
@@ -68,7 +69,7 @@ type Agent struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
-	seq int
+	seq atomic.Int64
 
 	mu         sync.Mutex
 	interrupts []Interrupt

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -1947,7 +1948,13 @@ func (m *Model) submit(text string) {
 	m.cancelTurn = cancel
 	go func() {
 		defer cancel()
-		_ = m.agent.Run(ctx, text)
+		// A turn already running takes the text as an interjection rather than
+		// dropping it. The agent refuses a second concurrent turn (H2.3), and
+		// the one caller that can reach it anyway is the queue flushing at turn
+		// end alongside an unattended continuation.
+		if err := m.agent.Run(ctx, text); errors.Is(err, agent.ErrBusy) {
+			m.agent.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
+		}
 	}()
 }
 

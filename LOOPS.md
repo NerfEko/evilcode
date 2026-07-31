@@ -2078,3 +2078,41 @@ open and stays its own task.
 
 Verified: a second `Run` against a held-open turn returns `ErrBusy`; the daemon
 race test is clean; `go test ./... -race` green.
+
+## 2026-07-31 H2.8 — Two events, one sequence number
+
+`a.seq++` on a plain int. The turn emits from its goroutine and the daemon's
+conflict delivery calls `Notice` from the pump, so the increment is a read and a
+write from two goroutines with nothing between them. Two events taking the same
+sequence is a reattaching client silently missing one, since the sequence is
+precisely how it works out what it missed.
+
+Eight goroutines, fifty events each:
+
+```
+seq_test.go:43: sequence 6 was handed out twice
+race detected during execution of test
+```
+
+Now an `atomic.Int64`. A mutex would have done as well and this is one counter
+with no invariant to hold alongside it.
+
+**A regression from H2.3, caught by the codex review of the phase before it.**
+The review pointed out that `flushPending` can start a queued turn immediately
+before `stepOvernight` starts a continuation — two turns from the TUI in one
+event. Before H2.3 both ran, badly. After H2.3 the second gets `ErrBusy`, and
+both TUI submit paths discarded the error from `Run`, so the user's queued text
+would have been silently dropped instead.
+
+`submit` now interjects on `ErrBusy`, which is what the daemon's `Input` does
+with its loser. The hidden path still drops it: a rejected overnight
+continuation is not lost work, because the running turn's end steps the loop
+again.
+
+Worth writing down as a pattern rather than an incident. Adding a guard turns a
+silent wrong behaviour into a silent refusal, and a caller that ignored the
+error was fine while the error could not happen. Every guard added in this phase
+needs its callers re-read for exactly this.
+
+Verified: distinct sequence numbers across three -race runs; `go test ./...
+-race` green.

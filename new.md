@@ -1,25 +1,47 @@
-1. better launch screen. current launch screen is ugly, the buttons dont look like buttons they only have the rounded edges on the sides no background to complete the button look, buttons need to be selectable
+# new.md — backlog
 
-2. remove black hole and replace with something else or just dont have anything at all
+1. **Launch screen.** The current one is ugly: the buttons only have rounded side
+   edges with no background, so they don't read as buttons. Add a background to
+   complete the button look, and make the buttons selectable.
 
-3. needs commands that give automatic prompts like /review /bugfix /describe
+2. **Idle art.** Remove the black hole — replace it with something else, or have
+   nothing at all.
 
-4. missing alot of commands like /btw /stats /init (needs a agents.md system too)
+3. **Auto-prompt commands.** Add commands that fire automatic prompts, e.g.
+   `/review`, `/bugfix`, `/describe`.
 
-5. the widgets sometimes appear and get covered by some text then disappear, widgets should not be flashing in and out, they should appear on top, but never appear next to model text output, they can appear next to tool calls or thinking blocks but they should only scroll with the main output, they shouldnt scroll inside thinking blocks and they shouldnt disappear.
+4. **Missing commands.** `/btw`, `/stats`, `/init` (the latter needs an `agents.md`
+   system too).
 
-6. download jcode sourcecode. its got alot of quirky features we are missing such as overscroll and other things that i want to implement
+5. **Widgets flashing in and out.** Widgets currently appear, get covered by text,
+   then disappear. They should render on top and never appear next to model text
+   output — only next to tool calls or thinking blocks. They scroll with the main
+   output only, never scroll inside thinking blocks, and never disappear.
 
-7. it needs a self-update 'evilcode update' pulls from github and updates itself
+6. **jcode source.** Download it — it has quirky features we're missing (overscroll
+   and others) that I want to implement.
 
-8. .md files can present as links, clicking opens another terminal running that file in 'glow' the terminal md viewer
+7. **Self-update.** `evilcode update` pulls from GitHub and updates itself.
 
-9. you should be able to click on a write or read, opens the side by side with a diff or the file, pressing esc closes. its a quick view system seperate from the /diff system
+8. **Markdown links.** `.md` files render as links; clicking opens a side-by-side
+   full markdown renderer view of the file, scrollable, Esc to close.
 
-10. currently the grey text after a bash command is just a repeat of the command, and it shows on top of widgets and messes with allignment. it should be a summary of the command or something. you should be able to click on it to view it side by side like the quickdiff system, it should show a side by side of what it would look like if the command ran in a terminal for example the bash command rm -rf would appear in the side by side like '> rm -rf' and the output would be under it like a real terminal. pressing esc closes.
+9. **Quick view for read/write.** Clicking a `write` or `read` opens a side-by-side
+   diff or file view; Esc closes. This is a quick-view system separate from `/diff`.
 
-11. we need to divert looks away from jcode look. come up with ways to make changes that give evilcode its own visual identity without removing features and write a looks.md with as many changes as you can think of and ill pick the ones i like
+10. **Bash command summary line.** The grey text after a bash command just repeats
+    the command, renders on top of widgets, and breaks alignment. It should be a
+    summary of the command instead. Make it clickable to open a side-by-side
+    terminal-style view — e.g. `rm -rf` shows as `> rm -rf` with the output beneath
+    it, like a real terminal; Esc closes.
 
-12. needs a /login that lets you input ollama cloud api key
+11. **Visual identity.** Divert the look away from jcode. Brainstorm changes that
+    give evilcode its own visual identity without dropping features, write them to
+    `looks.md`, and I'll pick the ones I like.
 
-13. read the plan.md and plan2.md create a planfiles.md file that describes how to make plan files that work the same way, with the same layout and quirks. they should be dense, but not bloated, confirm the loop at the top (write, fix, loops.md readme.md checkbox in plan.md, commit, codex review, next problem)
+12. **`/login`.** A command to input an Ollama Cloud API key.
+
+13. **[x] `planfiles.md`.** Read `plan.md` and `plan2.md`, create a `planfiles.md`
+    that describes how to author plan files with the same layout and quirks — dense,
+    not bloated, with the loop confirmed at the top (write, fix, checkbox in
+    `plan.md`, `LOOPS.md`, `README.md`, commit, codex review, next problem).

@@ -200,7 +200,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [ ] **H2.7** `internal/daemon/server.go:242` — concurrent opens of one session build
   duplicate stores outside the map lock; the loser writes lifecycle state to the shared log
   as it closes. Fix: per-session singleflight.  ⟨codex⟩
-- [ ] **H2.8** `internal/agent/events.go:119` — `a.seq++` unsynchronized. The daemon's
+- [x] **H2.8** `internal/agent/events.go:119` — `a.seq++` unsynchronized. The daemon's
   `deliverConflicts` calls `Notice` from the pump goroutine while `Loop` emits from the
   turn goroutine. Fix: `atomic.Int64`, or allocate under `a.mu`.  ⟨both⟩
 - [x] **H2.9** `internal/agent/agent.go:97,266` — `Attach` mutates `pendingImages` under

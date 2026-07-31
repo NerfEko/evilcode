@@ -116,7 +116,11 @@ func (e Event) ErrMessage() string {
 }
 
 // newEvent stamps the session and sequence number every event carries.
+//
+// Atomic because emitters are not all on the turn's goroutine: the daemon's
+// conflict delivery calls Notice from the pump while the turn emits from its
+// own, and two events sharing a sequence number is a client reattaching and
+// silently missing one — the sequence is how it works out what it missed.
 func (a *Agent) newEvent(kind EventKind) Event {
-	a.seq++
-	return Event{Kind: kind, Session: a.Session, Seq: a.seq}
+	return Event{Kind: kind, Session: a.Session, Seq: int(a.seq.Add(1))}
 }
