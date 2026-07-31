@@ -3401,3 +3401,34 @@ the `before[len(kept):]` boundary is taken.
 
 Verified: repro test passes; `go build ./... && go vet ./... && go test
 ./...` green.
+
+## 2026-07-31 H5.10 — crash detection read "clean_exit anywhere" instead of "last marker"
+
+`Describe` (`store.go:443`) initialized `Crashed: true` and then, scanning
+every entry forward, set `info.Crashed = false` the moment it saw *any*
+`MetaCleanExit` — nothing in the loop ever set it back to `true`. A session
+closed cleanly once, then resumed and killed with `kill -9`, still carried
+that first `clean_exit` line in its history, so the picker reported the
+crashed run as clean.
+
+Reproduce: `TestCrashAfterResumeIsDetected` in `session_test.go` — open a
+session, write a message, `Close()` (writes `clean_exit`), `Resume()`, write
+another message, then never close (simulating a crash after resume). Failed
+before the fix: `Describe` reported `Crashed: false`.
+
+Fix: `Resume` (`store.go:528`) now appends an explicit `MetaOpen` ("open")
+marker right after reopening, so a run that never reaches `Close` always has
+a non-`clean_exit` marker as the log's last lifecycle line. `Describe`
+(`store.go:459`) now treats `MetaStart` and `MetaOpen` as resetting
+`Crashed = true`, alongside `MetaCleanExit` resetting it to `false` — since
+the loop runs forward in file order, the last lifecycle marker seen wins,
+rather than the first `clean_exit` found anywhere.
+
+Left alone (H5.11, next task): `checkpoint.go`'s `Save` opens its own
+`*Store` for the pin/unpin marker and `defer`s `Close`, which appends its own
+`clean_exit` into the middle of a still-running session's log. That's a
+separate bug this fix does not paper over — it only fixes marker order for
+the normal open/resume/close lifecycle.
+
+Verified: repro test passes; `go build ./... && go vet ./... && go test
+./...` green.

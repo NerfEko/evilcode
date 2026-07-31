@@ -55,6 +55,7 @@ const (
 	MetaTokens     = "tokens"
 	MetaCheckpoint = "checkpoint"
 	MetaCleanExit  = "clean_exit"
+	MetaOpen       = "open"
 	MetaTitle      = "title"
 	MetaCompact    = "compact"
 	MetaSaved      = "saved"
@@ -381,7 +382,9 @@ type Info struct {
 	Modified time.Time
 	Title    string
 
-	// Crashed reports a session whose file has no clean-exit marker.
+	// Crashed reports whether the session's last lifecycle marker (start, open
+	// or clean_exit) was a clean_exit — not whether one exists anywhere in the
+	// log, since a resumed run can crash after an earlier clean exit.
 	Crashed bool
 
 	// Saved marks a pinned session (📌 in the picker).
@@ -457,16 +460,24 @@ func Describe(dataDir, name string) (Info, error) {
 				continue
 			}
 			switch m.Kind {
+			// Crashed reflects only the last lifecycle marker seen, not whether
+			// a clean_exit exists anywhere in the log: a resume or restart after
+			// a clean exit reopens the run, and that later run needs its own
+			// clean_exit or it must read as crashed, even though an earlier one
+			// is still sitting in the history.
 			case MetaCleanExit:
 				info.Crashed = false
+			case MetaStart:
+				info.Crashed = true
+				if m.Cwd != "" {
+					info.Cwd = m.Cwd
+				}
+			case MetaOpen:
+				info.Crashed = true
 			case MetaTitle:
 				info.Title = m.Note
 			case MetaCompact:
 				info.Compactions++
-			case MetaStart:
-				if m.Cwd != "" {
-					info.Cwd = m.Cwd
-				}
 			case MetaSaved:
 				info.Saved = true
 			case MetaUnsaved:
@@ -539,6 +550,13 @@ func Resume(dataDir, name string) (*Store, []provider.Message, error) {
 	}
 	st, err := Open(dataDir, name)
 	if err != nil {
+		return nil, nil, err
+	}
+	// An explicit open marker after whatever clean-exit already sits in the log:
+	// if this run crashes without ever closing, the log's last lifecycle marker
+	// is this one, not the stale clean_exit from the run being resumed.
+	if err := st.WriteMeta(Meta{Kind: MetaOpen}); err != nil {
+		st.file.Close()
 		return nil, nil, err
 	}
 	return st, msgs, nil

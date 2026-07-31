@@ -386,7 +386,7 @@ Lower cost per firing, and the phase where a feature that never worked gets deci
   `discarded := before[len(kept):]` where `before` came from `Conv.Messages()` (system
   message prepended) and `kept` came from the file (no system message), misattributing one
   boundary message. Fix: strip the system message from `before` first.  ⟨fable⟩
-- [ ] **H5.10** `internal/session/store.go:253` — crash detection treats **any** historical
+- [x] **H5.10** `internal/session/store.go:253` — crash detection treats **any** historical
   `clean_exit` as proof the latest run exited cleanly, so a crash after a resume reports
   clean. Fix: derive status from the final lifecycle marker; append an explicit open marker
   on resume.  ⟨codex⟩

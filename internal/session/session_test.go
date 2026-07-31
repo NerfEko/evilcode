@@ -106,6 +106,29 @@ func TestCrashDetection(t *testing.T) {
 	}
 }
 
+func TestCrashAfterResumeIsDetected(t *testing.T) {
+	dir := t.TempDir()
+
+	st, _ := Open(dir, "phantom")
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "first"})
+	st.Close() // clean_exit #1: the first run ended cleanly.
+
+	st2, _, err := Resume(dir, "phantom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st2.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "second"})
+	// No Close: this run crashed after the resume, despite the earlier clean exit.
+
+	info, err := Describe(dir, "phantom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Crashed {
+		t.Error("a crash after resume must not be masked by an earlier clean-exit marker")
+	}
+}
+
 func TestTruncatedFinalLineIsSkipped(t *testing.T) {
 	// A hard kill mid-write leaves a partial JSON line. Recovering what
 	// survived is the whole point of resuming.
