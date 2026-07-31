@@ -122,7 +122,7 @@ Everything here destroys user data or state with no error surfaced. Fix in order
   sequence. Fix: convert every LSP position UTF-16→byte with validation. Reproduce: rename
   a symbol in a file with an emoji or accented identifier above the edit site.
   ⟨codex — high, and the most likely to be corrupting files right now⟩
-- [ ] **H1.5** `internal/tools/fs.go:252` `writeTool`/`editTool` — truncate the destination
+- [x] **H1.5** `internal/tools/fs.go:252` `writeTool`/`editTool` — truncate the destination
   in place, so a crash, short write, or full disk leaves a partially written file. Fix:
   write + sync a same-directory temp file, preserve permissions, atomic rename.  ⟨codex⟩
 - [ ] **H1.6** `internal/tools/fs.go:331` `editTool` — batches run 8-way concurrent

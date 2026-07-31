@@ -1622,3 +1622,37 @@ round is still reported as interrupted if the context is done.
 Also logged from the reviews, not fixed here: the daemon closing a store while a
 round is still stubbing (that is **H1.9**, already in the plan) and replay not
 repairing histories that were already malformed (new: **H5.22**).
+
+## 2026-07-31 H1.5 — The file was neither version for a quarter of a second
+
+`write` and `edit` both ended in `os.WriteFile`, which truncates and then
+writes. Between those two steps the file on disk is not the old contents and not
+the new ones, and a crash, a short write or a full disk in that window leaves
+the truncated remains with the original nowhere.
+
+The window is not theoretical and does not need a crash to observe. A reader
+loop running alongside eight write/rewrite cycles of a 200 KB file caught it
+immediately:
+
+```
+a reader saw a partially written file: the file was empty — truncated, not yet rewritten
+... the file held 49152 bytes, matching neither version
+```
+
+49,152 bytes is twelve pages: the write was in progress, and anything reading
+that file — another tool call, a `go build`, the editor the user has open — sees
+a file that never existed.
+
+`writeAtomic` writes a same-directory temp file, syncs it, restores the
+destination's mode and renames. Same directory because rename is only atomic
+within a filesystem; sync before rename because otherwise the rename can be
+durable while the contents are not, which is precisely the crash that leaves an
+empty file. All three write sites in `fs.go` go through it.
+
+The permission test was written to fail in the other direction — a temp file is
+created 0600 and would have *narrowed* the mode had the chmod been forgotten,
+where `os.WriteFile` on an existing file left it alone. It passed before the
+change and passes after, which is the point of having written it first.
+
+Verified: the reader observes only whole versions, modes survive both tools,
+`go test ./...` green.

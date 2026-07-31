@@ -214,6 +214,51 @@ func (f *FS) readTool() Tool {
 	}
 }
 
+// writeAtomic replaces a file's contents in one visible step.
+//
+// `os.WriteFile` truncates the destination and then writes into it, so for the
+// length of the write the file on disk is neither the old version nor the new
+// one — and a crash, a short write or a full disk in that window leaves the
+// truncated remains and nothing else. Writing a same-directory temp file,
+// syncing it and renaming means a reader sees one version or the other, and a
+// failure leaves the original untouched.
+//
+// The temp file is in the destination's directory because rename is only
+// atomic within a filesystem, and the mode is copied from the destination
+// because the replacement is the same file as far as anyone using it is
+// concerned.
+func writeAtomic(path string, data []byte) error {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Sync before the rename: without it the rename can be durable while the
+	// contents are not, which is the crash that leaves an empty file behind.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(name, mode); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
 type writeArgs struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -249,7 +294,7 @@ func (f *FS) writeTool() Tool {
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return Result{}, err
 			}
-			if err := os.WriteFile(full, []byte(a.Content), 0o644); err != nil {
+			if err := writeAtomic(full, []byte(a.Content)); err != nil {
 				return Result{}, err
 			}
 			// The model has not seen the new contents, so its anchors for this
@@ -363,7 +408,7 @@ func (f *FS) editTool() Tool {
 			} else {
 				after = strings.Replace(before, a.Old, a.New, 1)
 			}
-			if err := os.WriteFile(full, []byte(after), 0o644); err != nil {
+			if err := writeAtomic(full, []byte(after)); err != nil {
 				return Result{}, err
 			}
 			f.anchors.forget(full)
@@ -415,7 +460,7 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 	if after == before {
 		return Result{}, fmt.Errorf("the patches produced no change to %s", name)
 	}
-	if err := os.WriteFile(full, []byte(after), 0o644); err != nil {
+	if err := writeAtomic(full, []byte(after)); err != nil {
 		return Result{}, err
 	}
 	f.anchors.forget(full)
