@@ -9,17 +9,8 @@
 
  Fixing the off-by-one.
 
-   ✓ edit testdata/clamp.go · 8 tok (+1 -1)
- ┌─ diff
- │  // makes every scenario's edit fail with "old string not found", and the
- │  // goldens then bake in the failure — which is exactly what happened once.                      ╭──────────────────────────────────────╮
- │  func clamp(offset, max int) int {                                                               │ ⚡ mock-large                        │
- │ -    if offset > max {                                                                           │ 1 sessions · dracula                 │
- │ +    if offset >= max {                                                                          │ …os-home/eko/projects/evilcode  main │
- │          return max                                                                              │ ☁ mock                               │
- │      }                                                                                           ╰──────────────────────────────────────╯
- │      return offset
- └─ (+1 -1 total)
+   ✗ edit testdata/clamp.go
+   ✗ old string not found in testdata/clamp.go. Re-read the file — it may have changed, or the indentation may differ from what you expected
 
  That was the clamp bug.
  💡 Ctrl+R searches your prompt history

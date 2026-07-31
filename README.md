@@ -34,7 +34,7 @@ ln -sf "$PWD/evilcode" ~/.local/bin/ec      # short form
 
 ## What works today
 
-Phases 0 and 1 complete; Phase 2 in progress. See `plan.md` for the full spec.
+All five phases complete. See `plan.md` for the full spec and `DEVIATIONS.md` for where the build differs from it.
 
 **Interactive TUI** — `evilcode tui`
 
@@ -82,6 +82,32 @@ another rewrote a file it had read, delivered between turns rather than mid-thou
 spawner supplies, so nobody parses prose. Live agents show in the SwarmStatus widget,
 with a one-line strip as the fallback when it cannot dock.
 
+**Images and diagrams**
+
+Mermaid fences render through `mmdc` and display inline with the kitty graphics
+protocol (kitty, ghostty, WezTerm; sixel through `img2sixel` elsewhere). Without a
+renderer the source shows styled with a line saying what would render it. `Alt+Shift+I`
+switches between pictures and placeholders.
+
+**Language servers and a second opinion**
+
+The `lsp` tool speaks to configured servers with gopls preconfigured — diagnostics,
+definition, references, hover, symbols, rename. A rename reads and rewrites every
+touched file in memory before anything reaches disk. `/advisor` puts a cheap second
+model on the conversation; it raises at most one concern per turn.
+
+**Unattended work** — `/overnight`
+
+Works the todo list with nobody watching, under four caps: turns, tokens, wall clock,
+and consecutive turns that do not move the list. `/productivity` renders what you have
+been doing as a dashboard and a PNG.
+
+**Working on evilcode itself** — `/selfdev`
+
+Opens a session on this repository with a skill encoding the development loop.
+`/rebuild` builds, tests, and restarts into the new binary; `/reload` restarts keeping
+the session.
+
 **Headless** — `evilcode run "prompt"`
 
 Text on stdout, tool rows and notices on stderr, exit 130 on interrupt. `--remote`
@@ -93,7 +119,8 @@ set (read/write/edit with hash anchors, glob/grep/bash, git helpers, `ask`) with
 bounded-concurrency batching, the agent loop with safe-point interleaving and retry
 classification, and JSONL sessions with crash detection.
 
-Not yet built: graphics, mermaid, the `lsp` tool, and the advisor.
+Shell completions: `evilcode completions bash|zsh|fish`. Speech to text:
+`evilcode dictate`, wired to whatever STT command you configure.
 
 ## Config reference
 

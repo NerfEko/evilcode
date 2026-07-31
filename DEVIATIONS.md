@@ -229,3 +229,41 @@ dependency and a per-frame physics step behind an effect nobody is missing.
 **When this would need revisiting:** if the panel ever grows to full width, or
 if toggling it starts reading as a flicker rather than a reveal. Neither is true
 at the sizes it actually opens at.
+
+## 9. "A pasted image displays" is unverified, not verified
+
+**Spec:** the Phase 5 verification asks for a pasted image to display.
+
+**Built:** the whole path — `LoadImage` reads and size-caps the file,
+`KittySequence` encodes it into protocol-conformant chunks with tmux
+passthrough, the block reserves its rows, and `Alt+Shift+I` deletes what is on
+screen when switching to placeholders. All of it is unit-tested.
+
+**Why it is not verified:** the terminal this was built in reports
+`TERM=xterm-kitty` and `Detect()` returns the kitty protocol, but the session is
+read through a harness rather than by looking at the pane. Everything up to the
+bytes leaving the process is checked; whether the terminal paints them is not.
+Claiming otherwise would make the verification list worth less than the code.
+
+**When this would need revisiting:** the first time someone runs the TUI in
+kitty and pastes a screenshot. That is a thirty-second check for a person with
+eyes on the terminal, and it is the only thing standing between this and a pass.
+
+## 8. Two emoji added to the §9.5 inventory
+
+**Spec:** §2.1 says the evil lexicon is complete and additions need sign-off;
+§9.5 gives a closed emoji inventory.
+
+**Added:** `📊` for `/productivity` and `🖼` for the image placeholder.
+
+**Why:** neither has a substitute in the inventory that means the right thing —
+the closest options are `💰` and `🔎`, and both would read as something else.
+Where an approved emoji *did* fit, it was used instead: `/overnight` uses `⏳`
+rather than the `🌙` it started with, because overnight is fundamentally about
+elapsed time.
+
+Both satisfy invariant 7: single codepoint, no ZWJ, no variation selector,
+Unicode 6.0, and rendered correctly in the probe's font stack.
+
+**When this would need revisiting:** immediately, if you would rather they were
+something else — this is a taste call and it is yours, not mine.

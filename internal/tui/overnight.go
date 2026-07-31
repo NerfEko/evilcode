@@ -130,11 +130,11 @@ func isComplete(summary string) bool {
 func (o *Overnight) Status() string {
 	if !o.Active {
 		if o.Stopped != "" {
-			return fmt.Sprintf("🌙 Overnight stopped after %d turns: %s", o.Turns, o.Stopped)
+			return fmt.Sprintf("⏳ Overnight stopped after %d turns: %s", o.Turns, o.Stopped)
 		}
-		return "🌙 Overnight is off · /overnight to start a supervised long run"
+		return "⏳ Overnight is off · /overnight to start a supervised long run"
 	}
-	return fmt.Sprintf("🌙 Overnight · turn %d/%d · %s tokens · until %s",
+	return fmt.Sprintf("⏳ Overnight · turn %d/%d · %s tokens · until %s",
 		o.Turns, o.MaxTurns, humanTokens(o.Tokens), o.Deadline.Format("15:04"))
 }
 
@@ -157,7 +157,7 @@ func (m *Model) overnightCommand(arg string) tea.Cmd {
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "off", "stop":
 		m.overnight.Stop("you stopped it")
-		m.notice = "🌙 Overnight OFF"
+		m.notice = "⏳ Overnight OFF"
 		return nil
 	case "status":
 		m.notice = m.overnight.Status()
@@ -165,17 +165,17 @@ func (m *Model) overnightCommand(arg string) tea.Cmd {
 	}
 
 	if m.todos == nil || m.todos.Summary() == "" {
-		m.notice = "🌙 Overnight needs a todo list to work through — make a plan first"
+		m.notice = "⏳ Overnight needs a todo list to work through — make a plan first"
 		return nil
 	}
 	if m.processing {
-		m.notice = "🌙 Finish the current turn first"
+		m.notice = "⏳ Finish the current turn first"
 		return nil
 	}
 
 	m.overnight.Start(time.Now())
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: fmt.Sprintf(
-		"🌙 Overnight armed · at most %d turns, %s tokens, %d hours\n"+
+		"⏳ Overnight armed · at most %d turns, %s tokens, %d hours\n"+
 			"It stops on its own and says why. /overnight off to stop it now.",
 		OvernightMaxTurns, humanTokens(OvernightBudget), OvernightHours)})
 	m.scroll.FollowBottom()
@@ -200,6 +200,6 @@ func (m *Model) stepOvernight() {
 	}
 
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice,
-		Text: fmt.Sprintf("🌙 Overnight stopped after %d turns: %s", m.overnight.Turns, why)})
+		Text: fmt.Sprintf("⏳ Overnight stopped after %d turns: %s", m.overnight.Turns, why)})
 	m.scroll.FollowBottom()
 }

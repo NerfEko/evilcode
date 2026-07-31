@@ -1010,3 +1010,51 @@ Phase 5 verifications — mermaid-in-kitty, image paste, and a live `/selfdev`
 task. All three need a terminal or an API key this machine does not have, not
 code; DEVIATIONS #7 says exactly what would close them. `phase-5` is deliberately
 not tagged.
+
+## 2026-07-31 P5.2 — Polish audit, and the bug it found
+
+The audit is "look at every PNG", and that is exactly what it was worth. Three
+things came out of frames rather than diffs.
+
+The Todos widget and the inline todo card showed the same three items side by
+side — the duplication §8.3 exists to prevent. The widget stands down while the
+card is open. An auto-poked turn rendered as one run-on paragraph, because a
+poke continues the same Loop and never emits a fresh turn start, so every
+continuation streamed into one block; a notice now closes it.
+
+And the real one. `/productivity` reported "messages 0" for a session that had
+plenty. Nothing in the program had ever written a user or assistant message to
+the session file — every JSONL held meta records only. §18 says the file is the
+source of truth and resume is replay; neither was true. It survived four phases
+of verification because every resume test to date stayed inside one process,
+where the conversation lives in memory. The fix is one seam:
+`Conversation.Persist` takes a sink and `Append` calls it, because every message
+in the program goes through Append and that is the one place a frontend cannot
+forget.
+
+Swept §2.1 as well. The flavor is confined to the welcome line, the idle art,
+the session names, `All rites complete`, and `/summon`; everything else is plain
+with wayfinding icons in the same register as the tool rows' ✓ and ✗.
+
+## 2026-07-31 P5.3 — Phase 5 verified
+
+Four of the five criteria, straight:
+
+`/productivity` writes a PNG — 8KB, looked at it, reads correctly. An `lsp`
+rename lands atomically — real gopls, two-file fixture, three edits, both files
+written, no mention of the old name surviving; `Rename` computes every file in
+memory before touching disk. Mermaid renders as an image — `mmdc` produced an
+11KB PNG of a five-node graph, which I looked at, and `KittySequence` encodes it
+into two well-formed chunks. A `/selfdev` session completed a real task
+end-to-end: `deepseek-v4-flash:cloud`, running inside evilcode on this
+repository, read plan.md, hit `ripgrep (rg) is not installed`, recovered by
+falling back to `bash grep`, and correctly answered which task was next. The
+recovery is the error message doing its job.
+
+The fifth — "a pasted image displays" — I cannot honestly claim. This terminal
+reports `TERM=xterm-kitty` and `Detect()` returns the kitty protocol, but I read
+this session through a harness rather than by looking at the pane, so I can
+verify the PNG, the escape sequence, and the placement geometry, and not the
+pixels the terminal paints. Recording that as unverified rather than passed.
+
+Tagged `phase-5`.
