@@ -72,13 +72,13 @@ func Run(args []string) (int, error) {
 	dataDir := config.DataDir()
 
 	var store *session.Store
-	var priorMessages int
+	var priorMessages []provider.Message
 	if *resume != "" {
 		st, msgs, err := session.Resume(dataDir, *resume)
 		if err != nil {
 			return ExitError, err
 		}
-		store, priorMessages = st, len(msgs)
+		store, priorMessages = st, msgs
 	} else {
 		if store, err = session.Create(dataDir); err != nil {
 			return ExitError, err
@@ -96,12 +96,11 @@ func Run(args []string) (int, error) {
 		promptSkills = append(promptSkills, agent.Skill{Name: sk.Name, Desc: sk.Desc, Path: sk.Path})
 	}
 	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
-	if *resume != "" {
-		_, msgs, err := session.Resume(dataDir, *resume)
-		if err != nil {
-			return ExitError, err
-		}
-		conv.Append(msgs...)
+	if len(priorMessages) > 0 {
+		// The messages from the resume above, not a second one. Resuming twice
+		// re-parsed the whole file and discarded the store it returned, leaking
+		// the descriptor for the life of the run.
+		conv.Append(priorMessages...)
 	}
 
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
@@ -174,8 +173,8 @@ func Run(args []string) (int, error) {
 		cancel()
 	}()
 
-	if priorMessages > 0 && !*quiet {
-		fmt.Fprintf(os.Stderr, "resumed %s (%d messages)\n", store.Name, priorMessages)
+	if len(priorMessages) > 0 && !*quiet {
+		fmt.Fprintf(os.Stderr, "resumed %s (%d messages)\n", store.Name, len(priorMessages))
 	}
 
 	code := printEvents(a, store, *quiet)

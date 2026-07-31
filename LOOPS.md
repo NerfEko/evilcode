@@ -2701,3 +2701,36 @@ rather than a correctness one.
 Verified: four 4 MiB attachments round-trip through resume, the message after
 them survives, the bytes are on disk beside the log; `go test ./... -race`
 green.
+
+## 2026-07-31 H3.6/H3.7 — Two ways to leave a session open
+
+**Switching sessions recursed.** `Run` called `Run` from inside itself, so the
+outer frame's defers — the session store, the MCP client, the LSP manager, the
+agent, the memory bank — did not run until the final unwind. Twenty switches
+meant twenty live sets of every MCP server process and every language server,
+all idle and none reachable.
+
+The `/reload` path next to it already does this correctly: it re-execs, which
+cannot accumulate frames. The picker path was written to look similar and is
+not.
+
+Now a loop. `runOnce` returns the session to switch to and `runSessions` calls
+it again — after the previous frame has unwound. The test asserts exactly that
+ordering, since the leak *is* the ordering:
+
+```
+enter 0 -m some-model / leave 0 / enter 1 -resume wisp -m some-model / leave 1 / ...
+```
+
+Testing it needed the loop extracted from the TTY work, which is also the only
+reason this is testable at all: the thing that leaked is not observable from
+outside a terminal, but "did frame N finish before frame N+1 started" is.
+
+**Resuming twice.** Both entry points called `session.Resume` a second time
+purely to get the messages, throwing away the `*Store` it returns — a leaked
+descriptor and a redundant full-file parse per resume, on the path where the
+file is at its largest. The messages from the first call were in scope the whole
+time.
+
+Verified: the switch loop tears down in order and an error stops it; one
+`session.Resume` per path now; `go test ./... -race` green.

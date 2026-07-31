@@ -28,37 +28,67 @@ import (
 const Version = "v0.1.0"
 
 // Run starts the interactive TUI.
+// Run starts the interactive TUI, and re-enters it for each session switch.
+//
+// A loop rather than recursion. Switching used to call Run again from inside
+// itself, so the outer frame's defers — the session store, the MCP client, the
+// LSP manager, the agent, the memory bank — did not run until the final unwind.
+// N switches meant N live sets of every MCP server process and language server,
+// all of them idle and none of them reachable.
 func Run(args []string) error {
+	return runSessions(args, runOnce)
+}
+
+// runSessions drives one session at a time, letting each tear down before the
+// next begins.
+func runSessions(args []string, once func([]string) (string, error)) error {
+	model := ""
+	for i, a := range args {
+		if a == "-m" && i+1 < len(args) {
+			model = args[i+1]
+		}
+	}
+	for {
+		target, err := once(args)
+		if err != nil || target == "" {
+			return err
+		}
+		args = append([]string{"-resume", target}, modelArgs(model)...)
+	}
+}
+
+// runOnce runs one session and returns the session to switch to, if any.
+func runOnce(args []string) (string, error) {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	model := fs.String("m", "", "model reference, e.g. qwen3-coder:480b-cloud@ollama-cloud")
 	resume := fs.String("resume", "", "resume a named session")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return "", err
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		return "", err
 	}
 	prov, modelName, err := cfg.Resolve(*model)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	cwd, _ := os.Getwd()
 	dataDir := config.DataDir()
 
 	var store *session.Store
-	var prior int
+	var priorMessages []provider.Message
 	if *resume != "" {
 		st, msgs, err := session.Resume(dataDir, *resume)
 		if err != nil {
-			return err
+			return "", err
 		}
-		store, prior = st, len(msgs)
+		store, priorMessages = st, msgs
 	} else {
 		if store, err = session.Create(dataDir); err != nil {
-			return err
+			return "", err
 		}
 	}
 	defer store.Close()
@@ -66,7 +96,7 @@ func Run(args []string) error {
 	// A repo may pin its roles and default model.
 	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
-		return err
+		return "", err
 	}
 
 	// Skills contribute only their names and one-liners to the prompt; bodies
@@ -91,12 +121,11 @@ func Run(args []string) error {
 	}
 	defer mcpClient.Close()
 	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
-	if prior > 0 {
-		_, msgs, err := session.Resume(dataDir, *resume)
-		if err != nil {
-			return err
-		}
-		conv.Append(msgs...)
+	if len(priorMessages) > 0 {
+		// The messages from the resume above, not a second one. Resuming twice
+		// re-parsed the whole file and discarded the store it returned, leaking
+		// the descriptor for the life of the session.
+		conv.Append(priorMessages...)
 	}
 
 	// The JSONL file is the source of truth (§18), so every message goes to it
@@ -106,7 +135,7 @@ func Run(args []string) error {
 
 	todos, err := todo.NewStore(dataDir, store.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	a := agent.New(store.Name, prov, modelName, nil, conv)
@@ -146,7 +175,7 @@ func Run(args []string) error {
 
 	prompts, err := session.OpenHistory(dataDir)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	keymap, problems := tui.NewKeymap(cfg.Keybindings)
@@ -201,7 +230,7 @@ func Run(args []string) error {
 		WithAdvisor(advisor, lsps).
 		WithCompactor(compactor).
 		WithVision(overrides.Vision)
-	if prior > 0 {
+	if len(priorMessages) > 0 {
 		m.RebuildFrom(conv.Messages())
 	}
 
@@ -224,7 +253,7 @@ func Run(args []string) error {
 	defer a.Close()
 
 	if err := tui.RunModel(m); err != nil {
-		return err
+		return "", err
 	}
 	// After the TUI is down, so a slow summary shows as a pause at the prompt
 	// rather than a frozen frame.
@@ -233,16 +262,15 @@ func Run(args []string) error {
 	// literally be a different one after /rebuild, and every subsystem here is
 	// bound to a session anyway.
 	if target := m.ReloadTarget(); target != "" {
-		return tui.Reexec(target)
+		return "", tui.Reexec(target)
 	}
 
 	// The session picker exits with a target rather than swapping state in
 	// place: the agent, todo store, history, and breakers are each bound to one
 	// session, and re-entering is a much smaller surface than rebuilding them.
-	if target := m.ResumeTarget(); target != "" {
-		return Run(append([]string{"-resume", target}, modelArgs(*model)...))
-	}
-	return nil
+	//
+	// Returned rather than recursed into, so this frame's defers run first.
+	return m.ResumeTarget(), nil
 }
 
 // modelArgs preserves an explicit -m across a session switch.

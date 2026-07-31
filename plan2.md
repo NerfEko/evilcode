@@ -267,13 +267,13 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
   and the session becomes **unresumable**. This is data loss with a resource cause; it sits
   here because the fix is the storage format. Fix: persist sanitized messages with image
   data replaced by external blob references.  ⟨codex⟩
-- [ ] **H3.6** `internal/tuicmd/tuicmd.go:243` — a session switch **recurses** into `Run`,
+- [x] **H3.6** `internal/tuicmd/tuicmd.go:243` — a session switch **recurses** into `Run`,
   so the outer frame's defers (`store.Close`, `mcpClient.Close`, `lsps.Close`, `a.Close`,
   `bank.Close`) do not run until final unwind. Every switch spawns a fresh set of MCP
   server processes and LSP servers while all previous sets stay alive: N switches = N live
   copies of every MCP server. Fix: loop instead of recursing, tearing down before
   re-entering — the `/reload` path's `Reexec` already does this correctly.  ⟨fable⟩
-- [ ] **H3.7** `internal/tuicmd/tuicmd.go:95` and `internal/runcmd/run.go:100` — `Resume` is
+- [x] **H3.7** `internal/tuicmd/tuicmd.go:95` and `internal/runcmd/run.go:100` — `Resume` is
   called a second time purely to get the messages, and the returned `*Store` is discarded
   unclosed: a leaked fd and a redundant full-file parse per resume. Fix: reuse the messages
   from the first call, already in scope.  ⟨both⟩

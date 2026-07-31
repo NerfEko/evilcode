@@ -179,7 +179,7 @@ still costs nothing.
 
 | consumer | question it asks | §  |
 |---|---|---|
-| `Dock.Layout` | may a widget sit on this row? | §2 |
+| `Dock.Layout` | is this row settled, and may a widget sit on it? | §2 |
 | mouse click | which block did I click? | §3 |
 | `.md` link detection | which tool row holds this path? | §4 |
 
@@ -195,40 +195,76 @@ Nothing else. This is not a general-purpose layout system and must not grow into
 > scroll with the main output, they shouldnt scroll inside thinking blocks and they
 > shouldnt disappear.
 
-Six requirements. Stated as rules the dock must obey:
+The follow-up names the cause, which is worth more than the symptom:
 
-1. **Never next to model text.** A widget may not occupy a row owned by a `BlockAssistant`.
-2. **May sit next to tool calls and thinking.** `BlockTool`, `BlockReasoning`, and the
-   chrome kinds (`BlockNotice`, `BlockTodoDelta`, `BlockMemory`) are dockable rows.
-3. **On top.** Where a widget is allowed to sit, it paints over whatever is there. It
-   does not wait for blank columns.
-4. **Never disappear.** A widget that is in the active list and not dismissed is on screen.
-5. **Scrolls with the main output.** Its anchor is an absolute transcript line, as today.
-6. **Does not scroll inside a thinking block.** A live `BlockReasoning` trace scrolls
-   *internally* — `DefaultThinkingLines` is 6, and a longer trace moves its own content
-   under a fixed frame. A widget anchored to a row inside that frame rides content that
-   is churning underneath it. It must anchor to the block, not to the churn.
+> its because widgets try to fill space on the left side that is empty, but widgets spawn
+> at the bottom of the screen where text is still generating and thinking bubbles are
+> scrolling, they need to generate a little higher up so they appear next to stuff that
+> isnt going to change. the functionality that tries to stop them from overlaying text is
+> actually pretty cool. and it doesnt need to take every oportunity it can to spawn a
+> widget, there should only be max 1 widget on screen, and there doesnt nessesarily have
+> to be any.
+
+Stated as rules the dock must obey:
+
+1. **Only on settled rows.** A widget may only be placed where the content has finished
+   changing. This is the root cause, and §2.2 is the whole of it.
+2. **Never next to model text.** A widget may not occupy a row owned by a `BlockAssistant`.
+3. **May sit next to tool calls and finished thinking.** `BlockTool`, a completed
+   `BlockReasoning`, and the chrome kinds are dockable. A *live* reasoning trace is
+   excluded by rule 1 rather than by a rule of its own — which is how "may appear next to
+   thinking blocks" and "must not scroll inside thinking blocks" stop contradicting each
+   other.
+4. **Never overlays text.** Kept exactly as it is: `fits`' free-width check stays.
+5. **At most one on screen, and zero is fine.** No fallback placement, no pinning a box
+   somewhere bad just to have one.
+6. **The one slot rotates, and urgency preempts the rotation.** §2.5.
+7. **Scrolls with the main output, and does not drift.** Its anchor survives lines being
+   added or removed above it.
+
+Rule 4 is a correction to an earlier draft of this section, which had widgets painting
+over their rows. They do not. `dock.go`'s own comment records that overlay was tried and
+reverted, and that judgment stands.
 
 ### §2.2 Why it happens today
 
-Four mechanisms in `internal/tui/dock.go`, each individually defensible, combining into
-the reported flicker:
+`findSlot` (`dock.go:283`) scans top-down and returns the first run of rows where
+`free[i] >= width+WidgetGap`. During and after a model answer the top of the viewport is
+full-width prose, so every one of those rows fails. The first run that passes is the
+short-line region at the tail — the newest tool rows, the live thinking bubble, and,
+decisively, the blank rows below the content.
 
-- `fits` (`dock.go:271`) requires `free[i] >= width+WidgetGap` for every row. Streaming
-  prose lengthens rows one frame at a time, so a slot that fit at frame N does not at
-  frame N+1. This is requirement 3's fault line — the file's own comment says overlaying
-  was tried and reverted, for a reason that requirement 1 now supersedes: overlay was
-  unbearable *because it covered prose*, and the fix is to not sit next to prose at all,
-  not to refuse to overlay.
-- The `default:` arm of `Layout`'s anchor switch (`dock.go:243`) hides the widget in
-  place for up to `RehomeFrames` (120) frames. That is the "disappear" half of the report,
-  and 120 frames is long enough to read as gone rather than as hysteresis.
-- `contentHeight < d.lastHeight` (`dock.go:194`) wipes **every** anchor. A collapsing
-  thinking trace — nine lines to one, the instant the answer starts — triggers it on an
-  ordinary turn, and every widget re-homes at once. That is the "flash" half.
-- `findSlot`/`reliableWidth` (`dock.go:283`, `dock.go:166`) look 12 rows ahead for a slot
-  that will *stay* clear. Under streaming there often is none, so a widget that has just
-  been un-anchored cannot find a new home and renders nowhere.
+Those blanks are real rows in the region the dock measures. `app.go:2212` appends
+`m.scroll.Slack()` blank rows below the text, and `app.go:2221` pads out to
+`res.Transcript` once the transcript is scrolling. `FreeWidth` reports them as maximally
+free. So the widget is placed exactly where the next line is about to arrive, and the next
+frame covers it.
+
+**`reliableWidth` cannot prevent this, despite being written to.** Its comment claims the
+look-ahead is what stops streaming flicker, but it looks ahead in *space* — over rows that
+are blank right now. They are blank because the content has not arrived yet, not because
+they are margin. It defends against a wide line already on screen below; it cannot see a
+line that does not exist yet. At the bottom edge it is weakest of all: `end` clamps to
+`len(free)`, so there are fewer rows to take the minimum over precisely where the threat
+is.
+
+Everything else follows from that one bad choice of row. `fits` fails next frame, the
+`default:` arm (`dock.go:243`) hides the widget in place for `RehomeFrames` — 120 frames,
+long enough to read as gone rather than as hysteresis — and it reappears elsewhere once
+the churn moves. That is the flashing.
+
+One separate mechanism contributes a jump of its own: `contentHeight < d.lastHeight`
+(`dock.go:194`) wipes **every** anchor, and a reasoning trace collapsing from nine lines
+to one triggers it on an ordinary turn.
+
+Two notes on the report's wording, neither of which changes the diagnosis:
+
+- Widgets never use the left side. `Col` is always `totalWidth - w.Width()`
+  (`dock.go:214`) — the right margin, unconditionally. `anchor.Side` is stored and never
+  read for placement, and `DEVIATIONS.md` already records left-side widgets as
+  unreachable. The empty space they chase is the ragged right edge.
+- "A little higher up" is not a fixed offset. The settled region's boundary moves with the
+  content, so §2.3 defines it by what the rows *are*, not by how far up they sit.
 
 ### §2.3 The policy after this plan
 
