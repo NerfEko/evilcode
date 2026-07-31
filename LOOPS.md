@@ -2669,3 +2669,35 @@ following it to the process half.
 
 Verified: both allocation checks under 32 MB, the grandchild's marker file never
 appears; `go test ./... -race` green.
+
+## 2026-07-31 H3.5 — The attachment took the session with it
+
+Raw image bytes went into the transcript record. Four attachments at the 4 MiB
+limit — which the TUI allows — exceed the reader's 16 MiB record cap, and the
+failure is not what it looks like:
+
+```
+bufio.Scanner: token too long
+```
+
+Not "the images were dropped". The *read* fails at that line, so every message
+after it is unreachable and the session cannot be resumed at all. The
+attachments are the smallest part of what is lost.
+
+Attachments now live beside the log in `<session>.blobs/`, content-addressed by
+SHA-256, and the record keeps references. Same image twice costs one file.
+Written through a temp file and synced, because a truncated image handed to a
+vision model on resume is a worse outcome than a missing one.
+
+A missing blob is skipped rather than fatal on read. Refusing to resume because
+an attachment was cleaned up would trade a small loss for a total one, which is
+the same mistake in the other direction.
+
+**Not done, and worth saying:** nothing removes blobs when a session is
+compacted, rewound or deleted, so they accumulate. That is disk in a directory
+the user owns rather than a session that will not open, and it is a cleanup task
+rather than a correctness one.
+
+Verified: four 4 MiB attachments round-trip through resume, the message after
+them survives, the bytes are on disk beside the log; `go test ./... -race`
+green.

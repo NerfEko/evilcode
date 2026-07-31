@@ -193,7 +193,7 @@ func (s *Store) Append(e Entry) error {
 
 // WriteMessage records a conversation message.
 func (s *Store) WriteMessage(m provider.Message) error {
-	data, err := json.Marshal(m)
+	data, err := encodeMessage(s.Path, m)
 	if err != nil {
 		return err
 	}
@@ -411,8 +411,8 @@ func Messages(path string) ([]provider.Message, error) {
 		if e.Type == TypeMeta {
 			continue
 		}
-		var m provider.Message
-		if json.Unmarshal(e.Data, &m) != nil {
+		m, err := decodeMessage(path, e.Data)
+		if err != nil {
 			continue
 		}
 		out = append(out, m)

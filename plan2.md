@@ -262,7 +262,7 @@ Wrong results under load, on a machine where the daemon and the swarm make load 
 - [x] **H3.4** `internal/tools/exec.go:167` — cancellation kills the shell but not its
   descendants, so grandchildren outlive timeouts and keep modifying the workspace. Fix:
   start in a process group, kill the group.  ⟨codex⟩
-- [ ] **H3.5** `internal/agent/agent.go:285` — raw image bytes are persisted into transcript
+- [x] **H3.5** `internal/agent/agent.go:285` — raw image bytes are persisted into transcript
   messages; four maximum-size attachments exceed the session reader's 16 MiB record limit
   and the session becomes **unresumable**. This is data loss with a resource cause; it sits
   here because the fix is the storage format. Fix: persist sanitized messages with image
