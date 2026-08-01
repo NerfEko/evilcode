@@ -282,6 +282,13 @@ func TestResidentIsNeverSwappedForAnotherWidget(t *testing.T) {
 		t.Errorf("%d widgets held the dock over 400 unscrolled frames (%v); "+
 			"a resident is never exchanged", len(seen), seen)
 	}
+	// Spacing is measured from the last spawn, so a screen's worth of unchanged
+	// content spawns once and never again. Getting that test backwards is what
+	// stacked widgets on top of each other and dragged the frame rate down.
+	if len(m.dock.residents) != 1 {
+		t.Errorf("%d residents after 400 frames over one screen of content, want 1",
+			len(m.dock.residents))
+	}
 }
 
 func TestScrolledOffWidgetReappearsOnScrollUp(t *testing.T) {
@@ -290,20 +297,23 @@ func TestScrolledOffWidgetReappearsOnScrollUp(t *testing.T) {
 	d := NewDock()
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, 0, viewH)
+	// Spawns land near the tail of the settled content, so the user following
+	// the tail is the one who sees them.
+	const tail = rowCount - viewH
+	first := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, tail, viewH)
 	if len(first) != 1 {
 		t.Fatalf("no initial placement: %+v", first)
 	}
 	anchor := first[0].Row
 
-	if got := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, anchor+viewH, viewH); len(got) != 0 {
+	if got := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, 0, viewH); len(got) != 0 {
 		t.Fatalf("offscreen resident produced a placement: %+v", got)
 	}
 	if len(d.residents) != 1 {
 		t.Fatalf("offscreen resident count = %d, want 1", len(d.residents))
 	}
 
-	back := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, 0, viewH)
+	back := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, tail, viewH)
 	if len(back) != 1 || back[0].Row != anchor {
 		t.Fatalf("scrolling back produced %+v, want row %d", back, anchor)
 	}
@@ -314,25 +324,27 @@ func TestSpawnSpacingIsOneViewport(t *testing.T) {
 	w1, w2 := widget(WidgetTodos, 3), widget(WidgetContextUsage, 3)
 	render := renderWidgets([]Widget{w1, w2})
 	d := NewDock()
-	content := make([]string, 40)
-	if got := d.Layout(render, []Widget{w1}, content, nil, nil, -1, 100, 0, viewH); len(got) != 1 {
-		t.Fatalf("first spawn = %+v", got)
-	}
+	d.Layout(render, []Widget{w1}, make([]string, 40), nil, nil, -1, 100, 0, viewH)
 	if len(d.residents) != 1 {
 		t.Fatalf("residents after first spawn = %d", len(d.residents))
 	}
+	firstAnchor := d.residents[0].Offset
 
-	// The next pocket is still less than one viewport below the first anchor.
-	content = make([]string, 49)
-	d.Layout(render, []Widget{w2}, content, nil, nil, -1, 100, 0, viewH)
-	if len(d.residents) != 1 {
-		t.Fatalf("high-salience candidate bypassed spacing: %d residents", len(d.residents))
+	// A few more lines of content is not a screenful, so no second spawn — no
+	// matter how salient the candidate is.
+	for _, grown := range []int{41, 44, firstAnchor + viewH - 1} {
+		d.Layout(render, []Widget{w2}, make([]string, grown), nil, nil, -1, 100, 0, viewH)
+		if len(d.residents) != 1 {
+			t.Fatalf("candidate bypassed spacing at %d rows: %d residents", grown, len(d.residents))
+		}
 	}
 
-	content = make([]string, 50)
-	d.Layout(render, []Widget{w2}, content, nil, nil, -1, 100, 0, viewH)
+	d.Layout(render, []Widget{w2}, make([]string, 60), nil, nil, -1, 100, 0, viewH)
 	if len(d.residents) != 2 {
 		t.Fatalf("spacing floor never cleared: %d residents", len(d.residents))
+	}
+	if gap := d.residents[1].Offset - firstAnchor; gap < viewH {
+		t.Errorf("second spawn only %d rows below the first, want >= %d", gap, viewH)
 	}
 }
 
@@ -341,7 +353,7 @@ func TestDismissKillsInstanceOnly(t *testing.T) {
 	render := renderWidgets([]Widget{w})
 	d := NewDock()
 	content := make([]string, 40)
-	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10)
+	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 30, 10)
 	if len(first) != 1 {
 		t.Fatal("expected first placement")
 	}
@@ -350,7 +362,7 @@ func TestDismissKillsInstanceOnly(t *testing.T) {
 		t.Fatalf("dismiss left %d residents", len(d.residents))
 	}
 
-	d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10)
+	d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 30, 10)
 	if len(d.residents) != 0 {
 		t.Fatal("dismissed instance respawned before its spacing floor cleared")
 	}
@@ -366,13 +378,14 @@ func TestDismissDoesNotResetSpacing(t *testing.T) {
 	render := renderWidgets([]Widget{w})
 	d := NewDock()
 	content := make([]string, 40)
-	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10)
+	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 30, 10)
 	if len(first) != 1 {
 		t.Fatal("expected first placement")
 	}
 	d.Dismiss(first[0].Index)
-	if got := d.Layout(render, []Widget{w}, make([]string, 49), nil, nil, -1, 100, 0, 10); len(got) != 0 {
-		t.Fatalf("dismissal reset spacing and placed %+v", got)
+	d.Layout(render, []Widget{w}, make([]string, 41), nil, nil, -1, 100, 30, 10)
+	if len(d.residents) != 0 {
+		t.Fatalf("dismissal reset spacing and respawned: %d residents", len(d.residents))
 	}
 }
 
@@ -798,13 +811,13 @@ func TestShrinkingContentNeverRelocatesTheResident(t *testing.T) {
 	}
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := layoutDock(d, w, rows, 100, 20, 200, false)
+	first := layoutDock(d, w, rows, 100, 0, 200, false)
 	if len(first) != 1 {
 		t.Fatal("expected a placement")
 	}
 
-	// Eight lines vanish from above, as a collapsing trace does.
-	got := layoutDock(d, w, rows, 100, 12, 192, false)
+	// Eight lines vanish, as a collapsing trace does.
+	got := layoutDock(d, w, rows[:len(rows)-8], 100, 0, 200, false)
 	if len(got) == 1 && got[0].Row != first[0].Row {
 		t.Errorf("widget lurched from row %d to %d when the transcript shortened",
 			first[0].Row, got[0].Row)

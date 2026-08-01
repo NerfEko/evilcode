@@ -86,22 +86,29 @@ func FreeWidth(rows []string, totalWidth int) []int {
 	return out
 }
 
+// firstRows maps each block to its first content row. Built once per Layout:
+// resolving every resident by rescanning owner is quadratic in a long session,
+// and it runs on the paint path.
+func firstRows(owner []int) map[int]int {
+	first := make(map[int]int, 64)
+	for i, block := range owner {
+		if _, ok := first[block]; !ok {
+			first[block] = i
+		}
+	}
+	return first
+}
+
 // contentRow resolves an instance in full-content coordinates.
-func (a *instance) contentRow(owner []int) (int, bool) {
+func (a *instance) contentRow(first map[int]int) (int, bool) {
 	if a.Block < 0 {
 		return a.Offset, true
 	}
-	first := -1
-	for i, block := range owner {
-		if block == a.Block {
-			first = i
-			break
-		}
-	}
-	if first < 0 {
+	row, ok := first[a.Block]
+	if !ok {
 		return 0, false
 	}
-	return first + a.Offset, true
+	return row + a.Offset, true
 }
 
 func anchorAt(owner []int, row int) (int, int) {
@@ -182,10 +189,11 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 		}, true
 	}
 
+	first := firstRows(owner)
 	placements := make([]Placement, 0, len(d.residents)+1)
 	for i := 0; i < len(d.residents); {
 		resident := d.residents[i]
-		row, ok := resident.contentRow(owner)
+		row, ok := resident.contentRow(first)
 		if !ok {
 			if d.lastSpawn == resident {
 				d.lastSpawn = nil
@@ -202,14 +210,16 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 		i++
 	}
 
-	lastRow, noFloor := 0, true
+	lastRow, hasFloor := 0, false
 	if d.lastSpawn != nil {
-		if lastRow, noFloor = d.lastSpawn.contentRow(owner); !noFloor {
+		if row, ok := d.lastSpawn.contentRow(first); ok {
+			lastRow, hasFloor = row, true
+		} else {
 			d.lastSpawn = nil
 		}
 	}
 	for _, w := range candidates {
-		floor := func(row int) bool { return noFloor || row-lastRow >= viewH }
+		floor := func(row int) bool { return !hasFloor || row-lastRow >= viewH }
 		row, ok := findSlot(free, dockable, w.Height(), w.Width(), floor)
 		if !ok {
 			continue
