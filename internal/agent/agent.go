@@ -648,11 +648,14 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 		if chunk.Usage != nil {
 			e := a.newEvent(EventTokenUsage)
 			e.Usage = &Usage{
-				In:      chunk.Usage.PromptTokens,
-				Out:     chunk.Usage.CompletionTokens,
-				CtxUsed: chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens,
-				CtxMax:  chunk.Usage.ContextMax,
-				GenMS:   int(time.Since(started).Milliseconds()),
+				In:         chunk.Usage.PromptTokens,
+				Out:        chunk.Usage.CompletionTokens,
+				CtxUsed:    chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens,
+				CtxMax:     chunk.Usage.ContextMax,
+				CacheRead:  chunk.Usage.CacheReadTokens,
+				CacheWrite: chunk.Usage.CacheWriteTokens,
+				CacheHit:   chunk.Usage.CacheReadTokens > 0,
+				GenMS:      int(time.Since(started).Milliseconds()),
 			}
 			a.noteContext(e.Usage.CtxUsed)
 			a.emit(e)

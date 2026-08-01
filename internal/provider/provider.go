@@ -90,6 +90,17 @@ type Usage struct {
 
 	// ContextMax is the model's window when the provider reports it.
 	ContextMax int
+
+	// CacheReadTokens are prompt tokens served from the provider's KV cache
+	// this request — DeepSeek's prompt_cache_hit_tokens. Zero when the
+	// provider does not report caching, so a non-cache provider just leaves
+	// both at zero and the widget stays away.
+	CacheReadTokens int
+
+	// CacheWriteTokens are prompt tokens written to the cache this request
+	// — DeepSeek's prompt_cache_miss_tokens. The cache is filled from the
+	// prefix that did not hit, so read+write is the full prompt the cache saw.
+	CacheWriteTokens int
 }
 
 // Chunk is one piece of a streamed response. Exactly one of the content fields

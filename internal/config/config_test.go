@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"evilcode/internal/provider"
 )
 
 func write(t *testing.T, body string) string {
@@ -23,8 +25,8 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing config file must not be an error: %v", err)
 	}
-	if len(cfg.Providers) != 2 {
-		t.Errorf("providers = %d, want the two defaults", len(cfg.Providers))
+	if len(cfg.Providers) != 3 {
+		t.Errorf("providers = %d, want the three defaults", len(cfg.Providers))
 	}
 	if cfg.Path != "" {
 		t.Errorf("Path = %q, want empty for defaults", cfg.Path)
@@ -66,7 +68,7 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if cfg.Display.Theme != "catppuccin-frappe" {
 		t.Errorf("theme = %q, want the default", cfg.Display.Theme)
 	}
-	if len(cfg.Providers) != 2 {
+	if len(cfg.Providers) != 3 {
 		t.Errorf("providers = %d, want the defaults kept", len(cfg.Providers))
 	}
 }
@@ -214,6 +216,9 @@ func TestValidate(t *testing.T) {
 			{Name: "a", Kind: KindOllama},
 		}}, false},
 		{"valid", Config{DefaultModel: "m@a", Providers: []ProviderConfig{{Name: "a", Kind: KindOllama}}}, true},
+		{"valid deepseek", Config{DefaultModel: "m@deepseek", Providers: []ProviderConfig{
+			{Name: "deepseek", Kind: KindDeepSeek},
+		}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -626,6 +631,64 @@ func TestFileDefaultModelBeatsTheKeyHeuristic(t *testing.T) {
 	}
 	if cfg.DefaultModel != "gpt-oss:20b@ollama-local" {
 		t.Errorf("default_model = %q, want the file's own choice", cfg.DefaultModel)
+	}
+}
+
+func TestDeepSeekIsAFirstClassKind(t *testing.T) {
+	// DeepSeek is a listed provider with its own kind, not a bare
+	// OpenAI-compatible key. The wire protocol is OpenAI's, so Build serves it
+	// with the OpenAI client — but the config kind, base URL, and key env are
+	// DeepSeek's own.
+	t.Setenv(EnvOllamaKey, "")
+	d := Default()
+	i := providerIndex(d.Providers, "deepseek")
+	if i < 0 {
+		t.Fatal("default config has no deepseek provider")
+	}
+	p := d.Providers[i]
+	if p.Kind != KindDeepSeek {
+		t.Errorf("deepseek kind = %q, want %q", p.Kind, KindDeepSeek)
+	}
+	if p.BaseURL != "https://api.deepseek.com" || p.APIKeyEnv != EnvDeepSeekKey {
+		t.Errorf("deepseek = %+v, want the deepseek base URL and key env", p)
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("default config does not validate: %v", err)
+	}
+	built, err := p.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.Name() != "deepseek" {
+		t.Errorf("built provider name = %q", built.Name())
+	}
+	if _, ok := built.(*provider.OpenAI); !ok {
+		t.Errorf("deepseek built as %T, want the OpenAI client (same wire protocol)", built)
+	}
+}
+
+// A config written before DeepSeek became its own kind used kind = "openai".
+// It must keep loading and building, not break an existing setup.
+func TestLegacyDeepSeekAsOpenAIKindStillWorks(t *testing.T) {
+	t.Setenv(EnvOllamaKey, "")
+	path := write(t, `default_model = "deepseek-chat@deepseek"
+
+[[provider]]
+name = "deepseek"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+`)
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := cfg.FindProvider("deepseek")
+	if pc == nil {
+		t.Fatal("deepseek provider missing")
+	}
+	if _, err := pc.Build(); err != nil {
+		t.Errorf("legacy openai-kind deepseek does not build: %v", err)
 	}
 }
 

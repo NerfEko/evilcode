@@ -110,6 +110,11 @@ type Model struct {
 	// models supplies picker entries; it is set once the provider answers.
 	models []ModelEntry
 
+	// providers is the configured provider list, so the picker can list models
+	// across every provider and rebuild the live one when a selection crosses
+	// providers. Empty falls back to the active provider only.
+	providers []config.ProviderConfig
+
 	// sawEscapeHint keeps the trailing-backslash tip to once per session.
 	sawEscapeHint bool
 
@@ -118,7 +123,15 @@ type Model struct {
 
 	// loginMode owns the composer while a cloud key is entered. The editor is
 	// reset completely when it ends so undo/stash cannot resurrect the secret.
-	loginMode bool
+	// loginProvider names the provider the entered key is saved to.
+	loginMode     bool
+	loginProvider string
+
+	// loginPicker is the provider selector shown by `/login` with no argument,
+	// so you can choose which provider's key you are entering before the masked
+	// composer takes over. `/login <provider>` skips it and goes straight in.
+	loginPicker     LoginPickerState
+	loginPickerOpen bool
 
 	// resumeTarget is set when the picker chose a session to switch to; the
 	// caller re-execs into it after the program exits.
@@ -281,6 +294,13 @@ type Model struct {
 	// the sum of the turn's requests — each one carries the whole conversation.
 	ctxUsed int
 
+	// cacheRead/cacheWrite accumulate DeepSeek KV-cache token counts across
+	// the whole session, for the KvCache widget (plan.md §8.5-adjacent). They
+	// stay zero for providers that do not report caching, which is what keeps
+	// the widget away outside DeepSeek.
+	cacheRead  int
+	cacheWrite int
+
 	// keepThinking leaves finished traces expanded (display.keep_thinking).
 	keepThinking bool
 
@@ -384,6 +404,13 @@ func (m *Model) Asker() tools.Asker {
 // picker and the session commands.
 func (m *Model) WithSessions(dataDir, cwd string, store *session.Store) *Model {
 	m.dataDir, m.cwd, m.store = dataDir, cwd, store
+	return m
+}
+
+// WithProviders attaches the configured provider list so the model picker can
+// list models from every provider and switch the live provider on selection.
+func (m *Model) WithProviders(provs []config.ProviderConfig) *Model {
+	m.providers = provs
 	return m
 }
 
@@ -711,6 +738,8 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.sessionTokensIn += e.Usage.In
 		m.sessionTokensOut += e.Usage.Out
 		m.ctxUsed = e.Usage.CtxUsed
+		m.cacheRead += e.Usage.CacheRead
+		m.cacheWrite += e.Usage.CacheWrite
 		m.genMS += e.Usage.GenMS
 		if m.genMS > 0 {
 			// Over generation time only. Wall-clock counts tool execution as
@@ -932,6 +961,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if m.loginMode {
 		return m.handleLoginKey(key, msg)
+	}
+	if m.loginPickerOpen {
+		return m.handleLoginPickerKey(key)
 	}
 
 	// A pending question owns the keyboard: the composer is an answer box
@@ -1392,16 +1424,34 @@ func (m *Model) retrievePending() (bool, tea.Model, tea.Cmd) {
 	return false, m, nil
 }
 
+// userPromptRows returns the transcript line index of the first line of each
+// user-prompt block, in document order.
+//
+// The indices share one coordinate system with contentHeight and scroll.Offset:
+// they include the header chrome, the leading blank, and the conditional
+// inter-block gaps, because they are read from transcriptLines' Owner
+// provenance. Recomputing them from per-block line counts — a blanket +1 per
+// block, no header — left them in a different frame from total/offset, so
+// Prev/Next Prompt landed on the wrong line.
+func (m *Model) userPromptRows() []int {
+	tr := m.transcriptLines()
+	var rows []int
+	seen := make(map[int]bool)
+	for i, owner := range tr.Owner {
+		if owner < 0 || seen[owner] {
+			continue
+		}
+		seen[owner] = true
+		if m.blocks[owner].Kind == BlockUser {
+			rows = append(rows, i)
+		}
+	}
+	return rows
+}
+
 // jumpPrompt moves the view to the next or previous user prompt.
 func (m *Model) jumpPrompt(dir int) {
-	var rows []int
-	line := 0
-	for i := range m.blocks {
-		if m.blocks[i].Kind == BlockUser {
-			rows = append(rows, line)
-		}
-		line += len(m.renderer.Lines(&m.blocks[i])) + 1
-	}
+	rows := m.userPromptRows()
 	if len(rows) == 0 {
 		return
 	}
@@ -1605,6 +1655,17 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 				m.notice = sel.Name + " is unavailable"
 				return m, nil
 			}
+			if sel.Provider != "" && sel.Provider != m.header.Provider {
+				// Crossing providers rebuilds the live client. The picker lists
+				// models from every configured provider, so a selection can name
+				// one the session did not start on.
+				if pc := m.providerConfig(sel.Provider); pc != nil {
+					if p, err := pc.Build(); err == nil {
+						m.agent.Provider = p
+						m.header.Provider = sel.Provider
+					}
+				}
+			}
 			m.header.Model = sel.Name
 			if sel.Provider != "" {
 				m.header.Provider = sel.Provider
@@ -1653,8 +1714,12 @@ func (m *Model) openPicker() tea.Cmd {
 	// and must not read Model fields — the user can switch models while the
 	// fetch is in flight, and reading m.header from there is a race.
 	prov, current, providerName := m.agent.Provider, m.header.Model, m.header.Provider
+	provs := m.providers
 	m.modelsPending = true
 	return func() tea.Msg {
+		if len(provs) > 0 {
+			return modelsLoaded{entries: fetchAllModels(provs, current, providerName)}
+		}
 		return modelsLoaded{entries: fetchModels(prov, current, providerName)}
 	}
 }
@@ -1676,6 +1741,17 @@ func (m *Model) showPicker(entries []ModelEntry) {
 		}
 	}
 	m.pickerOpen = true
+}
+
+// providerConfig looks up a configured provider by name for the picker's
+// cross-provider rebuild.
+func (m *Model) providerConfig(name string) *config.ProviderConfig {
+	for i := range m.providers {
+		if m.providers[i].Name == name {
+			return &m.providers[i]
+		}
+	}
+	return nil
 }
 
 // fetchModels asks the provider for its model list. It takes everything it
@@ -1705,6 +1781,69 @@ func fetchModels(prov provider.Provider, current, providerName string) []ModelEn
 			e.Detail = info.Size
 		}
 		out = append(out, e)
+	}
+	return out
+}
+
+// fetchAllModels lists models from every configured provider concurrently, so
+// the picker surfaces DeepSeek alongside Ollama without a config file. A
+// provider that errors or returns nothing (no key, unreachable) contributes no
+// rows rather than blanking the picker: a missing catalog is not a failure.
+func fetchAllModels(provs []config.ProviderConfig, current, currentProvider string) []ModelEntry {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type result struct {
+		name     string
+		infos    []provider.ModelInfo
+		hasKey   bool
+		needsKey bool
+	}
+
+	results := make(chan result, len(provs))
+	for _, pc := range provs {
+		pc := pc
+		go func() {
+			p, err := pc.Build()
+			if err != nil {
+				results <- result{name: pc.Name}
+				return
+			}
+			infos, err := p.Models(ctx)
+			results <- result{
+				name: pc.Name, infos: infos,
+				hasKey:   pc.APIKeyValue() != "",
+				needsKey: pc.APIKeyEnv != "",
+			}
+		}()
+	}
+
+	var out []ModelEntry
+	for range provs {
+		r := <-results
+		via := "local"
+		if r.needsKey {
+			if r.hasKey {
+				via = "api-key"
+			} else {
+				via = "no key"
+			}
+		}
+		for _, info := range r.infos {
+			e := ModelEntry{
+				Name:     info.Name,
+				Provider: r.name,
+				Via:      via,
+				Current:  r.name == currentProvider && info.Name == current,
+			}
+			if info.Size != "" {
+				e.Detail = info.Size
+			}
+			out = append(out, e)
+		}
+	}
+	if len(out) == 0 {
+		return []ModelEntry{{Name: current, Provider: currentProvider, Current: true, Default: true}}
 	}
 	return out
 }
@@ -2434,6 +2573,10 @@ func (m *Model) stackFor(contentHeight int) Stack {
 		s.Heights[SlotPicker] += len(m.renderer.RenderPicker(m.picker))
 		s.Heights[SlotPickerGap] = 1
 	}
+	if m.loginPickerOpen {
+		s.Heights[SlotPicker] += len(m.renderer.RenderLoginPicker(m.loginPicker))
+		s.Heights[SlotPickerGap] = 1
+	}
 
 	composer := m.renderer.RenderComposer(m.composerState())
 	s.Heights[SlotComposer] = len(composer)
@@ -2643,6 +2786,10 @@ func (m *Model) View() tea.View {
 	}
 	if m.pickerOpen {
 		rows = append(rows, m.renderer.RenderPicker(m.picker)...)
+		rows = append(rows, "")
+	}
+	if m.loginPickerOpen {
+		rows = append(rows, m.renderer.RenderLoginPicker(m.loginPicker)...)
 		rows = append(rows, "")
 	}
 
@@ -2967,6 +3114,13 @@ func (m *Model) activeWidgets() []Widget {
 	if m.ctxUsed > 0 && m.contextMax() > 0 {
 		add(m.renderer.ContextWidget(m.ctxUsed, m.contextMax()))
 	}
+	// The KV-cache widget only means something for providers that report
+	// prompt-cache tokens — DeepSeek today. Ollama (local or cloud) has no
+	// such concept, so even if counts somehow accumulated the widget stays
+	// away rather than advertising a cache that does not exist.
+	if m.cacheProviderActive() && (m.cacheRead > 0 || m.cacheWrite > 0) {
+		add(m.renderer.KvCacheWidget(m.cacheRead, m.cacheWrite))
+	}
 	add(m.renderer.ModelInfoWidget(m.header, 1))
 	if m.bg != nil {
 		var tasks []BackgroundTask
@@ -3079,6 +3233,10 @@ func (m *Model) widgetUrgency(w Widget) float64 {
 		}
 	case WidgetTodos:
 		return 3
+	case WidgetKvCache:
+		// Informational, not urgent, but it only exists once DeepSeek has
+		// reported cache tokens — so when it is present it has real news.
+		return 4
 	case WidgetSwarmStatus:
 		if m.swarm != nil && len(m.swarm.Live()) > 0 {
 			return 12
@@ -3096,6 +3254,14 @@ func (m *Model) contextMax() int {
 		return m.agent.NumCtx
 	}
 	return 200_000
+}
+
+// cacheProviderActive reports whether the active provider is one that reports
+// KV prompt-cache token counts. DeepSeek does (prompt_cache_hit_tokens /
+// prompt_cache_miss_tokens); Ollama — local or cloud — does not, and a cache
+// widget there would advertise a cache that does not exist.
+func (m *Model) cacheProviderActive() bool {
+	return m.header.Provider == "deepseek"
 }
 
 // dockWidgets paints widgets into the transcript's blank margin.

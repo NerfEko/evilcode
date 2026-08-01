@@ -49,6 +49,13 @@ type Usage struct {
 	CtxMax   int  `json:"ctx_max"`
 	CacheHit bool `json:"cache_hit"`
 
+	// CacheRead is prompt tokens served from the provider's KV cache this
+	// request; CacheWrite is the prefix written into it. Read+write is the
+	// full prompt the cache saw, so the hit rate is read/(read+write). Both
+	// are zero for providers that do not report caching (plan.md §16).
+	CacheRead  int `json:"cache_read,omitempty"`
+	CacheWrite int `json:"cache_write,omitempty"`
+
 	// GenMS is how long this request spent generating, in milliseconds.
 	//
 	// Reported per request because a turn is not one request: a turn with three

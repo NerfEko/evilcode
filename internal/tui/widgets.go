@@ -47,6 +47,7 @@ func (r *Renderer) EmptyWidget(kind WidgetKind) Widget {
 		WidgetBackgroundTasks: "no tasks",
 		WidgetMemoryActivity:  "idle",
 		WidgetSwarmStatus:     "no agents",
+		WidgetKvCache:         "no cache",
 		WidgetTips:            "·",
 	}[kind]
 	if text == "" {

@@ -227,6 +227,7 @@ func runOnce(args []string) (string, error) {
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
 		WithDisplay(cfg.Display).
 		WithSessions(dataDir, cwd, store).
+		WithProviders(cfg.Providers).
 		WithBackground(execTools.Bg).
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
 		WithMemory(mem).

@@ -19,19 +19,21 @@ import (
 // Env var overrides. Environment beats the config file, and an explicit flag
 // beats both.
 const (
-	EnvModel      = "EVILCODE_MODEL"
-	EnvProvider   = "EVILCODE_PROVIDER"
-	EnvConfigPath = "EVILCODE_CONFIG"
-	EnvOllamaKey  = "OLLAMA_API_KEY"
+	EnvModel       = "EVILCODE_MODEL"
+	EnvProvider    = "EVILCODE_PROVIDER"
+	EnvConfigPath  = "EVILCODE_CONFIG"
+	EnvOllamaKey   = "OLLAMA_API_KEY"
+	EnvDeepSeekKey = "DEEPSEEK_API_KEY"
 )
 
 // ProviderKind selects which wire protocol a provider speaks.
 type ProviderKind string
 
 const (
-	KindOllama ProviderKind = "ollama"
-	KindOpenAI ProviderKind = "openai"
-	KindMock   ProviderKind = "mock"
+	KindOllama   ProviderKind = "ollama"
+	KindOpenAI   ProviderKind = "openai"
+	KindDeepSeek ProviderKind = "deepseek"
+	KindMock     ProviderKind = "mock"
 )
 
 // ProviderConfig is one `[[provider]]` block.
@@ -172,8 +174,9 @@ type Config struct {
 // back to a *different* model instead meant falling back to one that is usually
 // not even pulled.
 const (
-	DefaultCloudModel = "glm-5.2:cloud@ollama-cloud"
-	DefaultLocalModel = "glm-5.2:cloud@ollama-local"
+	DefaultCloudModel    = "glm-5.2:cloud@ollama-cloud"
+	DefaultLocalModel    = "glm-5.2:cloud@ollama-local"
+	DefaultDeepSeekModel = "deepseek-chat"
 )
 
 // Default returns the configuration used when nothing is on disk: a local
@@ -183,6 +186,11 @@ func Default() *Config {
 		Providers: []ProviderConfig{
 			{Name: "ollama-local", Kind: KindOllama, BaseURL: "http://localhost:11434"},
 			{Name: "ollama-cloud", Kind: KindOllama, BaseURL: "https://ollama.com", APIKeyEnv: EnvOllamaKey},
+			// DeepSeek is its own provider kind, not a bare OpenAI-compatible key:
+			// its own base URL, key env var, and model catalogue. It still speaks
+			// the OpenAI chat completions API, so Build() serves it with the OpenAI
+			// client — only the base URL and key differ.
+			{Name: "deepseek", Kind: KindDeepSeek, BaseURL: "https://api.deepseek.com", APIKeyEnv: EnvDeepSeekKey},
 		},
 		Display: Display{
 			Theme:           "catppuccin-frappe",
@@ -193,7 +201,10 @@ func Default() *Config {
 			ThinkingLines:   DefaultThinkingLines,
 			InlineDiffs:     true,
 		},
-		Features: Features{AutoPoke: true, Memory: true},
+		// Memory is off by default for now: it fires embedding side-calls and
+		// injects recall into every turn, which users should opt into rather than
+		// discover after the fact. `memory = true` in the config turns it on.
+		Features: Features{AutoPoke: true, Memory: false},
 	}
 	c.DefaultModel = c.preferredDefaultModel()
 	return c
@@ -491,9 +502,9 @@ func (c *Config) Validate() error {
 		}
 		seen[p.Name] = true
 		switch p.Kind {
-		case KindOllama, KindOpenAI, KindMock:
+		case KindOllama, KindOpenAI, KindDeepSeek, KindMock:
 		case "":
-			return fmt.Errorf("config: provider %q is missing its kind (ollama|openai|mock)", p.Name)
+			return fmt.Errorf("config: provider %q is missing its kind (ollama|openai|deepseek|mock)", p.Name)
 		default:
 			return fmt.Errorf("config: provider %q has unknown kind %q", p.Name, p.Kind)
 		}
@@ -523,6 +534,12 @@ func (c *Config) findProvider(name string) *ProviderConfig {
 		}
 	}
 	return nil
+}
+
+// FindProvider is the exported lookup for callers outside config, e.g. the
+// /login command validating a provider name before accepting a key.
+func (c *Config) FindProvider(name string) *ProviderConfig {
+	return c.findProvider(name)
 }
 
 // ModelOverrides returns the configured overrides for a model reference, or the
@@ -608,6 +625,10 @@ func (p ProviderConfig) Build() (provider.Provider, error) {
 	case KindOllama:
 		return provider.NewOllama(p.Name, p.BaseURL, p.APIKeyValue()), nil
 	case KindOpenAI:
+		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()), nil
+	case KindDeepSeek:
+		// DeepSeek speaks the OpenAI-compatible chat completions API, so the
+		// OpenAI client serves it unchanged — only the base URL and key differ.
 		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()), nil
 	case KindMock:
 		return provider.NewMock(p.Name, ""), nil

@@ -66,3 +66,43 @@ func TestToOAIMessagesSetsToolName(t *testing.T) {
 		t.Errorf("Name = %q, want %q", out[0].Name, "get_weather")
 	}
 }
+
+// DeepSeek reports its KV cache as prompt_cache_hit_tokens / _miss_tokens in
+// the final usage chunk. The OpenAI provider reuses the same decoder, so the
+// cache counts must come through on the Done chunk's Usage.
+func TestDeepSeekCacheTokensParsed(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20," +
+		"\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20}}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	ch, err := NewOpenAI("deepseek", srv.URL, "k").ChatStream(context.Background(),
+		Req{Model: "deepseek-chat", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got Chunk
+	for c := range ch {
+		if c.Err != nil {
+			t.Fatalf("unexpected stream error: %v", c.Err)
+		}
+		if c.Done {
+			got = c
+		}
+	}
+	if got.Usage == nil {
+		t.Fatal("missing usage on done chunk")
+	}
+	if got.Usage.CacheReadTokens != 80 {
+		t.Errorf("CacheReadTokens = %d, want 80", got.Usage.CacheReadTokens)
+	}
+	if got.Usage.CacheWriteTokens != 20 {
+		t.Errorf("CacheWriteTokens = %d, want 20", got.Usage.CacheWriteTokens)
+	}
+}

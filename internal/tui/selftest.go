@@ -431,28 +431,57 @@ func (m *Model) statsCommand() tea.Cmd {
 }
 
 func (m *Model) loginCommand(arg string) tea.Cmd {
-	if arg == "status" {
+	// `/login status [provider]` reports a key's presence without printing it.
+	if arg == "status" || strings.HasPrefix(arg, "status ") {
+		target := strings.TrimSpace(strings.TrimPrefix(arg, "status"))
+		if target == "" {
+			target = "ollama-cloud"
+		}
 		cfg, err := config.Load()
 		if err != nil {
-			m.notice = "Ollama Cloud login status unavailable"
+			m.notice = target + " login status unavailable"
 			return nil
 		}
 		present := false
 		for _, p := range cfg.Providers {
-			if p.Name == "ollama-cloud" {
+			if p.Name == target {
 				present = p.APIKeyValue() != ""
 				break
 			}
 		}
 		if present {
-			m.notice = "Ollama Cloud login: key present"
+			m.notice = target + " login: key present"
 		} else {
-			m.notice = "Ollama Cloud login: no key configured"
+			m.notice = target + " login: no key configured"
 		}
 		return nil
 	}
-	if arg != "" {
-		m.notice = "usage: /login or /login status"
+	// `/login <provider>` targets a configured provider directly (e.g.
+	// `deepseek`). `/login` with no argument opens a provider selector first, so
+	// you can choose which key you are entering rather than defaulting silently.
+	target := strings.TrimSpace(arg)
+	if target == "" {
+		if m.processing {
+			m.notice = "Finish or interrupt the turn first, then /login"
+			return nil
+		}
+		entries := m.loginPickerEntries()
+		if len(entries) == 0 {
+			m.notice = "no providers configured"
+			return nil
+		}
+		m.loginPicker = LoginPickerState{Entries: entries}
+		m.loginPickerOpen = true
+		m.notice = "select a provider to enter a key for"
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		m.notice = target + " login unavailable: " + err.Error()
+		return nil
+	}
+	if cfg.FindProvider(target) == nil {
+		m.notice = "usage: /login [provider] or /login status [provider]\nunknown provider: " + target
 		return nil
 	}
 	if m.processing {
@@ -463,9 +492,78 @@ func (m *Model) loginCommand(arg string) tea.Cmd {
 		return nil
 	}
 	m.loginMode = true
+	m.loginProvider = target
 	m.editor = Editor{}
-	m.notice = "Ollama Cloud API key · input hidden · Enter saves · Esc cancels"
+	m.notice = target + " API key · input hidden · Enter saves · Esc cancels"
 	return nil
+}
+
+// loginPickerEntries builds the provider list for the `/login` selector from
+// the configured providers, preferring the live list (which the picker can
+// reach without re-reading the file) and falling back to a config load.
+func (m *Model) loginPickerEntries() []LoginPickerEntry {
+	provs := m.providers
+	if len(provs) == 0 {
+		if cfg, err := config.Load(); err == nil {
+			provs = cfg.Providers
+		}
+	}
+	entries := make([]LoginPickerEntry, 0, len(provs))
+	for _, p := range provs {
+		// A provider with no api_key_env is a local daemon (e.g. ollama-local)
+		// that takes no key, so it has nothing to log in to.
+		if p.APIKeyEnv == "" {
+			continue
+		}
+		entries = append(entries, LoginPickerEntry{
+			Name:   p.Name,
+			Kind:   string(p.Kind),
+			HasKey: p.APIKeyValue() != "",
+		})
+	}
+	return entries
+}
+
+// handleLoginPickerKey drives the `/login` provider selector. Selecting a row
+// transitions into the existing masked-key entry for that provider.
+func (m *Model) handleLoginPickerKey(key string) (tea.Model, tea.Cmd) {
+	entries, _ := m.loginPicker.Filtered()
+	switch key {
+	case "esc", "ctrl+c":
+		m.loginPickerOpen = false
+		m.loginPicker = LoginPickerState{}
+		m.notice = "login cancelled"
+		return m, nil
+	case "up", "ctrl+k":
+		m.loginPicker.Selected = MovePaletteSelection(m.loginPicker.Selected, -1, len(entries))
+		return m, nil
+	case "down", "ctrl+j":
+		m.loginPicker.Selected = MovePaletteSelection(m.loginPicker.Selected, 1, len(entries))
+		return m, nil
+	case "enter":
+		if len(entries) == 0 {
+			return m, nil
+		}
+		sel := entries[clamp(m.loginPicker.Selected, 0, len(entries)-1)]
+		m.loginPickerOpen = false
+		m.loginPicker = LoginPickerState{}
+		m.loginMode = true
+		m.loginProvider = sel.Name
+		m.editor = Editor{}
+		m.notice = sel.Name + " API key · input hidden · Enter saves · Esc cancels"
+		return m, nil
+	case "backspace":
+		if r := []rune(m.loginPicker.Filter); len(r) > 0 {
+			m.loginPicker.Filter = string(r[:len(r)-1])
+			m.loginPicker.Selected = 0
+		}
+		return m, nil
+	}
+	if len(key) == 1 {
+		m.loginPicker.Filter += key
+		m.loginPicker.Selected = 0
+	}
+	return m, nil
 }
 
 func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -473,29 +571,47 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 	case "esc", "ctrl+c":
 		m.loginMode = false
 		m.editor = Editor{}
-		m.notice = "Ollama Cloud login cancelled"
+		m.loginProvider = ""
+		m.notice = "login cancelled"
 		return m, nil
 	case "enter":
 		keyText := m.editor.Text
 		m.loginMode = false
 		m.editor = Editor{}
+		target := m.loginProvider
+		if target == "" {
+			target = "ollama-cloud" // back-compat for flows that set loginMode directly
+		}
+		m.loginProvider = ""
 		if strings.TrimSpace(keyText) == "" {
-			m.notice = "Ollama Cloud login cancelled: no key entered"
+			m.notice = target + " login cancelled: no key entered"
 			return m, nil
 		}
-		if err := config.SaveProviderAPIKey("ollama-cloud", keyText); err != nil {
-			m.notice = "Ollama Cloud login failed"
+		if err := config.SaveProviderAPIKey(target, keyText); err != nil {
+			m.notice = target + " login failed"
 			return m, nil
 		}
-		m.notice = "Ollama Cloud API key saved"
+		// The model picker fetches models from the in-memory provider list, so a
+		// key saved here must reach it too — otherwise the catalog stays empty
+		// until restart even though the turn now works.
+		m.updateProviderAPIKey(target, keyText)
+		m.notice = target + " API key saved"
 		if m.agent != nil && !m.processing {
 			// Only while nothing is in flight: the request goroutine reads this
-			// field, so writing it under a live turn is a data race.
-			if cloud, ok := m.agent.Provider.(*provider.Ollama); ok && cloud.Name() == "ollama-cloud" {
-				cloud.APIKey = keyText
+			// field, so writing it under a live turn is a data race. Both
+			// wire-format clients carry an APIKey field set at their own edge.
+			switch p := m.agent.Provider.(type) {
+			case *provider.Ollama:
+				if p.Name() == target {
+					p.APIKey = keyText
+				}
+			case *provider.OpenAI:
+				if p.Name() == target {
+					p.APIKey = keyText
+				}
 			}
 		} else if m.processing {
-			m.notice = "Ollama Cloud API key saved · takes effect next turn"
+			m.notice = target + " API key saved · takes effect next turn"
 		}
 		return m, nil
 	case "backspace":
@@ -526,6 +642,17 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 		}
 	}
 	return m, nil
+}
+
+// updateProviderAPIKey writes a just-saved key into the in-memory provider
+// list, so the model picker's fetch uses it without a restart.
+func (m *Model) updateProviderAPIKey(name, key string) {
+	for i := range m.providers {
+		if m.providers[i].Name == name {
+			m.providers[i].APIKey = key
+			return
+		}
+	}
 }
 
 func timeNoun(n int) string {

@@ -127,8 +127,10 @@ type oaiStreamResp struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens          int `json:"prompt_tokens"`
+		CompletionTokens      int `json:"completion_tokens"`
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -315,6 +317,8 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 			usage = &Usage{
 				PromptTokens:     resp.Usage.PromptTokens,
 				CompletionTokens: resp.Usage.CompletionTokens,
+				CacheReadTokens:  resp.Usage.PromptCacheHitTokens,
+				CacheWriteTokens: resp.Usage.PromptCacheMissTokens,
 			}
 		}
 		for _, choice := range resp.Choices {

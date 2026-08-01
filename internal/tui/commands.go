@@ -71,9 +71,10 @@ var Commands = []Command{
 	{Name: "context", Help: "Show context usage"},
 	{Name: "stats", Help: "Show current session statistics"},
 	{Name: "info", Help: "Show session info"},
-	{Name: "login", Help: "Set or inspect Ollama Cloud login",
-		Long: "/login        enter a masked Ollama Cloud API key\n" +
-			"/login status report whether a key is present without printing it."},
+	{Name: "login", Help: "Set or inspect a provider API key",
+		Long: "/login                  open a provider selector, then enter a masked key\n" +
+			"/login [provider]       enter a masked API key for a provider (e.g. /login deepseek)\n" +
+			"/login status [provider] report whether a key is present without printing it."},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
 	{Name: "theme", Help: "Switch, score, or generate a palette",

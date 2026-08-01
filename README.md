@@ -86,7 +86,7 @@ default_model = "glm-5.2:cloud@ollama-cloud"
 
 [[provider]]
 name = "ollama-cloud"
-kind = "ollama"                  # ollama | openai | mock
+kind = "ollama"                  # ollama | openai | deepseek | mock
 base_url = "https://ollama.com"
 api_key_env = "OLLAMA_API_KEY"
 
