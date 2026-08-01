@@ -176,8 +176,9 @@ type Snapshot struct {
 // flattened to what a renderer needs, so the wire format does not have to track
 // the provider package.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Repairs []string `json:"repairs,omitempty"`
 }
 
 // SessionInfo is one row of a list response.

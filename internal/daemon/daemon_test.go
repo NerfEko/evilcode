@@ -12,6 +12,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/provider"
 )
 
 func TestRingReplaysWhatItHolds(t *testing.T) {
@@ -445,5 +446,32 @@ func TestCheckSocketPathNamesTheLimit(t *testing.T) {
 	}
 	if err := CheckSocketPath("/run/user/1000/evilcode.sock"); err != nil {
 		t.Errorf("a normal path was refused: %v", err)
+	}
+}
+
+// Repairs ride through the attach snapshot, so an attached client's tool rows
+// show the same repair suffix as the live session.
+func TestSnapshotCarriesRepairs(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+	sess, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The agent's conversation is what snapshot renders; append a tool message
+	// carrying repairs the way appendToolResult does.
+	sess.built.Agent.Conv.Append(provider.Message{
+		Role: provider.RoleTool, ToolName: "read", Content: "ok",
+		Repairs: []string{"file_path→path"},
+	})
+	snap := sess.snapshot("")
+	var found bool
+	for _, m := range snap.Messages {
+		if len(m.Repairs) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("snapshot lost the repair metadata; attached clients would see no repair suffix")
 	}
 }

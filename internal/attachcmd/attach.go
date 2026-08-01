@@ -61,7 +61,7 @@ func Run(args []string) error {
 	// pushes the daemon's events back into the same stream (invariant 1).
 	conv := agent.NewConversation("")
 	for _, m := range snap.Messages {
-		conv.Append(provider.Message{Role: provider.Role(m.Role), Content: m.Content})
+		conv.Append(provider.Message{Role: provider.Role(m.Role), Content: m.Content, Repairs: m.Repairs})
 	}
 	a := agent.New(snap.Session, nil, snap.Model, nil, conv)
 	a.Forward = func(_ context.Context, text string) error {

@@ -633,7 +633,7 @@ func (sess *Session) snapshot(cwd string) *Snapshot {
 		if m.Role == provider.RoleSystem || m.Content == "" {
 			continue
 		}
-		out = append(out, Message{Role: string(m.Role), Content: m.Content})
+		out = append(out, Message{Role: string(m.Role), Content: m.Content, Repairs: m.Repairs})
 	}
 	return &Snapshot{
 		Session:  sess.Name,
