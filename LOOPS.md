@@ -4824,3 +4824,68 @@ codex:  2 reviews. Review 1 (951f48c): 2 findings — confined scan via openBene
         outside the workspace) and case-typo suggestions (the skip compared
         case-folded names, dropping the only valid suggestion); both fixed.
         Review 2 (951f48c): no findings; confirmed correct.
+
+## 2026-08-01 J1.4 — `edit` explains a failed match
+
+A failed exact match said only "old string not found", leaving the model to
+re-read the file to learn why. Before that error, `edit` now tries the trimmed
+string and a line-by-line comparison with whitespace normalized, and on either
+says which and where: "found after trimming … at line N" or "found with
+different indentation around line N". A trailing newline on `old` is handled
+(drop the synthetic empty element; name a missing trailing newline at EOF
+before the trimmed branch; compute the line from the EOF suffix offset). Only
+if all looser forms fail does the plain not-found error stand.
+
+⟨port⟩. New: `flexibleMatch`, `missingTrailingNewline`, `lineOf` (fs_edit.go).
+Edits: the count==0 branch of `editTool`.
+
+Verification (go build ./... && go vet ./... && go test ./..., green):
+`internal/tools/fs_edit_test.go` — `TestEditFailedMatchTrimmed`,
+`TestEditFailedMatchIndentation`, `TestEditFailedMatchNotFound`,
+`TestEditFailedMatchIndentationTrailingNewline`,
+`TestEditFailedMatchTrailingNewlineMissingAtEOF`,
+`TestEditFailedMatchMissingTrailingNewlineSameIndent`,
+`TestEditFailedMatchMissingTrailingNewlineLineIsEOF`.
+
+parity: crates/jcode-app-core/src/tool/edit.rs:256-290 — better
+        (jcode's try_flexible_match reports the trimmed match without a line and
+         has no missing-trailing-newline detection; evilcode gives the line for
+         both forms and names a missing trailing newline at EOF)
+codex:  5 reviews, all findings worked. R1 (cec3dfc): trailing newline inflated
+        the indentation window. R2 (5e28819): combined indentation + missing
+        newline at EOF. R3 (91f0416): pure missing-newline case misreported as
+        trimming (moved the check before the trimmed branch). R4 (5674cf1): the
+        missing-newline line was the first occurrence, not the EOF suffix. R5
+        (5674cf1): no findings; confirmed correct.
+
+## 2026-08-01 J1.5 — `edit` returns three lines of context either side
+
+Two consecutive edits to one region needed a re-read between them. A successful
+edit now appends three lines of context either side of the change, numbered the
+way `read` numbers them, truncated the way `read` truncates them, with the
+terminal newline trimmed (no phantom EOF line) and a trailing newline on `new`
+excluded from the span. The anchored path (`applyAnchoredEdit`) gets equivalent
+context too — centred on the first changed line — and, with anchors on, renders
+it via `AnnotateLines` and re-records the post-write anchor state for the shown
+window, so a follow-up anchored edit needs no re-read.
+
+⟨build⟩. New: `contextAround`, `firstChangedLine` (fs_edit.go). Edits: the
+exact-edit success path, `applyAnchoredEdit` (context + anchor re-record).
+
+Verification (green): `TestEditReturnsContextAroundChange`,
+`TestEditContextTrailingNewlineOnNew`, `TestEditContextNoPhantomEOFLine`,
+`TestEditContextTruncatesLongLines`, `TestAnchoredEditReturnsContext`,
+`TestAnchoredEditFollowUpNeedsNoReread`.
+
+parity: crates/jcode-app-core/src/tool/edit.rs:234-254,139-147 — on par
+        (3-line context either side, numbered; evilcode also truncates long
+         context lines, handles the terminal newline, and preserves fresh
+         anchors for a follow-up anchored edit, which jcode's non-anchored path
+         does not address)
+codex:  4 reviews, all findings worked. R1 (ddf48b4): anchored path had no
+        context; terminal newline on `new` over-counted; phantom EOF line; long
+        context lines untruncated. R2 (b65d32e): anchored context discarded
+        anchors (forget), so a follow-up needed a re-read — re-record post-write
+        state, render annotated context. R3 (e951b51): re-recording the whole
+        file broke the partial-read invariant — record only the shown window.
+        R4 (e951b51): no findings; confirmed correct.

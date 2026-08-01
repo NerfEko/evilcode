@@ -658,11 +658,11 @@ Line numbers as-of §0.5. Trust the symbol.
 - [x] **J1.3** `internal/tools/fs.go:178` `FS.readTool` — `read` on a missing path returns
       the bare `os.Stat` error. Scan the parent directory and name up to three near matches.
       §1.1. ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/read.rs:307-330⟩
-- [ ] **J1.4** `internal/tools/fs.go:477` `FS.editTool` — a failed match says only "not
+- [x] **J1.4** `internal/tools/fs.go:477` `FS.editTool` — a failed match says only "not
       found". Try trimmed, then whitespace-normalized line windows; on either, report which
       and at what line. §1.2. ⟨port⟩
       ⟨jcode: crates/jcode-app-core/src/tool/edit.rs:256-290⟩
-- [ ] **J1.5** `internal/tools/fs.go:477` `FS.editTool` — return three lines of context
+- [x] **J1.5** `internal/tools/fs.go:477` `FS.editTool` — return three lines of context
       either side of a successful edit, so a consecutive edit needs no re-read. §1.2.
       ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/edit.rs:234-254,139-147⟩
 - [ ] **J1.6** `internal/tools/fs.go:168` `FS.Tools` — add `multiedit`: one path, ordered
