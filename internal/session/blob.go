@@ -118,7 +118,7 @@ func decodeMessage(path string, data []byte) (provider.Message, error) {
 	return m, nil
 }
 
-const maxBlobBytes = 4 << 20
+const maxBlobBytes = 20 << 20
 
 func readBlob(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)

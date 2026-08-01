@@ -207,6 +207,13 @@ func (f *FS) readTool() Tool {
 				return Result{}, fmt.Errorf("%s is a directory; use glob to list it", a.Path)
 			}
 
+			// Images are extension-keyed and attach to the vision path rather
+			// than being refused as binary. They have their own size ceiling, so
+			// they bypass MaxReadBytes.
+			if isImageExt(a.Path) {
+				return f.readImage(full, f.rel(full))
+			}
+
 			// MaxReadBytes was declared, documented as capping a single read,
 			// initialized — and never referenced. A file larger than the cap
 			// was loaded whole and split into lines before any truncation
@@ -231,7 +238,10 @@ func (f *FS) readTool() Tool {
 				return Result{}, err
 			}
 			if isBinary(data) {
-				return Result{}, fmt.Errorf("%s looks like a binary file (%d bytes)", a.Path, len(data))
+				return Result{}, fmt.Errorf(
+					"%s looks like a binary file (%d bytes); if it is an image, "+
+						"give it the right extension (.png, .jpg, .gif, .webp, .bmp) "+
+						"and read will attach it to the vision path", a.Path, len(data))
 			}
 
 			lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")

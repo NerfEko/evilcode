@@ -8,8 +8,13 @@
 package graphics
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"os/exec"
 	"strings"
@@ -173,6 +178,23 @@ func SixelCommand(cols, rows int) []string {
 		args = append(args, fmt.Sprintf("--width=%d", cols*8))
 	}
 	return args
+}
+
+// Dimensions reads an image's width and height from its header without decoding
+// the whole picture. PNG, JPEG and GIF are handled by the standard library
+// (registered by the blank imports above); anything else — webp, bmp — returns
+// ok=false, matching jcode's `get_image_dimensions_from_data`, which only parses
+// those three. A wrong or missing dimension is acceptable; an expensive decode is
+// not.
+func Dimensions(data []byte) (w, h int, ok bool) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0, false
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return 0, 0, false
+	}
+	return cfg.Width, cfg.Height, true
 }
 
 // Placeholder is what a terminal with no image support shows.

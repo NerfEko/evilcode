@@ -409,3 +409,25 @@ changed its transcript; the implementation path is the one Bubble Tea delivers i
 During F4.4, `/stats` exposed that completed-turn token counts were lost when `StatusState`
 reset. This was fixed with cumulative session totals and a regression test; it is not a
 deliberate deviation from the plan.
+
+## 2026-08-01 — J1.1 PDF not carried from `read`
+
+**Spec** (§1.1): the `read` tool handles images; PDF is explicitly listed as
+not required — "`mmdc` is already a Node dependency and a second one for PDFs
+is worse than the refusal."
+
+**Built instead**: `read` refuses a `.pdf` as binary with the actionable message
+(the same refusal every other non-image binary gets). jcode extracts PDF text
+behind a `pdf` cargo feature (`read.rs:476-549`); carrying it would mean a new
+pure-Go PDF text-extraction dependency, which is the trade the plan told me not
+to make.
+
+**Why it's OK**: the plan names this as a deliberate cut. A `.pdf` the model
+needs can be converted with a tool the model already has (`bash` + `pdftotext`
+or `mutool`); a built-in extractor is not the cheaper option here.
+
+## 2026-08-01 — codex review is now active
+
+The 2026-07-30 P0.3 entry said the codex CLI was absent. It is present now
+(`codex` at `/home/eko/.local/bin/codex`, model `gpt-5.6-sol`, reasoning
+`high`); every plan4 commit is reviewed with `codex review --commit <SHA>`.

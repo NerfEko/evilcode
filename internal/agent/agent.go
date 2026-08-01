@@ -765,6 +765,7 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
 		IsError:    err != nil,
+		Images:     res.Images,
 	})
 
 	e := a.newEvent(EventToolResult)
@@ -776,5 +777,6 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 	e.DiffStat = res.DiffStat
 	e.Intent = res.Intent
 	e.Display = res.Display
+	e.Images = res.Images
 	a.emit(e)
 }

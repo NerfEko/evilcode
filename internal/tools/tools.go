@@ -41,6 +41,13 @@ type Result struct {
 	// with the result through the event channel rather than via a side channel,
 	// which is what keeps it free of races with the render loop.
 	Display any
+
+	// Images are raw image bytes a tool result attaches for a vision model, and
+	// for the UI to render inline. `read` sets it for an image file; every other
+	// tool leaves it empty. The session store content-addresses the bytes into a
+	// blob beside the log rather than inline, so a large picture cannot truncate
+	// the replay.
+	Images [][]byte
 }
 
 // Tool is one callable capability.

@@ -94,6 +94,12 @@ type Event struct {
 	// UI never has to read it from a side channel.
 	Display any `json:"-"`
 
+	// Images are raw image bytes a tool result attached for the vision path,
+	// carried so the UI can render them inline. Not serialized: a remote
+	// attach sees the text result and a placeholder, which is enough — the
+	// bytes are display-only, the model already received them on the turn.
+	Images [][]byte `json:"-"`
+
 	// Err is the in-process error. ErrText carries it across a socket, where a
 	// Go error cannot travel.
 	Err     error  `json:"-"`

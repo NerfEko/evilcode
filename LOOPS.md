@@ -4668,3 +4668,49 @@ which reads disk, not the resume view, which reads messages.
 
 Verified: go build ./..., go vet ./..., go test ./...
 (`internal/session`, `internal/completions`, `internal/daemon`, `internal/tui`).
+
+## 2026-08-01 J1.1 — `read` attaches an image to the vision path
+
+`internal/tools/fs.go` `FS.readTool` refused every image as binary. Now an image
+extension (`.png .jpg .jpeg .gif .webp .bmp`) is detected before the binary
+check, the bytes are read and attached to `tools.Result.Images`, the agent
+carries them onto the tool-result `provider.Message.Images` (the existing
+vision path) and onto the `EventToolResult` payload, and the TUI renders the
+picture inline via `internal/graphics` (kitty/ghostty/WezTerm) or a placeholder.
+
+Over the 20 MB vision ceiling the bytes are not attached; the result names the
+dimensions and the size, because a model that cannot see the picture must be
+told that rather than handed nothing. Dimensions come from `image.DecodeConfig`
+on the header (PNG/JPEG/GIF; webp/bmp report `unknown`, matching jcode, which
+parses only those three). The binary refusal now says what to do instead of
+naming only the byte count. PDF is deliberately not carried — see DEVIATIONS.
+
+The session store already content-addresses `Message.Images` into blobs beside
+the log (never inline), so a large picture cannot truncate the replay; the blob
+resume cap was raised from 4 MB to 20 MB so an image at the vision ceiling
+survives a resume.
+
+⟨build⟩. New: `internal/tools/fs_image.go` (`readImage`, `isImageExt`,
+`visionImageCeiling`), `graphics.Dimensions`, `Event.Images`,
+`tools.Result.Images`, `loadImageBytes`/`imageRows` in the TUI, the inline
+`BlockImage` render on `EventToolResult`. Edits: `readTool` dispatch,
+`appendToolResult` propagation, `maxBlobBytes` 4→20 MB, the binary-refusal text.
+
+Verification (go build ./... && go vet ./... && go test ./..., all green):
+`internal/tools/fs_image_test.go` —
+`TestReadImageAttachesBytesAndDimensions` (3×2 PNG attaches bytes + reports
+`Dimensions: 3x2`), `TestReadImageKeyedByExtensionNotContent` (a `.jpg` routes
+past `isBinary` by extension), `TestReadImageOverCeilingIsNotAttached`
+(over-ceiling PNG reports dims but attaches nothing),
+`TestReadBinaryRefusalSaysWhatToDo` (a non-image binary is refused with a
+pointer at the image extensions). Existing suite unaffected, including
+`TestReadRejectsBinaryAndDirectories` (the `bin` file with no image extension
+stays refused).
+
+parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par
+        (image bytes attached to the model; dimensions+size reported; over the
+         20 MB ceiling not attached, dims still reported; terminal display via
+         the graphics protocol; binary refused with an actionable message;
+         webp/bmp dimensions `unknown` as in jcode. PDF deliberately not
+         carried, see DEVIATIONS)
+codex:  pending — review to run after commit

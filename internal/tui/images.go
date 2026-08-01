@@ -91,6 +91,36 @@ func LoadImage(path string, cols, rows int) (ImageBlock, error) {
 	return ImageBlock{Path: path, PNG: data, Cols: cols, Rows: rows}, nil
 }
 
+// loadImageBytes builds an inline image block from in-memory bytes — the path a
+// `read` tool returns a picture from — rather than re-reading the file. Over
+// the terminal transmit cap it still returns a block, but with no PNG, so the
+// placeholder names it rather than the pty stalling on a multi-megabyte base64
+// payload.
+func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
+	block := ImageBlock{Path: path, Cols: cols, Rows: rows}
+	if len(data) == 0 || len(data) > MaxImageBytes {
+		return block
+	}
+	block.PNG = data
+	return block
+}
+
+// imageRows picks a cell-box height for an inline image that roughly preserves
+// its aspect ratio across `cols` columns. A terminal cell is about twice as
+// tall as it is wide, so the row count is the column count scaled by the
+// picture's height/width and halved. Capped so a tall screenshot does not take
+// over the whole transcript, and floored at one row. Unknown dimensions (webp,
+// bmp, or an unreadable header) fall back to a square box.
+func imageRows(data []byte, cols int) int {
+	const maxRows = 30
+	w, h, ok := graphics.Dimensions(data)
+	if !ok || w <= 0 {
+		return min(max(cols/2, 1), maxRows)
+	}
+	rows := int(float64(cols) * float64(h) / float64(w) / 2)
+	return max(min(rows, maxRows), 1)
+}
+
 // humanBytes renders a size the way a person reads it.
 func humanBytes(n int) string {
 	switch {
