@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,22 @@ func TestEditFailedMatchIndentation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "indentation") || !strings.Contains(err.Error(), "line 1") {
 		t.Errorf("error = %q, want 'different indentation around line 1'", err)
+	}
+}
+
+// A trailing newline on `old` must not break the indentation diagnosis: the
+// synthetic empty final element would inflate the window and compare the
+// block's last line against the line after it.
+func TestEditFailedMatchIndentationTrailingNewline(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "func main() {\n\tx()\n}\nnext\n"})
+	_, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "func main() {\n    x()\n}\n", "new": "func main() {\n\ty()\n}\n",
+	})
+	if err == nil {
+		t.Fatal("want an error: the indentation differs")
+	}
+	if !strings.Contains(err.Error(), "indentation") || !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("error = %q, want 'different indentation around line 1' despite the trailing newline", err)
 	}
 }
 
@@ -95,18 +112,91 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
-// A trailing newline on `old` must not break the indentation diagnosis: the
-// synthetic empty final element would inflate the window and compare the
-// block's last line against the line after it.
-func TestEditFailedMatchIndentationTrailingNewline(t *testing.T) {
-	f := tempFS(t, map[string]string{"a.txt": "func main() {\n\tx()\n}\nnext\n"})
-	_, err := run(t, f.Tools(), "edit", map[string]any{
-		"path": "a.txt", "old": "func main() {\n    x()\n}\n", "new": "func main() {\n\ty()\n}\n",
-	})
-	if err == nil {
-		t.Fatal("want an error: the indentation differs")
+// A trailing newline on `new` is a delimiter, not a changed line: the context
+// after the change is three lines, not four.
+func TestEditContextTrailingNewlineOnNew(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		b.WriteString("line ")
+		b.WriteString(itoa(i))
+		b.WriteString("\n")
 	}
-	if !strings.Contains(err.Error(), "indentation") || !strings.Contains(err.Error(), "line 1") {
-		t.Errorf("error = %q, want 'different indentation around line 1' despite the trailing newline", err)
+	f := tempFS(t, map[string]string{"a.txt": b.String()})
+	res, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "line 10", "new": "line ten\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Output, "14\tline 14") {
+		t.Errorf("output = %q, a trailing newline on new must not add a 4th context line", res.Output)
+	}
+}
+
+// A newline-terminated file edited near EOF does not print a phantom numbered
+// empty final line.
+func TestEditContextNoPhantomEOFLine(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "a\nb\nc\n"})
+	res, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "c", "new": "C",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No "4\t" line (the file has only 3 lines).
+	if strings.Contains(res.Output, "\n4\t") {
+		t.Errorf("output printed a phantom 4th line:\n%s", res.Output)
+	}
+}
+
+// A context line over MaxLineLen is truncated, so a minified neighbour does not
+// consume the result budget and push the changed line out.
+func TestEditContextTruncatesLongLines(t *testing.T) {
+	long := strings.Repeat("z", 5000)
+	f := tempFS(t, map[string]string{"a.txt": long + "\ntarget\n" + long + "\n"})
+	res, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "target", "new": "hit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(res.Output, "\n") {
+		if len(line) > MaxLineLen+50 {
+			t.Errorf("a context line is %d chars, past the cap", len(line))
+		}
+	}
+}
+
+// An anchored edit also returns context, so an anchored model need not re-read.
+func TestAnchoredEditReturnsContext(t *testing.T) {
+	body := "line one\nline two\nline three\n"
+	f := tempFS(t, map[string]string{"a.txt": body}).WithAnchors(true)
+	// Read first so anchors are recorded.
+	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.anchors.lookup(filepath.Join(f.Root, "a.txt"))
+	anchor := ""
+	for a, nums := range st.Anchors {
+		if len(nums) == 1 && nums[0] == 2 { // "line two"
+			anchor = a
+			break
+		}
+	}
+	if anchor == "" {
+		t.Fatal("could not find the anchor for line 2")
+	}
+	res, err := run(t, f.Tools(), "edit", map[string]any{
+		"path":    "a.txt",
+		"patches": []map[string]any{{"anchor": anchor, "op": "replace", "lines": []string{"line TWO"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "line TWO") {
+		t.Errorf("anchored edit output missing the changed line:\n%s", res.Output)
+	}
+	if !strings.Contains(res.Output, "1\tline one") || !strings.Contains(res.Output, "3\tline three") {
+		t.Errorf("anchored edit output = %q, want context lines 1 and 3", res.Output)
 	}
 }

@@ -819,9 +819,19 @@ func (f *FS) editTool() Tool {
 			name := f.rel(full)
 			diff, stat := makeDiff(name, before, after)
 			// Three lines of context either side of the change, so a consecutive
-			// edit to the same region needs no re-read (§1.2).
+			// edit to the same region needs no re-read (§1.2). The replacement
+			// sits at the same byte offset in `after` as the match was in
+			// `before` (Replace keeps the prefix); a trailing newline on `new`
+			// is a delimiter, not a changed line, so it is excluded from the
+			// span.
 			firstIdx := strings.Index(before, a.Old)
-			around := editContext(after, a.New, firstIdx, 3)
+			startLine := strings.Count(after[:firstIdx], "\n") + 1
+			endBytes := firstIdx + len(a.New)
+			if strings.HasSuffix(a.New, "\n") {
+				endBytes--
+			}
+			endLine := strings.Count(after[:endBytes], "\n") + 1
+			around := contextAround(after, startLine, endLine, 3)
 			return Result{
 				Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 				Diff:     diff,
@@ -873,8 +883,13 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 	f.anchors.forget(full)
 
 	diff, stat := makeDiff(name, before, after)
+	// Equivalent context for the anchored path, centred on the first changed
+	// line: anchored edits have no single old/new string to locate, but the
+	// re-read this eliminates is the same.
+	s := firstChangedLine(before, after)
+	around := contextAround(after, s, s, 3)
 	return Result{
-		Output:   fmt.Sprintf("edited %s (+%d -%d)", name, stat.Added, stat.Removed),
+		Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 		Diff:     diff,
 		DiffStat: &stat,
 		Intent:   fmt.Sprintf("editing %s", name),

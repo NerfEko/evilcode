@@ -59,28 +59,36 @@ func lineOf(content, sub string) int {
 	return strings.Count(content[:idx], "\n") + 1
 }
 
-// editContext returns the lines padding either side of a replacement in `after`,
-// numbered the way `read` numbers them, so a consecutive edit to the same region
-// needs no re-read. firstIdx is the byte offset of the replacement in `after`
-// (the prefix before a Replace is identical to the original, so the offset the
-// match was found at in `before` is valid here). Mirrors jcode's
-// `extract_context` (edit.rs:234-254) with padding 3.
-func editContext(after, replaced string, firstIdx, padding int) string {
-	if firstIdx < 0 || firstIdx > len(after) {
-		firstIdx = 0
-	}
-	end := firstIdx + len(replaced)
-	if end > len(after) {
-		end = len(after)
-	}
-	lines := strings.Split(after, "\n")
-	startLine := strings.Count(after[:firstIdx], "\n") // 0-based
-	endLine := strings.Count(after[:end], "\n")
-	lo := max(0, startLine-padding)
-	hi := min(len(lines), endLine+1+padding)
+// contextAround returns up to `padding` lines either side of the 1-based
+// inclusive [startLine, endLine] region in content, numbered the way `read`
+// numbers them and truncated the way `read` truncates them. The terminal
+// newline is trimmed before splitting, matching `read`, so a newline-terminated
+// file does not print a phantom final line. Mirrors jcode's `extract_context`
+// (edit.rs:234-254) with padding 3.
+func contextAround(content string, startLine, endLine, padding int) string {
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	lo := max(0, startLine-1-padding)
+	hi := min(len(lines), endLine+padding)
 	var b strings.Builder
 	for i := lo; i < hi; i++ {
-		fmt.Fprintf(&b, "%d\t%s\n", i+1, lines[i])
+		line, _ := truncateLine(lines[i])
+		fmt.Fprintf(&b, "%d\t%s\n", i+1, line)
 	}
 	return b.String()
+}
+
+// firstChangedLine is the 1-based number of the first line that differs between
+// before and after, used to centre context for anchored edits (which have no
+// single old/new string to locate). A pure append or truncate returns the first
+// line beyond the common prefix.
+func firstChangedLine(before, after string) int {
+	bl := strings.Split(strings.TrimSuffix(before, "\n"), "\n")
+	al := strings.Split(strings.TrimSuffix(after, "\n"), "\n")
+	n := min(len(bl), len(al))
+	for i := 0; i < n; i++ {
+		if bl[i] != al[i] {
+			return i + 1
+		}
+	}
+	return n + 1
 }
