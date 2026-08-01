@@ -272,7 +272,7 @@ func CompactNotice(conflicts []Conflict) string {
 // is not told about it is working from a file that moved.
 func WritesFiles(tool string) bool {
 	switch tool {
-	case "write", "edit":
+	case "write", "edit", "multiedit":
 		return true
 	}
 	return false
@@ -281,7 +281,7 @@ func WritesFiles(tool string) bool {
 // ToolPath pulls the file a call names, or "" when it names none.
 func ToolPath(tool string, args json.RawMessage) string {
 	switch tool {
-	case "read", "write", "edit":
+	case "read", "write", "edit", "multiedit":
 	default:
 		// grep, glob, bash and the rest touch files too, but not in a way that
 		// can be attributed to one path — claiming otherwise would produce

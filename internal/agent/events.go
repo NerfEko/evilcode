@@ -100,6 +100,11 @@ type Event struct {
 	// bytes are display-only, the model already received them on the turn.
 	Images [][]byte `json:"-"`
 
+	// NoWrite is set by a write-capable tool that did not actually write, so the
+	// daemon's swarm coordination does not queue a stale-file notice for a file
+	// that never changed (a fully-failed multiedit).
+	NoWrite bool `json:"-"`
+
 	// Err is the in-process error. ErrText carries it across a socket, where a
 	// Go error cannot travel.
 	Err     error  `json:"-"`

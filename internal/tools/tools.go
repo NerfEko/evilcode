@@ -48,6 +48,11 @@ type Result struct {
 	// blob beside the log rather than inline, so a large picture cannot truncate
 	// the replay.
 	Images [][]byte
+
+	// NoWrite is set by a write-capable tool that did not actually write (a
+	// fully-failed multiedit), so swarm coordination does not queue a stale-file
+	// notice for a file that never changed. write/edit leave it false.
+	NoWrite bool
 }
 
 // Tool is one callable capability.

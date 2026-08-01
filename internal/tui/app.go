@@ -3495,7 +3495,7 @@ func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 	switch strings.ToLower(b.ToolName) {
 	case "read":
 		m.quickView = m.readQuickView(b.ToolPath)
-	case "write", "edit":
+	case "write", "edit", "multiedit":
 		body := []string(nil)
 		if b.Diff == "" {
 			body = []string{"no diff captured for this edit"}

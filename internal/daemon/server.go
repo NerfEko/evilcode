@@ -464,7 +464,7 @@ func (sess *Session) observe(e agent.Event) {
 		if path == "" {
 			return
 		}
-		if WritesFiles(e.Call.Name) {
+		if WritesFiles(e.Call.Name) && !e.NoWrite {
 			// Queued on the *readers*, not on the writer. Keeping them here was
 			// the bug: the writer then filtered out every conflict as belonging
 			// to someone else and dropped it, so nobody was ever told.

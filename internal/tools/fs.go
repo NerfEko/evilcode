@@ -956,7 +956,9 @@ func (f *FS) multiEditTool() Tool {
 
 			if len(applied) == 0 {
 				// Nothing changed; do not rewrite the file or touch its mtime.
-				return Result{Output: b.String(), Intent: fmt.Sprintf("editing %s", name)}, nil
+				// NoWrite tells swarm coordination not to queue a stale-file
+				// notice for a file that never changed.
+				return Result{Output: b.String(), Intent: fmt.Sprintf("editing %s", name), NoWrite: true}, nil
 			}
 			if err := f.writeConfined(full, []byte(content)); err != nil {
 				return Result{}, err

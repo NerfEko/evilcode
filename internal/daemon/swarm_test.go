@@ -444,3 +444,48 @@ func TestWorkerResultFailingItsSchemaIsReportedAsSuch(t *testing.T) {
 		t.Errorf("report = %q, want it to say the schema was not met", report)
 	}
 }
+
+// A successful multiedit registers as a write: a reader of the file is told it
+// changed, just as for edit.
+func TestMultiEditRegistersAsAWrite(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+	reader, _ := srv.Open("")
+	writer, _ := srv.Open("")
+
+	reader.observe(toolResult("read", "auth.go"))
+	reader.observe(agent.Event{Kind: agent.EventTurnEnd})
+	writer.observe(toolResult("multiedit", "auth.go"))
+	writer.observe(agent.Event{Kind: agent.EventTurnEnd})
+	reader.observe(toolResult("read", "other.go"))
+	reader.observe(agent.Event{Kind: agent.EventTurnEnd})
+
+	msgs := reader.built.Agent.DrainInterrupts(false)
+	if len(msgs) == 0 {
+		t.Fatal("the reader was never told its file changed after a multiedit")
+	}
+}
+
+// A fully-failed multiedit (NoWrite) does not register as a write, so a reader
+// is not sent a stale-file notice for a file that never changed.
+func TestMultiEditNoWriteDoesNotRegister(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+	reader, _ := srv.Open("")
+	writer, _ := srv.Open("")
+
+	reader.observe(toolResult("read", "auth.go"))
+	reader.observe(agent.Event{Kind: agent.EventTurnEnd})
+	args, _ := json.Marshal(map[string]string{"path": "auth.go"})
+	writer.observe(agent.Event{
+		Kind: agent.EventToolResult, NoWrite: true,
+		Call: &provider.ToolCall{ID: "c1", Name: "multiedit", Args: args},
+	})
+	writer.observe(agent.Event{Kind: agent.EventTurnEnd})
+	reader.observe(toolResult("read", "other.go"))
+	reader.observe(agent.Event{Kind: agent.EventTurnEnd})
+
+	if msgs := reader.built.Agent.DrainInterrupts(false); len(msgs) != 0 {
+		t.Errorf("a no-write multiedit queued a stale-file notice: %v", msgs)
+	}
+}
