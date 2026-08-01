@@ -48,6 +48,51 @@ func TestKeepThinkingLeavesTheTraceOpen(t *testing.T) {
 	}
 }
 
+func TestReasoningSurvivesTurnEnd(t *testing.T) {
+	// The trace used to be garbage-collected once the answer pushed it above
+	// the viewport, so "thought (N lines)" vanished seconds after thinking
+	// finished. The transcript is the record: nothing is ever deleted.
+	m := newTestModel(t)
+	m.applyEvent(agent.Event{Kind: agent.EventReasoningDelta, Text: "weighing it up\n"})
+	idx := m.reasoningIdx
+	m.applyEvent(agent.Event{Kind: agent.EventTextDelta, Text: "The answer is"})
+	m.applyEvent(agent.Event{Kind: agent.EventTurnEnd})
+
+	if idx >= len(m.blocks) || m.blocks[idx].Kind != BlockReasoning {
+		t.Fatal("the reasoning block was removed at turn end")
+	}
+	if !m.blocks[idx].Collapsed {
+		t.Error("the trace is not collapsed after the answer started")
+	}
+	if m.blocks[idx].Text != "weighing it up\n" {
+		t.Errorf("trace text lost: %q", m.blocks[idx].Text)
+	}
+}
+
+func TestReasoningSurvivesFullViewportFill(t *testing.T) {
+	// Even with the trace fully scrolled out of a small viewport, the block
+	// must stay: scroll is how the reader leaves content behind, not deletion.
+	m := newTestModel(t)
+	m.width, m.height = 40, 6
+	m.applyEvent(agent.Event{Kind: agent.EventReasoningDelta, Text: "weighing it up\n"})
+	idx := m.reasoningIdx
+	m.applyEvent(agent.Event{Kind: agent.EventTextDelta, Text: "The answer is"})
+
+	// The answer plus the collapse leaves the trace above the viewport; the
+	// next streamed text would have been the moment the GC deleted it.
+	for i := 0; i < 20; i++ {
+		m.applyEvent(agent.Event{Kind: agent.EventTextDelta, Text: "more answer text\n"})
+	}
+	m.applyEvent(agent.Event{Kind: agent.EventTurnEnd})
+
+	if idx >= len(m.blocks) || m.blocks[idx].Kind != BlockReasoning {
+		t.Fatal("the reasoning block was deleted after text filled the viewport")
+	}
+	if !m.blocks[idx].Collapsed {
+		t.Error("the trace is not collapsed")
+	}
+}
+
 func TestLiveThinkingIsCappedAndSaysWhatItHid(t *testing.T) {
 	// A model that thinks for thirty seconds otherwise pushes the whole
 	// conversation off the screen.

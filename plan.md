@@ -226,9 +226,9 @@ Wheel-down while already pinned reveals a 1-row facts line below the composer (m
 
 Alt+S toggles: when locked, typing does not snap the view to bottom. Notices: `Typing scroll lock: ON - typing stays at current chat position` / `…OFF - typing follows chat bottom`.
 
-### 4.6 Streaming-reasoning GC
+### 4.6 Reasoning traces are never deleted
 
-In `current` thinking-display mode, old reasoning traces are deleted once provably above the viewport (`total − trace_lines > viewport + 2`). **Never while `autoScrollPaused`** — don't remove what the reader may be reading.
+Reasoning blocks — live, expanded, or collapsed to `▸ thought (N lines)` — stay in the transcript forever, in every thinking-display mode. The transcript is the session's record; scrolling past something is how the reader leaves it behind, not deletion. Collapsed traces keep their text so a future expand interaction can restore them; if the memory ever matters, a later compaction pass can revisit it (§9.7).
 
 ### 4.7 Full-repaint-on-scroll
 
@@ -658,7 +658,7 @@ Completed sub-calls fold into `… N completed` while running; a finished batch 
 
 ### 9.7 Reasoning / thinking
 
-Streamed thinking renders dim italic (`#646464`), trickling token-by-token; `Thought for 3.4s` footer same style; collapsed on replay to `▸ thought (12 lines)` dim italic. Modes `/thinking-display off|full|current`; `current` GCs offscreen traces (§4.6).
+Streamed thinking renders dim italic (`#646464`), trickling token-by-token; `Thought for 3.4s` footer same style; collapsed on replay to `▸ thought (12 lines)` dim italic. Modes `/thinking-display off|full|current`; `current` keeps the live trace while streaming and collapses it once the answer starts — the summary row stays in the transcript, never garbage-collected (§4.6). Traces retain their text so they can be expanded again (not yet implemented).
 
 ### 9.8 Error rows
 

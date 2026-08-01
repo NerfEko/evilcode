@@ -901,6 +901,10 @@ func (m *Model) finishStreaming() {
 
 // finishReasoning freezes the live thinking trace and collapses it, unless the
 // reader has asked to keep traces open (display.keep_thinking).
+//
+// The block itself is never removed: the transcript is the session's record,
+// and a collapsed trace is a one-row summary. Scrolling past it is how the
+// reader leaves it behind, not deletion (plan.md §4.6).
 func (m *Model) finishReasoning() {
 	if m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) {
 		m.blocks[m.reasoningIdx].Streaming = false
@@ -908,33 +912,6 @@ func (m *Model) finishReasoning() {
 		m.blocks[m.reasoningIdx].dropCache()
 	}
 	m.reasoningIdx = -1
-	m.collectReasoning()
-}
-
-// collectReasoning drops thinking traces that have scrolled safely out of view.
-//
-// It never runs while the reader has scrolled up: removing content someone may
-// be reading is worse than holding a little more memory (plan.md §4.6).
-func (m *Model) collectReasoning() {
-	if m.thinking != ThinkingCurrent || m.scroll.Paused {
-		return
-	}
-	viewport := m.transcriptHeight()
-	total := m.contentHeight()
-
-	kept := m.blocks[:0]
-	for i := range m.blocks {
-		b := m.blocks[i]
-		if b.Kind == BlockReasoning && i < len(m.blocks)-1 {
-			lines := len(m.renderer.Lines(&m.blocks[i]))
-			if total-lines > viewport+2 {
-				total -= lines
-				continue
-			}
-		}
-		kept = append(kept, b)
-	}
-	m.blocks = kept
 }
 
 // followIfPinned keeps the view at the bottom unless the reader scrolled up.

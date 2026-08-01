@@ -77,8 +77,9 @@ type Block struct {
 	// Streaming marks the tail block, which re-renders every frame.
 	Streaming bool
 
-	// Collapsed folds a finished reasoning trace to a single summary row on
-	// replay, so old thinking does not dominate the transcript (§9.7).
+	// Collapsed folds a finished reasoning trace to a single summary row, so
+	// old thinking does not dominate the transcript (§9.7). The block stays in
+	// the transcript — the text is retained so a future expand can restore it.
 	Collapsed bool
 
 	// cache holds rendered lines for up to two wrap widths: the one the
@@ -772,8 +773,9 @@ const (
 	// ThinkingFull keeps every trace in the transcript.
 	ThinkingFull ThinkingMode = "full"
 
-	// ThinkingCurrent keeps the live trace and garbage-collects older ones once
-	// they are provably above the viewport.
+	// ThinkingCurrent keeps the live trace on screen while it streams and
+	// collapses it to a summary row once the answer starts. The summary stays
+	// in the transcript — nothing is ever garbage-collected (plan.md §4.6).
 	ThinkingCurrent ThinkingMode = "current"
 )
 
