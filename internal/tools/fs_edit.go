@@ -101,7 +101,10 @@ func missingTrailingNewline(content, old string) (int, bool) {
 	if len(content) > len(core) && content[len(content)-len(core)-1] != '\n' {
 		return 0, false
 	}
-	return lineOf(content, core), true
+	// The match is the suffix, so its line is the count of newlines before
+	// that offset — not lineOf, which would report an earlier occurrence.
+	idx := len(content) - len(core)
+	return strings.Count(content[:idx], "\n") + 1, true
 }
 
 // contextAround returns up to `padding` lines either side of the 1-based

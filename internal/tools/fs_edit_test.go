@@ -275,3 +275,19 @@ func TestEditFailedMatchMissingTrailingNewlineSameIndent(t *testing.T) {
 		t.Errorf("error = %q, the pure missing-newline case must not be called trimming", err)
 	}
 }
+
+// The missing-newline line is the EOF occurrence, not an earlier one: content
+// "targetx\nother\ntarget" with old "target\n" — "target" appears earlier (in
+// "targetx") but the EOF block at line 3 is the match; report line 3, not 1.
+func TestEditFailedMatchMissingTrailingNewlineLineIsEOF(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "targetx\nother\ntarget"}) // no trailing newline
+	_, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "target\n", "new": "T\n",
+	})
+	if err == nil {
+		t.Fatal("want an error: 'target\\n' is not in the file")
+	}
+	if !strings.Contains(err.Error(), "line 3") {
+		t.Errorf("error = %q, want the EOF occurrence at line 3", err)
+	}
+}
