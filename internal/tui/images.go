@@ -92,16 +92,21 @@ func LoadImage(path string, cols, rows int) (ImageBlock, error) {
 }
 
 // loadImageBytes builds an inline image block from in-memory bytes — the path a
-// `read` tool returns a picture from — rather than re-reading the file. Over
-// the terminal transmit cap it still returns a block, but with no PNG, so the
-// placeholder names it rather than the pty stalling on a multi-megabyte base64
-// payload.
+// `read` tool returns a picture from — rather than re-reading the file. The
+// kitty protocol declares its payload as PNG (`f=100`), so a JPEG, GIF or BMP is
+// re-encoded first; a format the standard library cannot decode (webp, bmp)
+// keeps no PNG and renders as a placeholder, the model having already received
+// the original bytes through the vision path. Over the terminal transmit cap
+// the block keeps no PNG for the same reason — the placeholder names it rather
+// than the pty stalling on a large base64 payload.
 func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
 	block := ImageBlock{Path: path, Cols: cols, Rows: rows}
 	if len(data) == 0 || len(data) > MaxImageBytes {
 		return block
 	}
-	block.PNG = data
+	if png, ok := graphics.ToPNG(data); ok {
+		block.PNG = png
+	}
 	return block
 }
 

@@ -27,7 +27,7 @@ func tinyPNG(t *testing.T) []byte {
 // and reports dimensions and size, rather than refusing it as binary.
 func TestReadImageAttachesBytesAndDimensions(t *testing.T) {
 	png := tinyPNG(t)
-	f := tempFS(t, nil)
+	f := tempFS(t, nil).WithVision(true)
 	full := filepath.Join(f.Root, "pic.png")
 	if err := os.WriteFile(full, png, 0o644); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestReadImageAttachesBytesAndDimensions(t *testing.T) {
 // A JPEG by extension is treated the same as PNG: extension-keyed, so a model
 // asking for photo.jpg gets the vision path even though the bytes are opaque.
 func TestReadImageKeyedByExtensionNotContent(t *testing.T) {
-	f := tempFS(t, nil)
+	f := tempFS(t, nil).WithVision(true)
 	// Not a real JPEG; the point is the extension routes it past isBinary.
 	if err := os.WriteFile(filepath.Join(f.Root, "photo.jpg"),
 		[]byte{0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 'J', 'F'}, 0o644); err != nil {
@@ -93,8 +93,31 @@ func TestReadImageOverCeilingIsNotAttached(t *testing.T) {
 	}
 }
 
-// A file with no image extension and binary content stays refused — and the
-// refusal now says what to do instead of naming only the byte count.
+// A model without vision is not handed image bytes it would reject. It is told
+// the dimensions and that it cannot see the picture, mirroring the
+// user-attachment guard.
+func TestReadImageWithoutVisionIsNotAttached(t *testing.T) {
+	png := tinyPNG(t)
+	f := tempFS(t, nil) // Vision defaults to false.
+	full := filepath.Join(f.Root, "pic.png")
+	if err := os.WriteFile(full, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "pic.png"})
+	if err != nil {
+		t.Fatalf("reading an image errored: %v", err)
+	}
+	if len(res.Images) != 0 {
+		t.Errorf("a non-vision model was handed %d image(s); it must not be", len(res.Images))
+	}
+	if !strings.Contains(res.Output, "cannot see images") {
+		t.Errorf("output = %q, want it to say the model cannot see images", res.Output)
+	}
+	if !strings.Contains(res.Output, "Dimensions: 3x2") {
+		t.Errorf("output = %q, want dimensions reported even without vision", res.Output)
+	}
+}
 func TestReadBinaryRefusalSaysWhatToDo(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "bin"),

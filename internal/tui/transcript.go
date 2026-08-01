@@ -272,6 +272,7 @@ func (r *Renderer) render(b *Block) []string {
 	clean.ToolTarget = core.SanitizeTerminal(b.ToolTarget)
 	clean.ToolIntent = core.SanitizeTerminal(b.ToolIntent)
 	clean.ToolPath = core.SanitizeTerminal(b.ToolPath)
+	clean.Image.Path = core.SanitizeTerminal(b.Image.Path)
 	clean.Diff = core.SanitizeTerminal(b.Diff)
 	b = &clean
 

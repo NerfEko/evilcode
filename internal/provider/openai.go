@@ -66,8 +66,17 @@ type oaiImageURL struct {
 // OpenAI wants a data URI with a MIME type where Ollama wants bare base64,
 // which is exactly why Message.Images holds raw bytes and each provider encodes
 // at its own edge.
+//
+// Tool-result messages cannot carry image parts on strict OpenAI-compatible
+// endpoints — a role:tool content array must be text only, or the request
+// fails validation. jcode drops tool-result media to a text placeholder on
+// this provider for the same reason. The descriptive result text the model
+// reads ("Image: … Dimensions: … sent to model for vision analysis") is what
+// survives, which is the honest outcome on a backend that cannot take the
+// bytes. The image still reaches a vision model on Ollama, which accepts
+// attachments on any role.
 func oaiContent(m Message) any {
-	if len(m.Images) == 0 {
+	if len(m.Images) == 0 || m.Role == RoleTool {
 		return m.Content
 	}
 	parts := make([]oaiPart, 0, len(m.Images)+1)

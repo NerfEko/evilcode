@@ -41,6 +41,12 @@ const visionImageCeiling = 20 << 20
 // name, and sniffing magic bytes for a `.png` that happens to start with a NUL
 // would route it to the binary refusal. The binary check stays for everything
 // without a known image extension.
+//
+// When the active model cannot see images (Vision is false) the bytes are not
+// attached: the result reports the dimensions and size and says the model
+// cannot see the picture, because a text-only backend handed image bytes will
+// reject the request, and a model that cannot see an image must be told that
+// rather than handed nothing.
 func (f *FS) readImage(full, rel string) (Result, error) {
 	info, err := os.Stat(full)
 	if err != nil {
@@ -48,18 +54,13 @@ func (f *FS) readImage(full, rel string) (Result, error) {
 	}
 	size := info.Size()
 
-	var data []byte
-	if size <= int64(visionImageCeiling) {
-		data, err = f.readConfined(full)
-		if err != nil {
-			return Result{}, err
-		}
-	} else {
-		// Over the ceiling the bytes are not attached, but the dimensions are
-		// still worth reporting. image.DecodeConfig reads only the header, so
-		// pulling it from the file costs a few kilobytes rather than the whole
-		// picture.
-		data, _ = f.readHead(full, 64<<10)
+	// Read through the confined descriptor with a hard cap one byte past the
+	// ceiling, so a file that grows or is replaced after Stat cannot push past
+	// the limit while the stale size still selects the attach branch. The
+	// header needed for dimensions is always within this many bytes.
+	data, err := f.readHead(full, visionImageCeiling+1)
+	if err != nil {
+		return Result{}, err
 	}
 
 	w, h, dimsOK := graphics.Dimensions(data)
@@ -70,16 +71,22 @@ func (f *FS) readImage(full, rel string) (Result, error) {
 	sizeStr := humanBytes(size)
 
 	res := Result{Intent: fmt.Sprintf("reading %s", rel)}
-	if size <= int64(visionImageCeiling) {
+	switch {
+	case size > int64(visionImageCeiling):
+		res.Output = fmt.Sprintf(
+			"Image: %s (%s)\nDimensions: %s\nImage too large for vision (max %s) — not attached.",
+			rel, sizeStr, dimStr, humanBytes(int64(visionImageCeiling)))
+	case !f.Vision:
+		res.Output = fmt.Sprintf(
+			"Image: %s (%s)\nDimensions: %s\nThis model cannot see images (vision is off); "+
+				"switch to a vision model with /model to attach it.",
+			rel, sizeStr, dimStr)
+	default:
 		res.Output = fmt.Sprintf(
 			"Image: %s (%s)\nDimensions: %s\nImage sent to model for vision analysis.",
 			rel, sizeStr, dimStr)
 		res.Images = [][]byte{data}
-		return res, nil
 	}
-	res.Output = fmt.Sprintf(
-		"Image: %s (%s)\nDimensions: %s\nImage too large for vision (max %s) — not attached.",
-		rel, sizeStr, dimStr, humanBytes(int64(visionImageCeiling)))
 	return res, nil
 }
 

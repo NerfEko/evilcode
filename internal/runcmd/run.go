@@ -137,7 +137,7 @@ func Run(args []string) (int, error) {
 			ts = tools.Canned(canned)
 		} else {
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).Tools(),
+				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).Tools(),
 				tools.NewExec(cwd).Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 			if len(promptSkills) > 0 {

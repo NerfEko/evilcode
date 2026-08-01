@@ -36,6 +36,13 @@ type FS struct {
 	// rather than a global switch.
 	Anchors bool
 
+	// Vision reports whether the active model accepts image attachments. `read`
+	// on an image attaches bytes for the vision path only when this is true, so
+	// a text-only backend is told the picture's dimensions and that it cannot
+	// see it, rather than being handed bytes its provider will reject. Mirrors
+	// the user-attachment guard in the TUI.
+	Vision bool
+
 	anchors *anchorStore
 
 	// paths serializes read-modify-write on one file. A batch runs eight-way
@@ -93,6 +100,14 @@ func (f *FS) WithAnchors(on bool) *FS {
 // WithConfine restricts paths to the workspace root.
 func (f *FS) WithConfine(on bool) *FS {
 	f.Confine = on
+	return f
+}
+
+// WithVision declares whether the active model accepts image attachments, so
+// `read` on an image gates the vision path on the same flag the user-attachment
+// path uses.
+func (f *FS) WithVision(on bool) *FS {
+	f.Vision = on
 	return f
 }
 

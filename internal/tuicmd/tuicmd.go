@@ -220,7 +220,7 @@ func runOnce(args []string) (string, error) {
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-		WithConfine(cfg.Features.ConfineToWorkspace)
+		WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision)
 	execTools := tools.NewExec(cwd)
 
 	// Language servers start on first use, not here: gopls costs seconds and

@@ -14,7 +14,7 @@ import (
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"os"
 	"os/exec"
 	"strings"
@@ -195,6 +195,24 @@ func Dimensions(data []byte) (w, h int, ok bool) {
 		return 0, 0, false
 	}
 	return cfg.Width, cfg.Height, true
+}
+
+// ToPNG re-encodes an image as PNG. The kitty graphics protocol's `f=100`
+// declares PNG data, so a JPEG, GIF or BMP read off disk has to be converted
+// before it is transmitted or a kitty-compatible terminal rejects it. webp and
+// bmp decode through the standard library only when a decoder is registered,
+// so they return ok=false and the caller renders a placeholder — the model
+// still receives the original bytes through the vision path.
+func ToPNG(data []byte) ([]byte, bool) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
 }
 
 // Placeholder is what a terminal with no image support shows.

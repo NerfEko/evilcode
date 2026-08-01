@@ -711,12 +711,13 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrText})
 		}
 		// A `read` on an image attaches the bytes for the model's vision path
-		// (done in the agent) and renders inline here. Kitty/ghostty/WezTerm draw
-		// the picture; a terminal without image support shows the placeholder the
-		// block already reserves. Over the terminal transmit cap the block keeps
-		// no PNG, so it renders as a placeholder naming the file rather than
-		// stalling the pty on a large base64 payload.
-		if len(e.Images) > 0 && m.imagesOn {
+		// (done in the agent) and renders inline here. The block is always kept
+		// so a terminal without graphics, or one with images toggled off, still
+		// reserves the placeholder rows and can show the picture if images are
+		// turned on later; only the kitty transmission is gated on images being
+		// on. Over the terminal transmit cap the block keeps no PNG, so it
+		// renders as a placeholder naming the file rather than stalling the pty.
+		if len(e.Images) > 0 {
 			cols := m.chatWidth()
 			for _, img := range e.Images {
 				rows := imageRows(img, cols)
@@ -724,7 +725,7 @@ func (m *Model) applyEvent(e agent.Event) {
 				ib := loadImageBytes(img, b.ToolPath, cols, rows)
 				ib.ID = m.nextImageID
 				m.blocks = append(m.blocks, Block{Kind: BlockImage, Image: ib})
-				if len(ib.PNG) > 0 {
+				if m.imagesOn && len(ib.PNG) > 0 {
 					m.pendingImages += graphics.KittySequence(graphics.Image{
 						PNG: ib.PNG, Cols: ib.Cols, Rows: ib.Rows, ID: ib.ID,
 					})
