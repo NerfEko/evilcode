@@ -302,17 +302,12 @@ func (f *FS) readTool() Tool {
 			var b strings.Builder
 			truncated := 0
 			if f.Anchors {
-				win := make([]string, end-start)
-				for i := range win {
-					src := lines[start+i]
-					if t, ok := truncateLine(src); ok {
-						win[i] = t
+				for i := start; i < end; i++ {
+					if len(lines[i]) > MaxLineLen {
 						truncated++
-					} else {
-						win[i] = src
 					}
 				}
-				b.WriteString(AnnotateLines(win, start+1))
+				b.WriteString(AnnotateLines(lines[start:end], start+1))
 			} else {
 				for i := start; i < end; i++ {
 					line := lines[i]
@@ -344,14 +339,17 @@ func (f *FS) readTool() Tool {
 // the end rather than per line.
 const MaxLineLen = 2000
 
-// truncateLine caps a single line at MaxLineLen, appending a marker so the
-// model can see the line was cut. Returns the (possibly truncated) line and
-// whether it was capped.
+// truncateLine caps a single line at MaxLineLen bytes, backing up to a UTF-8
+// rune boundary so the cut does not split a multibyte character (which would
+// leave an invalid string the provider serializes as U+FFFD), and appends a
+// marker so the model can see the line was cut. Returns the (possibly
+// truncated) line and whether it was capped.
 func truncateLine(s string) (string, bool) {
-	if len(s) > MaxLineLen {
-		return s[:MaxLineLen] + "...", true
+	if len(s) <= MaxLineLen {
+		return s, false
 	}
-	return s, false
+	cut := backToRuneBoundary(s, MaxLineLen)
+	return s[:cut] + "...", true
 }
 
 // truncNotice is the one-line summary appended when any lines were truncated.
@@ -380,8 +378,12 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 		limit = -1
 	}
 
+	// The scanner buffer must hold one whole line, even a minified bundle line
+	// far larger than the output cap, or the scanner errors "token too long"
+	// before truncation can run. 1 MiB covers realistic single-line bundles; a
+	// line past that surfaces a scan error rather than hanging.
 	sc := bufio.NewScanner(file)
-	sc.Buffer(make([]byte, 0, 64*1024), cap)
+	sc.Buffer(make([]byte, 0, 64*1024), max(cap, 1<<20))
 
 	var lines []string
 	size := 0
@@ -397,7 +399,11 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 			break
 		}
 		line := sc.Text()
-		if size+len(line)+1 > cap {
+		// Always emit at least the first line of the window, even a single
+		// line larger than the cap: truncating it for display keeps the output
+		// bounded, and paging advances past it instead of returning
+		// "re-read with offset=1" forever.
+		if len(lines) > 0 && size+len(line)+1 > cap {
 			truncated = true
 			break
 		}
@@ -423,16 +429,12 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 	var b strings.Builder
 	truncatedLines := 0
 	if f.Anchors {
-		win := make([]string, len(lines))
-		for i, line := range lines {
-			if t, ok := truncateLine(line); ok {
-				win[i] = t
+		for _, line := range lines {
+			if len(line) > MaxLineLen {
 				truncatedLines++
-			} else {
-				win[i] = line
 			}
 		}
-		b.WriteString(AnnotateLines(win, start+1))
+		b.WriteString(AnnotateLines(lines, start+1))
 	} else {
 		for i, line := range lines {
 			if t, ok := truncateLine(line); ok {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // J1.2: a single line over 2000 characters is truncated with a marker rather
@@ -72,5 +73,71 @@ func TestReadLeavesShortLinesAlone(t *testing.T) {
 	}
 	if strings.Contains(res.Output, "truncated") {
 		t.Errorf("a 2000-char line should not be truncated:\n%s", res.Output)
+	}
+}
+
+// Truncation cuts at a UTF-8 rune boundary, not the middle of a multibyte
+// character, so the result is valid UTF-8 (no U+FFFD from the provider edge).
+func TestReadTruncatesAtRuneBoundary(t *testing.T) {
+	// 2000 'a' bytes, then a 3-byte rune '世' straddling the cut point: byte
+	// 2000 lands inside the rune.
+	prefix := strings.Repeat("a", 2000)
+	body := prefix + "世" + strings.Repeat("b", 100) + "\n"
+	f := tempFS(t, map[string]string{"u.txt": body})
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "u.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The output must be valid UTF-8: a cut mid-rune would leave invalid bytes
+	// that utf8.Valid rejects.
+	if !utf8.ValidString(res.Output) {
+		t.Errorf("truncated output is not valid UTF-8")
+	}
+	if !strings.Contains(res.Output, "...") {
+		t.Errorf("want a truncation marker:\n%s", res.Output)
+	}
+}
+
+// With anchors on, a truncated line's anchor is hashed from the original line,
+// so an edit quoting it validates against the version read — not from the
+// truncated text the edit path would reject.
+func TestAnchoredReadHashesOriginalLongLine(t *testing.T) {
+	long := strings.Repeat("x", 3000)
+	f := tempFS(t, map[string]string{"a.txt": long + "\n"}).WithAnchors(true)
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAnchor := LineAnchor(long)
+	if !strings.Contains(res.Output, wantAnchor) {
+		t.Errorf("output missing the original line's anchor %q:\n%s", wantAnchor, res.Output)
+	}
+	badAnchor := LineAnchor(long[:2000] + "...")
+	if strings.Contains(res.Output, badAnchor) {
+		t.Errorf("output carries the truncated-text anchor %q, which an edit would reject", badAnchor)
+	}
+}
+
+// A paged read of a file whose single line is larger than the read cap still
+// emits it (truncated) and advances past it, rather than returning
+// "re-read with offset=1" forever or erroring "token too long".
+func TestPagedReadEmitsASingleLineLargerThanTheCap(t *testing.T) {
+	f := tempFS(t, nil)
+	f.MaxReadBytes = 4096
+	giant := strings.Repeat("c", 50_000) + "\n"
+	full := filepath.Join(f.Root, "giant.js")
+	if err := os.WriteFile(full, []byte(giant), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "giant.js", "offset": 1, "limit": 5})
+	if err != nil {
+		t.Fatalf("a single over-cap line should page, not error: %v", err)
+	}
+	if !strings.Contains(res.Output, "...") {
+		t.Errorf("want the long line truncated with a marker:\n%s", res.Output)
+	}
+	// Paging advanced past the line: the continuation hint points beyond 1.
+	if strings.Contains(res.Output, "offset=1\n") && !strings.Contains(res.Output, "offset=2") {
+		t.Errorf("paging did not advance past the long line:\n%s", res.Output)
 	}
 }

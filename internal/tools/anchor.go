@@ -240,11 +240,16 @@ func truncateForError(s string) string {
 //
 // The anchor comes first so the columns line up regardless of line-number
 // width, which matters once a file passes a thousand lines.
+// AnnotateLines renders `read` output with anchors. The anchor is hashed from
+// the original line (so an edit quoting it validates against the version read),
+// while the display text is truncated — a long line keeps its real anchor and a
+// cut display, not a hash of the truncated text the edit path would reject.
 func AnnotateLines(lines []string, start int) string {
 	width := len(fmt.Sprint(start + len(lines)))
 	var b strings.Builder
 	for i, line := range lines {
-		fmt.Fprintf(&b, "%s|%*d| %s\n", LineAnchor(line), width, start+i, line)
+		disp, _ := truncateLine(line)
+		fmt.Fprintf(&b, "%s|%*d| %s\n", LineAnchor(line), width, start+i, disp)
 	}
 	return b.String()
 }
