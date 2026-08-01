@@ -81,10 +81,33 @@ type Block struct {
 	// replay, so old thinking does not dominate the transcript (§9.7).
 	Collapsed bool
 
-	// cache holds the rendered lines, keyed by the width they were made for.
-	cache      []string
-	cacheWidth int
-	cacheKey   blockCacheKey
+	// cache holds rendered lines for up to two wrap widths: the one the
+	// transcript is laid out at, and the one the scrollbar hysteresis probes
+	// every frame (contentHeightAtWidth). With a single slot the probe evicted
+	// the real render and vice versa, so every frame rendered the whole
+	// transcript twice — the scroll and streaming lag.
+	cache [2]blockRender
+}
+
+type blockRender struct {
+	valid bool
+	width int
+	key   blockCacheKey
+	lines []string
+}
+
+func (b *Block) dropCache() { b.cache = [2]blockRender{} }
+
+// keep stores a render, preferring the slot already holding that width so the
+// two widths in play settle into one slot each.
+func (b *Block) keep(c blockRender) {
+	for i := range b.cache {
+		if !b.cache[i].valid || b.cache[i].width == c.width {
+			b.cache[i] = c
+			return
+		}
+	}
+	b.cache[1] = c
 }
 
 // blockCacheKey deliberately keeps the source strings as strings instead of
@@ -185,12 +208,16 @@ func rgbStyle(r, g, b uint8) lipgloss.Style {
 // Lines renders a block, using its cache when the width has not changed.
 func (r *Renderer) Lines(b *Block) []string {
 	key := b.cacheContentKey(r)
-	if !b.Streaming && b.cache != nil && b.cacheWidth == r.Width && b.cacheKey == key {
-		return b.cache
+	if !b.Streaming {
+		for _, c := range b.cache {
+			if c.valid && c.width == r.Width && c.key == key {
+				return c.lines
+			}
+		}
 	}
 	lines := r.render(b)
 	if !b.Streaming {
-		b.cache, b.cacheWidth, b.cacheKey = lines, r.Width, key
+		b.keep(blockRender{valid: true, width: r.Width, key: key, lines: lines})
 	}
 	return lines
 }

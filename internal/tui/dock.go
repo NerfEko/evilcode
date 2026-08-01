@@ -14,6 +14,13 @@ const (
 	ScrollbarReserve = 2
 	SettleMargin     = 4
 	SpawnLift        = 3
+
+	// SpawnSearchViewports bounds how far above the settled tail a spawn will
+	// look for a pocket. Widgets spawn near the bottom of the settled content;
+	// a slot ten screens up is history the user has already read past. It also
+	// keeps the search off the whole transcript when there is no slot at all,
+	// which is the ordinary case once prose fills the tail.
+	SpawnSearchViewports = 2
 )
 
 type WidgetKind int
@@ -86,29 +93,61 @@ func FreeWidth(rows []string, totalWidth int) []int {
 	return out
 }
 
-// firstRows maps each block to its first content row. Built once per Layout:
-// resolving every resident by rescanning owner is quadratic in a long session,
-// and it runs on the paint path.
-func firstRows(owner []int) map[int]int {
-	first := make(map[int]int, 64)
+// freeWidths is FreeWidth measured on demand. Layout works in full-content
+// coordinates, so eagerly measuring is the dock's entire cost: an ANSI-aware
+// width of every row of a long transcript, every frame, when the rows that
+// decide anything are a handful near the tail plus the residents' own.
+type freeWidths struct {
+	rows  []string
+	total int
+	memo  []int32
+}
+
+func newFreeWidths(rows []string, total int) *freeWidths {
+	memo := make([]int32, len(rows))
+	for i := range memo {
+		memo[i] = -1
+	}
+	return &freeWidths{rows: rows, total: total, memo: memo}
+}
+
+func (f *freeWidths) at(row int) int {
+	if f.memo[row] < 0 {
+		f.memo[row] = int32(max(f.total-lipgloss.Width(strings.TrimRight(f.rows[row], " ")), 0))
+	}
+	return int(f.memo[row])
+}
+
+// firstRows indexes each block to its first content row, -1 for blocks with no
+// rows. Built once per Layout: resolving every resident by rescanning owner is
+// quadratic in a long session, and it runs on the paint path. A slice rather
+// than a map — this walks every row of the transcript per frame, and map stores
+// cost several times what a slice store does.
+func firstRows(owner []int) []int32 {
+	var first []int32
 	for i, block := range owner {
-		if _, ok := first[block]; !ok {
-			first[block] = i
+		if block < 0 {
+			continue
+		}
+		for len(first) <= block {
+			first = append(first, -1)
+		}
+		if first[block] < 0 {
+			first[block] = int32(i)
 		}
 	}
 	return first
 }
 
 // contentRow resolves an instance in full-content coordinates.
-func (a *instance) contentRow(first map[int]int) (int, bool) {
+func (a *instance) contentRow(first []int32) (int, bool) {
 	if a.Block < 0 {
 		return a.Offset, true
 	}
-	row, ok := first[a.Block]
-	if !ok {
+	if a.Block >= len(first) || first[a.Block] < 0 {
 		return 0, false
 	}
-	return row + a.Offset, true
+	return int(first[a.Block]) + a.Offset, true
 }
 
 func anchorAt(owner []int, row int) (int, int) {
@@ -145,7 +184,7 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 		return nil
 	}
 
-	free := FreeWidth(content, totalWidth)
+	free := newFreeWidths(content, totalWidth)
 	settledEnd := len(content)
 	if owner != nil {
 		if streamingBlock >= 0 {
@@ -218,9 +257,10 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 			d.lastSpawn = nil
 		}
 	}
+	minRow := max(settledEnd-SpawnSearchViewports*viewH, 0)
 	for _, w := range candidates {
 		floor := func(row int) bool { return !hasFloor || row-lastRow >= viewH }
-		row, ok := findSlot(free, dockable, w.Height(), w.Width(), floor)
+		row, ok := findSlot(free, dockable, w.Height(), w.Width(), minRow, floor)
 		if !ok {
 			continue
 		}
@@ -236,29 +276,31 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 	return placements
 }
 
-func fits(free []int, row, height, width int) bool {
-	if row < 0 || row+height > len(free) {
+func fits(free *freeWidths, row, height, width int) bool {
+	if row < 0 || row+height > len(free.memo) {
 		return false
 	}
 	for i := row; i < row+height; i++ {
-		if free[i] < width+WidgetGap {
+		if free.at(i) < width+WidgetGap {
 			return false
 		}
 	}
 	return true
 }
 
-func findSlot(free []int, dockable func(row, height int) bool,
-	height, width int, extra func(row int) bool) (int, bool) {
+// findSlot tests the spacing floor and provenance before measuring width: the
+// cheap rejections must come first, or the lazy measurement buys nothing.
+func findSlot(free *freeWidths, dockable func(row, height int) bool,
+	height, width, low int, extra func(row int) bool) (int, bool) {
 	usable := func(row int) bool {
 		return (extra == nil || extra(row)) && dockable(row, 1) && fits(free, row, 1, width)
 	}
-	for end := len(free); end > 0; end-- {
+	for end := len(free.memo); end > low; end-- {
 		if !usable(end - 1) {
 			continue
 		}
 		start := end - 1
-		for start > 0 && usable(start-1) {
+		for start > low && usable(start-1) {
 			start--
 		}
 		row := max(end-height-SpawnLift, start)

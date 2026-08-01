@@ -110,7 +110,7 @@ func (m *Model) setPalette(p *theme.Palette) {
 	// reply the same amber.
 	m.renderer.Markdown.SetProse(p.Prose)
 	for i := range m.blocks {
-		m.blocks[i].cache = nil
+		m.blocks[i].dropCache()
 	}
 	m.invalidateTranscriptCache()
 }

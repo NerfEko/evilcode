@@ -876,7 +876,7 @@ func (m *Model) finishReasoning() {
 	if m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) {
 		m.blocks[m.reasoningIdx].Streaming = false
 		m.blocks[m.reasoningIdx].Collapsed = !m.keepThinking
-		m.blocks[m.reasoningIdx].cache = nil
+		m.blocks[m.reasoningIdx].dropCache()
 	}
 	m.reasoningIdx = -1
 	m.collectReasoning()
@@ -1936,7 +1936,7 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		m.renderer.ToolDetails = !m.renderer.ToolDetails
 		for i := range m.blocks {
 			if m.blocks[i].Kind == BlockTool {
-				m.blocks[i].cache = nil
+				m.blocks[i].dropCache()
 			}
 		}
 		if m.renderer.ToolDetails {
@@ -2285,7 +2285,7 @@ func (m *Model) renumberPrompts() {
 	for i := len(m.blocks) - 1; i >= 0; i-- {
 		if m.blocks[i].Kind == BlockUser {
 			m.blocks[i].Decay = seen
-			m.blocks[i].cache = nil
+			m.blocks[i].dropCache()
 			seen++
 		}
 	}
@@ -2316,7 +2316,7 @@ func (m *Model) transcriptLines() Rows {
 		m.renderer.DiffMode = m.diffMode
 		for i := range m.blocks {
 			if m.blocks[i].Diff != "" {
-				m.blocks[i].cache = nil
+				m.blocks[i].dropCache()
 			}
 		}
 		m.invalidateTranscriptCache()

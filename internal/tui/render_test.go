@@ -621,11 +621,39 @@ func TestBlockCacheInvalidatesOnResize(t *testing.T) {
 	}
 }
 
+func TestBlockCacheHoldsBothWrapWidths(t *testing.T) {
+	// The scrollbar hysteresis renders the whole transcript at the alternate
+	// width every frame to decide whether the bar flips. With one cache slot
+	// that probe evicted the real render and the real render evicted the probe,
+	// so every frame rendered every block twice — 54ms per wheel event on a
+	// long transcript.
+	r := testRenderer(60)
+	b := Block{Kind: BlockUser, Text: "hello", Number: 0}
+	r.Lines(&b)
+	r.SetWidth(59)
+	r.Lines(&b)
+
+	widths := map[int]bool{}
+	for _, c := range b.cache {
+		if c.valid {
+			widths[c.width] = true
+		}
+	}
+	if !widths[60] || !widths[59] {
+		t.Errorf("cached widths = %v, want both 60 and 59 held at once", widths)
+	}
+
+	r.SetWidth(60)
+	if w := lipgloss.Width(r.Lines(&b)[0]); w != 60 {
+		t.Errorf("width = %d back at 60, want 60 — the probe corrupted the cache", w)
+	}
+}
+
 func TestStreamingBlockIsNotCached(t *testing.T) {
 	r := testRenderer(40)
 	b := Block{Kind: BlockAssistant, Text: "partial", Streaming: true}
 	r.Lines(&b)
-	if b.cache != nil {
+	if b.cache[0].valid || b.cache[1].valid {
 		t.Error("a streaming block must not be cached; it changes every frame")
 	}
 }
