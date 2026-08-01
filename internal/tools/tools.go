@@ -229,16 +229,68 @@ func forwardToRuneBoundary(s string, i int) int {
 // continuation byte).
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
 
+// argAliases maps parameter names from other agents' tool sets onto this one's.
+// Models emit the names they were trained on far more stubbornly than they read
+// the schema — deepseek sent "command" to bash five times running — and a strict
+// decoder turns that into a retry loop the model cannot escape. Aliasing is only
+// applied when the real name is absent, and the decode is still strict after, so
+// a name this tool does not have is still an error.
+var argAliases = map[string]string{
+	"command":    "cmd",
+	"file_path":  "path",
+	"filePath":   "path",
+	"old_string": "old",
+	"new_string": "new",
+}
+
 // unmarshalArgs decodes tool arguments, rejecting unknown fields so a model
 // that misspells a parameter is told rather than silently getting a default.
 func unmarshalArgs(raw json.RawMessage, dst any) error {
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
 	}
+	err := strictDecode(raw, dst)
+	if err == nil {
+		return nil
+	}
+	// Retried only on failure, so the ordinary call pays nothing for this.
+	if aliased, ok := applyAliases(raw); ok && strictDecode(aliased, dst) == nil {
+		return nil
+	}
+	return fmt.Errorf("bad arguments: %w", err)
+}
+
+func strictDecode(raw json.RawMessage, dst any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		return fmt.Errorf("bad arguments: %w", err)
+	return dec.Decode(dst)
+}
+
+// applyAliases renames known aliases, reporting whether anything changed.
+func applyAliases(raw json.RawMessage) (json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil, false
 	}
-	return nil
+	changed := false
+	for alias, real := range argAliases {
+		v, ok := fields[alias]
+		if !ok {
+			continue
+		}
+		if _, taken := fields[real]; taken {
+			continue
+		}
+		delete(fields, alias)
+		fields[real] = v
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }

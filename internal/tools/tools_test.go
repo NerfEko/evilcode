@@ -966,3 +966,29 @@ func TestLooksLikeAnchor(t *testing.T) {
 		}
 	}
 }
+
+func TestArgAliasesAreAccepted(t *testing.T) {
+	// A model trained on another agent's tool set sends that agent's parameter
+	// names no matter what the schema says; a strict decoder made that an
+	// inescapable retry loop.
+	var a struct {
+		Cmd string `json:"cmd"`
+		N   int    `json:"n,omitempty"`
+	}
+	if err := unmarshalArgs(json.RawMessage(`{"command":"ls","n":2}`), &a); err != nil {
+		t.Fatalf("command alias rejected: %v", err)
+	}
+	if a.Cmd != "ls" || a.N != 2 {
+		t.Errorf("decoded %+v, want cmd=ls n=2", a)
+	}
+
+	// A name this tool genuinely does not have is still an error.
+	if err := unmarshalArgs(json.RawMessage(`{"cmd":"ls","nope":1}`), &a); err == nil {
+		t.Error("an unknown parameter was accepted")
+	}
+
+	// The real name wins when both are present.
+	if err := unmarshalArgs(json.RawMessage(`{"cmd":"real","command":"alias"}`), &a); err == nil {
+		t.Error("cmd and command together should not silently pick one")
+	}
+}
