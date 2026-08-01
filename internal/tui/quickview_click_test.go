@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -167,25 +166,14 @@ func TestExistingMarkdownToolPathIsUnderlined(t *testing.T) {
 	}
 }
 
-func TestMarkdownMouseClickStartsDetachedGlow(t *testing.T) {
+func TestMarkdownClickOpensTheSidePanelRendered(t *testing.T) {
+	// It used to shell out to glow in a detached terminal, which put the file in
+	// a window of its own instead of beside the conversation.
 	root := t.TempDir()
-	record := filepath.Join(root, "args")
-	terminal := filepath.Join(root, "terminal")
-	glow := filepath.Join(root, "glow")
-	for path, body := range map[string]string{
-		terminal: "#!/bin/sh\nif [ -t 0 ]; then echo tty > \"$EVILCODE_TEST_RECORD\"; else echo no-tty > \"$EVILCODE_TEST_RECORD\"; fi\nprintf '%s\\n' \"$@\" >> \"$EVILCODE_TEST_RECORD\"\n",
-		glow:     "#!/bin/sh\nexit 0\n",
-	} {
-		if err := os.WriteFile(path, []byte(body), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# hello\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "README.md"),
+		[]byte("# hello\n\nsome **bold** prose\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TERMINAL", terminal)
-	t.Setenv("EVILCODE_TEST_RECORD", record)
-	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	m := clickModel([]Block{{
 		Kind: BlockTool, ToolName: "read", ToolTarget: "README.md", ToolPath: "README.md",
@@ -193,25 +181,28 @@ func TestMarkdownMouseClickStartsDetachedGlow(t *testing.T) {
 	}}, root)
 	model, _ := m.Update(tea.MouseClickMsg{X: 2, Y: ownerRow(t, m, 0), Button: tea.MouseLeft})
 	got := model.(*Model)
-	if got.quickView != nil {
-		t.Fatal("markdown click fell back to the in-process quick view despite glow and a terminal")
+	if got.quickView == nil {
+		t.Fatal("markdown click did not open the quick view")
+	}
+	if !got.sidePaneOpen() {
+		t.Fatal("quick view is set but the side pane is closed")
 	}
 
-	var data []byte
-	var err error
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		data, err = os.ReadFile(record)
-		if err == nil {
-			break
-		}
+	// Rendered as a document, not as highlighted source: the heading's hashes
+	// are gone and the bold marks with them.
+	_, side := Horizontal{Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: true}.Split()
+	panel := plain(strings.Join(
+		m.renderer.RenderSidePanel(*got.quickView, DiffInline, side, 10, true), "\n"))
+	if !strings.Contains(panel, "hello") || !strings.Contains(panel, "bold") {
+		t.Fatalf("panel is missing the file's prose:\n%s", panel)
 	}
-	if err != nil {
-		t.Fatalf("detached terminal did not record its arguments: %v", err)
+	if strings.Contains(panel, "# hello") || strings.Contains(panel, "**bold**") {
+		t.Fatalf("markdown was highlighted as source rather than rendered:\n%s", panel)
 	}
-	gotArgs := string(data)
-	for _, want := range []string{"no-tty", "-e", "glow", filepath.Join(root, "README.md")} {
-		if !strings.Contains(gotArgs, want) {
-			t.Errorf("detached markdown command omitted %q: %q", want, gotArgs)
-		}
+
+	// Esc closes it, like every other quick view.
+	got.escape()
+	if got.quickView != nil {
+		t.Fatal("escape did not close the markdown quick view")
 	}
 }

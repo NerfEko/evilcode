@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -363,7 +362,7 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		panelRatio:   50,
 		showHints:    true,
 		overscroll:   Overscroll{Mode: OverscrollPull},
-		welcomeFocus:    true,
+		welcomeFocus: true,
 		artVariant:   PickVariant(h.SessionName),
 		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 	}
@@ -655,7 +654,7 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 		if b.ToolPath != "" {
 			b.ToolPathExists = toolPathExists(m.cwd, b.ToolPath)
-			b.ToolPathMarkdown = b.ToolPathExists && strings.EqualFold(filepath.Ext(b.ToolPath), ".md")
+			b.ToolPathMarkdown = b.ToolPathExists && isMarkdown(b.ToolPath)
 		}
 		if b.ToolName == "bash" {
 			b.ToolCommand = truncateToolCommand(toolCommand(e.Call.Args))
@@ -3296,16 +3295,6 @@ func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 	}
 	b := m.blocks[idx]
 
-	// Markdown links get the external viewer first. If an optional dependency
-	// is missing, the same click degrades to the file quick view below.
-	if b.ToolPathMarkdown {
-		if launchMarkdown(resolveToolPath(m.cwd, b.ToolPath)) {
-			return
-		}
-		m.quickView = m.readQuickView(b.ToolPath)
-		return
-	}
-
 	switch strings.ToLower(b.ToolName) {
 	case "read":
 		m.quickView = m.readQuickView(b.ToolPath)
@@ -3353,42 +3342,6 @@ func (m *Model) readQuickView(path string) *PanelContent {
 	}
 	content.Body = strings.Split(tools.Truncate(string(data)), "\n")
 	return content
-}
-
-func terminalForMarkdown() string {
-	if configured := strings.TrimSpace(os.Getenv("TERMINAL")); configured != "" {
-		if path, err := exec.LookPath(configured); err == nil {
-			return path
-		}
-		return ""
-	}
-	for _, name := range []string{"kitty", "wezterm", "alacritty", "foot", "xterm"} {
-		if path, err := exec.LookPath(name); err == nil {
-			return path
-		}
-	}
-	return ""
-}
-
-func launchMarkdown(path string) bool {
-	if path == "" {
-		return false
-	}
-	if _, err := exec.LookPath("glow"); err != nil {
-		return false
-	}
-	terminal := terminalForMarkdown()
-	if terminal == "" {
-		return false
-	}
-	cmd := exec.Command(terminal, "-e", "glow", path)
-	// nil means the OS null device for os/exec; the TUI must keep the keyboard.
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
-	if err := cmd.Start(); err != nil {
-		return false
-	}
-	go func() { _ = cmd.Wait() }()
-	return true
 }
 
 // Run starts the TUI over a bare agent.

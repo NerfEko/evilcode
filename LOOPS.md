@@ -4546,3 +4546,34 @@ where the bar begins, so reserving one more would chop the last cell off every f
 prose line to buy clearance for the rare overlong row.
 
 Verified: `go build ./...`, `go vet ./...`, `go test ./...`.
+
+## 2026-07-31 — a markdown read opens the pane, not another window
+
+Reported: "when you click a read, it tries to open another window? it should work the same
+as bash and other click to view stuff where it views side by side. should have full
+treesitter and md rendering and esc to close like the others."
+
+`openQuickViewAt` had a branch ahead of the tool switch: a read whose path ended in `.md`
+shelled out to `glow` inside a detached `$TERMINAL`, and only fell back to the quick view
+when one of those two optional dependencies was missing. On a machine with kitty and glow
+installed — this one — a markdown read never used the pane at all.
+
+The branch and both its helpers (`launchMarkdown`, `terminalForMarkdown`) are gone, so
+every tool row now takes the same path: quick view in the side pane, Esc to close. The
+markdown gets rendered rather than highlighted — `RenderSidePanel` runs a `.md` quick view
+through glamour at the pane's inner width, which is the one thing the external viewer was
+buying. Code keeps chroma. The two are deliberately different: a *diff* of a markdown file
+still goes through the markdown lexer line-by-line, because glamour restructures bullets
+and headings and would break the gutter alignment. A whole file has no gutter to keep, so
+it gets the document.
+
+The `.md` test for the row underline moved to `isMarkdown` beside `langFromPath`, which is
+now the one place that decides prose-or-code.
+
+`TestMarkdownClickOpensTheSidePanelRendered` replaces
+`TestMarkdownMouseClickStartsDetachedGlow`: it clicks the row, asserts the pane opens, that
+the rendered panel has the prose but neither `# ` nor `**`, and that Esc closes it.
+Measured separately: every panel row stays inside the pane width — glamour's link output
+looks over-long in a plain-text dump only because the URLs ride inside OSC-8 escapes.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./...`.

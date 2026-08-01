@@ -101,6 +101,13 @@ func (r *Renderer) RenderSidePanel(c PanelContent, mode DiffMode, width, height 
 		body = r.fileDiffLines(c.Path, c.Diff, inner)
 	case c.Diff != "":
 		body = r.renderDiffLang(c.Diff, langFromPath(c.Path))
+	case c.Code && isMarkdown(c.Path):
+		// A whole file, unlike a diff, can go through glamour: there is no
+		// gutter to keep aligned and no per-line correspondence to preserve, so
+		// the reader gets the document rather than its source (see the diff
+		// path above, which stays line-exact on purpose).
+		body = strings.Split(
+			r.AtWidth(inner).Markdown.Render(strings.Join(c.Body, "\n"), true), "\n")
 	case c.Code:
 		body = HighlightLines(langFromPath(c.Path), strings.Join(c.Body, "\n"))
 	default:

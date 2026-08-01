@@ -131,6 +131,13 @@ func HighlightLines(lang, src string) []string {
 	return out
 }
 
+// isMarkdown reports whether a path is prose to be rendered rather than code to
+// be highlighted.
+func isMarkdown(path string) bool {
+	return strings.EqualFold(langFromPath(path), "md") ||
+		strings.EqualFold(langFromPath(path), "markdown")
+}
+
 // langFromPath guesses a lexer name from a file path, for diffs that name a
 // file but not a language.
 func langFromPath(path string) string {
