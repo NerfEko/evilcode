@@ -4600,3 +4600,32 @@ didn't catch the bug because the capture snaps at collapse, before the old GC ra
 
 Verified: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -tags probe ./probe/...`
 (twice, stable).
+
+## 2026-08-01 — the interleave path sent immediately and looked queued; deleted
+
+Reported again after the resend fix: "messages sent while the agent is still
+responding get sent immediately, but still sit in queue." The previous fix
+stopped the *resend* at turn end, but the behavior itself was wrong — Enter
+while a turn ran delivered the text into the live turn as a soft interrupt AND
+staged a `↻ already sent` row, so the message was gone before the user saw it
+queue, and the row made it look queued. Twice-fixed, twice-confusing: kill the
+path, don't patch it.
+
+SendActionFor is now Submit/Queue only: processing → Queue, period. The
+queue-mode toggle, the Ctrl+J opposite, the PendingSent/PendingInterleave
+kinds, and drainPendingForEdit's kind reordering are gone with it. Interrupt
+no longer clears pending — a queued message was never delivered, so the
+interrupted turn's turn_end flushes it as the next turn instead of throwing
+the user's typing away.
+
+Lesson: when a feature's observable behavior is wrong in a way the fix
+documented at length ("receipts", "delivered once"), the feature itself is the
+bug. The agent-side soft-interrupt mechanism still exists for system/daemon
+traffic; only the TUI's user-facing use of it was wrong.
+
+Also: probe goldens can pass against a stale ./evilcode binary — the probe
+test skips only when the binary is *missing*, not when it is outdated. After a
+TUI change, rebuild the root binary before trusting a probe pass.
+
+Verified: go build ./..., go vet ./..., go test ./..., probe goldens
+regenerated and run three times (stable).
