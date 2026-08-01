@@ -300,12 +300,31 @@ func (f *FS) readTool() Tool {
 			f.anchors.record(full, info, lines)
 
 			var b strings.Builder
+			truncated := 0
 			if f.Anchors {
-				b.WriteString(AnnotateLines(lines[start:end], start+1))
+				win := make([]string, end-start)
+				for i := range win {
+					src := lines[start+i]
+					if t, ok := truncateLine(src); ok {
+						win[i] = t
+						truncated++
+					} else {
+						win[i] = src
+					}
+				}
+				b.WriteString(AnnotateLines(win, start+1))
 			} else {
 				for i := start; i < end; i++ {
-					fmt.Fprintf(&b, "%d\t%s\n", i+1, lines[i])
+					line := lines[i]
+					if t, ok := truncateLine(line); ok {
+						line = t
+						truncated++
+					}
+					fmt.Fprintf(&b, "%d\t%s\n", i+1, line)
 				}
+			}
+			if truncated > 0 {
+				b.WriteString(truncNotice(truncated))
 			}
 			if end < len(lines) {
 				fmt.Fprintf(&b, "\n[%d more lines; re-read with offset=%d]\n", len(lines)-end, end+1)
@@ -316,6 +335,28 @@ func (f *FS) readTool() Tool {
 			}, nil
 		},
 	}
+}
+
+// MaxLineLen caps a single output line. A minified bundle line of tens of
+// thousands of characters would otherwise consume the whole read budget and
+// drown the rest of the file; jcode truncates at 2000 (read.rs:13), and so does
+// this. Lines past the cap are cut with a marker, and the count is said once at
+// the end rather than per line.
+const MaxLineLen = 2000
+
+// truncateLine caps a single line at MaxLineLen, appending a marker so the
+// model can see the line was cut. Returns the (possibly truncated) line and
+// whether it was capped.
+func truncateLine(s string) (string, bool) {
+	if len(s) > MaxLineLen {
+		return s[:MaxLineLen] + "...", true
+	}
+	return s, false
+}
+
+// truncNotice is the one-line summary appended when any lines were truncated.
+func truncNotice(n int) string {
+	return fmt.Sprintf("\n[%d line(s) truncated at %d characters]\n", n, MaxLineLen)
 }
 
 // readWindow reads one offset/limit window without loading the whole file.
@@ -380,12 +421,29 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 	f.anchors.recordAt(full, info, lines, start)
 
 	var b strings.Builder
+	truncatedLines := 0
 	if f.Anchors {
-		b.WriteString(AnnotateLines(lines, start+1))
+		win := make([]string, len(lines))
+		for i, line := range lines {
+			if t, ok := truncateLine(line); ok {
+				win[i] = t
+				truncatedLines++
+			} else {
+				win[i] = line
+			}
+		}
+		b.WriteString(AnnotateLines(win, start+1))
 	} else {
 		for i, line := range lines {
+			if t, ok := truncateLine(line); ok {
+				line = t
+				truncatedLines++
+			}
 			fmt.Fprintf(&b, "%d\t%s\n", start+1+i, line)
 		}
+	}
+	if truncatedLines > 0 {
+		b.WriteString(truncNotice(truncatedLines))
 	}
 	if truncated {
 		fmt.Fprintf(&b, "\n[more lines; re-read with offset=%d]\n", start+len(lines)+1)
