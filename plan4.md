@@ -646,7 +646,7 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J1 — Tool results the model can act on
 
-- [ ] **J1.1** `internal/tools/fs.go:178` `FS.readTool` — reading an image returns a binary
+- [x] **J1.1** `internal/tools/fs.go:178` `FS.readTool` — reading an image returns a binary
       refusal. Detect image extensions, attach the bytes to the result for the vision path,
       and display inline via `internal/graphics` when the protocol allows. Over the ceiling:
       report dimensions and size without attaching. §1.1. ⟨build⟩
@@ -973,6 +973,13 @@ Empty at authoring. Two sources feed it, neither ever deleted:
 - **Codex review** (§0.2 step 11) — a finding not acted on. Format:
   `J<n>.<m> · <finding in one line> · dismissed: <why>`. "Codex was wrong" needs the *how*
   after it, otherwise it is not a reason, it is a shrug.
+
+### J1.1 dismissed findings
+
+- **J1.1 · inline images paint at the frame cursor, not over their reserved block rows · dismissed:** the whole inline-image pipeline (`pendingImages` appended after the frame, drawn at the terminal's cursor) is shared with mermaid diagrams, which ship with the same placement; a per-block cursor-positioning rework is its own task, not a J1.1 regression.
+- **J1.1 · inline image display is kitty-only, not sixel · dismissed:** `graphics.SixelCommand` is defined but the inline pipeline never dispatches on protocol — mermaid has the identical kitty-only limitation; wiring sixel inline display is a shared-pipeline change.
+- **J1.1 · retained image blocks are not requeued when images are toggled back on · dismissed:** the toggle-on requeue gap is shared with mermaid (its `BlockImage` is retained but `toggleImages` only flips the flag); the placeholder-when-off display is correct, and fixing the requeue is the same per-block positioning rework as the first dismissed finding.
+- **J1.1 · daemon/remote `evilcode attach` sees no inline image or placeholder · dismissed:** `Event.Images` is `json:"-"` by design (display-only, bytes are large); plan §1.1 targets the local TUI, and a remote-attach placeholder is a daemon refinement, not a parity item against jcode's `read` tool.
 
 ---
 

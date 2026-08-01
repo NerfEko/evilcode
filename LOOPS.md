@@ -4713,4 +4713,44 @@ parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par
          the graphics protocol; binary refused with an actionable message;
          webp/bmp dimensions `unknown` as in jcode. PDF deliberately not
          carried, see DEVIATIONS)
-codex:  pending — review to run after commit
+codex:  4 reviews, all findings worked. Review 1 (0d7b881): 5 findings —
+        vision gate added; OpenAI tool-msg image parts dropped (role:tool content
+        kept text-only, matching jcode's placeholder); Image.Path sanitized at
+        the render choke point; bounded read; non-PNG re-encoded as PNG. 2
+        dismissed (cursor positioning over block rows; sixel dispatch) —
+        pre-existing properties of the shared inline-image pipeline (mermaid
+        uses the same kitty-only, frame-cursor placement), not J1.1 regressions.
+        Review 2 (20f08d0): 4 findings — ToPNG pixel cap + PNG-length check;
+        dynamic vision gate (FS.VisionFn + Model.WithVisionFor, re-evaluated on
+        /model switch); ceiling decided from len(data). 1 dismissed (requeue on
+        toggle-on) — same pre-existing pipeline limitation. Review 3 (a8399d2):
+        2 findings — m.vision made atomic.Bool (race between /model and the turn
+        goroutine, verified -race); size string derived from the bounded read.
+        Review 4 (a8399d2): no findings; confirmed correct.
+
+## 2026-08-01 J1.1 fixes — codex findings worked in three follow-up commits
+
+Three fix commits, each its own commit, each re-reviewed:
+
+- `0d7b881` fix(J1.1): vision gate, OpenAI tool msg, sanitize, bounded read,
+  PNG convert. parity: on par. codex: 5 findings — all fixed; 2 dismissed
+  (cursor positioning, sixel dispatch — pre-existing in the shared pipeline).
+- `20f08d0` fix(J1.1): bound PNG conversion, dynamic vision gate, bytes-read
+  ceiling. parity: on par. codex: 4 findings — 3 fixed, 1 dismissed (requeue on
+  toggle-on — pre-existing).
+- `a8399d2` fix(J1.1): atomic vision flag, size from read snapshot. parity: on
+  par. codex: 2 findings — both fixed; review 4 found nothing further.
+
+Dismissed findings ledger (PART III): J1.1 · cursor positioning of inline
+images over their reserved rows · dismissed: the whole inline-image pipeline
+paints at the frame cursor (pendingImages after the frame), and mermaid
+diagrams share this exact path; a per-block positioning rework is its own
+task, not a J1.1 regression. J1.1 · sixel dispatch for inline images ·
+dismissed: the inline pipeline is kitty-only (SixelCommand is defined but
+uncalled); mermaid has the same limitation. J1.1 · requeue retained image
+payloads when images are toggled back on · dismissed: same pipeline; the
+placeholder-when-off display is correct, and the toggle-on gap is shared with
+mermaid. J1.1 · daemon/remote image metadata across the socket · dismissed:
+Event.Images is json:"-" by design (display-only, bytes are large); the plan
+§1.1 targets the local TUI, and a remote-attach placeholder is a daemon
+refinement, not a parity item against jcode's read tool.
