@@ -4754,3 +4754,43 @@ mermaid. J1.1 · daemon/remote image metadata across the socket · dismissed:
 Event.Images is json:"-" by design (display-only, bytes are large); the plan
 §1.1 targets the local TUI, and a remote-attach placeholder is a daemon
 refinement, not a parity item against jcode's read tool.
+
+## 2026-08-01 J1.2 — `read` truncates long lines instead of drowning in them
+
+A single output line over 2000 characters consumed the whole read budget — one
+minified bundle line and the file was unreadable. `read` now caps each line at
+`MaxLineLen` (2000, matching jcode read.rs:13) with a `...` marker, cuts at a
+UTF-8 rune boundary (via the existing `backToRuneBoundary`), counts the
+truncated lines, and says the count once at the end. Both the in-memory read
+path and the paged `readWindow` path truncate; with anchors on, `AnnotateLines`
+hashes the *original* line (so an edit quoting it validates) and displays the
+truncated text. The paged path's scanner buffer now holds up to 1 MiB and
+always emits the first line of a window, so a single over-cap minified line
+pages and advances instead of erroring "token too long" or looping
+"re-read with offset=1]" forever.
+
+⟨port⟩. New: `MaxLineLen`, `truncateLine`, `truncNotice`. Edits: the two read
+output paths, `AnnotateLines` (hash original, display truncated), `readWindow`
+scanner buffer + first-line emission.
+
+Verification (go build ./... && go vet ./... && go test ./..., green incl. -race
+on tools/tui/agent): `internal/tools/fs_truncate_test.go` —
+`TestReadTruncatesLongLines`, `TestPagedReadTruncatesLongLines`,
+`TestReadLeavesShortLinesAlone`, `TestReadTruncatesAtRuneBoundary` (1999 prefix
+bytes so byte 2000 lands inside a 3-byte rune; a naive cut leaves invalid UTF-8,
+only the rune-boundary backtrack passes), `TestAnchoredReadHashesOriginalLongLine`
+(anchor matches `LineAnchor(original)`, not the truncated form),
+`TestPagedReadEmitsASingleLineLargerThanTheCap` (a 50 KB single line pages,
+truncates, and the looping `re-read with offset=1]` signature is absent).
+
+parity: crates/jcode-app-core/src/tool/read.rs:13,210-221 — better
+        (per-line cap at 2000 with a marker, rune-boundary cut, and the count
+         reported to the model; jcode truncates per line but only logs the count
+         server-side at read.rs:241-252, so the model never sees how many lines
+         were cut)
+codex:  3 reviews. Review 1 (37b6010): 3 findings — rune-boundary cut, original-
+        line anchors, over-cap single line in the paged path; all fixed. Review 2
+        (711d260): 2 test-quality findings — the rune test used 2000 prefix bytes
+        (byte 2000 was the rune start, so the old cut already passed) and the
+        paging test matched "offset=1\n" not "offset=1]"; both tests now exercise
+        the actual bugs. Review 3 (711d260): no findings; confirmed correct.

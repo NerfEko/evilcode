@@ -651,7 +651,7 @@ Line numbers as-of §0.5. Trust the symbol.
       and display inline via `internal/graphics` when the protocol allows. Over the ceiling:
       report dimensions and size without attaching. §1.1. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/read.rs:346-421⟩
-- [ ] **J1.2** `internal/tools/fs.go:178` `FS.readTool` — a single 2000+ character line
+- [x] **J1.2** `internal/tools/fs.go:178` `FS.readTool` — a single 2000+ character line
       consumes the read budget. Truncate per line with a marker; count how many were
       truncated and say so once. §1.1. ⟨port⟩
       ⟨jcode: crates/jcode-app-core/src/tool/read.rs:13,210-221⟩
