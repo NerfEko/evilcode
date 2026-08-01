@@ -655,7 +655,7 @@ Line numbers as-of §0.5. Trust the symbol.
       consumes the read budget. Truncate per line with a marker; count how many were
       truncated and say so once. §1.1. ⟨port⟩
       ⟨jcode: crates/jcode-app-core/src/tool/read.rs:13,210-221⟩
-- [ ] **J1.3** `internal/tools/fs.go:178` `FS.readTool` — `read` on a missing path returns
+- [x] **J1.3** `internal/tools/fs.go:178` `FS.readTool` — `read` on a missing path returns
       the bare `os.Stat` error. Scan the parent directory and name up to three near matches.
       §1.1. ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/read.rs:307-330⟩
 - [ ] **J1.4** `internal/tools/fs.go:477` `FS.editTool` — a failed match says only "not

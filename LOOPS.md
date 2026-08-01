@@ -4794,3 +4794,33 @@ codex:  3 reviews. Review 1 (37b6010): 3 findings — rune-boundary cut, origina
         (byte 2000 was the rune start, so the old cut already passed) and the
         paging test matched "offset=1\n" not "offset=1]"; both tests now exercise
         the actual bugs. Review 3 (711d260): no findings; confirmed correct.
+
+## 2026-08-01 J1.3 — `read` on a missing path suggests near matches
+
+`read` on a path that does not exist returned the bare `os.Stat` error, so a
+typo left the model to re-read the directory itself. On a not-exist, `read` now
+scans the parent directory for names that contain, or are contained by, the
+requested one, and names up to three in a "Did you mean:" line. One read on a
+path that was already an error; a missing parent or no near match leaves the
+bare error. Mirrors jcode's `find_similar_files` (read.rs:307-330); suggestions
+render relative to the workspace root (jcode uses absolute paths).
+
+⟨build⟩. New: `FS.suggestNear`, `FS.readDirConfined`. Edits: the not-exist branch
+of `readTool`.
+
+Verification (go build ./... && go vet ./... && go test ./..., green):
+`internal/tools/fs_suggest_test.go` — `TestReadMissingPathSuggestsNearMatches`,
+`TestReadMissingPathCapsSuggestionsAtThree`, `TestReadMissingPathWithNoNearMatch`,
+`TestReadMissingPathParentMissing`, `TestReadExistingFileUnaffectedBySuggestions`,
+`TestReadMissingPathSuggestsCaseTypo` (FS.GO → fs.go on a case-sensitive FS),
+`TestReadMissingPathSuggestsUnderConfine` (scan through the confined open).
+
+parity: crates/jcode-app-core/src/tool/read.rs:307-330 — on par
+        (parent scan, contains-either-direction, cap 3; rel-to-root paths are
+         more readable than jcode's absolute ones; case-typo and confined-scan
+         cases jcode does not distinguish)
+codex:  2 reviews. Review 1 (951f48c): 2 findings — confined scan via openBeneath
+        (a parent swapped for an external symlink after resolve could list names
+        outside the workspace) and case-typo suggestions (the skip compared
+        case-folded names, dropping the only valid suggestion); both fixed.
+        Review 2 (951f48c): no findings; confirmed correct.
