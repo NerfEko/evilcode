@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"evilcode/internal/todo"
 )
 
 // rowsOfWidth builds a frame whose rows are the given text widths.
@@ -15,12 +17,17 @@ func rowsOfWidth(widths ...int) []string {
 	return out
 }
 
-// layoutDock is the legacy Layout call used by the synthetic-row unit tests:
-// no provenance, so the settled-region constraint is dropped and every row is a
-// candidate (the pre-F2.2 behavior). Tests that exercise the settled region
-// call d.Layout directly with a real owner array.
+func renderWidgets(widgets []Widget) map[WidgetKind]Widget {
+	render := make(map[WidgetKind]Widget, len(widgets))
+	for _, w := range widgets {
+		render[w.Kind] = w
+	}
+	return render
+}
+
 func layoutDock(d *Dock, w []Widget, rows []string, totalWidth, scrollTop, contentHeight int, centered bool) []Placement {
-	return d.Layout(w, rows, nil, nil, -1, totalWidth, scrollTop, contentHeight, centered)
+	_ = centered
+	return d.Layout(renderWidgets(w), w, rows, nil, nil, -1, totalWidth, scrollTop, contentHeight)
 }
 
 func widget(kind WidgetKind, lines int) Widget {
@@ -224,29 +231,6 @@ func TestDockSecondCandidateGetsNoSlotWhileFirstHolds(t *testing.T) {
 	}
 }
 
-func TestLeftWidgetsFallBackToTheRightMargin(t *testing.T) {
-	// Honouring the left preference meant six widget kinds that could never
-	// render at all: the centered left margin is 22 cells at 140 columns, under
-	// WidgetMinWidth of 24. Falling back to the right is the difference between
-	// showing and not existing (see DEVIATIONS).
-	d := NewDock()
-	rows := make([]string, 40)
-	for i := range rows {
-		rows[i] = strings.Repeat("x", 10)
-	}
-	left := widget(WidgetBackgroundTasks, 3)
-	if left.Kind.PreferredSide() != SideLeft {
-		t.Fatal("BackgroundTasks should prefer the left margin")
-	}
-	got := layoutDock(d, []Widget{left}, rows, 100, 0, 999, false)
-	if len(got) != 1 {
-		t.Fatalf("a left-preferring widget did not dock at all: %+v", got)
-	}
-	if got[0].Col+got[0].Width != 100 {
-		t.Errorf("right edge at %d, want the frame edge", got[0].Col+got[0].Width)
-	}
-}
-
 func TestEmptyWidgetDrawsNothing(t *testing.T) {
 	// An empty box claims space to say nothing, which is worse than absence.
 	r := testRenderer(80)
@@ -288,7 +272,8 @@ func TestResidentIsNeverSwappedForAnotherWidget(t *testing.T) {
 	owner := make([]int, rowCount)
 	seen := map[WidgetKind]bool{}
 	for i := 0; i < 400; i++ {
-		m.dockWidgets(make([]string, rowCount), rowCount, 0, rowCount, owner)
+		rows := make([]string, rowCount)
+		m.dockWidgets(rows, rows, rowCount, 0, owner)
 		for _, p := range m.placements {
 			seen[p.Kind] = true
 		}
@@ -299,38 +284,149 @@ func TestResidentIsNeverSwappedForAnotherWidget(t *testing.T) {
 	}
 }
 
-func TestResidentRetiresOffTheTopAndAnotherSpawnsAfterAPause(t *testing.T) {
-	// The resident rides its anchor up and out of the viewport; it does not
-	// re-home to stay visible. Once it is gone the dock waits SpawnCooldown
-	// frames before seating another, so a replacement reads as arriving rather
-	// than as the old one jumping.
-	const rowCount = 30
+func TestScrolledOffWidgetReappearsOnScrollUp(t *testing.T) {
+	const rowCount, viewH = 40, 10
 	rows := make([]string, rowCount)
-	owner := make([]int, rowCount)
 	d := NewDock()
 	w := []Widget{widget(WidgetTodos, 3)}
 
-	first := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, 0, rowCount, false)
+	first := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, 0, viewH)
 	if len(first) != 1 {
 		t.Fatalf("no initial placement: %+v", first)
 	}
-	born := first[0].Row
+	anchor := first[0].Row
 
-	// Scroll far enough that the anchored row is above the viewport.
-	gone := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, born+rowCount, rowCount, false)
-	if len(gone) != 0 {
-		t.Fatalf("widget survived scrolling off the top at row %d: %+v", gone[0].Row, gone)
+	if got := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, anchor+viewH, viewH); len(got) != 0 {
+		t.Fatalf("offscreen resident produced a placement: %+v", got)
+	}
+	if len(d.residents) != 1 {
+		t.Fatalf("offscreen resident count = %d, want 1", len(d.residents))
 	}
 
-	// The frame it retired on is already the first empty one, so the cooldown
-	// has SpawnCooldown-1 frames left to run. They stay empty.
-	for i := 2; i < SpawnCooldown; i++ {
-		if got := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, 0, rowCount, false); len(got) != 0 {
-			t.Fatalf("respawned %d frames into a %d-frame cooldown", i, SpawnCooldown)
-		}
+	back := d.Layout(renderWidgets(w), w, rows, nil, nil, -1, 100, 0, viewH)
+	if len(back) != 1 || back[0].Row != anchor {
+		t.Fatalf("scrolling back produced %+v, want row %d", back, anchor)
 	}
-	if got := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, 0, rowCount, false); len(got) != 1 {
-		t.Errorf("no widget after the cooldown expired: %+v", got)
+}
+
+func TestSpawnSpacingIsOneViewport(t *testing.T) {
+	const viewH = 10
+	w1, w2 := widget(WidgetTodos, 3), widget(WidgetContextUsage, 3)
+	render := renderWidgets([]Widget{w1, w2})
+	d := NewDock()
+	content := make([]string, 40)
+	if got := d.Layout(render, []Widget{w1}, content, nil, nil, -1, 100, 0, viewH); len(got) != 1 {
+		t.Fatalf("first spawn = %+v", got)
+	}
+	if len(d.residents) != 1 {
+		t.Fatalf("residents after first spawn = %d", len(d.residents))
+	}
+
+	// The next pocket is still less than one viewport below the first anchor.
+	content = make([]string, 49)
+	d.Layout(render, []Widget{w2}, content, nil, nil, -1, 100, 0, viewH)
+	if len(d.residents) != 1 {
+		t.Fatalf("high-salience candidate bypassed spacing: %d residents", len(d.residents))
+	}
+
+	content = make([]string, 50)
+	d.Layout(render, []Widget{w2}, content, nil, nil, -1, 100, 0, viewH)
+	if len(d.residents) != 2 {
+		t.Fatalf("spacing floor never cleared: %d residents", len(d.residents))
+	}
+}
+
+func TestDismissKillsInstanceOnly(t *testing.T) {
+	w := widget(WidgetTodos, 3)
+	render := renderWidgets([]Widget{w})
+	d := NewDock()
+	content := make([]string, 40)
+	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10)
+	if len(first) != 1 {
+		t.Fatal("expected first placement")
+	}
+	d.Dismiss(first[0].Index)
+	if len(d.residents) != 0 {
+		t.Fatalf("dismiss left %d residents", len(d.residents))
+	}
+
+	d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10)
+	if len(d.residents) != 0 {
+		t.Fatal("dismissed instance respawned before its spacing floor cleared")
+	}
+	content = make([]string, 50)
+	placements := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 42, 10)
+	if len(d.residents) != 1 || len(placements) != 1 {
+		t.Fatalf("kind did not respawn after spacing: residents=%d placements=%d", len(d.residents), len(placements))
+	}
+}
+
+func TestDismissDoesNotResetSpacing(t *testing.T) {
+	w := widget(WidgetTodos, 3)
+	render := renderWidgets([]Widget{w})
+	d := NewDock()
+	content := make([]string, 40)
+	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10)
+	if len(first) != 1 {
+		t.Fatal("expected first placement")
+	}
+	d.Dismiss(first[0].Index)
+	if got := d.Layout(render, []Widget{w}, make([]string, 49), nil, nil, -1, 100, 0, 10); len(got) != 0 {
+		t.Fatalf("dismissal reset spacing and placed %+v", got)
+	}
+}
+
+func TestSpawnLandsOffscreenWhileScrolledUp(t *testing.T) {
+	w := widget(WidgetTodos, 3)
+	render := renderWidgets([]Widget{w})
+	d := NewDock()
+	content := make([]string, 60)
+	if got := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 10); len(got) != 0 {
+		t.Fatalf("tail spawn was painted while at the top: %+v", got)
+	}
+	if len(d.residents) != 1 {
+		t.Fatal("offscreen spawn was not retained")
+	}
+	if got := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 52, 10); len(got) != 1 {
+		t.Fatalf("scrolling to the tail did not reveal the resident: %+v", got)
+	}
+}
+
+func TestEmptyDataRendersStub(t *testing.T) {
+	m := NewModel(nil, HeaderState{Model: "mock"})
+	m.width, m.height = 100, 30
+	m.todos = &todo.Store{}
+	m.blocks = []Block{{Kind: BlockTool, ToolName: "read"}}
+	m.dock.residents = []*instance{{Kind: WidgetTodos, Block: -1, Offset: 5}}
+	m.dock.lastSpawn = m.dock.residents[0]
+
+	content := make([]string, 30)
+	owner := make([]int, len(content))
+	for i := range owner {
+		owner[i] = -1
+	}
+	rows := append([]string(nil), content[:20]...)
+	m.dockWidgets(rows, content, 20, 0, owner)
+	if len(m.placements) != 1 {
+		t.Fatalf("stub placement = %+v", m.placements)
+	}
+	if !strings.Contains(strings.Join(rows, "\n"), "no todos") {
+		t.Fatalf("empty resident did not render its stub:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+func TestResizeKeepsResidents(t *testing.T) {
+	w := widget(WidgetTodos, 3)
+	render := renderWidgets([]Widget{w})
+	d := NewDock()
+	content := make([]string, 20)
+	first := d.Layout(render, []Widget{w}, content, nil, nil, -1, 100, 0, 20)
+	if len(first) != 1 {
+		t.Fatal("expected first placement")
+	}
+	second := d.Layout(render, []Widget{w}, content, nil, nil, -1, 80, 0, 20)
+	if len(d.residents) != 1 || len(second) != 1 || second[0].Row != first[0].Row {
+		t.Fatalf("resize lost resident: first=%+v second=%+v residents=%d", first, second, len(d.residents))
 	}
 }
 
@@ -352,8 +448,8 @@ func TestSpawnSeatsLowWithClearanceAboveTheTail(t *testing.T) {
 	d := NewDock()
 	w := widget(WidgetTodos, 3)
 
-	got := d.Layout([]Widget{w}, rows, owner, kindOfFixed(BlockTool, BlockReasoning),
-		1, 100, 0, rowCount, false)
+	got := d.Layout(renderWidgets([]Widget{w}), []Widget{w}, rows, owner,
+		kindOfFixed(BlockTool, BlockReasoning), 1, 100, 0, rowCount)
 	if len(got) != 1 {
 		t.Fatalf("no placement: %+v", got)
 	}
@@ -667,26 +763,6 @@ func TestWidgetReturnsToTheSameSlotAfterAGap(t *testing.T) {
 	}
 }
 
-func TestWidgetLeavesWithTheContentItRodeOffTheTop(t *testing.T) {
-	// It does *not* re-home to stay on screen. The widget belongs to the part of
-	// the conversation it was placed beside, so it leaves when that leaves —
-	// which is what "flows offscreen" means. Re-homing to stay visible is the
-	// teleport this policy exists to prevent.
-	d := NewDock()
-	rows := make([]string, 40)
-	for i := range rows {
-		rows[i] = strings.Repeat("x", 10)
-	}
-	w := []Widget{widget(WidgetTodos, 3)}
-
-	if got := layoutDock(d, w, rows, 100, 0, 999, false); len(got) != 1 {
-		t.Fatal("expected a placement")
-	}
-	if got := layoutDock(d, w, rows, 100, 500, 999, false); len(got) != 0 {
-		t.Errorf("widget re-homed to %+v instead of leaving with its content", got)
-	}
-}
-
 func TestWidgetSurvivesTheScrollbarAppearing(t *testing.T) {
 	// The dock runs before the scrollbar is painted and reserves its column, so
 	// a bar appearing mid-session must not push a widget off the edge.
@@ -752,16 +828,16 @@ func TestDockKeepsItsAnchorWhileContentOnlyGrows(t *testing.T) {
 	if got := layoutDock(d, w, rows, 100, 0, 100, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
-	before := d.resident.Offset
+	before := d.residents[0].Offset
 
 	// Several frames of content arriving.
 	for i := 1; i <= 5; i++ {
 		layoutDock(d, w, rows, 100, 0, 100+i, false)
 	}
-	if d.resident == nil {
+	if len(d.residents) != 1 {
 		t.Fatal("resident retired while content only grew")
 	}
-	if got := d.resident.Offset; got != before {
+	if got := d.residents[0].Offset; got != before {
 		t.Errorf("anchor moved from %d to %d while content only grew", before, got)
 	}
 }

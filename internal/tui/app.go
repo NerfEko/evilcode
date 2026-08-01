@@ -136,11 +136,6 @@ type Model struct {
 	// re-appended to the log every turn.
 	sessionTitle string
 
-	// hiddenWidgets are the ones dismissed by clicking them. Session-scoped:
-	// a box you swatted away should stay away until you restart, but it is not
-	// worth persisting to config.
-	hiddenWidgets map[WidgetKind]bool
-
 	// placements is the last frame's widget geometry, for hit-testing clicks.
 	placements []Placement
 
@@ -354,7 +349,6 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		reasoningIdx:    -1,
 		dock:            NewDock(),
 		widgetsOn:       true,
-		hiddenWidgets:   map[WidgetKind]bool{},
 		widgetLastShown: map[WidgetKind]uint64{}, widgetLastChanged: map[WidgetKind]uint64{},
 		widgetHashes: map[WidgetKind]uint64{},
 		thinking:     ThinkingCurrent,
@@ -1163,7 +1157,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "alt+c":
 		m.centered = !m.centered
 		m.renderer.Centered = m.centered
-		m.dock.Reset()
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -1186,7 +1179,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "alt+g":
 		m.diffMode = m.diffMode.Next()
 		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
-		m.dock.Reset()
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -1195,7 +1187,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "alt+m":
 		m.panelOpen = !m.panelOpen
-		m.dock.Reset()
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -1205,7 +1196,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Ctrl+1..4 snap the split to quarters (§11).
 		m.panelRatio = 25 * (int(key[len(key)-1] - '0'))
 		m.panelOpen = true
-		m.dock.Reset()
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -1333,19 +1323,12 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 	case ActionCenteredToggle:
 		m.centered = !m.centered
 		m.renderer.Centered = m.centered
-		m.dock.Reset()
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
 		m.notice = map[bool]string{true: "Centered layout", false: "Left-aligned layout"}[m.centered]
 	case ActionInfoWidgets:
 		m.widgetsOn = !m.widgetsOn
-		// Turning them back on restores anything dismissed by clicking, which
-		// is what makes this the way out of having swatted one away.
-		if m.widgetsOn {
-			clear(m.hiddenWidgets)
-		}
-		m.dock.Reset()
 		m.notice = map[bool]string{true: "Info widgets: ON", false: "Info widgets: OFF"}[m.widgetsOn]
 	case ActionTodoCard:
 		m.showTodoCard = !m.showTodoCard
@@ -1751,6 +1734,7 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "clear", "cls":
 		m.blocks = nil
+		m.dock.Reset()
 		m.scroll.ClearSlack()
 		m.promptCount = 0
 		m.scroll.FollowBottom()
@@ -1923,7 +1907,6 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "alignment":
 		m.centered = !m.centered
 		m.renderer.Centered = m.centered
-		m.dock.Reset()
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -2604,7 +2587,7 @@ func (m *Model) View() tea.View {
 	// inset are painted into these rows. Docking last meant measuring rows that
 	// were already full width and concluding there was nowhere to go, which is
 	// why the boxes vanished (plan.md §8.3).
-	rows = m.dockWidgets(rows, res.Transcript, start, len(content), owner)
+	rows = m.dockWidgets(rows, content, res.Transcript, start, owner)
 
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
@@ -2967,17 +2950,12 @@ func (m *Model) activeWidgets() []Widget {
 	}
 	var out []Widget
 	add := func(w Widget) {
-		// Dismissed widgets are dropped here rather than at paint time, so a
-		// hidden box does not silently reserve rows another widget could use.
-		if len(w.Lines) > 0 && !m.hiddenWidgets[w.Kind] {
+		if len(w.Lines) > 0 {
 			out = append(out, w)
 		}
 	}
 
-	// The widget stands down while the card is open. They carry the same items,
-	// and showing both is the duplication §8.3 exists to prevent — the card is
-	// the fuller view, so it wins.
-	if m.todos != nil && !m.showTodoCard {
+	if m.todos != nil {
 		add(m.renderer.TodosWidget(m.todos.Items(), m.todos.Goals(), 4))
 	}
 	if m.ctxUsed > 0 && m.contextMax() > 0 {
@@ -3118,22 +3096,11 @@ func (m *Model) contextMax() int {
 //
 // Widgets are suppressed entirely while the welcome art is showing: an empty
 // screen decorated with status boxes is busier than the thing it decorates.
-func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHeight int, owner []int) []string {
+func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop int, owner []int) []string {
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
+		m.placements = nil
 		return rows
 	}
-	// Only the transcript region is dockable; the composer and status line own
-	// their rows outright.
-	region := rows
-	if len(region) > transcriptRows {
-		region = region[:transcriptRows]
-	}
-
-	// Owner is kept as the full transcript provenance. The dock maps visible
-	// rows through scrollTop so it can resolve a block's first row even when
-	// that row is above the viewport.
-	// kindOf resolves a block index to its kind for the settled-region test
-	// (§2.3). Owner holds block indices into m.blocks.
 	blocks := m.blocks
 	kindOf := func(idx int) BlockKind {
 		if idx < 0 || idx >= len(blocks) {
@@ -3142,10 +3109,25 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 		return blocks[idx].Kind
 	}
 
-	// One list, measured and painted. It used to be built twice per frame, and
-	// it is time-dependent — tips rotate, spinners advance — so the list Layout
-	// placed could differ from the map painted, leaving a reserved slot blank.
 	widgets := m.activeWidgets()
+	render := make(map[WidgetKind]Widget, len(widgets)+len(m.dock.residents))
+	for _, w := range widgets {
+		render[w.Kind] = w
+	}
+	for _, kind := range m.dock.ResidentKinds() {
+		if _, ok := render[kind]; !ok {
+			render[kind] = m.renderer.EmptyWidget(kind)
+		}
+	}
+	candidates := widgets
+	if m.showTodoCard {
+		candidates = make([]Widget, 0, len(widgets))
+		for _, w := range widgets {
+			if w.Kind != WidgetTodos {
+				candidates = append(candidates, w)
+			}
+		}
+	}
 
 	// Neither the scrollbar nor the centering inset has been painted yet, but
 	// both will be, so both are reserved here. Measuring one width and painting
@@ -3166,22 +3148,15 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 		}
 	}
 
-	placements := m.dock.Layout(widgets, region, owner, kindOf, streamingBlock, usable, scrollTop, contentHeight, m.centered)
-
-	byKind := make(map[WidgetKind]Widget, len(widgets))
-	for _, w := range widgets {
-		byKind[w.Kind] = w
-	}
+	placements := m.dock.Layout(render, candidates, content, owner, kindOf,
+		streamingBlock, usable, scrollTop, transcriptRows)
 
 	m.swarmDocked = false
 	for _, p := range placements {
-		if m.hiddenWidgets[p.Kind] {
-			continue
-		}
 		if p.Kind == WidgetSwarmStatus {
 			m.swarmDocked = true
 		}
-		paintWidget(rows, m.renderer.RenderWidget(byKind[p.Kind]),
+		paintWidget(rows, m.renderer.RenderWidget(render[p.Kind]),
 			p.Row, p.Col, min(transcriptRows, len(rows)))
 	}
 	// Airtime is pressure accrued while a widget is *not* the one on screen, so
@@ -3416,13 +3391,12 @@ func (m *Model) dismissWidgetAt(mouse tea.Mouse) bool {
 	// Placements are in transcript-region coordinates, and the region starts at
 	// the top of the frame, so the mouse row maps straight through.
 	_, pad := ContentWidth(m.width, m.centered)
-	kind, ok := m.dock.Hit(m.placements, mouse.X-pad, mouse.Y)
+	p, ok := m.dock.Hit(m.placements, mouse.X-pad, mouse.Y)
 	if !ok {
 		return false
 	}
-	m.hiddenWidgets[kind] = true
-	m.dock.Forget(kind)
-	m.notice = "Hidden · Alt+I brings the widgets back"
+	m.dock.Dismiss(p.Index)
+	m.notice = "Widget dismissed"
 	return true
 }
 

@@ -113,5 +113,4 @@ func (m *Model) setPalette(p *theme.Palette) {
 		m.blocks[i].cache = nil
 	}
 	m.invalidateTranscriptCache()
-	m.dock.Reset()
 }

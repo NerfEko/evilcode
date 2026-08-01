@@ -40,6 +40,21 @@ func (r *Renderer) RenderWidget(w Widget) []string {
 	return out
 }
 
+// EmptyWidget keeps a resident visible when its data source is empty.
+func (r *Renderer) EmptyWidget(kind WidgetKind) Widget {
+	text := map[WidgetKind]string{
+		WidgetTodos:           "no todos",
+		WidgetBackgroundTasks: "no tasks",
+		WidgetMemoryActivity:  "idle",
+		WidgetSwarmStatus:     "no agents",
+		WidgetTips:            "·",
+	}[kind]
+	if text == "" {
+		text = "·"
+	}
+	return Widget{Kind: kind, Lines: []string{r.style(theme.RoleDim).Render(text)}}
+}
+
 // SegmentedBar draws the pill meter `▰▰▰▰▱▱` used for quota and context.
 //
 // The fill color is driven by what REMAINS, not what is used: a meter that

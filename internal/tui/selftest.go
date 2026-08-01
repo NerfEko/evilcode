@@ -78,6 +78,7 @@ func (m *Model) applyCompaction(done compactDone) {
 	}
 
 	m.blocks = nil
+	m.dock.Reset()
 	m.scroll.ClearSlack()
 	m.promptCount = 0
 	// The meter reflected the pre-compaction size until the next turn reported

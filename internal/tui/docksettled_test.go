@@ -51,7 +51,7 @@ func TestSettledRegionStopsTailPlacement(t *testing.T) {
 	// Old behavior (no provenance): the widget is placed in the slack at the
 	// tail — the bug. This is the fail side.
 	d := NewDock()
-	got := d.Layout(widgets, rows, nil, nil, -1, totalWidth, 0, 20, false)
+	got := d.Layout(renderWidgets(widgets), widgets, rows, nil, nil, -1, totalWidth, 0, 20)
 	if len(got) != 1 {
 		t.Fatalf("legacy layout: expected the bug (1 placement in the tail), got %d", len(got))
 	}
@@ -64,7 +64,7 @@ func TestSettledRegionStopsTailPlacement(t *testing.T) {
 	// BlockAssistant (undockable) and rows >= 8 are below settledEnd, so there
 	// is no slot and no widget. This is the pass side — the flash is gone.
 	d2 := NewDock()
-	got2 := d2.Layout(widgets, rows, owner, kindOf, -1, totalWidth, 0, 12, false)
+	got2 := d2.Layout(renderWidgets(widgets), widgets, rows, owner, kindOf, -1, totalWidth, 0, 20)
 	if len(got2) != 0 {
 		t.Errorf("settled layout placed %d widget(s); expected none (no dockable settled region):\n%+v",
 			len(got2), got2)
@@ -102,7 +102,7 @@ func TestSettledRegionHoldsSlotAcrossStreaming(t *testing.T) {
 
 	// Frame 1: streaming tail at rows 16-23. settledEnd = 16 - 4 = 12.
 	d := NewDock()
-	first := d.Layout(widgets, rows, owner, kindOf, 1, totalWidth, 0, 24, false)
+	first := d.Layout(renderWidgets(widgets), widgets, rows, owner, kindOf, 1, totalWidth, 0, 24)
 	if len(first) != 1 {
 		t.Fatalf("frame 1: expected 1 placement, got %d", len(first))
 	}
@@ -118,7 +118,7 @@ func TestSettledRegionHoldsSlotAcrossStreaming(t *testing.T) {
 	rows2 := append(append([]string{}, toolRows...), streamRows...)
 	owner2 := make([]int, len(rows2))
 	copy(owner2, owner)
-	second := d.Layout(widgets, rows2, owner2, kindOf, 1, totalWidth, 0, 24, false)
+	second := d.Layout(renderWidgets(widgets), widgets, rows2, owner2, kindOf, 1, totalWidth, 0, 24)
 	if len(second) != 1 {
 		t.Fatalf("frame 2: expected 1 placement, got %d", len(second))
 	}
@@ -160,7 +160,7 @@ func TestSettledRegionExcludesAssistantProse(t *testing.T) {
 	widgets := []Widget{widget(WidgetTodos, 3)} // height 5
 
 	d := NewDock()
-	got := d.Layout(widgets, rows, owner, kindOf, -1, totalWidth, 0, 20, false)
+	got := d.Layout(renderWidgets(widgets), widgets, rows, owner, kindOf, -1, totalWidth, 0, 20)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 placement in the tool region, got %d", len(got))
 	}
@@ -169,6 +169,35 @@ func TestSettledRegionExcludesAssistantProse(t *testing.T) {
 	if p.Row < 5 || p.Row+5 > 13 {
 		t.Errorf("widget placed at rows %d-%d, must be within the tool region [5,13): %+v",
 			p.Row, p.Row+5, p)
+	}
+}
+
+func TestReasoningRowsAreNotDockable(t *testing.T) {
+	const totalWidth = 100
+	rows := append(rowsOfWidth(10, 10, 10, 10, 10),
+		rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10)...)
+	rows = append(rows, rowsOfWidth(10, 10, 10, 10, 10, 10, 10)...)
+	owner := make([]int, len(rows))
+	for i := range owner {
+		switch {
+		case i < 5:
+			owner[i] = 0 // settled tool
+		case i < 13:
+			owner[i] = 1 // reasoning
+		default:
+			owner[i] = 2 // settled tool, but below the first settled pocket
+		}
+	}
+	kindOf := kindOfFixed(BlockTool, BlockReasoning, BlockTool)
+	widgets := []Widget{widget(WidgetTodos, 3)}
+
+	got := NewDock().Layout(renderWidgets(widgets), widgets, rows, owner, kindOf,
+		-1, totalWidth, 0, len(rows))
+	if len(got) != 1 {
+		t.Fatalf("expected a placement in the tool rows, got %+v", got)
+	}
+	if got[0].Row < 0 || got[0].Row+got[0].Height > 5 {
+		t.Fatalf("widget landed outside the first tool region: %+v", got[0])
 	}
 }
 
@@ -188,7 +217,7 @@ func TestDockAnchorFollowsBlockAfterRowsAboveCollapse(t *testing.T) {
 	widgets := []Widget{widget(WidgetTodos, 3)}
 	d := NewDock()
 	kindOf := kindOfFixed(BlockAssistant, BlockTool)
-	first := d.Layout(widgets, rows, owner, kindOf, -1, 100, 0, len(rows), false)
+	first := d.Layout(renderWidgets(widgets), widgets, rows, owner, kindOf, -1, 100, 0, len(rows))
 	if len(first) != 1 || first[0].Row != 8 {
 		t.Fatalf("initial placement = %+v, want row 8 in the tool block", first)
 	}
@@ -205,7 +234,7 @@ func TestDockAnchorFollowsBlockAfterRowsAboveCollapse(t *testing.T) {
 			owner[i] = 1
 		}
 	}
-	second := d.Layout(widgets, rows, owner, kindOf, -1, 100, 0, len(rows), false)
+	second := d.Layout(renderWidgets(widgets), widgets, rows, owner, kindOf, -1, 100, 0, len(rows))
 	if len(second) != 1 || second[0].Row != 1 {
 		t.Fatalf("after collapse placement = %+v, want row 1 in the same tool block", second)
 	}
