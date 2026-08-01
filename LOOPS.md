@@ -4629,3 +4629,42 @@ TUI change, rebuild the root binary before trusting a probe pass.
 
 Verified: go build ./..., go vet ./..., go test ./..., probe goldens
 regenerated and run three times (stable).
+
+## 2026-08-01 — /resume listed sessions that never said anything
+
+A fresh run writes a `start` marker the instant its store is created
+(`CreateNamed`), so opening the TUI and quitting without a prompt leaves a
+session file with lifecycle markers and zero messages — and the `/resume`
+picker, `-resume` completions, and the productivity stats all read `List`, so
+they surfaced that empty log as something worth resuming.
+
+Fix is one filter in `session.List`: skip any session whose log holds no
+user/assistant/tool entries. `List` is the single chokepoint the picker,
+completions, and the productivity stats share, so they now uniformly treat an
+empty log as non-existent for resuming.
+
+Name allocation does not go through `List` anymore. `Create` and
+`PickFreeName` build their taken set from a raw directory listing
+(`takenNames`) instead, because an empty log still owns its name at the
+`O_EXCL` layer `CreateNamed` guards with. The daemon's `claimName` can only
+advance past names its *in-memory* taken-set knows about; handing it a
+disk-claimed name (which the filtered `List` would do) made it retry the same
+name 64 times and fail to spawn a worker. A codex review caught that before it
+shipped.
+
+First attempt deleted the empty file in `Close`. It broke the name-claiming
+invariant: `Create` is list-then-`O_EXCL`, and removing a closed empty log
+reopened its name mid-flight, letting a concurrent creator re-claim it and
+collide with a live store that had already returned that name
+(`TestConcurrentCreatesGetDistinctSessions`). It also bypassed the clean-exit
+write the `/dev/full` test exercises, and the title/rename tests that expect a
+0-message file to survive `Close`. A file, once claimed, stays claimed until a
+deliberate rename/fork/remove — auto-deleting on close is at odds with that.
+
+Lesson: the lifecycle of a name and the lifecycle of its content are separate.
+"Nothing was said" is a reason to hide a session from the resume view, not a
+reason to free its name or delete its file — those belong to the naming layer,
+which reads disk, not the resume view, which reads messages.
+
+Verified: go build ./..., go vet ./..., go test ./...
+(`internal/session`, `internal/completions`, `internal/daemon`, `internal/tui`).

@@ -63,7 +63,10 @@ func TestCompleteSessionsFromTheStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"bat", "crypt"} {
-		if err := os.WriteFile(filepath.Join(sessions, name+".jsonl"), nil, 0o644); err != nil {
+		// A resumable session has at least one message; an empty log is not
+		// offered for -resume, so write a user line to make these resumable.
+		if err := os.WriteFile(filepath.Join(sessions, name+".jsonl"),
+			[]byte(`{"type":"user","data":{"role":"user","content":"hi"}}`+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

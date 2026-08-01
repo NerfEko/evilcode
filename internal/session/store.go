@@ -174,11 +174,7 @@ func Create(dataDir string) (*Store, error) {
 	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
 		return CreateNamed(dataDir, "dracula")
 	}
-	taken := map[string]bool{}
-	existing, _ := List(dataDir)
-	for _, s := range existing {
-		taken[s.Name] = true
-	}
+	taken := takenNames(dataDir)
 	// Bounded: the creature table is finite, and a run of collisions means the
 	// table is full rather than that another attempt would help.
 	for attempt := range 64 {
@@ -196,6 +192,27 @@ func Create(dataDir string) (*Store, error) {
 	return nil, fmt.Errorf("no free session name after 64 attempts")
 }
 
+// takenNames is the set of session names already claimed on disk, including
+// empty logs that List hides from the resume picker. Name allocation needs
+// this raw view, not List: a 0-message file still owns its name at the O_EXCL
+// layer CreateNamed guards with, and proposing it would force a collision
+// retry. (The daemon's claimName can only advance past a name its in-memory
+// taken-set knows about, so handing it a disk-claimed name makes it loop.)
+func takenNames(dataDir string) map[string]bool {
+	taken := map[string]bool{}
+	entries, err := os.ReadDir(Dir(dataDir))
+	if err != nil {
+		return taken
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		taken[strings.TrimSuffix(e.Name(), ".jsonl")] = true
+	}
+	return taken
+}
+
 // PickFreeName proposes a session name nothing on disk holds.
 //
 // It claims nothing — CreateNamed does that, exclusively. This exists for the
@@ -206,12 +223,7 @@ func PickFreeName(dataDir string) string {
 	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
 		return "dracula"
 	}
-	existing, _ := List(dataDir)
-	taken := make(map[string]bool, len(existing))
-	for _, s := range existing {
-		taken[s.Name] = true
-	}
-	return core.PickName(core.Creatures, core.SeedFrom(time.Now().String()), taken)
+	return core.PickName(core.Creatures, core.SeedFrom(time.Now().String()), takenNames(dataDir))
 }
 
 // CreateNamed claims one specific session name, failing if it is already taken.
@@ -501,6 +513,13 @@ func List(dataDir string) ([]Info, error) {
 		name := strings.TrimSuffix(e.Name(), ".jsonl")
 		info, err := Describe(dataDir, name)
 		if err != nil {
+			continue
+		}
+		// A session that never got a message has nothing to resume: it is the
+		// file a fresh run leaves behind when it is opened and quit without a
+		// prompt. Drop it here so the picker, completions and name allocation
+		// all agree it does not exist for resuming.
+		if info.Messages == 0 {
 			continue
 		}
 		out = append(out, info)

@@ -228,6 +228,68 @@ func TestListMissingDirectory(t *testing.T) {
 	}
 }
 
+// A session that was opened and quit without a prompt leaves a log with only
+// lifecycle markers — nothing to resume. The picker must not list it, and
+// neither must completions or name allocation, all of which go through List.
+func TestListOmitsEmptySessions(t *testing.T) {
+	dir := t.TempDir()
+
+	// An empty session: created (writes a start marker), closed, never said.
+	empty, err := CreateNamed(dir, "ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := empty.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real session with one message, for contrast.
+	real, err := CreateNamed(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	real.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "hi"})
+	real.Close()
+
+	list, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list = %d sessions, want only the non-empty one: %+v", len(list), list)
+	}
+	if list[0].Name != "bat" {
+		t.Errorf("listed %q, want bat", list[0].Name)
+	}
+}
+
+// Name allocation must not propose a name whose empty log is on disk, even
+// though List hides that log from the resume picker. The name is still claimed
+// at the O_EXCL layer CreateNamed guards with, and the daemon's claimName can
+// only advance past names its in-memory set knows — handing it a disk-claimed
+// name makes it retry the same name until it gives up.
+func TestCreateSkipsNamesClaimedByEmptyFiles(t *testing.T) {
+	t.Setenv("EVILCODE_DETERMINISTIC", "")
+	dir := t.TempDir()
+
+	empty, err := CreateNamed(dir, "raven")
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty.Close() // leaves a 0-message raven.jsonl
+
+	for range 40 {
+		st, err := Create(dir)
+		if err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+		if st.Name == "raven" {
+			t.Fatalf("Create reused the disk-claimed empty name %q", st.Name)
+		}
+		st.Close()
+	}
+}
+
 func TestCreateIsDeterministicUnderTestMode(t *testing.T) {
 	t.Setenv("EVILCODE_DETERMINISTIC", "1")
 	dir := t.TempDir()
