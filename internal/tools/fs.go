@@ -262,7 +262,7 @@ func (f *FS) readDirConfined(parent string) ([]os.DirEntry, error) {
 
 // Tools returns the filesystem tool set.
 func (f *FS) Tools() Set {
-	return Set{f.readTool(), f.writeTool(), f.editTool(), f.globTool()}
+	return Set{f.readTool(), f.writeTool(), f.editTool(), f.multiEditTool(), f.globTool()}
 }
 
 type readArgs struct {
@@ -842,6 +842,139 @@ func (f *FS) editTool() Tool {
 	}
 }
 
+// multiEditHunk is one edit in a multiedit batch.
+type multiEditHunk struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+	All bool   `json:"all,omitempty"`
+}
+
+type multiEditArgs struct {
+	Path  string          `json:"path"`
+	Edits []multiEditHunk `json:"edits"`
+}
+
+// multiEditTool applies an ordered list of edits to one file against the
+// accumulating content, reported per-edit, in one lock and one atomic write.
+// Partial application is the correct outcome: an edit that fails does not roll
+// back the ones before it, it is reported and the rest continue. This is not
+// new capability — it is the removal of N-1 file rewrites and N-1 round trips.
+// The existing lockPath and writeAtomic invariants hold: one lock, one atomic
+// write (jcode's multiedit writes non-atomically with no lock; this must not).
+func (f *FS) multiEditTool() Tool {
+	return Tool{
+		Name: "multiedit",
+		Desc: "Apply several edits to one file in one pass. Each edit is {old, new, all}; " +
+			"old must appear exactly once unless all is true. Edits apply in order against " +
+			"the accumulating content, so a later edit can touch text an earlier one " +
+			"produced. A failed edit is reported and skipped — it does not roll back the " +
+			"ones before it. One atomic write, so the file changes once.",
+		Schema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "path":  {"type": "string", "description": "File path, relative to the workspace root"},
+    "edits": {
+      "type": "array",
+      "description": "Ordered edits, applied sequentially against the accumulating content",
+      "items": {
+        "type": "object",
+        "properties": {
+          "old": {"type": "string", "description": "Exact text to replace, including indentation"},
+          "new": {"type": "string", "description": "Replacement text"},
+          "all": {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one"}
+        },
+        "required": ["old", "new"]
+      }
+    }
+  },
+  "required": ["path", "edits"]
+}`),
+		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
+			var a multiEditArgs
+			if err := unmarshalArgs(raw, &a); err != nil {
+				return Result{}, err
+			}
+			if len(a.Edits) == 0 {
+				return Result{}, fmt.Errorf("multiedit needs at least one edit")
+			}
+			full, err := f.resolve(a.Path)
+			if err != nil {
+				return Result{}, err
+			}
+			defer f.lockPath(full)()
+
+			data, err := f.readConfined(full)
+			if err != nil {
+				return Result{}, err
+			}
+			before := string(data)
+			content := before
+
+			var applied, failed []string
+			for i, e := range a.Edits {
+				n := i + 1
+				switch {
+				case e.Old == e.New:
+					failed = append(failed, fmt.Sprintf("edit %d: old equals new", n))
+					continue
+				case e.Old == "":
+					failed = append(failed, fmt.Sprintf("edit %d: old is empty", n))
+					continue
+				}
+				count := strings.Count(content, e.Old)
+				switch {
+				case count == 0:
+					msg := fmt.Sprintf("edit %d: old string not found", n)
+					if hint, ok := flexibleMatch(content, e.Old); ok {
+						msg += " (" + hint + ")"
+					}
+					failed = append(failed, msg)
+					continue
+				case count > 1 && !e.All:
+					failed = append(failed, fmt.Sprintf(
+						"edit %d: found %d occurrences; add context to make it unique or set all=true", n, count))
+					continue
+				}
+				if e.All {
+					content = strings.ReplaceAll(content, e.Old, e.New)
+					applied = append(applied, fmt.Sprintf("edit %d: replaced %d occurrences", n, count))
+				} else {
+					content = strings.Replace(content, e.Old, e.New, 1)
+					applied = append(applied, fmt.Sprintf("edit %d: replaced 1 occurrence", n))
+				}
+			}
+
+			name := f.rel(full)
+			var b strings.Builder
+			fmt.Fprintf(&b, "multiedit %s: %d applied, %d failed\n", name, len(applied), len(failed))
+			for _, m := range applied {
+				fmt.Fprintf(&b, "  ✓ %s\n", m)
+			}
+			for _, m := range failed {
+				fmt.Fprintf(&b, "  ✗ %s\n", m)
+			}
+
+			if len(applied) == 0 {
+				// Nothing changed; do not rewrite the file or touch its mtime.
+				return Result{Output: b.String(), Intent: fmt.Sprintf("editing %s", name)}, nil
+			}
+			if err := f.writeConfined(full, []byte(content)); err != nil {
+				return Result{}, err
+			}
+			f.anchors.forget(full)
+
+			diff, stat := makeDiff(name, before, content)
+			b.WriteString("\n")
+			b.WriteString(diff)
+			return Result{
+				Output:   b.String(),
+				Diff:     diff,
+				DiffStat: &stat,
+				Intent:   fmt.Sprintf("editing %s", name),
+			}, nil
+		},
+	}
+}
 // applyAnchoredEdit resolves anchor patches against the version the model read,
 // refusing loudly rather than fuzzily matching. Silently best-effort applying a
 // patch to a file that moved underneath corrupts it, which is strictly worse
