@@ -44,6 +44,20 @@ func flexibleMatch(content, old string) (msg string, ok bool) {
 			}
 		}
 		if match {
+			// `old` ending in a newline requires one after the block in the
+			// file too. If the match is at EOF without a terminating newline,
+			// the missing newline — not the indentation — is the real
+			// difference, so say so rather than sending the model chasing
+			// whitespace.
+			if strings.HasSuffix(old, "\n") {
+				afterWindow := i + len(oldLines)
+				if afterWindow >= len(contentLines) && !strings.HasSuffix(content, "\n") {
+					return fmt.Sprintf(
+						"found with different indentation around line %d, "+
+							"but the file is missing the trailing newline your old string includes",
+						i+1), true
+				}
+			}
 			return fmt.Sprintf("found with different indentation around line %d", i+1), true
 		}
 	}

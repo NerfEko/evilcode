@@ -200,3 +200,18 @@ func TestAnchoredEditReturnsContext(t *testing.T) {
 		t.Errorf("anchored edit output = %q, want context lines 1 and 3", res.Output)
 	}
 }
+
+// When `old` ends in a newline but the matched block is at EOF without one, the
+// diagnosis names the missing newline, not (only) the indentation.
+func TestEditFailedMatchTrailingNewlineMissingAtEOF(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "func main() {\n\tx()\n}"}) // no trailing newline
+	_, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "func main() {\n    x()\n}\n", "new": "func main() {\n\ty()\n}\n",
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "missing the trailing newline") {
+		t.Errorf("error = %q, want it to name the missing trailing newline", err)
+	}
+}
