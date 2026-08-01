@@ -1,7 +1,7 @@
  evilcode · v0.1.0
  server: Dracula 🧛 · client: Bat 🦇
  /model to switch · socket:daemon · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
  <repo>
 
  1› look at the clamp
@@ -42,7 +42,7 @@
  evilcode · v0.1.0
  server: Dracula 🧛 · client: Serpent 🐉
  /model to switch · socket:daemon · mock-large
- ● ollama-local  ○ ollama-cloud  ● mock
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
  <repo>
 
  1› look at the clamp

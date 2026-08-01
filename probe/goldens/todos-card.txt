@@ -1,7 +1,7 @@
- /model to switch · local:mock · mock-large                                                             ╭────────────────────────────────╮
- ● ollama-local  ○ ollama-cloud  ● mock                                                                 │ 💡 Ctrl+R searches your prompt │
- skills: /agent-architect /agent-browser /commit /dreaming +15 more                                     │ history			 │ ╷
- <repo> (main)                                                                     ╰────────────────────────────────╯ │
+ /model to switch · local:mock · mock-large                                                             │ history			 │
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                     ╰────────────────────────────────╯
+ skills: /agent-architect /agent-browser /commit /dreaming +15 more                                                                        ╷
+ <repo> (main)                                                                                                        │
                                                                                                                                            │
  1› wire the auth flow                                                                                                                     │
                                                                                                                                            │
