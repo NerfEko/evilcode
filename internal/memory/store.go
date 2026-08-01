@@ -373,8 +373,12 @@ func (s *Store) Search(query string, vec []float32, n int, threshold float64) []
 			}
 			hits = append(hits, Hit{Record: r, Score: score * r.Kind.Weight()})
 		}
-	}
-	if hits == nil {
+	} else {
+		// Only the no-embedding case degrades to substring matching. A working
+		// embedder that found nothing above threshold means nothing is
+		// relevant — falling back here would silently override a correct
+		// "nothing relevant" with the far looser lexical fallback, recalling
+		// something on almost every message.
 		hits = s.substringHits(query)
 	}
 
