@@ -880,14 +880,34 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 	if err := f.writeConfined(full, []byte(after)); err != nil {
 		return Result{}, err
 	}
-	f.anchors.forget(full)
+	// Re-record the post-write state so a follow-up anchored edit has fresh
+	// anchors for the new content and needs no re-read (§1.2). When anchors
+	// are off there is nothing to serve a follow-up; forget keeps the store
+	// honest about what the model has seen.
+	if f.Anchors {
+		if info, err := os.Stat(full); err == nil {
+			f.anchors.record(full, info, patched)
+		} else {
+			f.anchors.forget(full)
+		}
+	} else {
+		f.anchors.forget(full)
+	}
 
 	diff, stat := makeDiff(name, before, after)
 	// Equivalent context for the anchored path, centred on the first changed
-	// line: anchored edits have no single old/new string to locate, but the
-	// re-read this eliminates is the same.
+	// line. With anchors on the context carries fresh anchors the model can
+	// quote for a follow-up edit; without, plain numbered rows serve an exact
+	// follow-up.
 	s := firstChangedLine(before, after)
-	around := contextAround(after, s, s, 3)
+	lo := max(0, s-1-3)
+	hi := min(len(patched), s+3)
+	var around string
+	if f.Anchors {
+		around = AnnotateLines(patched[lo:hi], lo+1)
+	} else {
+		around = contextAround(after, s, s, 3)
+	}
 	return Result{
 		Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 		Diff:     diff,

@@ -196,8 +196,10 @@ func TestAnchoredEditReturnsContext(t *testing.T) {
 	if !strings.Contains(res.Output, "line TWO") {
 		t.Errorf("anchored edit output missing the changed line:\n%s", res.Output)
 	}
-	if !strings.Contains(res.Output, "1\tline one") || !strings.Contains(res.Output, "3\tline three") {
-		t.Errorf("anchored edit output = %q, want context lines 1 and 3", res.Output)
+	// With anchors on, the context carries fresh anchors (anchor|line| text)
+	// the model can quote for a follow-up edit, not plain "N\t" rows.
+	if !strings.Contains(res.Output, "|1| line one") || !strings.Contains(res.Output, "|3| line three") {
+		t.Errorf("anchored edit output = %q, want annotated context lines 1 and 3", res.Output)
 	}
 }
 
@@ -213,5 +215,44 @@ func TestEditFailedMatchTrailingNewlineMissingAtEOF(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing the trailing newline") {
 		t.Errorf("error = %q, want it to name the missing trailing newline", err)
+	}
+}
+
+// After an anchored edit, a follow-up anchored edit on a neighbouring line
+// succeeds without a re-read: the post-write anchor state was re-recorded.
+func TestAnchoredEditFollowUpNeedsNoReread(t *testing.T) {
+	body := "line one\nline two\nline three\n"
+	f := tempFS(t, map[string]string{"a.txt": body}).WithAnchors(true)
+	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.anchors.lookup(filepath.Join(f.Root, "a.txt"))
+	anchorFor := func(line int) string {
+		for a, nums := range st.Anchors {
+			if len(nums) == 1 && nums[0] == line {
+				return a
+			}
+		}
+		return ""
+	}
+	a2 := anchorFor(2)
+	if a2 == "" {
+		t.Fatal("no anchor for line 2")
+	}
+	// First anchored edit on line 2.
+	if _, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "patches": []map[string]any{{"anchor": a2, "op": "replace", "lines": []string{"line TWO"}}},
+	}); err != nil {
+		t.Fatalf("first anchored edit: %v", err)
+	}
+	// A follow-up anchored edit on line 3 — no re-read in between.
+	a3 := anchorFor(3)
+	if a3 == "" {
+		t.Fatal("no anchor for line 3")
+	}
+	if _, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "patches": []map[string]any{{"anchor": a3, "op": "replace", "lines": []string{"line THREE"}}},
+	}); err != nil {
+		t.Fatalf("follow-up anchored edit without re-read failed: %v", err)
 	}
 }
