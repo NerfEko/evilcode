@@ -573,6 +573,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dismissWidgetAt(mouse) {
 			return m, nil
 		}
+		// A click on a finished thinking trace toggles it open or shut (§9.7).
+		// Reasoning and tool blocks are disjoint by row, so this and the tool
+		// quick-view below never both apply to one click; the early return just
+		// keeps the two paths separate.
+		if m.toggleReasoningAt(mouse) {
+			return m, nil
+		}
 		m.openQuickViewAt(mouse)
 
 	case tea.PasteMsg:
@@ -3399,6 +3406,30 @@ func truncateToolCommand(s string) string {
 		keep--
 	}
 	return s[:keep] + marker
+}
+
+// toggleReasoningAt expands or collapses a finished thinking trace under a
+// click, reporting whether the click landed on one. The collapsed summary row
+// "▸ thought (N lines)" expands the trace; clicking an expanded trace collapses
+// it again (plan.md §9.7).
+//
+// Live traces are left alone: finishReasoning re-asserts their collapsed state at
+// turn end, so a manual fold mid-stream would be undone a moment later. The
+// block's render cache is dropped alongside the toggle, or the prior folded/
+// unfolded lines survive the state change.
+func (m *Model) toggleReasoningAt(mouse tea.Mouse) bool {
+	idx := m.transcriptBlockAt(mouse)
+	if idx < 0 || idx >= len(m.blocks) {
+		return false
+	}
+	b := &m.blocks[idx]
+	if b.Kind != BlockReasoning || b.Streaming {
+		return false
+	}
+	b.Collapsed = !b.Collapsed
+	b.dropCache()
+	m.invalidateTranscriptCache()
+	return true
 }
 
 func (m *Model) openQuickViewAt(mouse tea.Mouse) {
