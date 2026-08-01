@@ -121,13 +121,41 @@ func renderTokens(line []token, tint *color.RGBA) string {
 	return b.String()
 }
 
-// HighlightLines returns syntax-highlighted lines for a code block.
+// lineCache memoizes the styled result, where tokenCache above memoizes only
+// the lexing. Styling is the larger half and the side panel re-runs it on every
+// frame it is open: a read preview of a long file cost 30ms a frame, all of it
+// re-styling text that had not changed. Colours come from the fixed chroma
+// style rather than the palette, so a cached line survives /theme.
+var (
+	lineMu    sync.Mutex
+	lineCache = map[string][]string{}
+)
+
+// HighlightLines returns syntax-highlighted lines for a code block. Callers
+// must not mutate the result; it is shared.
 func HighlightLines(lang, src string) []string {
+	key := lang + "\x00" + src
+	lineMu.Lock()
+	cached, ok := lineCache[key]
+	lineMu.Unlock()
+	if ok {
+		return cached
+	}
+
 	lines := tokenize(lang, src)
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, renderTokens(line, nil))
 	}
+
+	lineMu.Lock()
+	// Bounded like tokenCache, but tighter: an entry here is a whole file's
+	// worth of styled text, not its tokens.
+	if len(lineCache) > 64 {
+		lineCache = map[string][]string{}
+	}
+	lineCache[key] = out
+	lineMu.Unlock()
 	return out
 }
 

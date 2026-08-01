@@ -101,3 +101,36 @@ func BenchmarkContentHeightAtWidth(b *testing.B) {
 		m.contentHeightAtWidth(m.renderer.Width - 1)
 	}
 }
+
+// BenchmarkViewQuickView is a read preview open beside the transcript.
+func BenchmarkViewQuickView(b *testing.B) {
+	m := perfModel(b, 400)
+	m.View()
+	body := make([]string, 400)
+	for i := range body {
+		body[i] = fmt.Sprintf("line %d of the previewed file", i)
+	}
+	m.quickView = &PanelContent{Title: "main.go", Path: "main.go", Body: body, Code: true}
+	m.View()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.widgetClock++
+		m.View()
+	}
+}
+
+func BenchmarkViewQuickViewScrolling(b *testing.B) {
+	m := perfModel(b, 400)
+	body := make([]string, 400)
+	for i := range body {
+		body[i] = fmt.Sprintf("line %d of the previewed file", i)
+	}
+	m.quickView = &PanelContent{Title: "main.go", Path: "main.go", Body: body, Code: true}
+	m.View()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.invalidateTranscriptCache()
+		m.scroll.Offset = 100 + i%50
+		m.View()
+	}
+}
