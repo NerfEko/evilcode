@@ -95,3 +95,18 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+// A trailing newline on `old` must not break the indentation diagnosis: the
+// synthetic empty final element would inflate the window and compare the
+// block's last line against the line after it.
+func TestEditFailedMatchIndentationTrailingNewline(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "func main() {\n\tx()\n}\nnext\n"})
+	_, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "func main() {\n    x()\n}\n", "new": "func main() {\n\ty()\n}\n",
+	})
+	if err == nil {
+		t.Fatal("want an error: the indentation differs")
+	}
+	if !strings.Contains(err.Error(), "indentation") || !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("error = %q, want 'different indentation around line 1' despite the trailing newline", err)
+	}
+}

@@ -24,7 +24,13 @@ func flexibleMatch(content, old string) (msg string, ok bool) {
 	}
 
 	// 2. Line-by-line with whitespace normalized — the indentation differs.
+	// A trailing newline on `old` would add a synthetic empty final element,
+	// inflating the window so the block's last line is compared against the
+	// line after it and the match fails; drop it.
 	oldLines := strings.Split(old, "\n")
+	if strings.HasSuffix(old, "\n") && len(oldLines) > 0 && oldLines[len(oldLines)-1] == "" {
+		oldLines = oldLines[:len(oldLines)-1]
+	}
 	contentLines := strings.Split(content, "\n")
 	if len(oldLines) == 0 || len(oldLines) > len(contentLines) {
 		return "", false
