@@ -790,6 +790,12 @@ func (f *FS) editTool() Tool {
 			count := strings.Count(before, a.Old)
 			switch {
 			case count == 0:
+				if msg, ok := flexibleMatch(before, a.Old); ok {
+					return Result{}, fmt.Errorf(
+						"old string not found exactly in %s, but %s. "+
+							"Re-read the file and use the exact text including indentation",
+						a.Path, msg)
+				}
 				return Result{}, fmt.Errorf(
 					"old string not found in %s. Re-read the file — it may have changed, "+
 						"or the indentation may differ from what you expected", a.Path)
