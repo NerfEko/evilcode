@@ -73,7 +73,6 @@ type Model struct {
 	lastPaste time.Time
 
 	processing bool
-	queueMode  bool
 
 	status  StatusState
 	header  HeaderState
@@ -921,31 +920,19 @@ func (m *Model) followIfPinned() {
 	}
 }
 
-// flushPending sends queued messages once a turn ends.
+// flushPending sends queued messages once a turn ends. Every staged message
+// is undelivered — the send model has no immediate path — so all of them go
+// out together (plan.md §6.3).
 func (m *Model) flushPending() {
-	texts := pendingToResend(m.pending)
-	m.pending = nil
-	if len(texts) == 0 {
+	if len(m.pending) == 0 {
 		return
 	}
-	m.submit(strings.Join(texts, "\n\n"))
-}
-
-// pendingToResend selects the staged messages that still need to reach the
-// model. PendingSent rows are receipts: the text was already delivered as a
-// soft interrupt into the turn that just ended, and resubmitting it at turn end
-// is how a message ended up sent twice (plan.md §6.3).
-func pendingToResend(pending []PendingMessage) []string {
 	var texts []string
-	for _, p := range pending {
-		switch p.Kind {
-		case PendingSent:
-			// Already injected; the row was informational.
-		default:
-			texts = append(texts, p.Text)
-		}
+	for _, p := range m.pending {
+		texts = append(texts, p.Text)
 	}
-	return texts
+	m.pending = nil
+	m.submit(strings.Join(texts, "\n\n"))
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1059,7 +1046,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.welcomeFocus {
 				m.editor.Text = SuggestionChips[m.welcomeChip%len(SuggestionChips)]
 				m.editor.Cursor = len([]rune(m.editor.Text))
-				return m.send(false)
+				return m.send()
 			}
 		}
 	}
@@ -1101,19 +1088,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		return m.send(false)
+		return m.send()
 
 	case "ctrl+j":
-		return m.send(true)
-
-	case "ctrl+t":
-		m.queueMode = !m.queueMode
-		if m.queueMode {
-			m.notice = "Queue mode: messages wait until response completes"
-		} else {
-			m.notice = "Immediate mode: messages send next (no interrupt)"
-		}
-		return m, nil
+		// Ctrl+J is bound to next-prompt in the keymap, which resolves first;
+		// this fixed fallback only fires if the keymap is absent or rebound.
+		return m.send()
 
 	case "ctrl+u":
 		m.editor.KillToStart()
@@ -1361,13 +1341,6 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 			m.notice = "Typing scroll lock: ON - typing stays at current chat position"
 		} else {
 			m.notice = "Typing scroll lock: OFF - typing follows chat bottom"
-		}
-	case ActionQueueMode:
-		m.queueMode = !m.queueMode
-		if m.queueMode {
-			m.notice = "Queue mode: messages wait until response completes"
-		} else {
-			m.notice = "Immediate mode: messages send next (no interrupt)"
 		}
 	case ActionAutoPoke:
 		if m.poke == nil {
@@ -2215,9 +2188,7 @@ func helpText() string {
 	}
 	b.WriteString("\nKeys\n")
 	for _, k := range [][2]string{
-		{"Enter", "submit, or interleave while a turn is running"},
-		{"Ctrl+Enter", "toggle queue mode (Ctrl+J: opposite send for this message)"},
-		{"Ctrl+T", "toggle queue mode"},
+		{"Enter", "submit, or queue while a turn is running"},
 		{"Esc", "cancel: close overlays, interrupt, or clear input"},
 		{"Ctrl+C", "interrupt; twice when idle to quit"},
 		{"Ctrl+G", "toggle a scroll bookmark"},
@@ -2270,8 +2241,9 @@ func (m *Model) interrupt(disarmPoke bool) {
 	if m.cancelTurn != nil {
 		m.cancelTurn()
 	}
-	// Staged interleaves were aimed at the turn being cancelled.
-	m.pending = nil
+	// Queued messages stay: they were never delivered, and the interrupted
+	// turn's TurnEnd event flushes them as the next turn. Dropping them here
+	// would throw away text the user already typed (plan.md §6.3).
 
 	if disarmPoke && m.poke != nil && m.poke.Enabled() {
 		m.poke.Disarm()
@@ -2281,23 +2253,16 @@ func (m *Model) interrupt(disarmPoke bool) {
 	m.notice = "Interrupting..."
 }
 
-// send applies the §6.3 send model.
-func (m *Model) send(alternate bool) (tea.Model, tea.Cmd) {
+// send applies the §6.3 send model: idle submits, processing queues.
+func (m *Model) send() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.editor.Text)
 	if text == "" {
 		return m, nil
 	}
 
-	switch SendActionFor(m.processing, m.queueMode, m.editor.Text, alternate) {
+	switch SendActionFor(m.processing, m.editor.Text) {
 	case Queue:
 		m.pending = append(m.pending, PendingMessage{Kind: PendingQueued, Text: text})
-		m.editor.Clear()
-		return m, nil
-
-	case Interleave:
-		m.agent.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
-		m.pending = append(m.pending, PendingMessage{Kind: PendingSent, Text: text})
-		m.notice = "⏭ Sending now (interleave)"
 		m.editor.Clear()
 		return m, nil
 
@@ -2365,20 +2330,11 @@ func (m *Model) submit(text string) {
 // deep in the provider with a message that explains nothing.
 func (m *Model) visionOK() bool { return m.vision }
 
-// drainPendingForEdit orders staged messages for retrieval: soft-interrupts
-// first, then interleaves, then queued, so the text comes back in the order it
-// would have reached the model (plan.md §6.4).
+// drainPendingForEdit returns the staged messages for retrieval, in the order
+// they were staged. Every staged message is queued, so there is no kind
+// reordering to do (plan.md §6.4).
 func drainPendingForEdit(pending []PendingMessage) []PendingMessage {
-	order := []PendingKind{PendingSent, PendingInterleave, PendingQueued}
-	var out []PendingMessage
-	for _, kind := range order {
-		for _, p := range pending {
-			if p.Kind == kind {
-				out = append(out, p)
-			}
-		}
-	}
-	return out
+	return pending
 }
 
 // submitHidden starts a turn whose prompt is harness-authored, so it drives the
@@ -2620,7 +2576,6 @@ func (m *Model) composerState() ComposerState {
 		CtxMax:       m.contextMax(),
 		Session:      m.header.SessionName,
 		Processing:   m.processing,
-		QueueMode:    m.queueMode,
 		PaletteOpen:  m.paletteOpen(),
 		Masked:       m.loginMode,
 	}

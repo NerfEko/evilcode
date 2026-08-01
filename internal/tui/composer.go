@@ -19,50 +19,31 @@ const (
 
 	// Queue holds the message until the current turn finishes.
 	Queue
-
-	// Interleave injects the message into the live turn at a safe point. It is
-	// the KV-cache-friendly path: not a new request, just a user message
-	// appended so the next loop iteration carries it with the cache intact.
-	Interleave
 )
 
 func (s SendAction) String() string {
 	switch s {
 	case Queue:
 		return "queue"
-	case Interleave:
-		return "interleave"
 	default:
 		return "submit"
 	}
 }
 
-// SendActionFor decides what Enter (or Ctrl+J, via alternate) does.
+// SendActionFor decides what Enter does.
 //
-// Ctrl+J is the one-shot "opposite of my current mode" for this message, which
-// is why the alternate branch inverts rather than picking a fixed action. To
-// change the mode itself (and keep it changed), Ctrl+Enter / Ctrl+T toggle
-// queue mode (§11).
-func SendActionFor(processing, queueMode bool, input string, alternate bool) SendAction {
+// While a turn is running, every message queues until it ends — there is no
+// immediate-send path (plan.md §6.3). A slash command is for the harness, not
+// the model, so it runs immediately regardless.
+func SendActionFor(processing bool, input string) SendAction {
 	if !processing {
 		return Submit
 	}
-	// A slash command is for the harness, not the model, so it runs
-	// immediately regardless of mode.
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "/") {
 		return Submit
 	}
-	if alternate {
-		if queueMode {
-			return Interleave
-		}
-		return Queue
-	}
-	if queueMode {
-		return Queue
-	}
-	return Interleave
+	return Queue
 }
 
 // ComposerState is everything the composer needs to draw itself.
@@ -78,7 +59,6 @@ type ComposerState struct {
 	PromptNumber int
 
 	Processing bool
-	QueueMode  bool
 
 	// Model, CtxUsed, CtxMax and Session feed the idle hint. At rest the row
 	// is the only always-visible place to put live state, and it was spending
@@ -96,9 +76,6 @@ type ComposerState struct {
 	// Masked keeps secrets in the composer while making every rendered frame
 	// safe to screenshot.
 	Masked bool
-
-	// Pending counts staged messages, for the send-mode indicator.
-	Pending int
 }
 
 // MaxComposerRows caps the visible input height; beyond this it scrolls
@@ -120,14 +97,10 @@ func (r *Renderer) promptGlyph(s ComposerState) (string, lipgloss.Style) {
 
 // sendModeGlyph is the single right-aligned glyph on the composer's last row.
 func (r *Renderer) sendModeGlyph(s ComposerState) string {
-	switch {
-	case s.NewSession:
+	if s.NewSession {
 		return rgbStyle(120, 200, 255).Render("↗")
-	case s.QueueMode:
-		return r.style(theme.RoleQueued).Render("⏳")
-	default:
-		return ""
 	}
+	return ""
 }
 
 // hintLine is the one row under the input. It is hidden while the palette is
@@ -140,14 +113,12 @@ func (r *Renderer) hintLine(s ComposerState) string {
 	switch {
 	case s.NewSession:
 		return rgbStyle(120, 200, 255).Render("  ↗ Next prompt opens a new session")
-	case s.Processing && s.QueueMode:
-		return dim.Render("  Ctrl+Enter to send now")
 	case s.Processing:
-		return dim.Render("  Ctrl+Enter to queue")
+		return dim.Render("  Enter queues until the turn ends")
 	default:
-		// Nothing is running, so there is nothing to queue behind — saying so
-		// was both clutter and untrue. This row is the one piece of screen that
-		// is always visible, so it carries what is always worth knowing.
+		// Nothing is running, so there is nothing to queue behind. This row is
+		// the one piece of screen that is always visible, so it carries what
+		// is always worth knowing.
 		return dim.Render("  " + idleHint(s))
 	}
 }
@@ -254,14 +225,9 @@ func (r *Renderer) RenderComposer(s ComposerState) []string {
 type PendingKind int
 
 const (
-	// PendingSent has already gone in as a soft interrupt.
-	PendingSent PendingKind = iota
-
-	// PendingInterleave is staged to go in at the next safe point.
-	PendingInterleave
-
-	// PendingQueued waits for the turn to end.
-	PendingQueued
+	// PendingQueued waits for the turn to end. It is the only kind: while a
+	// turn runs, every message queues; nothing is sent into the live turn.
+	PendingQueued PendingKind = iota
 )
 
 // PendingMessage is one staged message row.
@@ -287,22 +253,9 @@ func (r *Renderer) RenderPending(msgs []PendingMessage) []string {
 
 	out := make([]string, 0, len(shown))
 	for i, m := range shown {
-		var glyph string
-		var glyphStyle, textStyle lipgloss.Style
-		switch m.Kind {
-		case PendingSent:
-			glyph = "↻"
-			glyphStyle = r.style(theme.RolePending)
-			textStyle = r.style(theme.RoleAIText)
-		case PendingInterleave:
-			glyph = "⚡"
-			glyphStyle = r.style(theme.RoleAsap)
-			textStyle = r.style(theme.RoleAIText)
-		default:
-			glyph = "⏳"
-			glyphStyle = r.style(theme.RoleQueued)
-			textStyle = r.style(theme.RoleDim)
-		}
+		glyph := "⏳"
+		glyphStyle := r.style(theme.RoleQueued)
+		textStyle := r.style(theme.RoleDim)
 
 		numStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(len(shown) - 1 - i))))

@@ -41,48 +41,38 @@ func plainLines(lines []string) []string {
 }
 
 func TestSendActionMatrix(t *testing.T) {
-	// The full table from plan.md §6.3. Ctrl+J is always "the opposite of my
-	// current mode", which is the part that is easy to get backwards.
+	// The send model from plan.md §6.3: idle submits, processing queues, a
+	// slash command runs now regardless.
 	tests := []struct {
 		name       string
 		processing bool
-		queueMode  bool
 		input      string
-		alternate  bool
 		want       SendAction
 	}{
-		{"idle, enter", false, false, "hi", false, Submit},
-		{"idle, ctrl+j", false, false, "hi", true, Submit},
-		{"idle in queue mode still submits", false, true, "hi", false, Submit},
+		{"idle, enter", false, "hi", Submit},
 
-		{"processing default, enter", true, false, "hi", false, Interleave},
-		{"processing default, ctrl+j", true, false, "hi", true, Queue},
-
-		{"processing queue mode, enter", true, true, "hi", false, Queue},
-		{"processing queue mode, ctrl+j", true, true, "hi", true, Interleave},
+		{"processing, enter", true, "hi", Queue},
 
 		// A harness command is not for the model, so it runs now regardless.
-		{"slash command while processing", true, false, "/model", false, Submit},
-		{"slash command with leading space", true, true, "  /help", false, Submit},
+		{"slash command while processing", true, "/model", Submit},
+		{"slash command with leading space", true, "  /help", Submit},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := SendActionFor(tt.processing, tt.queueMode, tt.input, tt.alternate)
+			got := SendActionFor(tt.processing, tt.input)
 			if got != tt.want {
-				t.Errorf("SendActionFor(%v, %v, %q, %v) = %v, want %v",
-					tt.processing, tt.queueMode, tt.input, tt.alternate, got, tt.want)
+				t.Errorf("SendActionFor(%v, %q) = %v, want %v",
+					tt.processing, tt.input, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCtrlJIsAlwaysTheOpposite(t *testing.T) {
-	for _, queueMode := range []bool{false, true} {
-		normal := SendActionFor(true, queueMode, "hi", false)
-		alternate := SendActionFor(true, queueMode, "hi", true)
-		if normal == alternate {
-			t.Errorf("queueMode=%v: Enter and Ctrl+Enter both give %v", queueMode, normal)
-		}
+func TestProcessingAlwaysQueues(t *testing.T) {
+	// There is no immediate-send path anymore: every message typed while a
+	// turn runs waits for it to end, so nothing can be delivered twice.
+	if got := SendActionFor(true, "hi"); got != Queue {
+		t.Errorf("SendActionFor(true, \"hi\") = %v, want Queue", got)
 	}
 }
 
@@ -470,16 +460,18 @@ func TestComposerHintHiddenWhilePaletteOpen(t *testing.T) {
 func TestPendingRows(t *testing.T) {
 	r := testRenderer(60)
 	lines := plainLines(r.RenderPending([]PendingMessage{
-		{Kind: PendingSent, Text: "already sent"},
-		{Kind: PendingInterleave, Text: "goes next"},
-		{Kind: PendingQueued, Text: "waits"},
+		{Kind: PendingQueued, Text: "first"},
+		{Kind: PendingQueued, Text: "second"},
 	}))
-	if len(lines) != 3 {
+	if len(lines) != 2 {
 		t.Fatalf("rows = %d", len(lines))
 	}
-	for i, want := range []string{"↻", "⚡", "⏳"} {
+	for i, want := range []string{"first", "second"} {
 		if !strings.Contains(lines[i], want) {
-			t.Errorf("row %d = %q, want glyph %q", i, lines[i], want)
+			t.Errorf("row %d = %q, want text %q", i, lines[i], want)
+		}
+		if !strings.Contains(lines[i], "⏳") {
+			t.Errorf("row %d = %q, want the queued glyph", i, lines[i])
 		}
 	}
 }

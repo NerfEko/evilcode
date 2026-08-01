@@ -34,7 +34,6 @@ const (
 	ActionImages          Action = "images_toggle"
 	ActionSidePanel       Action = "side_panel_toggle"
 	ActionTypingLock      Action = "typing_scroll_lock"
-	ActionQueueMode       Action = "queue_mode_toggle"
 	ActionAutoPoke        Action = "auto_poke_toggle"
 	ActionHistorySearch   Action = "history_search"
 	ActionRetrievePending Action = "retrieve_pending"
@@ -66,7 +65,6 @@ var DefaultBindings = []Binding{
 	{ActionImages, []string{"alt+shift+i"}, "show images inline or as placeholders"},
 	{ActionSidePanel, []string{"alt+m"}, "toggle the side panel"},
 	{ActionTypingLock, []string{"alt+s"}, "typing scroll lock"},
-	{ActionQueueMode, []string{"ctrl+t", "ctrl+tab", "ctrl+enter"}, "toggle queue mode"},
 	{ActionAutoPoke, []string{"ctrl+p"}, "toggle auto-poke"},
 	{ActionHistorySearch, []string{"ctrl+r"}, "search prompt history"},
 	{ActionRetrievePending, []string{"ctrl+up", "alt+up"}, "retrieve staged messages"},

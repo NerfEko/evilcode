@@ -19,4 +19,4 @@
  ╰──────────────────────────────────────────────────────────────────────╯
 
  2…
-   Ctrl+Enter to queue
+   Enter queues until the turn ends

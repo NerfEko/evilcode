@@ -240,13 +240,11 @@ self-modifying program locks itself out.
 
 | Key | Action |
 |---|---|
-| `Enter` | send; interleave into a running turn; queue in queue mode |
-| `Ctrl+Enter` | the opposite of the current send mode |
+| `Enter` | send; queue while a turn is running |
 | `Shift+Enter`, `Alt+Enter`, trailing `\` | newline |
 | `Esc` | layered cancel: overlays, then interrupt, then clear input |
 | `Ctrl+C` | interrupt; twice when idle to quit |
 | `Ctrl+R` | history search |
-| `Ctrl+T` | toggle queue mode |
 | `Ctrl+G` | toggle scroll bookmark |
 | `Alt+B` | send a running tool to the background |
 | `PgUp`, `PgDn` | scroll a page |

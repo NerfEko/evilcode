@@ -340,9 +340,9 @@ Row 1 = `{N}{prompt}{text}` where `{N}` = next prompt number colored **full red*
 | skill active | `» ` | accent |
 | default | `> ` | user color |
 
-Hint line (1 row, hidden while palette is open): shell mode → `  shell mode · Enter runs locally` green; new-session armed → `  ↗ Next prompt opens a new session` `rgb(120,200,255)`; else `  Ctrl+Enter to queue` / `to send now` dim.
+Hint line (1 row, hidden while palette is open): shell mode → `  shell mode · Enter runs locally` green; new-session armed → `  ↗ Next prompt opens a new session` `rgb(120,200,255)`; processing → `  Enter queues until the turn ends` dim; else the idle hint (model · ctx · session).
 
-**Send-mode indicator**, right-aligned on the composer's last row, single glyph: shell `$` green · new-session `↗` `rgb(120,200,255)` · queue-mode `⏳` yellow · connection type when attached (websocket `󰌘` teal / subprocess `󰆍` `rgb(180,160,220)` / http `󰖟` `rgb(140,180,255)` — Nerd Font, degrade to nothing without font support).
+**Send-mode indicator**, right-aligned on the composer's last row, single glyph: shell `$` green · new-session `↗` `rgb(120,200,255)` · connection type when attached (websocket `󰌘` teal / subprocess `󰆍` `rgb(180,160,220)` / http `󰖟` `rgb(140,180,255)` — Nerd Font, degrade to nothing without font support).
 
 ### 6.2 Newline entry (three paths, priority order)
 
@@ -350,34 +350,23 @@ Hint line (1 row, hidden while palette is open): shell mode → `  shell mode ·
 2. **Alt+Enter** — arrives as ESC+CR, works everywhere.
 3. **Trailing `\` + Enter** — universal fallback; the backslash is consumed; `\\` is a literal backslash and still submits (parity: even count of trailing backslashes ⇒ submit). First use per session → one-shot tip `Tip: run /terminal-setup to make Shift+Enter insert newlines`.
 
-### 6.3 Send model — Submit / Queue / Interleave (get this exactly right)
+### 6.3 Send model — Submit / Queue (get this exactly right)
 
 ```go
-func sendAction(processing bool, queueMode bool, input string, alternate bool) SendAction {
+func sendAction(processing bool, input string) SendAction {
     if !processing { return Submit }
     if strings.HasPrefix(trim(input), "/") || strings.HasPrefix(trim(input), "!") { return Submit }
-    if alternate { if queueMode { return Interleave }; return Queue }
-    if queueMode { return Queue }
-    return Interleave
+    return Queue
 }
 ```
 
-| state | Enter | Ctrl+J |
-|---|---|---|
-| idle | Submit | Submit |
-| processing, default mode | **Interleave** | Queue |
-| processing, queue mode | Queue | **Interleave** |
-| processing, `/` or `!` input | Submit | Submit |
+| state | Enter |
+|---|---|
+| idle | Submit |
+| processing | **Queue** |
+| processing, `/` or `!` input | Submit |
 
-Ctrl+J = "opposite of my current mode", one message at a time. **Ctrl+Enter (also Ctrl+T, Ctrl+Tab) toggles queue mode** — the persistent control: once queue mode is on, Enter queues until the turn ends; off, Enter interleaves immediately. Toggle notices `Queue mode: messages wait until response completes` / `Immediate mode: messages send next (no interrupt)`.
-
-Interleaves are delivered once: staging a message as a soft interrupt hands it to the agent immediately, and the pending row it leaves behind (`↻`) is a receipt, not a queued message — at turn end only messages that were never delivered (queued ones) are submitted, so nothing reaches the model twice.
-
-**Interleave = soft interrupt** — the KV-cache-friendly path. The message is NOT a new API request; it is appended as a user message into the live conversation at a *safe point* so the next loop iteration carries it with the cache prefix intact. Safe points:
-- **B**: stream ended, no tool calls — always safe.
-- **C**: between tool executions — *urgent only*; every remaining tool first gets a stub result `[Skipped: user interrupted]` (`isError: true`) because the API requires tool_use → tool_result adjacency.
-- **D**: after all tool results, before the next request — the default injection point.
-Multiple pending interrupts group by source (User / System / BackgroundTask), each group joined `\n\n`, different sources flushed separately (a system nudge never merges into a user message). The queue persists to disk and survives restarts. On injection while streaming: flush the stream buffer, commit in-flight text as an assistant message, then show the injected content; if tools were skipped → notice `⚡ {n} tool(s) skipped`. Write the full semantics into `docs/soft-interrupt.md` as implemented — this mechanism deserves its own doc.
+There is no immediate-send path. While a turn runs, every message waits in the pending queue and is submitted as one prompt when the turn ends — so a message can never reach the model twice, and interrupting the turn keeps the queue (the interrupted turn's `turn_end` flushes it as the next turn). Interleaving into the live turn was the KV-cache-friendly idea, but in practice it both sent immediately and looked queued; the soft-interrupt *mechanism* still exists in the agent (system nudges, daemon traffic — see `docs/soft-interrupt.md`), the TUI just no longer uses it for user messages.
 
 ### 6.4 Pending-message rows (stack row 1, max 3 shown)
 
@@ -385,12 +374,9 @@ Multiple pending interrupts group by source (User / System / BackgroundTask), ea
 
 | kind | glyph | color | text style |
 |---|---|---|---|
-| Pending (already sent as soft interrupt) | `↻` | pending gray `#8c8c8c` | normal |
-| Interleave (staged, sends next) | `⚡` | asap cyan `#8be9fd` | normal |
 | Queued (waits for turn end) | `⏳` | queued yellow `#f1fa8c` | dim |
 
-Staging an interleave → notice `⏭ Sending now (interleave)`.
-**Ctrl+Up (also Alt+Up)** with empty composer retrieves pending messages back for editing: drain soft-interrupts → interleave → queued, join `\n\n`, notice `Retrieved {n} pending message(s) for editing`; nothing pending → falls through to prompt-history navigation.
+**Ctrl+Up (also Alt+Up)** with empty composer retrieves pending messages back for editing, join `\n\n`, notice `Retrieved {n} pending message(s) for editing`; nothing pending → falls through to prompt-history navigation.
 
 ### 6.5 Editing keys (readline set)
 
@@ -406,7 +392,7 @@ Ctrl+U kill-to-start · Ctrl+K kill-to-end (plain Ctrl+K only; Ctrl+Shift+K is s
 ### 6.7 Interrupt / cancel — Esc layered priority
 
 1. Picker/overlay open → close it (+ clear input).
-2. Processing → interrupt: cancel stream; keep partial text as a message; clear staged interleaves; **disarm auto-poke** (interrupt means *stop* — the harness must not immediately re-poke). Notice one of: `Interrupting...` / `Interrupting... Auto-poke OFF`.
+2. Processing → interrupt: cancel stream; keep partial text as a message; **keep the pending queue** — queued messages were never delivered, and the interrupted turn's `turn_end` flushes them as the next turn; **disarm auto-poke** (interrupt means *stop* — the harness must not immediately re-poke). Notice one of: `Interrupting...` / `Interrupting... Auto-poke OFF`.
 3. Idle → follow bottom + clear input.
 
 **Ctrl+C / Ctrl+D**: same interrupt but does **NOT** disarm auto-poke (it's "skip this", not "stand down"); when idle → quit (press twice to confirm). In selection mode with a non-empty selection, Ctrl+C copies instead (quitting while the user is copying an error is a classic bug — don't ship it).
@@ -693,13 +679,10 @@ Knight-rider tool bar (§8.2). Scroll ease-out (§4.1). Tail catch-up (§4.2). O
 
 | key | action |
 |---|---|
-| Enter | Submit / Interleave / Queue (§6.3) |
-| Ctrl+J | opposite send mode (one message) |
-| Ctrl+Enter / Ctrl+T / Ctrl+Tab | toggle queue mode |
+| Enter | Submit / Queue (§6.3) |
 | Shift+Enter / Alt+Enter / trailing `\` | newline (§6.2) |
 | Esc | layered cancel (§6.7) |
 | Ctrl+C / Ctrl+D | interrupt; idle → quit (twice) |
-| Ctrl+T (Ctrl+Tab) | toggle queue mode |
 | Ctrl+R | history search (§5.2) |
 | Ctrl+Up / Alt+Up | retrieve pending for edit; else prompt history |
 | Tab | autocomplete cycle |

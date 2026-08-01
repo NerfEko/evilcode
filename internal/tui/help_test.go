@@ -234,15 +234,15 @@ func TestSpliceOverlayEmpty(t *testing.T) {
 	}
 }
 
-func TestDrainPendingForEditOrdersByDelivery(t *testing.T) {
-	// Retrieval returns text in the order it would have reached the model.
+func TestDrainPendingForEditKeepsOrder(t *testing.T) {
+	// Retrieval returns text in the order it was staged. Every staged message
+	// is queued — there are no kinds to reorder (plan.md §6.4).
 	pending := []PendingMessage{
-		{Kind: PendingQueued, Text: "third"},
-		{Kind: PendingSent, Text: "first"},
-		{Kind: PendingInterleave, Text: "second"},
+		{Kind: PendingQueued, Text: "first"},
+		{Kind: PendingQueued, Text: "second"},
 	}
 	got := drainPendingForEdit(pending)
-	want := []string{"first", "second", "third"}
+	want := []string{"first", "second"}
 	for i := range want {
 		if got[i].Text != want[i] {
 			t.Fatalf("order = %v, want %v", texts(got), want)
