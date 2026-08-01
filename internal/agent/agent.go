@@ -779,5 +779,6 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 	e.Display = res.Display
 	e.Images = res.Images
 	e.NoWrite = res.NoWrite
+	e.Repairs = res.Repairs
 	a.emit(e)
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -53,6 +54,12 @@ type Result struct {
 	// fully-failed multiedit), so swarm coordination does not queue a stale-file
 	// notice for a file that never changed. write/edit leave it false.
 	NoWrite bool
+
+	// Repairs names the argument rewrites RunOne applied before the tool's
+	// strict decode (an aliased field, a string-wrapped number coerced). It is
+	// silent to the model — the output is unchanged — and shown in the tool row
+	// so a quietly rewritten argument is findable later (§1.4).
+	Repairs []string
 }
 
 // Tool is one callable capability.
@@ -195,8 +202,19 @@ func (s Set) RunOne(ctx context.Context, call Call) (outcome Outcome) {
 		return outcome
 	}
 
-	res, err := tool.Run(ctx, call.Args)
+	// Repair common argument mistakes before the tool's strict decode runs:
+	// alias a name the model was trained on (command→cmd, file_path→path,
+	// pattern→query, …) and coerce a number given as a string for the schema's
+	// numeric fields. The repair is silent to the model — the tool runs against
+	// the repaired args and its output is unchanged — but the repairs are
+	// recorded on the result so the tool row can show what was rewritten (§1.4:
+	// an argument quietly rewritten is one nobody finds later).
+	repaired, repairs := repairArgs(call.Args, tool.Schema)
+	res, err := tool.Run(ctx, repaired)
 	res.Output = Truncate(res.Output)
+	if len(repairs) > 0 {
+		res.Repairs = repairs
+	}
 	outcome.Result = res
 	outcome.Err = err
 	return outcome
@@ -255,6 +273,19 @@ var argAliases = map[string]string{
 	"new_string": "new",
 }
 
+// repairAliases extends argAliases with names that are real fields in some
+// tools and so cannot be renamed blindly: `pattern` is grep's real field, so
+// `pattern`→`query` must only apply to a tool whose schema actually has
+// `query`. repairArgs applies these conditionally on the schema.
+var repairAliases = func() map[string]string {
+	m := make(map[string]string, len(argAliases)+1)
+	for k, v := range argAliases {
+		m[k] = v
+	}
+	m["pattern"] = "query"
+	return m
+}()
+
 // unmarshalArgs decodes tool arguments, rejecting unknown fields so a model
 // that misspells a parameter is told rather than silently getting a default.
 func unmarshalArgs(raw json.RawMessage, dst any) error {
@@ -278,7 +309,138 @@ func strictDecode(raw json.RawMessage, dst any) error {
 	return dec.Decode(dst)
 }
 
-// applyAliases renames known aliases, reporting whether anything changed.
+// repairArgs fixes common argument mistakes against a tool's schema before
+// the strict decode runs: rename a known alias onto the real field (only when
+// the real field is absent), and coerce a number given as a string for the
+// schema's numeric fields. It returns the repaired arguments and a list of
+// human-readable repairs (empty when nothing changed). The repair is silent to
+// the model; the repairs list is what the tool row shows.
+func repairArgs(raw json.RawMessage, schema json.RawMessage) (json.RawMessage, []string) {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil {
+		return raw, nil
+	}
+	var repairs []string
+	props := schemaProperties(schema)
+
+	// Aliases: rename only when the real name is absent AND the tool's schema
+	// actually has the real field. The schema check is what makes `pattern`→
+	// `query` safe — grep's real field is `pattern`, so the alias is skipped
+	// for grep and applied only for a tool that has `query`.
+	for alias, real := range repairAliases {
+		if !props[real] {
+			continue
+		}
+		v, ok := fields[alias]
+		if !ok {
+			continue
+		}
+		if _, taken := fields[real]; taken {
+			continue
+		}
+		delete(fields, alias)
+		fields[real] = v
+		repairs = append(repairs, alias+"→"+real)
+	}
+
+	// Numeric coercion: a model often sends "5" for an integer field. Coerce
+	// string-wrapped numbers for the schema's numeric fields; strict decode
+	// validates the type afterwards (a "1.5" on an integer field still fails).
+	for _, name := range numericFields(schema) {
+		v, ok := fields[name]
+		if !ok {
+			continue
+		}
+		if coerced, ok := coerceStringNumber(v); ok {
+			fields[name] = coerced
+			repairs = append(repairs, name+": string→number")
+		}
+	}
+
+	if len(repairs) == 0 {
+		return raw, nil
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return raw, repairs
+	}
+	return out, repairs
+}
+
+// numericFields lists the schema's properties whose type is integer or number.
+// "type" may be a string or an array (e.g. ["integer", "null"]).
+func numericFields(schema json.RawMessage) []string {
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(schema, &s) != nil {
+		return nil
+	}
+	var out []string
+	for name, prop := range s.Properties {
+		if hasNumericType(prop) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// schemaProperties is the set of property names a tool's schema declares.
+func schemaProperties(schema json.RawMessage) map[string]bool {
+	out := map[string]bool{}
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(schema, &s) != nil {
+		return out
+	}
+	for name := range s.Properties {
+		out[name] = true
+	}
+	return out
+}
+
+func hasNumericType(prop json.RawMessage) bool {
+	var p struct {
+		Type any `json:"type"`
+	}
+	if json.Unmarshal(prop, &p) != nil {
+		return false
+	}
+	switch t := p.Type.(type) {
+	case string:
+		return t == "integer" || t == "number"
+	case []any:
+		for _, x := range t {
+			if s, ok := x.(string); ok && (s == "integer" || s == "number") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// coerceStringNumber turns a JSON string holding a number into a JSON number
+// token, re-marshalled so leading zeros and the like are canonicalized.
+func coerceStringNumber(v json.RawMessage) (json.RawMessage, bool) {
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		return nil, false
+	}
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return nil, false
+	}
+	if n, err := strconv.ParseInt(t, 10, 64); err == nil {
+		b, _ := json.Marshal(n)
+		return b, true
+	}
+	if f, err := strconv.ParseFloat(t, 64); err == nil {
+		b, _ := json.Marshal(f)
+		return b, true
+	}
+	return nil, false
+}
 func applyAliases(raw json.RawMessage) (json.RawMessage, bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {

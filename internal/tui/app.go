@@ -689,6 +689,7 @@ func (m *Model) applyEvent(e agent.Event) {
 			ToolTokens: len(e.Output) / 4,
 			Failed:     e.IsError(),
 			Diff:       e.Diff,
+			Repairs:    e.Repairs,
 		}
 		if b.ToolPath != "" {
 			b.ToolPathExists = toolPathExists(m.cwd, b.ToolPath)

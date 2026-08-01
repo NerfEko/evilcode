@@ -55,6 +55,9 @@ type Block struct {
 	ToolCommand      string
 	ToolOutput       string
 	ToolTokens       int
+	// Repairs names argument rewrites RunOne applied (alias, string→number).
+	// Shown dim in the tool row so a quietly rewritten argument is findable.
+	Repairs           []string
 	Added            int
 	Removed          int
 	HasDiff          bool
@@ -121,6 +124,7 @@ type blockCacheKey struct {
 	text, toolName, toolTarget, toolIntent                       string
 	toolPath, toolCommand, toolOutput                            string
 	diff                                                         string
+	repairs                                                      string
 	hasDiff, failed, collapsed, toolPathExists, toolPathMarkdown bool
 	graphics                                                     graphics.Protocol
 	imagesOn, centered, toolDetails                              bool
@@ -230,6 +234,7 @@ func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
 		text: b.Text, toolName: b.ToolName, toolTarget: b.ToolTarget,
 		toolIntent: b.ToolIntent, toolPath: b.ToolPath,
 		toolCommand: b.ToolCommand, toolOutput: b.ToolOutput, diff: b.Diff,
+		repairs: strings.Join(b.Repairs, ","),
 		hasDiff: b.HasDiff, failed: b.Failed, collapsed: b.Collapsed,
 		toolPathExists: b.ToolPathExists, toolPathMarkdown: b.ToolPathMarkdown,
 		graphics: r.Graphics, imagesOn: r.ImagesOn, centered: r.Centered,
@@ -458,6 +463,9 @@ func (r *Renderer) renderTool(b *Block) []string {
 		b2.WriteString(" " + dim.Render("(") +
 			add.Render(fmt.Sprintf("+%d", b.Added)) + " " +
 			del.Render(fmt.Sprintf("-%d", b.Removed)) + dim.Render(")"))
+	}
+	if len(b.Repairs) > 0 {
+		b2.WriteString(dim.Render(" · repaired: " + strings.Join(b.Repairs, ", ")))
 	}
 
 	// A tool row is assembled from parts that are each bounded but together are

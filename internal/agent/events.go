@@ -105,6 +105,11 @@ type Event struct {
 	// that never changed (a fully-failed multiedit).
 	NoWrite bool `json:"-"`
 
+	// Repairs names the argument rewrites RunOne applied (an aliased field, a
+	// string-wrapped number coerced). Silent to the model, shown in the tool row
+	// so a quietly rewritten argument is findable later (§1.4).
+	Repairs []string `json:"-"`
+
 	// Err is the in-process error. ErrText carries it across a socket, where a
 	// Go error cannot travel.
 	Err     error  `json:"-"`
