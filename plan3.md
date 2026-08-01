@@ -737,6 +737,16 @@ both need a reproduction before a line changes.
   `Deterministic()` or every golden churns (invariant 5). Test: a context meter crossing
   its threshold takes the slot from an incumbent and holds it; with nothing urgent, every
   candidate gets the slot within a bounded number of ticks.  ⟨build⟩ ⟨new.md#5⟩
+  **Superseded 2026-07-31 — the slot does not rotate.** Built as specced, and the
+  rotation was itself the complaint: "widgets disappear and get replaced with another
+  widget like on a clock". Both the last clause of the test above and §2.5's premise are
+  withdrawn. A widget is a *resident* — it spawns into a settled pocket, rides its anchor,
+  scrolls off with the content it was placed beside, and is never exchanged while it is up.
+  `Salience`, the airtime cap and the change boost survive with a narrower job: they break
+  the tie for a *spawn*, which spreads spawns across the kinds without a timer deciding
+  what is on screen. The incumbent bonus, the minimum dwell and the urgency high-water
+  mark are gone — there is no incumbent to defend when nothing may challenge it. See
+  `LOOPS.md` and `Dock`'s doc comment.
 - [x] **F2.6** `internal/tui/dock.go:24` `RehomeFrames` — 120 frames of hide-in-place
   hysteresis was compensating for slots that churned every frame. Settled placement does
   not churn, so the compensation is either dead or is what makes a genuinely displaced
@@ -845,6 +855,14 @@ looking at a PNG.
   Enter loads that chip into the composer and submits, any other key returns to typing.
   The transcript is empty on this screen, so the arrow keys are free. Reproduce the
   cosmetic half by looking: capture the welcome PNG before and after.  ⟨fix⟩ ⟨new.md#1⟩
+- [~] **F6.2** `internal/tui/idleart.go:32` `VariantBlackhole` — delete the variant, its
+  sampler, and the coin flip in `PickVariant` (`idleart.go:38`); `SamplerFor`
+  (`idleart.go:277`) keeps its `default:` arm and every session gets the eye. Delete
+  `BlackholeSampler` outright rather than leaving it unreferenced. If the eye alone reads
+  as thin at full width, do not invent a replacement here — add "no art at all" and any
+  replacement ideas as `looks.md` entries and let them be picked.  ⟨build⟩ ⟨new.md#2⟩
+  **Dismissed:** `new.md` item 2 was reversed — the black hole stays. See §7 and the
+  dismissed-findings ledger.
 - [x] **F6.3** `looks.md` (new) — write the menu of §7: as many concrete visual changes as
   you can think of that move evilcode away from the jcode look **without removing
   features**. Each entry names what changes, the file it lives in, and what it costs, so
@@ -906,16 +924,21 @@ source that is wrong in a small way is worth knowing about:
 
 ## Dismissed findings
 
-Nothing dismissed yet. `[~]` is not available in this plan for ⟨fix⟩ tasks — see §0.2
-step 2 — so anything that lands here is a ⟨build⟩ task deliberately not built, with its
-reason, never deleted.
+`[~]` is not available in this plan for ⟨fix⟩ tasks — see §0.2 step 2 — so anything that
+lands here is a ⟨build⟩ task deliberately not built, with its reason, never deleted.
+
+- **F6.2 — delete the black hole.** `new.md` item 2 asked for it; the ask was reversed
+  before the phase ran and both idle variants stay. No code changed. The task was first
+  deleted from this document outright, which is what this section exists to prevent; it
+  is restored above as `[~]` so the reversal is discoverable rather than silent.
 
 ---
 
 # Definition of done
 
-Every box above is `[x]`. `go build ./... && go vet ./... && go test ./...` is green, and
-each of `feat-1` … `feat-6` tags a commit that was green when it was made.
+Every box above is `[x]` or `[~]` with its reason in the ledger. `go build ./... && go vet
+./... && go test ./...` is green, and each of `feat-1` … `feat-6` tags a commit that was
+green when it was made.
 
 At most one widget is on screen at a time, sometimes none, and the one that is there never
 moves, blinks, or vanishes across a turn that streams prose, runs a tool batch, and

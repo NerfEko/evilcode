@@ -252,7 +252,10 @@ func runOnce(args []string) (string, error) {
 	ts = append(ts, mcpClient.Tools()...)
 	a.Tools = ts
 
-	a.NumCtx = overrides.ContextWindow
+	// An explicit [[model]] context_window wins; otherwise the provider is
+	// asked, so a discovered window drives the meter and compaction instead
+	// of the hardcoded guess behind them.
+	a.NumCtx = config.ContextWindowFor(prov, modelName, overrides.ContextWindow)
 	a.MaxSteps = cfg.Features.MaxSteps
 	defer a.Close()
 

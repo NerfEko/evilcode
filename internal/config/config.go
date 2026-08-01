@@ -3,11 +3,13 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -165,11 +167,19 @@ type Config struct {
 	Path string `toml:"-"`
 }
 
+// The model both default routes point at. Same model either way — only the
+// route differs, because a local daemon proxies the same cloud models. Falling
+// back to a *different* model instead meant falling back to one that is usually
+// not even pulled.
+const (
+	DefaultCloudModel = "glm-5.2:cloud@ollama-cloud"
+	DefaultLocalModel = "glm-5.2:cloud@ollama-local"
+)
+
 // Default returns the configuration used when nothing is on disk: a local
 // Ollama, plus Ollama Cloud when a key is in the environment.
 func Default() *Config {
 	c := &Config{
-		DefaultModel: "glm-5.2:cloud@ollama-cloud",
 		Providers: []ProviderConfig{
 			{Name: "ollama-local", Kind: KindOllama, BaseURL: "http://localhost:11434"},
 			{Name: "ollama-cloud", Kind: KindOllama, BaseURL: "https://ollama.com", APIKeyEnv: EnvOllamaKey},
@@ -185,14 +195,25 @@ func Default() *Config {
 		},
 		Features: Features{AutoPoke: true, Memory: true},
 	}
-	// Without a key, ollama.com is unreachable directly — but a local Ollama
-	// daemon proxies the same cloud models, so the fallback keeps the model and
-	// changes only the route. Falling back to a different model instead meant
-	// falling back to one that is usually not even pulled.
-	if os.Getenv(EnvOllamaKey) == "" {
-		c.DefaultModel = "glm-5.2:cloud@ollama-local"
-	}
+	c.DefaultModel = c.preferredDefaultModel()
 	return c
+}
+
+// preferredDefaultModel routes to the cloud when a key can actually be resolved
+// and to the local daemon when it cannot. Without a key ollama.com is
+// unreachable directly, so the local route is the working one.
+//
+// It reads the *resolved* key rather than the environment, which is the whole
+// point: a key saved by /login lives in the config file, and Default() runs
+// before that file has been decoded. Deciding from the environment alone left
+// every turn routed through a local daemon no matter what you logged in with.
+func (c *Config) preferredDefaultModel() string {
+	for _, p := range c.Providers {
+		if p.Name == "ollama-cloud" && p.APIKeyValue() != "" {
+			return DefaultCloudModel
+		}
+	}
+	return DefaultLocalModel
 }
 
 // ConfigDir is ~/.config/evilcode, honoring XDG_CONFIG_HOME.
@@ -243,10 +264,18 @@ func LoadFrom(path string) (*Config, error) {
 		// Decoding straight into the defaults means an absent key keeps its
 		// default, including booleans that default to true — which a
 		// merge-from-zero-value would silently clear.
-		if _, err := toml.Decode(string(data), cfg); err != nil {
+		md, err := toml.Decode(string(data), cfg)
+		if err != nil {
 			return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 		}
 		cfg.Path = path
+		// Default() had to guess the route from the environment, because it
+		// builds the very struct this file decodes into. Now that the file's
+		// providers — and any key /login wrote into them — are loaded, the guess
+		// is re-made. Only when the file does not state a preference of its own.
+		if !md.IsDefined("default_model") {
+			cfg.DefaultModel = cfg.preferredDefaultModel()
+		}
 	}
 
 	applyEnv(cfg)
@@ -279,15 +308,74 @@ func SaveProviderAPIKey(providerName, key string) error {
 		if updated != "" && !strings.HasSuffix(updated, "\n") {
 			updated += "\n"
 		}
-		if updated != "" {
-			updated += "\n"
+		for _, p := range newProviderSections(updated, providerName, key) {
+			updated += "\n" + providerSection(p)
 		}
-		updated += "[[provider]]\n" +
-			"name = " + strconv.Quote(providerName) + "\n" +
-			"kind = \"ollama\"\n" +
-			"api_key = " + strconv.Quote(key) + "\n"
 	}
 	return writeConfigAtomic(path, []byte(updated))
+}
+
+// newProviderSections is the provider tables to append when the file has no
+// entry for providerName yet.
+//
+// An explicit `[[provider]]` array *replaces* the defaults at load time rather
+// than merging with them, so writing a lone stub into a file that had no
+// provider tables leaves a config that will not load at all: Validate rejects
+// the default model for naming a provider the file just deleted. When there is
+// nothing to replace, the defaults are written out alongside the new key.
+func newProviderSections(text, providerName, key string) []ProviderConfig {
+	var out []ProviderConfig
+	if !hasProviderTable(text) {
+		out = append(out, Default().Providers...)
+	}
+	if providerIndex(out, providerName) < 0 {
+		// Seed from the default of the same name so the entry carries its
+		// base_url and api_key_env, not just a name and a key.
+		seed := ProviderConfig{Name: providerName, Kind: KindOllama}
+		if i := providerIndex(Default().Providers, providerName); i >= 0 {
+			seed = Default().Providers[i]
+		}
+		out = append(out, seed)
+	}
+	if i := providerIndex(out, providerName); i >= 0 {
+		out[i].APIKey = key
+	}
+	return out
+}
+
+func providerIndex(providers []ProviderConfig, name string) int {
+	for i, p := range providers {
+		if p.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasProviderTable(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "[[provider]]" {
+			return true
+		}
+	}
+	return false
+}
+
+func providerSection(p ProviderConfig) string {
+	var b strings.Builder
+	b.WriteString("[[provider]]\n")
+	b.WriteString("name = " + strconv.Quote(p.Name) + "\n")
+	for _, kv := range [][2]string{
+		{"kind", string(p.Kind)},
+		{"base_url", p.BaseURL},
+		{"api_key_env", p.APIKeyEnv},
+		{"api_key", p.APIKey},
+	} {
+		if kv[1] != "" {
+			b.WriteString(kv[0] + " = " + strconv.Quote(kv[1]) + "\n")
+		}
+	}
+	return b.String()
 }
 
 func updateProviderKey(text, providerName, key string) (string, bool, error) {
@@ -448,6 +536,35 @@ func (c *Config) ModelOverrides(ref string) ModelConfig {
 		}
 	}
 	return ModelConfig{}
+}
+
+// ContextWindowDiscovery bounds the one metadata request made at startup. It is
+// a nicety — the meter falls back to a guess — so it must never be what makes
+// launching slow.
+const ContextWindowDiscovery = 3 * time.Second
+
+// ContextWindowFor resolves a model's context window. An explicit
+// `[[model]] context_window` wins; otherwise the provider is asked, which is
+// what saves hand-writing a block per model for a catalogue of seventeen. Zero
+// means nobody knew and the caller's own default stands.
+//
+// Only Ollama can answer today, so this type-asserts rather than widening the
+// Provider interface with a method the other two would have to stub.
+func ContextWindowFor(prov provider.Provider, model string, override int) int {
+	if override > 0 {
+		return override
+	}
+	o, ok := prov.(*provider.Ollama)
+	if !ok {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ContextWindowDiscovery)
+	defer cancel()
+	info, err := o.Show(ctx, model)
+	if err != nil {
+		return 0
+	}
+	return info.ContextWindow
 }
 
 // APIKey resolves a provider's key, preferring the environment.

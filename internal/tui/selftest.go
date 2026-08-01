@@ -454,6 +454,13 @@ func (m *Model) loginCommand(arg string) tea.Cmd {
 		m.notice = "usage: /login or /login status"
 		return nil
 	}
+	if m.processing {
+		// Saving the key updates the live provider's APIKey field, which the
+		// in-flight request reads from another goroutine. Waiting for the turn
+		// is cheaper than putting a mutex around a field written once a month.
+		m.notice = "Finish or interrupt the turn first, then /login"
+		return nil
+	}
 	m.loginMode = true
 	m.editor = Editor{}
 	m.notice = "Ollama Cloud API key · input hidden · Enter saves · Esc cancels"
@@ -479,12 +486,16 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 			m.notice = "Ollama Cloud login failed"
 			return m, nil
 		}
-		if m.agent != nil {
+		m.notice = "Ollama Cloud API key saved"
+		if m.agent != nil && !m.processing {
+			// Only while nothing is in flight: the request goroutine reads this
+			// field, so writing it under a live turn is a data race.
 			if cloud, ok := m.agent.Provider.(*provider.Ollama); ok && cloud.Name() == "ollama-cloud" {
 				cloud.APIKey = keyText
 			}
+		} else if m.processing {
+			m.notice = "Ollama Cloud API key saved · takes effect next turn"
 		}
-		m.notice = "Ollama Cloud API key saved"
 		return m, nil
 	case "backspace":
 		m.editor.Backspace()

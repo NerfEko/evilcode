@@ -141,10 +141,11 @@ func TestDockScrollsWithTheText(t *testing.T) {
 	}
 }
 
-func TestDockRehomesImmediatelyWhenItsSlotIsBlocked(t *testing.T) {
-	// Settled provenance prevents normal streaming churn from reaching an
-	// anchor. When a real line does block the slot, the widget should rehome on
-	// the next frame rather than wait ten seconds behind hysteresis.
+func TestBlockedResidentHidesInPlaceRatherThanMoving(t *testing.T) {
+	// A wide line sliding under the resident must not send it somewhere else.
+	// It hides for as long as the line covers it and returns to the identical
+	// row after — a widget that relocates has visibly teleported, which is worse
+	// than one that is briefly absent.
 	d := NewDock()
 	open := rowsOfWidth(10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
 		10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
@@ -155,23 +156,17 @@ func TestDockRehomesImmediatelyWhenItsSlotIsBlocked(t *testing.T) {
 		t.Fatal("expected a placement")
 	}
 
-	// A wide line slides under it: it hides in place rather than jumping, and
-	// comes back to the same slot once the line passes.
 	blocked := append([]string(nil), open...)
-	for i := first[0].Row; i < first[0].Row+3; i++ {
+	for i := first[0].Row; i < first[0].Row+first[0].Height; i++ {
 		blocked[i] = strings.Repeat("x", 98)
 	}
-
-	moved := layoutDock(d, w, blocked, 100, 0, 999, false)
-	if len(moved) != 1 || moved[0].Row == first[0].Row {
-		t.Errorf("widget did not rehome immediately: first=%+v moved=%+v", first, moved)
+	if got := layoutDock(d, w, blocked, 100, 0, 999, false); len(got) != 0 {
+		t.Errorf("widget moved to %+v instead of hiding in place", got)
 	}
 
-	// Once the line passes, it returns to the new anchor rather than the stale
-	// blocked row.
 	back := layoutDock(d, w, open, 100, 0, 999, false)
-	if len(back) != 1 || back[0].Row != moved[0].Row {
-		t.Errorf("widget did not hold its rehomed slot: moved=%+v back=%+v", moved, back)
+	if len(back) != 1 || back[0].Row != first[0].Row {
+		t.Errorf("came back at %+v, want its original row %d", back, first[0].Row)
 	}
 }
 
@@ -212,14 +207,19 @@ func TestDockSecondCandidateGetsNoSlotWhileFirstHolds(t *testing.T) {
 		t.Fatal("expected a placement")
 	}
 
+	// A higher-ranked candidate turns up. It does not get the slot: ranking
+	// decides who moves in when the dock is empty, and never evicts a sitting
+	// resident. Priority outranking a resident is what produced the swap-on-a-
+	// timer behaviour.
 	both := []Widget{widget(WidgetTodos, 3), widget(WidgetTips, 3)}
 	for i := 0; i < 2; i++ {
 		got := layoutDock(d, both, rows, 100, 0, 999, false)
 		if len(got) != 1 {
 			t.Fatalf("frame %d: placed %d widgets, want 1 (one slot)", i, len(got))
 		}
-		if got[0].Kind != WidgetTodos {
-			t.Fatalf("frame %d: slot held by %v, want the higher-priority WidgetTodos", i, got[0].Kind)
+		if got[0].Kind != WidgetTips || got[0].Row != first[0].Row {
+			t.Fatalf("frame %d: slot went to %+v, want the sitting Tips at row %d",
+				i, got[0], first[0].Row)
 		}
 	}
 }
@@ -264,27 +264,110 @@ func TestContextSaliencePreemptsStaticModelInfo(t *testing.T) {
 	}
 }
 
-func TestWidgetSlotEventuallyChangesHands(t *testing.T) {
-	// F2.5's airtime must be observable outside deterministic goldens: after
-	// the incumbent's dwell expires, another live candidate gets the slot.
+// TestResidentIsNeverSwappedForAnotherWidget is the reproduction for the
+// reported "widgets disappear and get replaced with another widget like on a
+// clock".
+//
+// A previous version of this file asserted the opposite — that the slot changes
+// hands — which is where the clock came from: airtime accrued against a sitting
+// widget until it outscored it, roughly every two seconds at the 80ms tick. A
+// widget is a resident, not a timeslot. Nothing may take the screen from one
+// that is still riding its anchor.
+func TestResidentIsNeverSwappedForAnotherWidget(t *testing.T) {
 	t.Setenv("EVILCODE_DETERMINISTIC", "")
 	m := NewModel(nil, HeaderState{Model: "mock", SessionName: "s", Provider: "mock"})
 	m.width, m.height = 140, 40
-	first := m.activeWidgets()
-	if len(first) < 2 {
+	m.blocks = []Block{{Kind: BlockTool, ToolName: "read", ToolTarget: "x"}}
+	if first := m.activeWidgets(); len(first) < 2 {
 		t.Fatalf("need at least two widget candidates, got %+v", first)
 	}
-	incumbent := first[0].Kind
-	m.placements = []Placement{{Kind: incumbent}}
-	m.widgetLastShown[incumbent] = m.widgetClock
 
-	for i := 0; i < WidgetDwellFrames+WidgetAirtimeCap*12; i++ {
-		widgets := m.activeWidgets()
-		if len(widgets) > 0 && widgets[0].Kind != incumbent {
-			return
+	// Short rows owned by a settled tool block: dockable everywhere, so nothing
+	// but policy decides what is on screen.
+	const rowCount = 30
+	owner := make([]int, rowCount)
+	seen := map[WidgetKind]bool{}
+	for i := 0; i < 400; i++ {
+		m.dockWidgets(make([]string, rowCount), rowCount, 0, rowCount, owner)
+		for _, p := range m.placements {
+			seen[p.Kind] = true
 		}
 	}
-	t.Fatalf("widget slot stayed with %v after dwell; candidates did not rotate", incumbent)
+	if len(seen) != 1 {
+		t.Errorf("%d widgets held the dock over 400 unscrolled frames (%v); "+
+			"a resident is never exchanged", len(seen), seen)
+	}
+}
+
+func TestResidentRetiresOffTheTopAndAnotherSpawnsAfterAPause(t *testing.T) {
+	// The resident rides its anchor up and out of the viewport; it does not
+	// re-home to stay visible. Once it is gone the dock waits SpawnCooldown
+	// frames before seating another, so a replacement reads as arriving rather
+	// than as the old one jumping.
+	const rowCount = 30
+	rows := make([]string, rowCount)
+	owner := make([]int, rowCount)
+	d := NewDock()
+	w := []Widget{widget(WidgetTodos, 3)}
+
+	first := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, 0, rowCount, false)
+	if len(first) != 1 {
+		t.Fatalf("no initial placement: %+v", first)
+	}
+	born := first[0].Row
+
+	// Scroll far enough that the anchored row is above the viewport.
+	gone := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, born+rowCount, rowCount, false)
+	if len(gone) != 0 {
+		t.Fatalf("widget survived scrolling off the top at row %d: %+v", gone[0].Row, gone)
+	}
+
+	// The frame it retired on is already the first empty one, so the cooldown
+	// has SpawnCooldown-1 frames left to run. They stay empty.
+	for i := 2; i < SpawnCooldown; i++ {
+		if got := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, 0, rowCount, false); len(got) != 0 {
+			t.Fatalf("respawned %d frames into a %d-frame cooldown", i, SpawnCooldown)
+		}
+	}
+	if got := d.Layout(w, rows, owner, kindOfFixed(BlockTool), -1, 100, 0, rowCount, false); len(got) != 1 {
+		t.Errorf("no widget after the cooldown expired: %+v", got)
+	}
+}
+
+func TestSpawnSeatsLowWithClearanceAboveTheTail(t *testing.T) {
+	// Two things at once. Seated near the pocket floor the widget has the whole
+	// viewport above it as runway before it scrolls out — seated at the top it
+	// would retire almost at once and the dock would spend its life respawning.
+	// SpawnLift then keeps it clear of the floor, which is where the live
+	// thinking bubble sits.
+	const rowCount = 40
+	rows := make([]string, rowCount)
+	owner := make([]int, rowCount)
+	// Block 0 is a live reasoning trace occupying the tail from row 30.
+	for i := range owner {
+		if i >= 30 {
+			owner[i] = 1
+		}
+	}
+	d := NewDock()
+	w := widget(WidgetTodos, 3)
+
+	got := d.Layout([]Widget{w}, rows, owner, kindOfFixed(BlockTool, BlockReasoning),
+		1, 100, 0, rowCount, false)
+	if len(got) != 1 {
+		t.Fatalf("no placement: %+v", got)
+	}
+	// settledEnd = 30 - SettleMargin. The widget's bottom must clear it by the
+	// lift, and it must sit well below the top of the screen.
+	settledEnd := 30 - SettleMargin
+	if bottom := got[0].Row + got[0].Height; bottom > settledEnd-SpawnLift {
+		t.Errorf("widget bottom at row %d, want at or above %d — %d rows clear of the tail",
+			bottom, settledEnd-SpawnLift, SpawnLift)
+	}
+	if got[0].Row < rowCount/3 {
+		t.Errorf("widget seated at row %d of %d — too high to have any runway",
+			got[0].Row, rowCount)
+	}
 }
 
 func TestWidgetBoxIsRectangular(t *testing.T) {
@@ -584,10 +667,11 @@ func TestWidgetReturnsToTheSameSlotAfterAGap(t *testing.T) {
 	}
 }
 
-func TestWidgetRehomesImmediatelyWhenItScrollsOffTheTop(t *testing.T) {
-	// Scrolling with the content and staying visible used to be in conflict:
-	// once the anchor scrolled above the viewport the row went negative, `fits`
-	// failed, and hide-in-place held it invisible instead of re-placing it.
+func TestWidgetLeavesWithTheContentItRodeOffTheTop(t *testing.T) {
+	// It does *not* re-home to stay on screen. The widget belongs to the part of
+	// the conversation it was placed beside, so it leaves when that leaves —
+	// which is what "flows offscreen" means. Re-homing to stay visible is the
+	// teleport this policy exists to prevent.
 	d := NewDock()
 	rows := make([]string, 40)
 	for i := range rows {
@@ -598,10 +682,8 @@ func TestWidgetRehomesImmediatelyWhenItScrollsOffTheTop(t *testing.T) {
 	if got := layoutDock(d, w, rows, 100, 0, 999, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
-	// The content it was riding has scrolled well above the viewport.
-	got := layoutDock(d, w, rows, 100, 500, 999, false)
-	if len(got) != 1 {
-		t.Error("the widget disappeared instead of re-homing after scrolling off")
+	if got := layoutDock(d, w, rows, 100, 500, 999, false); len(got) != 0 {
+		t.Errorf("widget re-homed to %+v instead of leaving with its content", got)
 	}
 }
 
@@ -626,11 +708,13 @@ func TestWidgetSurvivesTheScrollbarAppearing(t *testing.T) {
 	}
 }
 
-func TestDockRehomesWhenContentShrinks(t *testing.T) {
+func TestShrinkingContentNeverRelocatesTheResident(t *testing.T) {
 	// A thinking trace collapsing from nine lines to one the instant the answer
-	// starts removes lines from *above* the widgets. An anchor is an absolute
-	// content line, so every one of them silently starts naming different
-	// content and the box lurches to wherever its old number now points.
+	// starts removes lines from *above* the widget. With provenance the anchor
+	// is block-relative and simply follows its block (see
+	// TestDockAnchorFollowsBlockAfterRowsAboveCollapse). Without it — the
+	// legacy synthetic-row path — the only safe answer is to stay put or be
+	// absent. Reappearing at some other row is the lurch being guarded against.
 	d := NewDock()
 	rows := make([]string, 40)
 	for i := range rows {
@@ -645,12 +729,11 @@ func TestDockRehomesWhenContentShrinks(t *testing.T) {
 
 	// Eight lines vanish from above, as a collapsing trace does.
 	got := layoutDock(d, w, rows, 100, 12, 192, false)
-	if len(got) != 1 {
-		t.Fatal("the widget disappeared when the transcript shortened")
+	if len(got) == 1 && got[0].Row != first[0].Row {
+		t.Errorf("widget lurched from row %d to %d when the transcript shortened",
+			first[0].Row, got[0].Row)
 	}
-	// It re-homed cleanly rather than holding a line that now means something
-	// else. What matters is that it is placed and on screen.
-	if got[0].Row < 0 || got[0].Row+got[0].Height > len(rows) {
+	if len(got) == 1 && (got[0].Row < 0 || got[0].Row+got[0].Height > len(rows)) {
 		t.Errorf("widget landed off screen at row %d", got[0].Row)
 	}
 }
@@ -669,13 +752,16 @@ func TestDockKeepsItsAnchorWhileContentOnlyGrows(t *testing.T) {
 	if got := layoutDock(d, w, rows, 100, 0, 100, false); len(got) != 1 {
 		t.Fatal("expected a placement")
 	}
-	before := d.anchors[WidgetTodos].Offset
+	before := d.resident.Offset
 
 	// Several frames of content arriving.
 	for i := 1; i <= 5; i++ {
 		layoutDock(d, w, rows, 100, 0, 100+i, false)
 	}
-	if got := d.anchors[WidgetTodos].Offset; got != before {
+	if d.resident == nil {
+		t.Fatal("resident retired while content only grew")
+	}
+	if got := d.resident.Offset; got != before {
 		t.Errorf("anchor moved from %d to %d while content only grew", before, got)
 	}
 }

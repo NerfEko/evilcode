@@ -363,7 +363,7 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		panelRatio:   50,
 		showHints:    true,
 		overscroll:   Overscroll{Mode: OverscrollPull},
-		welcomeFocus: true,
+		welcomeFocus:    true,
 		artVariant:   PickVariant(h.SessionName),
 		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 	}
@@ -1014,6 +1014,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Configurable bindings are resolved before the fixed keys, so a rebind
 	// genuinely takes the chord away from its default (plan.md §11).
+	if m.keymap != nil {
+		if b, ok := m.keymap.Lookup(key); ok {
+			if handled, model, cmd := m.runAction(b.Action); handled {
+				m.noteHotkey(key, b.Desc)
+				return model, cmd
+			}
+		}
+	}
+
+	// The welcome screen's chips take the arrows and Enter (§7, item 1). The
+	// transcript is empty there, so there is no scroll to conflict with — but a
+	// rebind still gets these chords first, which is why this sits below the
+	// keymap rather than above it.
 	if len(m.blocks) == 0 && m.editor.Text == "" && len(SuggestionChips) > 0 {
 		switch key {
 		case "up":
@@ -1025,17 +1038,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.welcomeChip = (m.welcomeChip + 1) % len(SuggestionChips)
 			return m, nil
 		case "enter":
-			m.editor.Text = SuggestionChips[m.welcomeChip%len(SuggestionChips)]
-			m.editor.Cursor = len([]rune(m.editor.Text))
-			return m.send(false)
-		}
-	}
-
-	if m.keymap != nil {
-		if b, ok := m.keymap.Lookup(key); ok {
-			if handled, model, cmd := m.runAction(b.Action); handled {
-				m.noteHotkey(key, b.Desc)
-				return model, cmd
+			// Only when a chip is actually highlighted: with the focus dropped
+			// there is nothing on screen to say which chip Enter would send.
+			if m.welcomeFocus {
+				m.editor.Text = SuggestionChips[m.welcomeChip%len(SuggestionChips)]
+				m.editor.Cursor = len([]rune(m.editor.Text))
+				return m.send(false)
 			}
 		}
 	}
@@ -2915,11 +2923,19 @@ func (m *Model) factStack() FactStack {
 	}
 }
 
+// The salience knobs. Salience decides one thing only: which widget moves in
+// when the dock is empty and a pocket opens. It has no say over a widget that is
+// already resident — that one stays until it scrolls away (see Dock). Both are
+// feel values and the first set will be wrong.
 const (
-	// WidgetDwellFrames keeps a visible box stable for about two seconds. The
-	// slot may still change sooner for a genuinely urgent context warning.
-	WidgetDwellFrames = 25
-	WidgetAirtimeCap  = 12
+	// WidgetAirtimeCap bounds the pressure a widget accrues while it is not the
+	// one on screen. It is what spreads spawns across the kinds instead of
+	// handing every one to whichever ranks highest, and it only ever applies at
+	// the moment of spawning.
+	WidgetAirtimeCap = 12
+
+	// WidgetChangeBoost favours a widget whose rendered content just changed, so
+	// the one with news is the one that moves in.
 	WidgetChangeBoost = 8
 )
 
@@ -3007,24 +3023,11 @@ func (m *Model) activeWidgets() []Widget {
 				change = maxFloat(WidgetChangeBoost-float64(m.widgetClock-changed)/6, 0)
 			}
 		}
+		// No incumbent bonus and no dwell: the dock does not consult this
+		// ranking for a widget that is already resident, so there is nothing to
+		// defend a sitting widget against. Scoring one was how a timer ended up
+		// deciding what was on screen.
 		w.Salience = m.widgetUrgency(*w) + airtime + change
-
-		incumbent := false
-		for _, p := range m.placements {
-			if p.Kind == w.Kind {
-				incumbent = true
-				break
-			}
-		}
-		if incumbent {
-			dwell := m.widgetClock
-			if shown, ok := m.widgetLastShown[w.Kind]; ok && dwell >= shown {
-				dwell -= shown
-			}
-			if dwell < WidgetDwellFrames {
-				w.Salience += 100
-			}
-		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Salience != out[j].Salience {
@@ -3168,10 +3171,13 @@ func (m *Model) dockWidgets(rows []string, transcriptRows, scrollTop, contentHei
 		paintWidget(rows, m.renderer.RenderWidget(byKind[p.Kind]),
 			p.Row, p.Col, min(transcriptRows, len(rows)))
 	}
-	m.placements = placements
+	// Airtime is pressure accrued while a widget is *not* the one on screen, so
+	// the resident's resets every frame it is up and it starts from zero when it
+	// finally scrolls away.
 	for _, p := range placements {
 		m.widgetLastShown[p.Kind] = m.widgetClock
 	}
+	m.placements = placements
 	return rows
 }
 

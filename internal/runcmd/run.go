@@ -134,7 +134,10 @@ func Run(args []string) (int, error) {
 	conv.Persist(func(m provider.Message) error { return store.WriteMessage(m) })
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
-	a.NumCtx = overrides.ContextWindow
+	// An explicit [[model]] context_window wins; otherwise the provider is
+	// asked, so a discovered window drives the meter and compaction instead
+	// of the hardcoded guess behind them.
+	a.NumCtx = config.ContextWindowFor(prov, modelName, overrides.ContextWindow)
 	a.MaxSteps = cfg.Features.MaxSteps
 
 	// Compaction reaches headless and the daemon too. It was a *tui.Model

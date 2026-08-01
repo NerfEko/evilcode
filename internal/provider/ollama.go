@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -27,6 +28,11 @@ type Ollama struct {
 	// turn of a session — a session resumed against an OpenAI-kind provider
 	// depends on tool_call_id being unique, not just present.
 	callSeq atomic.Int64
+
+	// showCache memoizes /api/show per model. A model's context window and
+	// capabilities do not change under a running session.
+	showMu    sync.Mutex
+	showCache map[string]ModelInfo
 }
 
 // NewOllama builds a client. An empty base URL means a local daemon.
@@ -313,11 +319,145 @@ func (o *Ollama) Models(ctx context.Context) ([]ModelInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
 		return nil, err
 	}
-	out := make([]ModelInfo, 0, len(tags.Models))
-	for _, m := range tags.Models {
-		out = append(out, ModelInfo{Name: m.Name, Size: m.Details.ParameterSize})
+	out := make([]ModelInfo, len(tags.Models))
+	for i, m := range tags.Models {
+		out[i] = ModelInfo{Name: m.Name, Size: m.Details.ParameterSize}
 	}
+
+	// /api/tags is a catalogue listing: names and disk sizes, no context window
+	// and no capabilities. Ollama Cloud does not even fill parameter_size. The
+	// per-model detail lives behind /api/show, so it is fetched here rather than
+	// left for every caller to guess at or for the user to hand-write a
+	// [[model]] context_window block for each of seventeen cloud models.
+	//
+	// Bounded fan-out: one request per model, ShowConcurrency at a time, and the
+	// caller's deadline governs. A model that does not answer keeps its listing
+	// entry unenriched — a catalogue missing a context window is far better than
+	// no catalogue.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, ShowConcurrency)
+	for i := range out {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			detail, err := o.Show(ctx, out[i].Name)
+			if err != nil {
+				return
+			}
+			out[i].ContextWindow = detail.ContextWindow
+			out[i].Vision = detail.Vision
+			if detail.Size != "" {
+				out[i].Size = detail.Size
+			}
+		}(i)
+	}
+	wg.Wait()
 	return out, nil
+}
+
+// ShowConcurrency bounds the per-model detail fan-out. Model listings are
+// short — a local daemon holds a handful, ollama.com under twenty — so this is
+// about not opening a connection per model at once, not about throughput.
+const ShowConcurrency = 8
+
+type ollamaShowResp struct {
+	Capabilities []string       `json:"capabilities"`
+	ModelInfo    map[string]any `json:"model_info"`
+	Details      struct {
+		ParameterSize string `json:"parameter_size"`
+	} `json:"details"`
+}
+
+// Show fetches one model's metadata, memoized for the life of the client: a
+// model's context window does not change under a running session, and the model
+// picker would otherwise re-fetch the whole catalogue every time it opens.
+func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
+	o.showMu.Lock()
+	if o.showCache == nil {
+		o.showCache = map[string]ModelInfo{}
+	} else if hit, ok := o.showCache[model]; ok {
+		o.showMu.Unlock()
+		return hit, nil
+	}
+	o.showMu.Unlock()
+
+	resp, err := o.post(ctx, "/api/show", map[string]string{"model": model})
+	if err != nil {
+		return ModelInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ModelInfo{}, httpError(resp.StatusCode, resp.Body)
+	}
+	var show ollamaShowResp
+	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
+		return ModelInfo{}, err
+	}
+
+	// A local daemon reports parameter_size as "8B"; cloud reports a bare count,
+	// or "0" for a model it does not publish one for. Only the already-readable
+	// form is taken verbatim.
+	info := ModelInfo{Name: model}
+	if _, bare := jsonInt(json.Number(show.Details.ParameterSize)); !bare {
+		info.Size = show.Details.ParameterSize
+	}
+	// Ollama scopes the context length to the architecture — glm5.2.context_length,
+	// llama.context_length, qwen3moe.context_length. The suffix identifies it;
+	// no fixed key can, and the family is not knowable in advance.
+	for key, value := range show.ModelInfo {
+		if strings.HasSuffix(key, ".context_length") {
+			if n, ok := jsonInt(value); ok && n > 0 {
+				info.ContextWindow = n
+			}
+			break
+		}
+	}
+	for _, c := range show.Capabilities {
+		if c == "vision" {
+			info.Vision = true
+		}
+	}
+	// Cloud reports a bare parameter count where local reports "8B". Render the
+	// count so the picker's detail column stays one kind of thing.
+	if n, ok := jsonInt(show.ModelInfo["general.parameter_count"]); ok && n > 0 {
+		info.Size = humanParams(n)
+	}
+
+	o.showMu.Lock()
+	o.showCache[model] = info
+	o.showMu.Unlock()
+	return info, nil
+}
+
+// jsonInt reads a number that came through encoding/json as a float64 without
+// losing a parameter count that does not fit one exactly.
+func jsonInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
+	}
+	return 0, false
+}
+
+func humanParams(n int) string {
+	switch {
+	case n >= 1e12:
+		return fmt.Sprintf("%.0fT", float64(n)/1e12)
+	case n >= 1e9:
+		return fmt.Sprintf("%.0fB", float64(n)/1e9)
+	case n >= 1e6:
+		return fmt.Sprintf("%.0fM", float64(n)/1e6)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // httpError turns a non-200 into an error carrying enough of the body to be

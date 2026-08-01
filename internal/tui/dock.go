@@ -25,6 +25,19 @@ const (
 	// feel value — the right number depends on stream speed and terminal height
 	// and will want tuning against a real session.
 	SettleMargin = 4
+
+	// SpawnLift holds a new widget this many rows clear of the pocket floor it
+	// is seated on. The floor sits just above the churning tail, and a widget
+	// level with the live thinking bubble reads as having been parked next to
+	// it. A couple of lines up is enough to break that reading.
+	SpawnLift = 3
+
+	// SpawnCooldown is how long the dock stays empty after a widget scrolls away
+	// before it will seat another — roughly two seconds at the 80ms frame tick.
+	// Without the pause a replacement arrives on the same frame the last one
+	// left, which reads as the old widget jumping rather than a new one
+	// arriving.
+	SpawnCooldown = 25
 )
 
 // WidgetKind identifies a dockable widget. The order is the priority order of
@@ -111,26 +124,48 @@ type Placement struct {
 	Width, Height int
 }
 
-// anchor remembers where a widget lives between frames, which is what lets it
-// scroll with the text rather than snapping to a fresh slot each frame.
+// anchor remembers where the resident lives between frames, which is what lets
+// it scroll with the text rather than snapping to a fresh slot each frame.
 type anchor struct {
+	Kind WidgetKind
+
 	// Block and Offset identify the transcript row the widget rides. Block is
 	// -1 for chrome (header/gap/slack), where Offset is the absolute row. A
 	// block-relative anchor survives that block gaining or losing lines above
-	// it; an absolute ContentTop did not.
+	// it; an absolute content line did not — a reasoning trace collapsing above
+	// the widget moved every line under it.
 	Block  int
 	Offset int
 
 	Side Side
 }
 
-// Dock places widgets into the blank space beside the transcript.
+// Dock places one widget into the blank space beside the transcript.
+//
+// Widgets are residents, not a rotation. A widget spawns into a settled pocket
+// of negative space, and from then on it belongs to that part of the
+// conversation: it rides its anchor, scrolls up with the text, and eventually
+// leaves the screen with the content it was placed beside. It is never swapped
+// for another widget while it is up, and it never re-homes — a widget that
+// re-homes has visibly teleported, and one that is exchanged on a timer reads
+// as a clock.
+//
+// Once it has scrolled away the dock sits empty for SpawnCooldown frames before
+// it will consider spawning another. That pause is what makes a new widget read
+// as arriving rather than as the last one moving.
 type Dock struct {
-	anchors map[WidgetKind]*anchor
+	// resident is the widget currently riding the transcript, or nil.
+	resident *anchor
+
+	// emptyFrames counts consecutive frames with no resident, so a fresh one
+	// does not appear the instant the last one scrolls out. It starts already
+	// past the cooldown: the pause is there to separate one widget from the
+	// next, and there is nothing to separate the first one from.
+	emptyFrames int
 }
 
 // NewDock builds an empty dock.
-func NewDock() *Dock { return &Dock{anchors: map[WidgetKind]*anchor{}} }
+func NewDock() *Dock { return &Dock{emptyFrames: SpawnCooldown} }
 
 // FreeWidth reports, per row, how many trailing columns are blank. This is what
 // the dock measures: widgets go where the text is not, so a long line of prose
@@ -232,19 +267,59 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 		return true
 	}
 
-	// At most one widget is placed (§2.5: rule 5). Zero is a legitimate
-	// outcome — there is no fallback placement, no pinning a box somewhere bad
-	// just to have one. With one widget there is no second widget to overlap,
-	// so the cross-widget `occupied` tracker is gone.
-	var out []Placement
-
-	place := func(w Widget, a *anchor, row, height int) Placement {
+	place := func(w Widget, row int) Placement {
 		return Placement{
 			Kind: w.Kind, Row: row, Col: totalWidth - w.Width(),
-			Width: w.Width(), Height: height,
+			Width: w.Width(), Height: w.Height(),
+		}
+	}
+	offered := func(kind WidgetKind) (Widget, bool) {
+		for _, w := range widgets {
+			if w.Kind == kind {
+				return w, true
+			}
+		}
+		return Widget{}, false
+	}
+
+	// The resident rides its anchor. Nothing may take the slot from it and it
+	// never re-homes: it belongs to the part of the conversation it was placed
+	// beside, and it leaves the screen with it.
+	if d.resident != nil {
+		w, still := offered(d.resident.Kind)
+		row, anchored := d.resident.screenRow(owner, scrollTop, len(rows))
+
+		switch {
+		case !still || !anchored || row < 0:
+			// Its content has scrolled above the viewport — or the widget stopped
+			// being offered at all, or the block it rode was compacted away. The
+			// resident retires rather than re-homing. Re-homing is what made a
+			// widget appear to teleport across the screen.
+			d.resident = nil
+			d.emptyFrames = 0
+
+		case row+w.Height() > len(rows) || !fits(free, row, w.Height(), w.Width()):
+			// Momentarily unusable — the viewport shrank, or a long line grew
+			// under it. Hide in place with the anchor intact, so it comes back
+			// exactly where it was instead of hunting for somewhere new.
+			return nil
+
+		default:
+			return []Placement{place(w, row)}
 		}
 	}
 
+	// Empty dock. Let the space stay empty for a moment first: a new widget
+	// appearing the same frame the last one scrolled out reads as the old one
+	// jumping, which is the whole effect this is here to avoid.
+	d.emptyFrames++
+	if d.emptyFrames < SpawnCooldown {
+		return nil
+	}
+
+	// widgets arrives ranked by salience, so the highest-ranked candidate that
+	// can find a pocket is the one that moves in. Salience only ever decides
+	// this moment — once a widget is resident, ranking stops mattering.
 	for _, w := range widgets {
 		side := w.Kind.PreferredSide()
 		if side == SideLeft && !centered {
@@ -254,51 +329,16 @@ func (d *Dock) Layout(widgets []Widget, rows []string, owner []int, kindOf func(
 			// every real terminal width anyway (see DEVIATIONS).
 			side = SideRight
 		}
-
-		a := d.anchors[w.Kind]
-		height := w.Height()
-
-		if a != nil {
-			row, anchored := a.screenRow(owner, scrollTop, len(rows))
-
-			switch {
-			case !anchored || row < 0 || row+height > len(rows):
-				// The anchored content scrolled out of the viewport. It was not
-				// on screen, so re-homing now cannot be seen as a jump — fall
-				// through without aging. This is what lets a widget scroll with
-				// the text *and* stay visible, which used to be in conflict.
-
-			case fits(free, row, height, w.Width()) && dockable(row, height):
-				// Still in the settled region and still fits: hold the slot.
-				// Settled rows do not change, so this is the common case.
-				out = append(out, place(w, a, row, height))
-				continue
-
-			default:
-				// The slot is genuinely unusable. Find a new settled slot now;
-				// if none exists, the widget is absent until one opens.
-			}
-		}
-
-		row, ok := findSlot(free, owner, dockable, height, w.Width())
+		row, ok := findSlot(free, dockable, w.Height(), w.Width())
 		if !ok {
 			continue
 		}
-		if a == nil {
-			a = &anchor{}
-			d.anchors[w.Kind] = a
-		}
-		a.Block, a.Offset = anchorAt(owner, scrollTop, row)
-		a.Side = side
-		out = append(out, place(w, a, row, height))
+		block, offset := anchorAt(owner, scrollTop, row)
+		d.resident = &anchor{Kind: w.Kind, Block: block, Offset: offset, Side: side}
+		d.emptyFrames = 0
+		return []Placement{place(w, row)}
 	}
-	// One slot: keep only the first placement. The widget that holds the slot
-	// is chosen by list order today; F2.5's salience score reorders that list so
-	// the slot rotates and urgency preempts.
-	if len(out) > 1 {
-		out = out[:1]
-	}
-	return out
+	return nil
 }
 
 // ownerAt maps a visible row back to the full transcript provenance. Keeping
@@ -368,8 +408,19 @@ func fits(free []int, row, height, width int) bool {
 	return true
 }
 
-// findSlot picks the topmost row where a widget fits, so a fresh placement is
-// not covered by the next line that arrives.
+// findSlot seats a new widget near the floor of the lowest usable pocket.
+//
+// Not the topmost row, which is what it used to return. A resident rides
+// upward with the text and retires when it passes the top of the viewport, so
+// the row it is born on *is* its whole lifespan: seated at the top of the
+// screen it scrolls out almost immediately and the dock spends its life
+// respawning, which is the slideshow. Seated low it has the entire viewport
+// above it as runway.
+//
+// SpawnLift then holds it a few rows clear of the pocket floor. The floor sits
+// just above the unsettled tail, which is where the live thinking bubble is, and
+// a widget level with a bubble that is about to collapse looks like it was
+// placed next to it on purpose.
 //
 // The look-ahead profile (reliableWidth) is gone: it looked ahead in *space*
 // over rows that were blank because the content had not arrived yet, which is
@@ -378,28 +429,46 @@ func fits(free []int, row, height, width int) bool {
 // guarantees it will (§2.3). The settled-region check (dockable) and fits'
 // instantaneous free-width test are enough: a settled row does not change, so
 // the width it has now is the width it keeps.
-func findSlot(free []int, owner []int, dockable func(row, height int) bool, height, width int) (int, bool) {
-	for row := 0; row+height <= len(free); row++ {
-		if !dockable(row, height) {
+func findSlot(free []int, dockable func(row, height int) bool, height, width int) (int, bool) {
+	usable := func(row int) bool { return dockable(row, 1) && fits(free, row, 1, width) }
+
+	// Walk pockets bottom-up and take the lowest one tall enough to hold the
+	// widget plus its lift.
+	for end := len(free); end > 0; end-- {
+		if !usable(end - 1) {
 			continue
 		}
-		if fits(free, row, height, width) {
+		start := end - 1
+		for start > 0 && usable(start-1) {
+			start--
+		}
+		// Seat at the pocket floor, lifted clear of it, but never above the
+		// pocket's own ceiling: in a pocket only just tall enough, fitting at all
+		// beats the extra clearance.
+		row := max(end-height-SpawnLift, start)
+		if row+height <= end && dockable(row, height) && fits(free, row, height, width) {
 			return row, true
 		}
+		end = start + 1 // skip the rest of this pocket
 	}
 	return 0, false
 }
 
-// Forget drops a widget's anchor, so a widget dismissed by clicking does not
-// come back to the same slot when it is restored.
-//
-// Was dead code for a long time: the aging path in Layout covers a widget that
-// merely stops rendering, so this is only for a deliberate dismissal.
-func (d *Dock) Forget(kind WidgetKind) { delete(d.anchors, kind) }
+// Forget retires the resident if it is the named kind, for a widget dismissed
+// by clicking. The cooldown runs from here too, so swatting one away does not
+// immediately produce another in its place.
+func (d *Dock) Forget(kind WidgetKind) {
+	if d.resident != nil && d.resident.Kind == kind {
+		d.resident = nil
+		d.emptyFrames = 0
+	}
+}
 
-// Reset clears every anchor, for a resize or an alignment change where holding
-// old positions would be worse than starting over.
-func (d *Dock) Reset() { d.anchors = map[WidgetKind]*anchor{} }
+// Reset retires the resident, for a resize or an alignment change where every
+// row has re-wrapped and holding an old position would be worse than starting
+// over. No cooldown: nothing scrolled away, the frame was rebuilt under it, so
+// a gap here would just read as the widget blinking out on resize.
+func (d *Dock) Reset() { d.resident, d.emptyFrames = nil, SpawnCooldown }
 
 // Hit reports the widget whose box covers a screen cell, if any.
 func (d *Dock) Hit(placements []Placement, col, row int) (WidgetKind, bool) {

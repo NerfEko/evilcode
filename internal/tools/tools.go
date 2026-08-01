@@ -197,14 +197,18 @@ func Truncate(s string) string {
 	if len(s) <= MaxResultBytes {
 		return s
 	}
-	const note = "\n\n… output truncated; narrow the request to see the rest …\n\n"
-	available := MaxResultBytes - len(note)
+	// How much was dropped is the useful half of the message — it is what tells
+	// the model whether narrowing the request is worth it. Budget for the
+	// longest count the note can carry rather than dropping it to stay under
+	// the cap.
+	const format = "\n\n… %d bytes of output truncated; narrow the request to see the rest …\n\n"
+	available := MaxResultBytes - len(fmt.Sprintf(format, len(s)))
 	head := available * 2 / 3
 	tail := available - head
 	// Cut on rune boundaries so truncation never emits a broken sequence.
 	head = backToRuneBoundary(s, head)
 	tailStart := forwardToRuneBoundary(s, len(s)-tail)
-	return s[:head] + note + s[tailStart:]
+	return s[:head] + fmt.Sprintf(format, tailStart-head) + s[tailStart:]
 }
 
 func backToRuneBoundary(s string, i int) int {

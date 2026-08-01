@@ -483,6 +483,85 @@ func TestOllamaModels(t *testing.T) {
 	}
 }
 
+func TestOllamaModelsEnrichesFromShow(t *testing.T) {
+	// /api/tags is a catalogue listing and carries no context window at all —
+	// Ollama Cloud does not even fill parameter_size. Without the per-model
+	// /api/show behind it, every cloud model needs a hand-written [[model]]
+	// context_window block or the meter falls back to a guess.
+	var shows int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			w.Write([]byte(`{"models":[{"name":"glm-5.2"},{"name":"gemma4:31b"}]}`))
+		case "/api/show":
+			atomic.AddInt32(&shows, 1)
+			var body struct {
+				Model string `json:"model"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.Model == "gemma4:31b" {
+				w.Write([]byte(`{"capabilities":["completion","vision"],
+					"details":{"parameter_size":"0"},
+					"model_info":{"gemma4.context_length":262144,"general.parameter_count":33000000000}}`))
+				return
+			}
+			w.Write([]byte(`{"capabilities":["thinking","tools"],
+				"details":{"parameter_size":"756162687872"},
+				"model_info":{"glm5.2.context_length":1000000,"general.parameter_count":756000000000}}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	o := NewOllama("cloud", srv.URL, "key")
+	models, err := o.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]ModelInfo{}
+	for _, m := range models {
+		byName[m.Name] = m
+	}
+	if got := byName["glm-5.2"]; got.ContextWindow != 1000000 || got.Vision || got.Size != "756B" {
+		t.Errorf("glm-5.2 = %+v, want ctx 1000000, no vision, size 756B", got)
+	}
+	if got := byName["gemma4:31b"]; got.ContextWindow != 262144 || !got.Vision || got.Size != "33B" {
+		t.Errorf("gemma4:31b = %+v, want ctx 262144, vision, size 33B", got)
+	}
+
+	// Memoized: opening the picker a second time must not re-fetch the whole
+	// catalogue one request per model.
+	before := atomic.LoadInt32(&shows)
+	if _, err := o.Models(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if after := atomic.LoadInt32(&shows); after != before {
+		t.Errorf("/api/show called %d more times on the second listing, want 0", after-before)
+	}
+}
+
+func TestOllamaModelsSurviveAShowThatFails(t *testing.T) {
+	// A catalogue missing a context window beats no catalogue: the picker must
+	// still list a model whose detail lookup errored.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.Write([]byte(`{"models":[{"name":"m","details":{"parameter_size":"8B"}}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	models, err := NewOllama("c", srv.URL, "").Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].Name != "m" || models[0].Size != "8B" {
+		t.Errorf("models = %+v, want the listing kept", models)
+	}
+}
+
 func TestOllamaDefaultsToLocalhost(t *testing.T) {
 	if got := NewOllama("local", "", "").BaseURL; got != "http://localhost:11434" {
 		t.Errorf("BaseURL = %q", got)

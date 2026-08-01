@@ -68,6 +68,17 @@ closed terminal does not drop the messages the turn was still writing.
 `~/.config/evilcode/config.toml`, or wherever `$EVILCODE_CONFIG` points. Every key has
 a default and a missing file is a working setup.
 
+`default_model` is the one key you usually do not have to set. Left out, the route is
+picked from whether an Ollama Cloud key can be resolved — from `$OLLAMA_API_KEY` or from
+the config file, so a key entered with `/login` counts. With a key you get
+`glm-5.2:cloud@ollama-cloud`; without one, ollama.com is unreachable directly, so the same
+model is routed through the local daemon that proxies it. Setting `default_model`
+yourself always wins.
+
+`context_window` is likewise optional: the window and capabilities of every Ollama model,
+local or cloud, are read from the provider, so the meter and auto-compaction are right
+without a `[[model]]` block per model. Set one only to correct what the provider claims.
+
 ```toml
 default_model = "glm-5.2:cloud@ollama-cloud"
 

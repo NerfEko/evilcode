@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"evilcode/internal/tools"
+	"evilcode/internal/tui"
 	"evilcode/internal/tuicmd"
 )
 
@@ -21,6 +22,13 @@ func runUpdate() error {
 		return fmt.Errorf("update: not inside a git checkout: %w", err)
 	}
 	root = strings.TrimSpace(root)
+	// `update` builds ./ in this checkout and installs the result over the
+	// running binary, so the checkout has to actually be evilcode's. Without
+	// this, running `evilcode update` from inside any other Go repository
+	// fast-forwards *that* repo and installs *its* main package as evilcode.
+	if !tui.IsEvilcodeRepo(root) {
+		return fmt.Errorf("update refused: %s is not evilcode's own checkout; run it from there", root)
+	}
 	status, err := gitOutput(root, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("update: checking the working tree: %w", err)
@@ -70,7 +78,10 @@ func runUpdate() error {
 	oldHead = strings.TrimSpace(oldHead)
 	rollback := func(failure error) error { return updateFailure(root, oldHead, failure) }
 
-	newVersion, err := gitOutput(root, "describe", "--tags", "--always", "--dirty=false")
+	// No --dirty: the tree was checked clean at the top of this function, and
+	// `--dirty=false` does not mean "do not mark dirty" — it makes the mark the
+	// literal string "false", stamping versions like "feat-2false".
+	newVersion, err := gitOutput(root, "describe", "--tags", "--always")
 	if err != nil {
 		newVersion = "unknown"
 	}

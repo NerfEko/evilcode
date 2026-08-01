@@ -4287,3 +4287,221 @@ Final gates all pass: `go test ./...`, `go test -race ./...`, `go vet ./...`, `g
 with `-trimpath` and atomically installed at `/home/eko/.local/bin/evilcode`; `/home/eko/.local/bin/ec`
 still resolves through the `evilcode` symlink. Both resolve to SHA-256
 `db837b4b2fac7f3f5eefad8a8e0bde38c144a5d7a51cee6f1704eb270787c174`.
+
+## 2026-07-31 — plan3 review pass: seven defects in the delivered work
+
+A review of everything `plan3.md` produced, run against the code rather than against the
+`LOOPS.md` claims. Seven real defects, each reproduced before it was fixed.
+
+**F4.3 — `/login` bricked a fresh install.** `SaveProviderAPIKey` on a machine with no
+config file wrote a lone `[[provider]]` stub. An explicit provider array *replaces* the
+defaults at load time rather than merging, so the next launch died in `Validate` with
+`default_model "glm-5.2:cloud@ollama-local" names unknown provider "ollama-local"` — a
+login that made evilcode refuse to start, and no test covered it. The writer now seeds a
+new entry from `Default()` (so it carries `base_url` and `api_key_env`, not just a key)
+and, when the file had no provider tables to replace, writes the defaults out alongside
+it. Reproduced by `TestSaveProviderAPIKeyOnAFreshMachineStillLoads`, which failed on the
+old writer; `TestSaveProviderAPIKeyLeavesAnExplicitProviderListAlone` holds the other side
+so a file that deliberately replaces the defaults still does.
+
+**F2.5 — the widget slot never rotated.** `dockWidgets` refreshed
+`widgetLastShown[kind]` on every frame a widget was drawn, and the minimum dwell was
+measured against that map — so an incumbent's dwell was permanently zero, its `+100` bonus
+permanent with it, and `ModelInfo` owned the only slot for the life of the session. The
+shipped `TestWidgetSlotEventuallyChangesHands` passed because it set `widgetLastShown` once
+by hand and then called `activeWidgets` in a loop, never touching the bookkeeping that
+carries the bug. Driving the real `dockWidgets` loop for 3000 frames showed one holder,
+3000 placements. Split into two clocks: `widgetLastShown` (last drawn, resets airtime) and
+`widgetSlotSince` (took the slot, starts the dwell). The single `+100` also became the two
+mechanisms §2.5 asks for — `WidgetIncumbentBonus` standing, `WidgetDwellBonus` while new —
+and a candidate at or above `WidgetUrgentMark` now cuts the dwell short, which the old
+arithmetic did not guarantee for an urgent context meter against a failing background task.
+The test now drives `dockWidgets`; `TestNearFullContextPreemptsTheDwell` covers the
+preemption.
+
+**F5.1 — `evilcode update` updated whatever repository you were standing in.** It resolved
+its checkout with `git rev-parse --show-toplevel` against the *current directory*, then
+fast-forwarded that repo, ran `go build ./` in it, and installed the result over the
+evilcode binary. `tui.IsEvilcodeRepo` already existed for exactly this and `/rebuild`
+already used it; `update` now does too.
+
+**F6.1 — the welcome chips outranked the keymap.** The arrow/Enter block was inserted
+directly above `m.keymap.Lookup`, orphaning the comment that says configurable bindings are
+resolved first (plan.md §11) and taking those three chords away from any rebind. Moved
+below the lookup. Enter also fired a chip while `welcomeFocus` was false — no highlight on
+screen, so nothing said which chip it would send; it now requires the focus.
+
+**F4.3 — `/login` raced a live turn.** Saving the key wrote `provider.Ollama.APIKey`
+from the UI goroutine while an in-flight request read it from another. `/login` now refuses
+while a turn is running (Esc would have been eaten by the masked composer anyway, leaving
+no way to interrupt), and the live-provider write is skipped if one starts regardless.
+
+**F2.1 — the bash intent measured the placeholder.** `bashIntent("0", out)` ran *after*
+`out` was replaced by `"(no output)"`, so a command that printed nothing reported
+`exit 0 · 10 B out`. Measured before the substitution now.
+
+**F3.2 — `Truncate` lost its byte count.** Reserving room for the marker was right; paying
+for it by deleting `%d bytes` was not — the count is what tells the model whether narrowing
+the request is worth it. The format is budgeted at its longest and keeps both the count and
+the `output truncated` marker §3.5 asks for.
+
+Also cleaned: `Dock.Layout` laid out every candidate and threw all but the first away,
+re-anchoring six invisible boxes per frame — it now stops at the first placement, and
+`findSlot`'s unused `owner` and `place`'s unused `anchor` are gone. `plan3.md`'s F6.2 was
+deleted from the document when `new.md` item 2 was reversed; it is restored as `[~]` with
+its reason in the dismissed-findings ledger, which is what that section exists for.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./...`, and `go test -race` on
+`internal/tui`, `internal/config`, `internal/tools` all green.
+
+Known and *not* introduced here: `probe/` `TestScenarios/tui-numbers` fails its
+`prompt-numbers` golden on roughly two runs in three, and passes when run alone. The same
+flake reproduces at `aca9d38` with this pass stashed, so it is pre-existing and wants its
+own reproduction rather than a regenerated golden.
+
+## 2026-07-31 — review pass installed
+
+Rebuilt with `go build -trimpath` and atomically replaced `/home/eko/.local/bin/evilcode`;
+`/home/eko/.local/bin/ec` still resolves through it. Installed SHA-256:
+`fe7c392dfd75d4d899fa9916c709607ac5ad9ee45472ff34a7908f5170b8d694`, stamped `feat-2-dirty`
+— the checkout carries the review pass uncommitted, and the stamp says so.
+
+Also fixed while stamping: `update.go` passed `git describe --dirty=false`, which does not
+mean "do not mark dirty" — it makes the dirty mark the literal string `false`, so a dirty
+tree stamped versions like `feat-2false`. The flag is gone; the tree is already checked
+clean at the top of `runUpdate`. (`git describe --tags` also resolves to `feat-2` rather
+than `feat-6` because `feat-2`…`feat-6` all tag the same commit — see the review entry
+above.)
+
+## 2026-07-31 — repaired the config the old /login wrote
+
+The `/login` defect found in the review pass had already fired on this machine:
+`~/.config/evilcode/config.toml` was the four-line stub — one `[[provider]]` for
+`ollama-cloud`, name/kind/api_key and nothing else. Confirmed against the real file:
+
+    config: default_model "glm-5.2:cloud@ollama-local" names unknown provider "ollama-local"
+
+The fixed writer stops that file being *created*; it cannot repair one already on disk,
+because a config that already names a provider takes the update-in-place path. Repaired by
+reading the key out, moving the old file to `config.toml.broken-backup` (0600), and
+re-running the fixed `SaveProviderAPIKey` against the now-absent path — which exercises the
+fix and rebuilds the full default provider set around the preserved key. `ollama-cloud`
+also regained the `base_url` and `api_key_env` the stub never had, so it would not have
+reached ollama.com even if it had loaded.
+
+Verified: `LoadFrom` clean, mode still 0600, and `evilcode run` completed a real turn
+through `ollama-cloud`. The backup still holds the key at 0600 and can be deleted.
+
+## 2026-07-31 — Ollama Cloud: route on the resolved key, discover the catalogue
+
+Reported as "when i put the api key in for ollama cloud, it should auto discover all
+ollama cloud models and all their data, so i dont have to use local ollama". Three
+separate gaps behind one symptom; probed against the live account before anything changed.
+
+**The routing was the symptom.** `Default()` chose between `@ollama-cloud` and
+`@ollama-local` from `os.Getenv(EnvOllamaKey)` alone — and it *cannot* do better, because
+it builds the very struct the config file decodes into, so it runs before the file exists.
+A key saved by `/login` lives in that file and could never influence the choice: after a
+successful login the repaired config still loaded `default_model:
+glm-5.2:cloud@ollama-local`. The decision is now re-made in `LoadFrom` once the providers
+are known, guarded by `md.IsDefined("default_model")` so a file that states its own
+preference still wins. `DefaultCloudModel`/`DefaultLocalModel` name the two routes so
+`Default()` and the reload share one rule.
+
+**Discovery already worked.** `GET https://ollama.com/api/tags` with a bearer token
+returns the whole cloud catalogue — 17 models — and `Ollama.Models` already pointed at
+`BaseURL+/api/tags`. Verified live rather than rebuilt.
+
+**The data did not exist.** `/api/tags` carries names and disk sizes; cloud does not even
+fill `parameter_size`, and nothing anywhere carries a context window. `ModelInfo.Vision`
+and `ModelInfo.ContextWindow` were populated by the mock provider and nothing else, so
+`a.NumCtx` came only from a hand-written `[[model]] context_window` and `contextMax()`
+otherwise guessed 200k — wrong by 5x for `glm-5.2:cloud`, which is a 1M window.
+`POST /api/show` has all of it: `capabilities` (thinking/tools/vision) and
+`model_info["<family>.context_length"]` — family-scoped, so the key is matched by suffix
+because no fixed name and no advance knowledge of the family can find it. `Models` now
+fans out one `/api/show` per model, `ShowConcurrency` at a time, memoized per client. Live:
+17 models fully enriched in 237ms; a failing detail lookup leaves that model listed but
+unenriched, because a catalogue missing a context window beats no catalogue.
+
+**Wired to the agent.** `config.ContextWindowFor` resolves the window for the active
+model — explicit override first, provider second, zero last — and replaces the bare
+`a.NumCtx = overrides.ContextWindow` in `tuicmd`, `wiring`, and `runcmd`. It type-asserts
+`*provider.Ollama` rather than widening the `Provider` interface with a method the other
+two implementations would only stub. Live: `glm-5.2:cloud` resolves 1000000 in 136ms,
+bounded by `ContextWindowDiscovery`.
+
+Reproductions: `TestConfiguredCloudKeyRoutesToTheCloud` fails on the old env-only rule;
+`TestNoKeyAnywhereStaysLocal` and `TestFileDefaultModelBeatsTheKeyHeuristic` hold the other
+two sides. `TestOllamaModelsEnrichesFromShow` covers the window, vision, the humanized
+parameter count, and asserts the second listing spends no further requests;
+`TestOllamaModelsSurviveAShowThatFails` covers the degraded path.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race` on
+`internal/provider` and `internal/config`, and a real `evilcode run` turn through
+`ollama-cloud`. README's Configuration section documents both defaults. Reinstalled:
+SHA-256 `80d0f01d437a1f5a87ffc52179e9c076dc1681b2ec39e0048f698b66c51d6118`.
+
+## 2026-07-31 — widgets are residents, not a rotation
+
+Reported: "its not picking a widget and sticking with it and letting it scroll with the
+content, widgets disapear and get replaced with another widget like on a clock." Followed
+by the spec: widgets spawn about 2/3 from the top in empty space, stay forever and move
+with the content unless clicked, flow offscreen, and after a gap with nothing on screen the
+dock may attempt another.
+
+The clock was mine. The review pass fixed a dwell that never expired, which turned "the
+slot never changes" into "the slot changes every WidgetDwellFrames" — 25 frames at the
+80ms tick, two seconds. Measured: after the dwell the sitting widget kept a +2 standing
+margin while a waiting one accrued up to +12 airtime, so it lost on schedule. Both that
+fix and `plan3.md` §2.5 were built on the premise that the slot should rotate at all. It
+should not, and §2.5's airtime/dwell/incumbent apparatus is superseded — see the plan.
+
+jcode was read for the policy only, not the code (`crates/jcode-tui/src/tui/
+info_widget_settle.rs`, `info_widget_layout.rs`). It names the model — "info widgets
+should behave like residents of the transcript: once placed into a pocket of negative
+space, they belong to that part of the conversation and scroll with it" — and both bugs:
+that a resident whose line scrolls above the viewport must *retire* rather than re-home,
+and that seating one at the top of its pocket makes it "fall off and re-home every frame
+(a constant recycle)". evilcode keeps its own mechanisms: block-relative anchors rather
+than jcode's absolute content line (an absolute line drifts when a trace collapses above
+it, which is the F2.4 bug jcode still has), its own settled region, and salience for the
+pick.
+
+`Dock` now holds one `resident` instead of a per-kind anchor map:
+
+- **Never exchanged.** Ranking decides only who moves in when the dock is empty. A
+  resident is not scored against anything, so nothing can outbid it.
+- **Never re-homed.** Its block scrolls above the viewport and it retires. Momentarily
+  unusable — a wide line under it, a shrunken viewport — hides in place with the anchor
+  intact so it returns to the identical row.
+- **Seated at the pocket floor, lifted clear of it.** `findSlot` walks pockets bottom-up
+  and takes the lowest one, seating at `end-height-SpawnLift`. Seating low is the whole
+  lifespan: the row it is born on is its runway. `SpawnLift` (3) keeps it off the floor,
+  which is where the live thinking bubble sits — the reported "it spawns next to thinking
+  bubbles".
+- **`SpawnCooldown` (25 frames) after one leaves**, so a replacement reads as arriving
+  rather than as the old one jumping. A fresh dock starts past the cooldown; only a
+  retirement or a click restarts it.
+
+`activeWidgets` lost the dwell, the incumbent bonus and the urgency high-water mark, and
+`widgetSlotSince`/`heldSlot` went with them. Airtime and the change boost stay: they now
+only ever break the tie for a spawn, which is what spreads spawns across the kinds without
+a timer touching what is on screen.
+
+Reproduction: `TestResidentIsNeverSwappedForAnotherWidget` drives 400 frames of the real
+paint loop and fails on more than one holder — it failed on the shipped code with two.
+`TestResidentRetiresOffTheTopAndAnotherSpawnsAfterAPause` covers retirement and the
+cooldown; `TestSpawnSeatsLowWithClearanceAboveTheTail` covers the seat and the lift;
+`TestBlockedResidentHidesInPlaceRatherThanMoving` and
+`TestWidgetLeavesWithTheContentItRodeOffTheTop` replace the two tests that asserted
+re-homing. A 60-frame simulation with a live reasoning tail: spawns at row 14 of 36,
+descends 14→0 one row per scrolled line in exact step with the content, retires at -1,
+no second widget.
+
+Not taken from jcode: its monotonic non-increasing anchor width, which stops a
+right-anchored widget's left edge creeping inward as the margin changes. Nothing has
+reported that here and it is cheap to add later if the edge is seen to breathe.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./internal/tui`.
+Installed SHA-256 `e70c83d77a140ab5216a87d10b95326375dde6365374034272f30946e9a02c43`.

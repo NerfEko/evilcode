@@ -523,6 +523,121 @@ future_setting = "also keep"
 	}
 }
 
+func TestSaveProviderAPIKeyOnAFreshMachineStillLoads(t *testing.T) {
+	// /login on a machine with no config file used to write a lone
+	// [[provider]] stub. An explicit provider array replaces the defaults, so
+	// the next launch died on `default_model names unknown provider
+	// "ollama-local"` — the login bricked the install.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+	if err := SaveProviderAPIKey("ollama-cloud", "sk-fresh"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("config written by /login does not load: %v", err)
+	}
+	if len(cfg.Providers) != len(Default().Providers) {
+		t.Fatalf("providers = %+v, want the defaults kept", cfg.Providers)
+	}
+	i := providerIndex(cfg.Providers, "ollama-cloud")
+	if i < 0 {
+		t.Fatal("ollama-cloud missing")
+	}
+	if got := cfg.Providers[i].APIKeyValue(); got != "sk-fresh" {
+		t.Errorf("key = %q, want the saved one", got)
+	}
+	if cfg.Providers[i].BaseURL != Default().Providers[1].BaseURL {
+		t.Errorf("base_url = %q, want the default seeded in", cfg.Providers[i].BaseURL)
+	}
+}
+
+func TestSaveProviderAPIKeyLeavesAnExplicitProviderListAlone(t *testing.T) {
+	// A file that already names providers is replacing the defaults on purpose;
+	// adding one must not drag the defaults back in behind the user's back.
+	path := write(t, `default_model = "m@mine"
+
+[[provider]]
+name = "mine"
+kind = "ollama"
+base_url = "http://localhost:1"
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+	if err := SaveProviderAPIKey("ollama-cloud", "sk-added"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Providers) != 2 || providerIndex(cfg.Providers, "mine") < 0 {
+		t.Fatalf("providers = %+v, want only mine + ollama-cloud", cfg.Providers)
+	}
+}
+
+func TestConfiguredCloudKeyRoutesToTheCloud(t *testing.T) {
+	// The symptom this guards: /login saves the key into the config file, but
+	// Default() picks the route before that file is decoded and could only read
+	// the environment — so logging in still sent every turn through the local
+	// daemon.
+	t.Setenv(EnvOllamaKey, "")
+	path := write(t, `
+[[provider]]
+name = "ollama-local"
+kind = "ollama"
+base_url = "http://localhost:11434"
+
+[[provider]]
+name = "ollama-cloud"
+kind = "ollama"
+base_url = "https://ollama.com"
+api_key = "sk-in-the-file"
+`)
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != DefaultCloudModel {
+		t.Errorf("default_model = %q, want %q", cfg.DefaultModel, DefaultCloudModel)
+	}
+}
+
+func TestNoKeyAnywhereStaysLocal(t *testing.T) {
+	t.Setenv(EnvOllamaKey, "")
+	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != DefaultLocalModel {
+		t.Errorf("default_model = %q, want %q — ollama.com is unreachable without a key",
+			cfg.DefaultModel, DefaultLocalModel)
+	}
+}
+
+func TestFileDefaultModelBeatsTheKeyHeuristic(t *testing.T) {
+	// Re-deciding the route must only fill in a choice the file did not make.
+	t.Setenv(EnvOllamaKey, "sk-env")
+	path := write(t, `default_model = "gpt-oss:20b@ollama-local"`)
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != "gpt-oss:20b@ollama-local" {
+		t.Errorf("default_model = %q, want the file's own choice", cfg.DefaultModel)
+	}
+}
+
+func TestContextWindowForPrefersAnExplicitOverride(t *testing.T) {
+	// A hand-written [[model]] context_window is a deliberate correction of what
+	// the provider claims, so discovery must not undo it — and must not spend a
+	// request finding that out.
+	if got := ContextWindowFor(nil, "any", 4096); got != 4096 {
+		t.Errorf("ContextWindowFor = %d, want the override", got)
+	}
+}
+
 func containsAll(text string, values ...string) bool {
 	for _, value := range values {
 		if !strings.Contains(text, value) {

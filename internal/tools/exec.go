@@ -244,10 +244,13 @@ func (e *Exec) bashTool() Tool {
 					Intent: bashIntent(exitStatus(runErr), out),
 				}, fmt.Errorf("exit status %s", exitStatus(runErr))
 			}
+			// The intent measures what the command actually produced, so it is
+			// taken before the empty-output placeholder stands in for nothing.
+			intent := bashIntent("0", out)
 			if strings.TrimSpace(out) == "" {
 				out = "(no output)"
 			}
-			return Result{Output: out, Intent: bashIntent("0", out)}, nil
+			return Result{Output: out, Intent: intent}, nil
 		},
 	}
 }
