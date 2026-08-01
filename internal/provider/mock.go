@@ -7,10 +7,39 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"evilcode/internal/tools"
 )
 
 // ScenarioEnv selects which canned conversation the mock provider replays.
 const ScenarioEnv = "EVILCODE_SCENARIO"
+
+// StreamDelayEnv paces ChatStream's chunk delivery, so a screen recording
+// shows the same word-by-word reveal a live model produces instead of an
+// instant dump. Empty or unparsable is zero delay, which is what every
+// existing test and probe scenario relies on.
+const StreamDelayEnv = "EVILCODE_MOCK_STREAM_DELAY"
+
+// demoCannedTools maps a demo-* scenario name to its captured tool results.
+var demoCannedTools = map[string]func() []tools.CannedResult{
+	"demo-search": demoSearchCannedTools,
+}
+
+// DemoCannedTools reports the canned tool results for the current
+// EVILCODE_SCENARIO, when running under the mock provider. False means the
+// scenario has none — every scenario except the demo-* ones captured from a
+// real session (see demo_search.go and demo/README.md).
+func DemoCannedTools() ([]tools.CannedResult, bool) {
+	if os.Getenv("EVILCODE_PROVIDER") != "mock" {
+		return nil, false
+	}
+	fn, ok := demoCannedTools[os.Getenv(ScenarioEnv)]
+	if !ok {
+		return nil, false
+	}
+	return fn(), true
+}
 
 // Mock replays deterministic canned streams so TUI and agent tests never need a
 // live model (plan.md §14). Each ChatStream call consumes the next turn of the
@@ -114,10 +143,15 @@ func (m *Mock) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 		chunks = closingTurn
 	}
 
+	delay, _ := time.ParseDuration(os.Getenv(StreamDelayEnv))
+
 	ch := make(chan Chunk)
 	go func() {
 		defer close(ch)
 		for _, c := range chunks {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
 			select {
 			case ch <- c:
 			case <-ctx.Done():
@@ -170,6 +204,19 @@ func text(s string) []Chunk {
 			continue
 		}
 		out = append(out, Chunk{Text: w})
+	}
+	return out
+}
+
+// reason is text's counterpart for the reasoning trace.
+func reason(s string) []Chunk {
+	words := strings.SplitAfter(s, " ")
+	out := make([]Chunk, 0, len(words)+1)
+	for _, w := range words {
+		if w == "" {
+			continue
+		}
+		out = append(out, Chunk{Reasoning: w})
 	}
 	return out
 }
@@ -498,6 +545,20 @@ var mockScenarios = map[string][][]Chunk{
 		append(text("Exponential it is."), done(400, 6)),
 	},
 
+	// The five demo-* scenarios below drive the README's VHS recordings.
+	// Unlike the others they are not exercised by any test or golden — they
+	// exist purely so the recorded session can point at a real external repo
+	// (evilwm/evil) and have the read/edit/grep/bash tools actually run
+	// against real files, instead of narrating over paths that only exist in
+	// this repo. The paths and old/new pairs below are real content in that
+	// checkout as of the recording; they only need to keep matching well
+	// enough for `edit` to find its anchor, not to stay in lockstep forever.
+
+	// Real captured transcript, real tool call args — see demo_search.go.
+	// The tool *results* are canned too (see DemoCannedTools), so this
+	// replays without needing evilwm/evil checked out at record time.
+	"demo-search": demoSearchTurns(),
+
 	// A detached command, for the background-task widget and its completion
 	// notice (§17, §8.3).
 	"background": {
@@ -531,6 +592,7 @@ var mockScenarios = map[string][][]Chunk{
 		}(),
 	},
 }
+
 
 // MockScenarios lists the built-in scenario names, for `--help` output and
 // tests that want to sweep all of them.

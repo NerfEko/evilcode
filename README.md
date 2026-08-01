@@ -11,6 +11,8 @@ and first-class support for Ollama Cloud alongside anything that speaks the Open
 
 Single user, no telemetry, no account. Sessions are JSONL files on your own disk.
 
+![evilcode auditing a real codebase for panic-shaped bugs](demo/demo-search.gif)
+
 ## Requirements
 
 Go 1.26 or newer. Linux only.

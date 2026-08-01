@@ -237,8 +237,13 @@ func runOnce(args []string) (string, error) {
 		m.RebuildFrom(conv.Messages())
 	}
 
-	ts := append(fsTools.Tools(), execTools.Tools()...)
-	ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+	var ts tools.Set
+	if canned, ok := provider.DemoCannedTools(); ok {
+		ts = tools.Canned(canned)
+	} else {
+		ts = append(fsTools.Tools(), execTools.Tools()...)
+		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+	}
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))
 	if len(promptSkills) > 0 {

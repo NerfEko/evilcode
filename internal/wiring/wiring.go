@@ -158,10 +158,18 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 
 	var ts tools.Set
 	if !opts.NoTools {
-		ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-			WithConfine(cfg.Features.ConfineToWorkspace).Tools(),
-			tools.NewExec(cwd).Tools()...)
-		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+		if canned, ok := provider.DemoCannedTools(); ok {
+			// A screen recording replaying a captured transcript: tool
+			// *results* are canned too, so it never depends on a particular
+			// repo being checked out at record time (plan.md §14 covers the
+			// model side of this; this is the same idea for tools).
+			ts = tools.Canned(canned)
+		} else {
+			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
+				WithConfine(cfg.Features.ConfineToWorkspace).Tools(),
+				tools.NewExec(cwd).Tools()...)
+			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+		}
 		// No `ask` tool: a headless session has nobody to ask, and a tool that
 		// is present and always fails is worse than one that is absent.
 	}

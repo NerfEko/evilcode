@@ -2886,6 +2886,12 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 // cost of animating, not the picture itself; omitting it entirely would remove
 // the welcome screen rather than quiet it (plan.md §10).
 func (m *Model) idleArt() []string {
+	// A demo-only escape hatch, distinct from deterministic mode's "freeze,
+	// don't omit" guarantee above: a screen recording wants a clean, tight
+	// welcome band, not the full art.
+	if os.Getenv("EVILCODE_DEMO_NO_LOGO") != "" {
+		return nil
+	}
 	rows := min(ArtHeight, max(m.height-12, 0))
 	if rows < 6 || m.width < 40 {
 		return nil
