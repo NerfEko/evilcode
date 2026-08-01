@@ -4577,3 +4577,26 @@ Measured separately: every panel row stays inside the pane width — glamour's l
 looks over-long in a plain-text dump only because the URLs ride inside OSC-8 escapes.
 
 Verified: `go build ./...`, `go vet ./...`, `go test ./...`.
+
+## 2026-08-01 — reasoning traces vanished seconds after thinking finished
+
+Reported: "the thinking lines that show after it's done thinking disappear after a couple
+seconds." The `▸ thought (N lines)` summary row was being *deleted*, not scrolled past.
+
+`finishReasoning` collapsed the trace and then called `collectReasoning`, the §4.6
+streaming-reasoning GC: once `total − trace_lines > viewport + 2` it removed any finished
+BlockReasoning from `m.blocks` outright. A couple of seconds of answer streaming fills the
+viewport, so the summary the user had just been shown was gone — and unlike scroll it was
+unrecoverable, and it happened in `current` mode only, which made it look intermittent.
+
+Lesson: the transcript is the session's record. GC of visible history is never acceptable
+here — scroll is the exit. `collectReasoning` is deleted; reasoning blocks (live, expanded,
+collapsed) stay forever, and collapsed ones keep their text so an expand interaction can
+be built later without re-streaming anything.
+
+Also: the probe goldens had rotted — the deepseek provider commit added a header entry and
+nobody regenerated them, so all 13 scenarios failed on the header row. The thinking golden
+didn't catch the bug because the capture snaps at collapse, before the old GC ran.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -tags probe ./probe/...`
+(twice, stable).
