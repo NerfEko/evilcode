@@ -137,9 +137,11 @@ type Model struct {
 	resumeTarget string
 
 	// attachments are images staged for the next message (§6.6), and vision
-	// records whether the active model can actually accept them.
+	// records whether the active model can actually accept them. Atomic because
+	// the read-tool gate reads it from the agent's turn goroutine while /model
+	// writes it from Bubble Tea's update goroutine.
 	attachments []Attachment
-	vision      bool
+	vision      atomic.Bool
 
 	// visionFor resolves a model reference to its configured vision capability,
 	// so a /model switch re-evaluates the gate against the new model rather than
@@ -1687,7 +1689,7 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 			// the user-attachment gate and the read-tool gate against the new
 			// model so neither is stale.
 			if m.visionFor != nil {
-				m.vision = m.visionFor(sel.Name)
+				m.vision.Store(m.visionFor(sel.Name))
 			}
 			m.notice = "Model: " + sel.Name
 			// Record the switch so a later /resume picks up this model rather than
@@ -2392,7 +2394,7 @@ func (m *Model) submit(text string) {
 // Configured rather than inferred from the model name: a guess that says no to a
 // capable model is invisible, and a guess that says yes to a text-only one fails
 // deep in the provider with a message that explains nothing.
-func (m *Model) visionOK() bool { return m.vision }
+func (m *Model) visionOK() bool { return m.vision.Load() }
 
 // WithVisionFor installs the model->vision resolver and the filesystem tool
 // group whose gate it drives, so a /model switch keeps the read-tool vision gate
@@ -2403,7 +2405,7 @@ func (m *Model) WithVisionFor(fn func(string) bool, fs *tools.FS) *Model {
 	// The read-tool gate consults the live capability rather than a snapshot,
 	// so a model switch is reflected on the next image read.
 	if fs != nil {
-		fs.WithVisionFn(func() bool { return m.vision })
+		fs.WithVisionFn(func() bool { return m.vision.Load() })
 	}
 	return m
 }

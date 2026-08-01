@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"evilcode/internal/graphics"
@@ -48,16 +47,11 @@ const visionImageCeiling = 20 << 20
 // reject the request, and a model that cannot see an image must be told that
 // rather than handed nothing.
 func (f *FS) readImage(full, rel string) (Result, error) {
-	info, err := os.Stat(full)
-	if err != nil {
-		return Result{}, err
-	}
-	size := info.Size()
-
 	// Read through the confined descriptor with a hard cap one byte past the
-	// ceiling, so a file that grows or is replaced after Stat cannot push past
-	// the limit while the stale size still selects the attach branch. The
-	// header needed for dimensions is always within this many bytes.
+	// ceiling, so a file that grows or is replaced after the dispatch's Stat
+	// cannot push past the limit while a stale size still selects the attach
+	// branch. The header needed for dimensions is always within this many
+	// bytes; readHead errors if the file vanished between the Stat and now.
 	data, err := f.readHead(full, visionImageCeiling+1)
 	if err != nil {
 		return Result{}, err
@@ -68,11 +62,17 @@ func (f *FS) readImage(full, rel string) (Result, error) {
 	if dimsOK {
 		dimStr = fmt.Sprintf("%dx%d", w, h)
 	}
-	sizeStr := humanBytes(size)
 
 	res := Result{Intent: fmt.Sprintf("reading %s", rel)}
+	// The displayed size comes from the bytes actually read, not the stale
+	// Stat: a file replaced between Stat and read would otherwise be described
+	// as one size and then refused for another. A capped read (len(data) past
+	// the ceiling) only knows the picture exceeds the ceiling, so it says so.
+	readSize := len(data)
+	sizeStr := humanBytes(int64(readSize))
 	switch {
-	case len(data) > visionImageCeiling:
+	case readSize > visionImageCeiling:
+		sizeStr = "over " + humanBytes(int64(visionImageCeiling))
 		res.Output = fmt.Sprintf(
 			"Image: %s (%s)\nDimensions: %s\nImage too large for vision (max %s) — not attached.",
 			rel, sizeStr, dimStr, humanBytes(int64(visionImageCeiling)))

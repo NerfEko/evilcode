@@ -223,7 +223,7 @@ func dropNotice(images, files int) string {
 
 // WithVision declares whether the active model accepts image attachments.
 func (m *Model) WithVision(ok bool) *Model {
-	m.vision = ok
+	m.vision.Store(ok)
 	return m
 }
 
