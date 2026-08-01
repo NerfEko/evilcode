@@ -110,6 +110,9 @@ func runOnce(args []string) (string, error) {
 			return "", err
 		}
 	}
+	// Registered before the WriteModel below: a failed meta write must still
+	// close the store, or it leaks the descriptor and holds the session name.
+	defer store.Close()
 
 	// Record the model this run is on. Last-write-wins on read, so this updates
 	// the remembered model for a resume even when the ref came from the session
@@ -117,7 +120,6 @@ func runOnce(args []string) (string, error) {
 	if err := store.WriteModel(config.ModelRef(modelName, prov.Name())); err != nil {
 		return "", err
 	}
-	defer store.Close()
 
 	// Skills contribute only their names and one-liners to the prompt; bodies
 	// load through the skill tool, which keeps the prompt cacheable as the set

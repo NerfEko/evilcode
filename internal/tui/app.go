@@ -1648,9 +1648,13 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 			m.notice = "Model: " + sel.Name
 			// Record the switch so a later /resume picks up this model rather than
 			// the one the session started with (§18). The ref is rebuilt from the
-			// header, which the lines above just updated.
+			// header, which the lines above just updated. A failed write is
+			// surfaced the way WriteCheckpoint does: a success notice would hide
+			// that the resume path lost the switch.
 			if m.store != nil {
-				_ = m.store.WriteModel(config.ModelRef(m.header.Model, m.header.Provider))
+				if werr := m.store.WriteModel(config.ModelRef(m.header.Model, m.header.Provider)); werr != nil {
+					m.notice = "could not record model: " + werr.Error()
+				}
 			}
 		}
 		m.pickerOpen = false
