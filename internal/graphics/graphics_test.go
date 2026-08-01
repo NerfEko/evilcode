@@ -1,7 +1,12 @@
 package graphics
 
 import (
+	"bytes"
 	"encoding/base64"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"strings"
 	"testing"
 )
@@ -153,5 +158,53 @@ func TestSixelCommandScalesToTheCellBox(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got, " "), "--width=320") {
 		t.Errorf("command = %v, want a pixel width derived from the columns", got)
+	}
+}
+
+// ToPNG re-encodes any decodable format as PNG for the kitty protocol, and
+// rejects an image whose pixel count would balloon past the cap on decode.
+func TestToPNGConvertsAndBoundsPixels(t *testing.T) {
+	// A 3×2 PNG round-trips through ToPNG as PNG bytes.
+	var pngBuf bytes.Buffer
+	small := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	small.Set(0, 0, color.RGBA{1, 2, 3, 255})
+	if err := png.Encode(&pngBuf, small); err != nil {
+		t.Fatal(err)
+	}
+	if out, ok := ToPNG(pngBuf.Bytes()); !ok || len(out) == 0 {
+		t.Fatalf("ToPNG(png) = %v ok=%v, want re-encoded PNG bytes", out, ok)
+	}
+
+	// A JPEG decodes and re-encodes as PNG.
+	var jpgBuf bytes.Buffer
+	if err := jpeg.Encode(&jpgBuf, small, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if out, ok := ToPNG(jpgBuf.Bytes()); !ok || len(out) == 0 {
+		t.Fatalf("ToPNG(jpeg) = %v ok=%v, want PNG bytes", out, ok)
+	}
+
+	// An image past the pixel cap is refused without decoding the bitmap.
+	huge := image.NewRGBA(image.Rect(0, 0, 5000, 5000)) // 25M px > 16M cap.
+	var hugeBuf bytes.Buffer
+	if err := png.Encode(&hugeBuf, huge); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ToPNG(hugeBuf.Bytes()); ok {
+		t.Error("ToPNG accepted a 25M-px image; it must reject past the cap")
+	}
+}
+
+// Dimensions parses PNG, JPEG and GIF headers and reports unknown for the rest.
+func TestDimensionsParsesKnownFormats(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 7, 4))); err != nil {
+		t.Fatal(err)
+	}
+	if w, h, ok := Dimensions(buf.Bytes()); !ok || w != 7 || h != 4 {
+		t.Errorf("Dimensions(png) = %d %d %v, want 7 4 true", w, h, ok)
+	}
+	if _, _, ok := Dimensions([]byte("not an image")); ok {
+		t.Error("Dimensions accepted non-image bytes")
 	}
 }

@@ -43,6 +43,12 @@ type FS struct {
 	// the user-attachment guard in the TUI.
 	Vision bool
 
+	// VisionFn overrides Vision when set, so a session that switches models
+	// mid-run (the TUI's /model picker) re-evaluates the capability against the
+	// new model rather than the one it started with. Headless paths leave it
+	// nil and use the static Vision set at construction.
+	VisionFn func() bool
+
 	anchors *anchorStore
 
 	// paths serializes read-modify-write on one file. A batch runs eight-way
@@ -109,6 +115,23 @@ func (f *FS) WithConfine(on bool) *FS {
 func (f *FS) WithVision(on bool) *FS {
 	f.Vision = on
 	return f
+}
+
+// WithVisionFn installs a dynamic vision-capability lookup, used by the TUI so a
+// mid-session model switch re-evaluates the gate. nil clears it (headless paths
+// use the static WithVision instead).
+func (f *FS) WithVisionFn(fn func() bool) *FS {
+	f.VisionFn = fn
+	return f
+}
+
+// visionOK reports whether the active model accepts images, preferring the
+// dynamic lookup when one is installed.
+func (f *FS) visionOK() bool {
+	if f.VisionFn != nil {
+		return f.VisionFn()
+	}
+	return f.Vision
 }
 
 // resolve turns a tool-supplied path into an absolute path.

@@ -72,11 +72,11 @@ func (f *FS) readImage(full, rel string) (Result, error) {
 
 	res := Result{Intent: fmt.Sprintf("reading %s", rel)}
 	switch {
-	case size > int64(visionImageCeiling):
+	case len(data) > visionImageCeiling:
 		res.Output = fmt.Sprintf(
 			"Image: %s (%s)\nDimensions: %s\nImage too large for vision (max %s) — not attached.",
 			rel, sizeStr, dimStr, humanBytes(int64(visionImageCeiling)))
-	case !f.Vision:
+	case !f.visionOK():
 		res.Output = fmt.Sprintf(
 			"Image: %s (%s)\nDimensions: %s\nThis model cannot see images (vision is off); "+
 				"switch to a vision model with /model to attach it.",

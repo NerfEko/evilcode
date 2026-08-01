@@ -141,6 +141,15 @@ type Model struct {
 	attachments []Attachment
 	vision      bool
 
+	// visionFor resolves a model reference to its configured vision capability,
+	// so a /model switch re-evaluates the gate against the new model rather than
+	// the one the session started with. nil in headless builds.
+	visionFor func(modelRef string) bool
+
+	// fs is the filesystem tool group, held so a model switch can update its
+	// vision gate to match. nil when the session runs canned/headless tools.
+	fs *tools.FS
+
 	// compactor summarises and replaces the conversation when it gets long.
 	compactor *agent.Compactor
 
@@ -1674,6 +1683,12 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 				m.header.Provider = sel.Provider
 			}
 			m.agent.Model = sel.Name
+			// A model switch can change vision capability; re-evaluate both
+			// the user-attachment gate and the read-tool gate against the new
+			// model so neither is stale.
+			if m.visionFor != nil {
+				m.vision = m.visionFor(sel.Name)
+			}
 			m.notice = "Model: " + sel.Name
 			// Record the switch so a later /resume picks up this model rather than
 			// the one the session started with (§18). The ref is rebuilt from the
@@ -2378,6 +2393,20 @@ func (m *Model) submit(text string) {
 // capable model is invisible, and a guess that says yes to a text-only one fails
 // deep in the provider with a message that explains nothing.
 func (m *Model) visionOK() bool { return m.vision }
+
+// WithVisionFor installs the model->vision resolver and the filesystem tool
+// group whose gate it drives, so a /model switch keeps the read-tool vision gate
+// in step with the active model.
+func (m *Model) WithVisionFor(fn func(string) bool, fs *tools.FS) *Model {
+	m.visionFor = fn
+	m.fs = fs
+	// The read-tool gate consults the live capability rather than a snapshot,
+	// so a model switch is reflected on the next image read.
+	if fs != nil {
+		fs.WithVisionFn(func() bool { return m.vision })
+	}
+	return m
+}
 
 // drainPendingForEdit returns the staged messages for retrieval, in the order
 // they were staged. Every staged message is queued, so there is no kind

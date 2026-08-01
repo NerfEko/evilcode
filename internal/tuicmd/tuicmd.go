@@ -220,7 +220,7 @@ func runOnce(args []string) (string, error) {
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-		WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision)
+		WithConfine(cfg.Features.ConfineToWorkspace)
 	execTools := tools.NewExec(cwd)
 
 	// Language servers start on first use, not here: gopls costs seconds and
@@ -255,6 +255,10 @@ func runOnce(args []string) (string, error) {
 		WithAdvisor(advisor, lsps).
 		WithCompactor(compactor).
 		WithVision(overrides.Vision)
+	// The read-tool vision gate tracks the active model: a /model switch
+	// re-evaluates it, so neither gate is stale after the picker changes the
+	// model. WithVisionFor wires fsTools.VisionFn to the live capability.
+	m.WithVisionFor(func(ref string) bool { return cfg.ModelOverrides(ref).Vision }, fsTools)
 	if len(priorMessages) > 0 {
 		m.RebuildFrom(conv.Messages())
 	}

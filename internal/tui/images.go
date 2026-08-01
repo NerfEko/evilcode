@@ -104,7 +104,7 @@ func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
 	if len(data) == 0 || len(data) > MaxImageBytes {
 		return block
 	}
-	if png, ok := graphics.ToPNG(data); ok {
+	if png, ok := graphics.ToPNG(data); ok && len(png) <= MaxImageBytes {
 		block.PNG = png
 	}
 	return block

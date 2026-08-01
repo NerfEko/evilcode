@@ -118,6 +118,31 @@ func TestReadImageWithoutVisionIsNotAttached(t *testing.T) {
 		t.Errorf("output = %q, want dimensions reported even without vision", res.Output)
 	}
 }
+
+// The vision gate is dynamic: a VisionFn overrides the static flag, so a
+// mid-session model switch re-evaluates the gate without rebuilding the tools.
+func TestReadImageVisionFnOverridesStaticFlag(t *testing.T) {
+	png := tinyPNG(t)
+	f := tempFS(t, nil).WithVision(false)
+	on := false
+	f.WithVisionFn(func() bool { return on })
+	full := filepath.Join(f.Root, "pic.png")
+	if err := os.WriteFile(full, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := run(t, f.Tools(), "read", map[string]any{"path": "pic.png"}); err != nil {
+		t.Fatal(err)
+	}
+	on = true
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "pic.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Images) != 1 {
+		t.Errorf("after the VisionFn flipped to true, want 1 image; got %d", len(res.Images))
+	}
+}
 func TestReadBinaryRefusalSaysWhatToDo(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "bin"),

@@ -203,7 +203,19 @@ func Dimensions(data []byte) (w, h int, ok bool) {
 // bmp decode through the standard library only when a decoder is registered,
 // so they return ok=false and the caller renders a placeholder — the model
 // still receives the original bytes through the vision path.
+//
+// A compressed image under the terminal transmit cap can still decode to
+// hundreds of megabytes of pixels, so the decoded dimensions are bounded first
+// and anything past the cap returns ok=false rather than allocating the bitmap.
 func ToPNG(data []byte) ([]byte, bool) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, false
+	}
+	const maxPixels = 16 << 20 // 16M px ≈ 64 MB RGBA, the upper bound on decode.
+	if int64(cfg.Width)*int64(cfg.Height) > maxPixels {
+		return nil, false
+	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, false
