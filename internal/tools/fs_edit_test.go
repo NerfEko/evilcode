@@ -256,3 +256,22 @@ func TestAnchoredEditFollowUpNeedsNoReread(t *testing.T) {
 		t.Fatalf("follow-up anchored edit without re-read failed: %v", err)
 	}
 }
+
+// The common case the missing-newline diagnosis is for: the block matches and
+// the indentation is identical, and the sole mismatch is the trailing newline
+// the file lacks. Detected before the trimmed branch.
+func TestEditFailedMatchMissingTrailingNewlineSameIndent(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "line one\nline two"}) // no trailing newline
+	_, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "line two\n", "new": "line TWO\n",
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "missing the trailing newline") {
+		t.Errorf("error = %q, want the missing-trailing-newline diagnosis", err)
+	}
+	if strings.Contains(err.Error(), "trimming") {
+		t.Errorf("error = %q, the pure missing-newline case must not be called trimming", err)
+	}
+}

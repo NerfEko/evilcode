@@ -15,6 +15,16 @@ import (
 // Returns a human-readable clause ("found … at line N") and ok=true when a
 // looser form matched; the caller folds it into the not-found error.
 func flexibleMatch(content, old string) (msg string, ok bool) {
+	// 0. A trailing newline on `old` that the file lacks is the sole mismatch
+	// when the block matches but sits at EOF without a terminating newline.
+	// Detect it before the trimmed branch, which would otherwise call it
+	// "trimming" and send the model chasing whitespace.
+	if line, ok := missingTrailingNewline(content, old); ok {
+		return fmt.Sprintf(
+			"the file is missing the trailing newline your old string includes "+
+				"(the block matches at line %d)", line), true
+	}
+
 	// 1. Trimmed match — the model included leading/trailing whitespace the
 	// file does not (or vice versa).
 	trimmed := strings.TrimSpace(old)
@@ -71,6 +81,27 @@ func lineOf(content, sub string) int {
 		return 1
 	}
 	return strings.Count(content[:idx], "\n") + 1
+}
+
+// missingTrailingNewline reports whether `old` ends in a newline that the file
+// lacks: the block old describes (minus its trailing newline) is the last thing
+// in content, at a line boundary, with no newline after it. That is the sole
+// mismatch — the model's old string is otherwise exact — so the diagnosis names
+// the missing newline rather than trimming or indentation.
+func missingTrailingNewline(content, old string) (int, bool) {
+	if !strings.HasSuffix(old, "\n") {
+		return 0, false
+	}
+	core := old[:len(old)-1]
+	if core == "" || !strings.HasSuffix(content, core) {
+		return 0, false
+	}
+	// core must start at a line boundary (or be the whole file), so it is a
+	// full trailing block rather than the tail of a longer line.
+	if len(content) > len(core) && content[len(content)-len(core)-1] != '\n' {
+		return 0, false
+	}
+	return lineOf(content, core), true
 }
 
 // contextAround returns up to `padding` lines either side of the 1-based
