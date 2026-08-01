@@ -1274,6 +1274,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A lone period on an empty composer is the quick-resume gesture: instead of
+	// typing the ".", send "resume" as an invisible (harness-authored) prompt so
+	// the agent picks up where it left off. The period is swallowed and no user
+	// block is drawn — the composer stays empty. Only on an empty composer, so a
+	// period inside a message ("fix this.", "./path") still types normally.
+	if m.editor.Text == "" && m.agent != nil && msg.Key().Text == "." {
+		m.submitHidden("resume")
+		return m, nil
+	}
+
 	// Ordinary text input. Key.Text is the printable characters the key
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
