@@ -58,6 +58,12 @@ type Message struct {
 	// shared type. `encoding/json` base64s a []byte for free, so the session
 	// log round-trips without a store change.
 	Images [][]byte `json:"images,omitempty"`
+
+	// Repairs names the argument rewrites a tool call received before its
+	// strict decode (an aliased field, a string-wrapped number coerced). It is
+	// display metadata: it lives on the message so a resumed or attached
+	// session's tool rows show the same repair suffix as the live one did.
+	Repairs []string `json:"repairs,omitempty"`
 }
 
 // ToolDef describes a tool to the model.

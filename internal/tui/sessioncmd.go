@@ -249,6 +249,7 @@ func BlocksFromMessages(msgs []provider.Message) []Block {
 		case provider.RoleTool:
 			out = append(out, Block{
 				Kind: BlockTool, ToolName: msg.ToolName, Failed: msg.IsError,
+				Repairs: msg.Repairs,
 			})
 		}
 	}

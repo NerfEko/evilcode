@@ -465,7 +465,11 @@ func (r *Renderer) renderTool(b *Block) []string {
 			del.Render(fmt.Sprintf("-%d", b.Removed)) + dim.Render(")"))
 	}
 	if len(b.Repairs) > 0 {
-		b2.WriteString(dim.Render(" · repaired: " + strings.Join(b.Repairs, ", ")))
+		clean := make([]string, len(b.Repairs))
+		for i, r := range b.Repairs {
+			clean[i] = core.SanitizeTerminal(r)
+		}
+		b2.WriteString(dim.Render(" · repaired: " + strings.Join(clean, ", ")))
 	}
 
 	// A tool row is assembled from parts that are each bounded but together are

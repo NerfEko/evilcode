@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
 )
 
 // J1.7: a known alias is repaired before the strict decode, and the repair is
@@ -135,3 +136,6 @@ func TestRepairArgsCoercesNestedNumbers(t *testing.T) {
 		t.Errorf("repairs = %v, want nested coercion recorded", repairs)
 	}
 }
+
+// Repairs survive a session round-trip: they are persisted on the message and
+// restored, so a resumed session's tool row shows them.
