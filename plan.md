@@ -362,14 +362,16 @@ func sendAction(processing bool, queueMode bool, input string, alternate bool) S
 }
 ```
 
-| state | Enter | Ctrl+Enter |
+| state | Enter | Ctrl+J |
 |---|---|---|
 | idle | Submit | Submit |
 | processing, default mode | **Interleave** | Queue |
 | processing, queue mode | Queue | **Interleave** |
 | processing, `/` or `!` input | Submit | Submit |
 
-Ctrl+Enter = "opposite of my current mode". Ctrl+T (also Ctrl+Tab) toggles queue mode: notices `Queue mode: messages wait until response completes` / `Immediate mode: messages send next (no interrupt)`.
+Ctrl+J = "opposite of my current mode", one message at a time. **Ctrl+Enter (also Ctrl+T, Ctrl+Tab) toggles queue mode** — the persistent control: once queue mode is on, Enter queues until the turn ends; off, Enter interleaves immediately. Toggle notices `Queue mode: messages wait until response completes` / `Immediate mode: messages send next (no interrupt)`.
+
+Interleaves are delivered once: staging a message as a soft interrupt hands it to the agent immediately, and the pending row it leaves behind (`↻`) is a receipt, not a queued message — at turn end only messages that were never delivered (queued ones) are submitted, so nothing reaches the model twice.
 
 **Interleave = soft interrupt** — the KV-cache-friendly path. The message is NOT a new API request; it is appended as a user message into the live conversation at a *safe point* so the next loop iteration carries it with the cache prefix intact. Safe points:
 - **B**: stream ended, no tool calls — always safe.
@@ -692,7 +694,8 @@ Knight-rider tool bar (§8.2). Scroll ease-out (§4.1). Tail catch-up (§4.2). O
 | key | action |
 |---|---|
 | Enter | Submit / Interleave / Queue (§6.3) |
-| Ctrl+Enter | opposite send mode |
+| Ctrl+J | opposite send mode (one message) |
+| Ctrl+Enter / Ctrl+T / Ctrl+Tab | toggle queue mode |
 | Shift+Enter / Alt+Enter / trailing `\` | newline (§6.2) |
 | Esc | layered cancel (§6.7) |
 | Ctrl+C / Ctrl+D | interrupt; idle → quit (twice) |

@@ -946,15 +946,29 @@ func (m *Model) followIfPinned() {
 
 // flushPending sends queued messages once a turn ends.
 func (m *Model) flushPending() {
-	if len(m.pending) == 0 {
+	texts := pendingToResend(m.pending)
+	m.pending = nil
+	if len(texts) == 0 {
 		return
 	}
-	var texts []string
-	for _, p := range m.pending {
-		texts = append(texts, p.Text)
-	}
-	m.pending = nil
 	m.submit(strings.Join(texts, "\n\n"))
+}
+
+// pendingToResend selects the staged messages that still need to reach the
+// model. PendingSent rows are receipts: the text was already delivered as a
+// soft interrupt into the turn that just ended, and resubmitting it at turn end
+// is how a message ended up sent twice (plan.md §6.3).
+func pendingToResend(pending []PendingMessage) []string {
+	var texts []string
+	for _, p := range pending {
+		switch p.Kind {
+		case PendingSent:
+			// Already injected; the row was informational.
+		default:
+			texts = append(texts, p.Text)
+		}
+	}
+	return texts
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -2225,7 +2239,7 @@ func helpText() string {
 	b.WriteString("\nKeys\n")
 	for _, k := range [][2]string{
 		{"Enter", "submit, or interleave while a turn is running"},
-		{"Ctrl+Enter", "the opposite of the current send mode"},
+		{"Ctrl+Enter", "toggle queue mode (Ctrl+J: opposite send for this message)"},
 		{"Ctrl+T", "toggle queue mode"},
 		{"Esc", "cancel: close overlays, interrupt, or clear input"},
 		{"Ctrl+C", "interrupt; twice when idle to quit"},

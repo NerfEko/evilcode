@@ -259,7 +259,7 @@ var Tips = []string{
 	"Ctrl+R searches your prompt history",
 	"Ctrl+G bookmarks your scroll position",
 	"Alt+C toggles centered layout",
-	"Ctrl+Enter does the opposite of your current send mode",
+	"Ctrl+Enter toggles queue mode (Ctrl+J: opposite send)",
 	"/help lists everything",
 }
 

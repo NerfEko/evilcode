@@ -201,7 +201,7 @@ func UncoveredCommands() []Command {
 // HelpKeys is the keymap shown in the overlay.
 var HelpKeys = [][2]string{
 	{"Enter", "submit; interleave into a running turn; queue in queue mode"},
-	{"Ctrl+Enter", "the opposite of the current send mode"},
+	{"Ctrl+Enter", "toggle queue mode (Ctrl+J: opposite send for this message)"},
 	{"Shift+Enter / Alt+Enter", "newline (or end a line with a backslash)"},
 	{"Esc", "close overlays, interrupt (disarms auto-poke), then clear input"},
 	{"Ctrl+C", "interrupt without disarming; twice when idle to quit"},

@@ -37,10 +37,12 @@ func (s SendAction) String() string {
 	}
 }
 
-// SendActionFor decides what Enter (or Ctrl+Enter, via alternate) does.
+// SendActionFor decides what Enter (or Ctrl+J, via alternate) does.
 //
-// Ctrl+Enter always means "the opposite of my current mode", which is why the
-// alternate branch inverts rather than picking a fixed action.
+// Ctrl+J is the one-shot "opposite of my current mode" for this message, which
+// is why the alternate branch inverts rather than picking a fixed action. To
+// change the mode itself (and keep it changed), Ctrl+Enter / Ctrl+T toggle
+// queue mode (§11).
 func SendActionFor(processing, queueMode bool, input string, alternate bool) SendAction {
 	if !processing {
 		return Submit

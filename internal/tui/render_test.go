@@ -41,8 +41,8 @@ func plainLines(lines []string) []string {
 }
 
 func TestSendActionMatrix(t *testing.T) {
-	// The full table from plan.md §6.3. Ctrl+Enter is always "the opposite of
-	// my current mode", which is the part that is easy to get backwards.
+	// The full table from plan.md §6.3. Ctrl+J is always "the opposite of my
+	// current mode", which is the part that is easy to get backwards.
 	tests := []struct {
 		name       string
 		processing bool
@@ -52,14 +52,14 @@ func TestSendActionMatrix(t *testing.T) {
 		want       SendAction
 	}{
 		{"idle, enter", false, false, "hi", false, Submit},
-		{"idle, ctrl+enter", false, false, "hi", true, Submit},
+		{"idle, ctrl+j", false, false, "hi", true, Submit},
 		{"idle in queue mode still submits", false, true, "hi", false, Submit},
 
 		{"processing default, enter", true, false, "hi", false, Interleave},
-		{"processing default, ctrl+enter", true, false, "hi", true, Queue},
+		{"processing default, ctrl+j", true, false, "hi", true, Queue},
 
 		{"processing queue mode, enter", true, true, "hi", false, Queue},
-		{"processing queue mode, ctrl+enter", true, true, "hi", true, Interleave},
+		{"processing queue mode, ctrl+j", true, true, "hi", true, Interleave},
 
 		// A harness command is not for the model, so it runs now regardless.
 		{"slash command while processing", true, false, "/model", false, Submit},
@@ -76,7 +76,7 @@ func TestSendActionMatrix(t *testing.T) {
 	}
 }
 
-func TestCtrlEnterIsAlwaysTheOpposite(t *testing.T) {
+func TestCtrlJIsAlwaysTheOpposite(t *testing.T) {
 	for _, queueMode := range []bool{false, true} {
 		normal := SendActionFor(true, queueMode, "hi", false)
 		alternate := SendActionFor(true, queueMode, "hi", true)
