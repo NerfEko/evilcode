@@ -4889,3 +4889,35 @@ codex:  4 reviews, all findings worked. R1 (ddf48b4): anchored path had no
         state, render annotated context. R3 (e951b51): re-recording the whole
         file broke the partial-read invariant — record only the shown window.
         R4 (e951b51): no findings; confirmed correct.
+
+## 2026-08-01 J1.6 — `multiedit`: several edits to one file, one atomic write
+
+A `multiedit` form: one path, an ordered list of `{old, new, all}` edits applied
+sequentially against the accumulating content, reported per-edit as applied or
+failed with a reason. Partial application is the correct outcome — a failed
+edit is reported and skipped, it does not roll back the ones before it, and the
+rest continue. One `lockPath` and one `writeAtomic`, so the file changes once
+(jcode's multiedit writes non-atomically with no lock; this does not regress to
+that). A fully-failed multiedit rewrites nothing (no mtime churn) and sets
+`Result.NoWrite` so swarm coordination does not queue a stale-file notice for a
+file that never changed. multiedit is wired into `WritesFiles`/`ToolPath` and
+the TUI diff quick view. A not-found edit carries the J1.4 flexibleMatch hint.
+
+⟨build⟩. New: `multiEditTool`, `multiEditArgs`, `multiEditHunk`; `Result.NoWrite`,
+`Event.NoWrite`. Edits: `FS.Tools`, `WritesFiles`/`ToolPath`, daemon `observe`,
+TUI `openQuickViewAt`.
+
+Verification (go build ./... && go vet ./... && go test ./..., green):
+`internal/tools/fs_multiedit_test.go` (ordered, accumulating, partial
+application, non-unique fail, replace-all, no-write-on-all-failed) and
+`internal/daemon/swarm_test.go` (`TestMultiEditRegistersAsAWrite`,
+`TestMultiEditNoWriteDoesNotRegister`).
+
+parity: crates/jcode-app-core/src/tool/multiedit.rs:78-161 — better
+        (one lock + one atomic write where jcode is non-atomic and lockless; a
+         fully-failed multiedit skips the write; the not-found hint; wired into
+         swarm coordination)
+codex:  2 reviews. R1 (862a7c1): 2 findings — multiedit missing from swarm
+        tracking (WritesFiles/ToolPath) and the diff quick view; both fixed,
+        with NoWrite to avoid a false stale-file notice on a no-write result.
+        R2 (862a7c1): no findings; confirmed correct.

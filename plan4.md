@@ -665,7 +665,7 @@ Line numbers as-of §0.5. Trust the symbol.
 - [x] **J1.5** `internal/tools/fs.go:477` `FS.editTool` — return three lines of context
       either side of a successful edit, so a consecutive edit needs no re-read. §1.2.
       ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/edit.rs:234-254,139-147⟩
-- [ ] **J1.6** `internal/tools/fs.go:168` `FS.Tools` — add `multiedit`: one path, ordered
+- [x] **J1.6** `internal/tools/fs.go:168` `FS.Tools` — add `multiedit`: one path, ordered
       edits, applied against accumulating content, reported per-edit, **one** `lockPath` and
       **one** `writeAtomic`. Partial application is the correct outcome. §1.3. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/multiedit.rs:78-161⟩ — note jcode writes this
