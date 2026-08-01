@@ -4921,3 +4921,68 @@ codex:  2 reviews. R1 (862a7c1): 2 findings — multiedit missing from swarm
         tracking (WritesFiles/ToolPath) and the diff quick view; both fixed,
         with NoWrite to avoid a false stale-file notice on a no-write result.
         R2 (862a7c1): no findings; confirmed correct.
+
+## 2026-08-01 J1.7 — a misspelled argument is repaired, and the repair is shown
+
+`unmarshalArgs` already aliased command→cmd, file_path→path, old_string→old,
+new_string→new (4f3bede). This completes §1.4:
+
+- `pattern`→`query`, applied only when the tool's schema actually has `query`
+  (schema-conditional): grep's real field is `pattern`, so the alias must not
+  fire for grep. `repairArgs` runs once in `RunOne` with the schema in hand.
+- A number given as a string is coerced for the schema's numeric fields,
+  recursing into nested properties and array items (todo's items[].confidence,
+  plan.*, goals[].*), with the dotted path recorded. Non-finite strings
+  ("NaN"/"+Inf") are rejected, so they fail strict decode honestly.
+- The repair is silent to the model but visible in the tool row: repairs ride
+  `Result.Repairs` → `Event.Repairs` → TUI tool row and headless `toolLine`,
+  rendered dim as "· repaired: file_path→path, offset: string→number", each
+  label passed through `core.SanitizeTerminal`. They persist on
+  `provider.Message` (session JSONL), survive resume (`BlocksFromMessages`) and
+  daemon attach (snapshot Message), so the suffix shows everywhere the tool row
+  renders. A call using the real name pays nothing.
+
+⟨port⟩. New: `repairArgs`, `coerceNumeric`, `childSchema`, `coerceStringNumber`,
+`schemaProperties`, `Result.Repairs`, `Event.Repairs`, `provider.Message.Repairs`,
+`daemon.Message.Repairs`. Edits: `RunOne` (repair before strict decode), the two
+tool-row renderers, snapshot/attach/rebuild paths.
+
+Verification (green, incl. -race): `internal/tools/fs_args_test.go`,
+`internal/runcmd/run_test.go` (TestToolLineShowsRepairs),
+`internal/session/store_test.go` (TestRepairsRoundTripThroughSessionEncoding),
+`internal/daemon/daemon_test.go` (TestSnapshotCarriesRepairs).
+
+parity: crates/jcode-app-core/src/tool/serde_coerce.rs:52-140,
+        crates/jcode-app-core/src/tool/batch.rs:105-164 — better
+        (jcode coerces silently; §1.4's rule that a quietly rewritten argument
+         is one nobody finds later is the point — evilcode shows the rewrite in
+         the tool row, and carries it through resume and attach)
+codex:  6 reviews, all findings worked. R1 (e8c0f8c): non-finite numbers coerced
+        to zero; nested schema fields (todo) not coerced; repairs dropped across
+        daemon socket and missing from headless rows. R2 (1371992): repairs lost
+        on resume (persist on provider.Message, BlocksFromMessages) and
+        unsanitized in tool rows. R3 (5d41953): repairs lost on daemon attach
+        (snapshot Message + attachcmd). R4-R6 (5d41953): no findings; confirmed
+        correct.
+
+## 2026-08-01 Verify J1 — phase J1 checked end to end
+
+Every task in J1 is `[x]` and its codex line is closed. The plan's verification
+list, run against the real tool set:
+
+- read an image → `TestReadImageAttachesBytesAndDimensions` (3×2 PNG attaches,
+  `Dimensions: 3x2`)
+- a minified JS file → `TestReadTruncatesLongLines` (5000-char line capped at
+  MaxLineLen with a marker, count reported once)
+- a misspelled path → `TestReadMissingPathSuggestsNearMatches` ("Did you mean:")
+- a two-hunk `multiedit` → `TestMultiEditAppliesOrderedEdits` (2 applied,
+  one write)
+- `edit` with wrong indentation → `TestEditFailedMatchIndentation`
+  ("different indentation around line 1")
+- `read` with `file_path` instead of `path` → `TestReadAcceptsFilePathAliasAndRecordsRepair`
+  (repair recorded and shown)
+
+`go build ./... && go vet ./... && go test ./...` green (19 packages); the J1
+tool-level tests above all pass. Tagged `jcode-1`. Every J1 commit was pushed
+to forgejo (origin, git.evileko.dev). Stopping here per instruction — J2 not
+started.

@@ -670,12 +670,12 @@ Line numbers as-of §0.5. Trust the symbol.
       **one** `writeAtomic`. Partial application is the correct outcome. §1.3. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/multiedit.rs:78-161⟩ — note jcode writes this
       one non-atomically and with no lock; evilcode's must not.
-- [ ] **J1.7** `internal/tools/tools.go:229` `unmarshalArgs` — `DisallowUnknownFields`
+- [x] **J1.7** `internal/tools/tools.go:229` `unmarshalArgs` — `DisallowUnknownFields`
       rejects a model that spells a field the way three other harnesses do. Alias the common
       forms, coerce string-wrapped numbers, then fail as now. Repairs show in the tool row.
       §1.4. ⟨port⟩ ⟨jcode: crates/jcode-app-core/src/tool/batch.rs:105-164,
       crates/jcode-app-core/src/tool/serde_coerce.rs:52-140⟩
-- [ ] Verify J1: read an image, a minified JS file, a misspelled path; run a two-hunk
+- [x] Verify J1: read an image, a minified JS file, a misspelled path; run a two-hunk
       `multiedit`; call `edit` with wrong indentation and read the error; call `read` with
       `file_path` instead of `path`. Tag `jcode-1`.
 
