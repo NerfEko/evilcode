@@ -880,19 +880,6 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 	if err := f.writeConfined(full, []byte(after)); err != nil {
 		return Result{}, err
 	}
-	// Re-record the post-write state so a follow-up anchored edit has fresh
-	// anchors for the new content and needs no re-read (§1.2). When anchors
-	// are off there is nothing to serve a follow-up; forget keeps the store
-	// honest about what the model has seen.
-	if f.Anchors {
-		if info, err := os.Stat(full); err == nil {
-			f.anchors.record(full, info, patched)
-		} else {
-			f.anchors.forget(full)
-		}
-	} else {
-		f.anchors.forget(full)
-	}
 
 	diff, stat := makeDiff(name, before, after)
 	// Equivalent context for the anchored path, centred on the first changed
@@ -908,6 +895,24 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 	} else {
 		around = contextAround(after, s, s, 3)
 	}
+
+	// Re-record the post-write state so a follow-up anchored edit has fresh
+	// anchors for the new content and needs no re-read (§1.2). Only the
+	// context window the model was just shown is recorded — a partial read
+	// never recorded the rest, and re-recording the whole file would let a
+	// duplicate or collision on an unseen line make a context anchor
+	// ambiguous. When anchors are off there is nothing to serve a follow-up;
+	// forget keeps the store honest about what the model has seen.
+	if f.Anchors {
+		if info, err := os.Stat(full); err == nil {
+			f.anchors.recordAt(full, info, patched[lo:hi], lo)
+		} else {
+			f.anchors.forget(full)
+		}
+	} else {
+		f.anchors.forget(full)
+	}
+
 	return Result{
 		Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 		Diff:     diff,
