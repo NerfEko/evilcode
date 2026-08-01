@@ -105,3 +105,21 @@ func TestSlackIsCappedWellBelowTheViewport(t *testing.T) {
 		t.Errorf("slack = %d, want it capped for a 21-row viewport", got)
 	}
 }
+
+// TestSlackIsDroppedOnceTheReaderScrollsUp: slack is scaffolding for a reply
+// that is still arriving. A reader who has scrolled up is anchored to content,
+// so holding the gap left a hole below the text — the "big empty space after a
+// turn" — and shifted the window forward past the oldest lines.
+func TestSlackIsDroppedOnceTheReaderScrollsUp(t *testing.T) {
+	var s Scroll
+	s.Observe(100, 40)
+	s.Observe(85, 40) // a thinking trace collapsed
+	if s.Slack() == 0 {
+		t.Fatal("no slack after a shrink; the case under test never set up")
+	}
+	s.Up(5, 85, 40)
+	s.Observe(85, 40)
+	if s.Slack() != 0 {
+		t.Errorf("slack = %d while scrolled up, want 0", s.Slack())
+	}
+}

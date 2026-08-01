@@ -431,7 +431,10 @@ func (r *Renderer) renderTool(b *Block) []string {
 			del.Render(fmt.Sprintf("-%d", b.Removed)) + dim.Render(")"))
 	}
 
-	out := []string{b2.String()}
+	// A tool row is assembled from parts that are each bounded but together are
+	// not: a 60-cell target plus an intent plus a token count runs past a narrow
+	// column, and an over-wide row wraps the terminal and drags the frame down.
+	out := []string{truncateCells(b2.String(), r.Width)}
 	if b.Diff != "" && r.DiffMode == DiffInline {
 		path := b.ToolPath
 		if path == "" {

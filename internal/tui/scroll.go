@@ -81,8 +81,16 @@ func (s *Scroll) Observe(contentHeight, viewportHeight int) {
 		s.lastHeight = contentHeight
 		return
 	}
+	if s.Paused {
+		// Not just "stop growing it" — drop it. A reader who has scrolled up is
+		// anchored to content, so a gap held below the text is a hole in their
+		// view, and it shifts the window forward, which hid the oldest lines
+		// once they scrolled all the way back.
+		s.slack, s.lastHeight = 0, contentHeight
+		return
+	}
 	switch {
-	case contentHeight < s.lastHeight && !s.Paused:
+	case contentHeight < s.lastHeight:
 		// The largest single collapse, not the sum of them. A turn can collapse
 		// several traces — think, call a tool, think again — and summing meant
 		// the gap grew past anything a reply could fill, leaving a hole on

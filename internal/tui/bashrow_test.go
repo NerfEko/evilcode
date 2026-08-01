@@ -76,7 +76,9 @@ func TestBashRowDuplicatedCommandIsTheBug(t *testing.T) {
 	const cmd = "rm -rf build/ target/release node_modules dist out .cache vendor tmp && echo all gone now"
 	args, _ := json.Marshal(map[string]any{"cmd": cmd})
 
-	m := &Model{renderer: NewRenderer(theme.Dracula(), 80)}
+	// Wide on purpose: the duplication is what is under test, and at 80 columns
+	// the row is truncated to the column before the second copy can show.
+	m := &Model{renderer: NewRenderer(theme.Dracula(), 200)}
 	// Old behavior: intent was shortCmd(cmd) — the command truncated to 48.
 	m.applyEvent(agent.Event{
 		Kind: agent.EventToolResult,

@@ -2609,9 +2609,19 @@ func (m *Model) View() tea.View {
 
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
+		// The bar owns the last column of the *chat* area, not of the terminal.
+		// With the side pane open those are different columns, and painting at
+		// the terminal edge made every row wider than the chat, which shoved the
+		// pane off screen and wrapped the frame.
+		_, lead := ContentWidth(m.width, m.centered)
+		avail := max(m.chatWidth()-lead-1, 0)
 		for i := 0; i < res.Transcript && i < len(bar) && i < len(rows); i++ {
-			pad := max(m.width-Inset(false)-1-lipgloss.Width(rows[i]), 0)
-			rows[i] = rows[i] + strings.Repeat(" ", pad) + bar[i]
+			// Truncate, not just pad: a row wider than its column — an untrimmed
+			// tool row, a docked widget — used to push the bar past the edge
+			// instead of being cut off at it.
+			row := truncateCells(rows[i], avail)
+			pad := max(avail-lipgloss.Width(row), 0)
+			rows[i] = row + strings.Repeat(" ", pad) + bar[i]
 		}
 	}
 
@@ -2875,9 +2885,13 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 		rows = append(rows, "")
 	}
 
+	// Cut the chat off at its column. A row wider than the chat — a long tool
+	// row, a wide code line — used to leak straight across the divider and push
+	// the panel off screen, which wrapped the frame and left half of it blank.
 	for i := 0; i < len(rows) && i < len(panel); i++ {
-		pad := max(chat-lipgloss.Width(rows[i]), 0)
-		rows[i] = rows[i] + strings.Repeat(" ", pad) + panel[i]
+		row := truncateCells(rows[i], chat)
+		pad := max(chat-lipgloss.Width(row), 0)
+		rows[i] = row + strings.Repeat(" ", pad) + panel[i]
 	}
 	return rows
 }

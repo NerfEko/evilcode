@@ -4505,3 +4505,44 @@ reported that here and it is cheap to add later if the edge is seen to breathe.
 
 Verified: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./internal/tui`.
 Installed SHA-256 `e70c83d77a140ab5216a87d10b95326375dde6365374034272f30946e9a02c43`.
+
+## 2026-07-31 — rows are cut at their column, not just padded to it
+
+Reported with three screenshots: bash rows drawn over the scrollbar ("scroll bar always
+top"), clicking a tool row for the quick view showing "a blank half screen, or just lines
+at the last two lines of the terminal", and "a big empty space if you scroll down after
+agent turns".
+
+One shape behind all three composition bugs. Both places that join a column to the frame —
+the scrollbar paint in `View` and `attachSidePanel` — padded the row out to the column and
+appended, with no truncation. A row wider than its column therefore *pushed* what came
+after it instead of being cut off at the edge.
+
+- The scrollbar was painted at `m.width-Inset(false)-1`, the terminal's last column rather
+  than the chat's. With the side pane open those differ by the whole pane: every
+  transcript row came out `m.width-1` wide, `attachSidePanel` then found zero pad and put
+  the pane past the right edge, so the terminal wrapped every row. That is the blank
+  half-screen — the pane was on screen, just re-flowed into the rows below it. The column
+  now comes from `m.chatWidth()` and the real left pad, and the row is truncated to it.
+- `renderTool` assembles a row from parts that are each bounded and together are not: a
+  60-cell target, an intent, a token count. On a narrow chat it ran past the reserved
+  scrollbar column. Truncated to `r.Width` at the source, and truncated again at both
+  composition points, which covers "sometimes other things do too" without hunting each
+  producer.
+- `Scroll.slack` — the gap held below the text so a collapsing thinking trace does not haul
+  the conversation back down — was only prevented from *growing* while the reader was
+  scrolled up, never dropped. Its own comment already claimed the paused case holds no
+  gap. It now does: paused clears it. Held slack also shifted the window forward, which hid
+  the oldest lines once the reader scrolled all the way back.
+
+Reproduction: `TestFrameFitsTheTerminalWithBarAndPanel` builds a frame with the bar up and
+a quick view open and fails on any row wider than the terminal — on the shipped code, row 0
+at 106 cells in a 100-cell terminal. `TestSlackIsDroppedOnceTheReaderScrollsUp` covers the
+gap. `TestBashRowDuplicatedCommandIsTheBug` moved to a 200-cell renderer: at 80 the row is
+now correctly cut before the duplicated command it asserts on.
+
+Not taken: a gap column between the text and the bar. The wrap width already ends exactly
+where the bar begins, so reserving one more would chop the last cell off every full-width
+prose line to buy clearance for the rare overlong row.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./...`.

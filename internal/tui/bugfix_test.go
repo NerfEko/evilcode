@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/provider"
@@ -270,5 +272,35 @@ func TestSidePanelUsesTheWholeTerminalHeight(t *testing.T) {
 	if below == 0 {
 		t.Error("nothing was drawn past the end of the chat column — the panel " +
 			"is still being cut off at the composer")
+	}
+}
+
+// TestFrameFitsTheTerminalWithBarAndPanel is the composition guard: a row wider
+// than its column used to be padded, not cut, so the scrollbar landed past the
+// right edge and the side pane was pushed off screen — the terminal wrapped the
+// frame and the pane came back as blank half-screens.
+func TestFrameFitsTheTerminalWithBarAndPanel(t *testing.T) {
+	m := newTestModel(t)
+	m.quickView = &PanelContent{Title: "bash", Body: []string{strings.Repeat("x", 300)}}
+	for i := 0; i < 80; i++ {
+		m.blocks = append(m.blocks, Block{
+			Kind: BlockTool, ToolName: "bash",
+			ToolTarget: strings.Repeat("z", 60),
+			ToolIntent: "exit 0 · 12.4 KB out", ToolTokens: 3200,
+		})
+	}
+
+	// The scrollbar decision reads the previous frame, so it lands on the second.
+	m.View()
+	m.View()
+	if !m.scrollbarOn {
+		t.Fatal("scrollbar off; this case only bites with the bar up")
+	}
+
+	for i, line := range strings.Split(m.lastFrame, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Fatalf("row %d is %d cells wide, terminal is %d:\n%s",
+				i, w, m.width, plain(line))
+		}
 	}
 }
