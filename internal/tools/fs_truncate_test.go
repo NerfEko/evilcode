@@ -79,9 +79,9 @@ func TestReadLeavesShortLinesAlone(t *testing.T) {
 // Truncation cuts at a UTF-8 rune boundary, not the middle of a multibyte
 // character, so the result is valid UTF-8 (no U+FFFD from the provider edge).
 func TestReadTruncatesAtRuneBoundary(t *testing.T) {
-	// 2000 'a' bytes, then a 3-byte rune '世' straddling the cut point: byte
-	// 2000 lands inside the rune.
-	prefix := strings.Repeat("a", 2000)
+	// 1999 ASCII bytes, then a 3-byte rune '世' so byte 2000 lands *inside*
+	// the rune: a naive s[:2000] cut splits it and leaves invalid UTF-8.
+	prefix := strings.Repeat("a", 1999)
 	body := prefix + "世" + strings.Repeat("b", 100) + "\n"
 	f := tempFS(t, map[string]string{"u.txt": body})
 	res, err := run(t, f.Tools(), "read", map[string]any{"path": "u.txt"})
@@ -136,8 +136,9 @@ func TestPagedReadEmitsASingleLineLargerThanTheCap(t *testing.T) {
 	if !strings.Contains(res.Output, "...") {
 		t.Errorf("want the long line truncated with a marker:\n%s", res.Output)
 	}
-	// Paging advanced past the line: the continuation hint points beyond 1.
-	if strings.Contains(res.Output, "offset=1\n") && !strings.Contains(res.Output, "offset=2") {
-		t.Errorf("paging did not advance past the long line:\n%s", res.Output)
+	// Before the fix the size check discarded the only line and read returned
+	// "re-read with offset=1]" forever; assert that looping signature is gone.
+	if strings.Contains(res.Output, "re-read with offset=1]") {
+		t.Errorf("paging did not advance past the long line (looping hint present):\n%s", res.Output)
 	}
 }
