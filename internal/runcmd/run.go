@@ -409,6 +409,9 @@ func toolLine(e agent.Event) string {
 	if e.Intent != "" && !strings.Contains(e.Intent, target) {
 		fmt.Fprintf(&b, " · %s", e.Intent)
 	}
+	if len(e.Repairs) > 0 {
+		fmt.Fprintf(&b, " · repaired: %s", strings.Join(e.Repairs, ", "))
+	}
 	if n := approxTokens(e.Output); n > 0 {
 		fmt.Fprintf(&b, " · %s tok", humanCount(n))
 	}

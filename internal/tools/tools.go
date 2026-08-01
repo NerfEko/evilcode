@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,18 +345,11 @@ func repairArgs(raw json.RawMessage, schema json.RawMessage) (json.RawMessage, [
 	}
 
 	// Numeric coercion: a model often sends "5" for an integer field. Coerce
-	// string-wrapped numbers for the schema's numeric fields; strict decode
-	// validates the type afterwards (a "1.5" on an integer field still fails).
-	for _, name := range numericFields(schema) {
-		v, ok := fields[name]
-		if !ok {
-			continue
-		}
-		if coerced, ok := coerceStringNumber(v); ok {
-			fields[name] = coerced
-			repairs = append(repairs, name+": string→number")
-		}
-	}
+	// string-wrapped numbers for the schema's numeric fields, recursing into
+	// object properties and array items (todo's items[].confidence, plan.*,
+	// goals[].* are nested); strict decode validates the type afterwards (a
+	// "1.5" on an integer field still fails).
+	coerceNumeric(fields, schema, "", &repairs)
 
 	if len(repairs) == 0 {
 		return raw, nil
@@ -365,6 +359,110 @@ func repairArgs(raw json.RawMessage, schema json.RawMessage) (json.RawMessage, [
 		return raw, repairs
 	}
 	return out, repairs
+}
+
+// coerceNumeric walks a JSON object against its JSON-schema properties and
+// coerces string-wrapped numbers onto numeric fields, recursing into nested
+// objects and arrays. prefix is the dotted path for the repair label.
+func coerceNumeric(obj map[string]json.RawMessage, schema json.RawMessage, prefix string, repairs *[]string) {
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(schema, &s) != nil {
+		return
+	}
+	for name, prop := range s.Properties {
+		v, ok := obj[name]
+		if !ok {
+			continue
+		}
+		if hasNumericType(prop) {
+			if coerced, ok := coerceStringNumber(v); ok {
+				obj[name] = coerced
+				*repairs = append(*repairs, joinPath(prefix, name)+": string→number")
+			}
+			continue
+		}
+		// Recurse into a nested object or array of objects against the schema's
+		// child definition. The recursion mutates fresh maps, so each level is
+		// re-marshalled back into its slot.
+		if child := childSchema(prop); child != nil {
+			switch {
+			case isObject(v):
+				var m map[string]json.RawMessage
+				if json.Unmarshal(v, &m) == nil {
+					coerceNumeric(m, child, joinPath(prefix, name), repairs)
+					if b, err := json.Marshal(m); err == nil {
+						obj[name] = b
+					}
+				}
+			case isArray(v):
+				var arr []json.RawMessage
+				if json.Unmarshal(v, &arr) == nil {
+					for i, item := range arr {
+						var m map[string]json.RawMessage
+						if json.Unmarshal(item, &m) == nil {
+							coerceNumeric(m, child, joinPath(prefix, name), repairs)
+							if b, err := json.Marshal(m); err == nil {
+								arr[i] = b
+							}
+						}
+					}
+					if b, err := json.Marshal(arr); err == nil {
+						obj[name] = b
+					}
+				}
+			}
+		}
+	}
+}
+
+// childSchema returns the schema to validate a property's value against: the
+// property's own schema for an object, or the items schema for an array.
+func childSchema(prop json.RawMessage) json.RawMessage {
+	var p struct {
+		Type  any             `json:"type"`
+		Items json.RawMessage `json:"items"`
+	}
+	if json.Unmarshal(prop, &p) != nil {
+		return nil
+	}
+	switch t := p.Type.(type) {
+	case string:
+		if t == "array" {
+			return p.Items
+		}
+		if t == "object" {
+			return prop
+		}
+	case []any:
+		for _, x := range t {
+			if s, ok := x.(string); ok && s == "array" {
+				return p.Items
+			}
+			if s, ok := x.(string); ok && s == "object" {
+				return prop
+			}
+		}
+	}
+	return nil
+}
+
+func isObject(v json.RawMessage) bool {
+	var m map[string]json.RawMessage
+	return json.Unmarshal(v, &m) == nil
+}
+
+func isArray(v json.RawMessage) bool {
+	var a []json.RawMessage
+	return json.Unmarshal(v, &a) == nil
+}
+
+func joinPath(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "." + name
 }
 
 // numericFields lists the schema's properties whose type is integer or number.
@@ -420,8 +518,10 @@ func hasNumericType(prop json.RawMessage) bool {
 	return false
 }
 
-// coerceStringNumber turns a JSON string holding a number into a JSON number
-// token, re-marshalled so leading zeros and the like are canonicalized.
+// coerceStringNumber turns a JSON string holding a finite number into a JSON
+// number token. NaN/±Inf are rejected: json.Marshal would fail on them and
+// leaving the field as a string makes strict decode reject the call, which is
+// the honest outcome for an argument that is not a real number.
 func coerceStringNumber(v json.RawMessage) (json.RawMessage, bool) {
 	var s string
 	if json.Unmarshal(v, &s) != nil {
@@ -435,11 +535,15 @@ func coerceStringNumber(v json.RawMessage) (json.RawMessage, bool) {
 		b, _ := json.Marshal(n)
 		return b, true
 	}
-	if f, err := strconv.ParseFloat(t, 64); err == nil {
-		b, _ := json.Marshal(f)
-		return b, true
+	f, err := strconv.ParseFloat(t, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil, false
 	}
-	return nil, false
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 func applyAliases(raw json.RawMessage) (json.RawMessage, bool) {
 	var fields map[string]json.RawMessage

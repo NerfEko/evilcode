@@ -93,3 +93,45 @@ func containsJoin(parts []string, want string) bool {
 	}
 	return false
 }
+// A non-finite numeric string ("NaN") must not be coerced: leaving it a string
+// makes strict decode reject the call, which is the honest outcome for an
+// argument that is not a real number.
+func TestRepairArgsRejectsNonFiniteNumbers(t *testing.T) {
+	querySchema := json.RawMessage(`{"type":"object","properties":{"timeout":{"type":"integer"}}}`)
+	for _, bad := range []string{"NaN", "+Inf", "-Inf"} {
+		repaired, repairs := repairArgs(
+			json.RawMessage(`{"timeout":"`+bad+`"}`), querySchema)
+		if len(repairs) != 0 {
+			t.Errorf("timeout=%q: repairs = %v, want none (must not coerce non-finite)", bad, repairs)
+		}
+		if strings.Contains(string(repaired), `"timeout":`) {
+			// The field must still be a string so strict decode rejects it.
+			if !strings.Contains(string(repaired), `"timeout":"`+bad+`"`) {
+				t.Errorf("timeout=%q: repaired = %s, want the string left intact", bad, repaired)
+			}
+		}
+	}
+}
+
+// Numeric coercion recurses into nested schema fields (todo's items[].confidence).
+func TestRepairArgsCoercesNestedNumbers(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{
+	  "items":{"type":"array","items":{"type":"object","properties":{
+	    "confidence":{"type":"integer"}}}},
+	  "plan":{"type":"object","properties":{"max_steps":{"type":"integer"}}}
+	}}`)
+	repaired, repairs := repairArgs(json.RawMessage(`{
+	  "items":[{"confidence":"90"}],
+	  "plan":{"max_steps":"7"}
+	}`), schema)
+	if !strings.Contains(string(repaired), `"confidence":90`) {
+		t.Errorf("repaired = %s, want items[].confidence coerced to 90", repaired)
+	}
+	if !strings.Contains(string(repaired), `"max_steps":7`) {
+		t.Errorf("repaired = %s, want plan.max_steps coerced to 7", repaired)
+	}
+	if !containsJoin(repairs, "items.confidence: string→number") ||
+		!containsJoin(repairs, "plan.max_steps: string→number") {
+		t.Errorf("repairs = %v, want nested coercion recorded", repairs)
+	}
+}
