@@ -356,6 +356,59 @@ func TestTitleFromMeta(t *testing.T) {
 	}
 }
 
+// TestRememberedModel records model switches and checks that Describe reports
+// the last one, which is what /resume resolves against. Last-write-wins is the
+// point: a session that switched mid-run resumes on the model it ended on.
+func TestRememberedModel(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteModel("llama2:7b@ollama-local"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteModel("deepseek-chat@deepseek"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := Describe(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Model != "deepseek-chat@deepseek" {
+		t.Errorf("Model = %q, want the last-written deepseek-chat@deepseek", info.Model)
+	}
+}
+
+// TestRememberedModelEmptyForOldSessions confirms a session with no model meta
+// leaves Model empty, so the resume path falls through to the config default
+// rather than resolving against garbage.
+func TestRememberedModelEmptyForOldSessions(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := Describe(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Model != "" {
+		t.Errorf("Model = %q, want empty for a session with no model meta", info.Model)
+	}
+}
+
 func TestHistoryPersistsAcrossOpens(t *testing.T) {
 	dir := t.TempDir()
 	h, err := OpenHistory(dir)

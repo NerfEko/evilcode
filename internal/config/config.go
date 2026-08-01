@@ -527,6 +527,17 @@ func SplitModelRef(ref string) (model, providerName string) {
 	return ref, ""
 }
 
+// ModelRef builds a `model@provider` reference from its parts, the inverse of
+// SplitModelRef. A bare model name (no provider) round-trips unchanged. Used
+// to record the model a session is on so a later resume resolves back to the
+// same provider.
+func ModelRef(model, provider string) string {
+	if provider == "" {
+		return model
+	}
+	return model + "@" + provider
+}
+
 func (c *Config) findProvider(name string) *ProviderConfig {
 	for i := range c.Providers {
 		if c.Providers[i].Name == name {

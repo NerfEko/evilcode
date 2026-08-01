@@ -1646,6 +1646,12 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 			}
 			m.agent.Model = sel.Name
 			m.notice = "Model: " + sel.Name
+			// Record the switch so a later /resume picks up this model rather than
+			// the one the session started with (§18). The ref is rebuilt from the
+			// header, which the lines above just updated.
+			if m.store != nil {
+				_ = m.store.WriteModel(config.ModelRef(m.header.Model, m.header.Provider))
+			}
 		}
 		m.pickerOpen = false
 		m.picker.Filter = ""

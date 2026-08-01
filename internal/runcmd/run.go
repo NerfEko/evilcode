@@ -74,7 +74,16 @@ func Run(args []string) (int, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return ExitError, err
 	}
-	prov, modelName, err := cfg.Resolve(*model)
+	// A resumed session remembers the model it left off with; use it unless an
+	// explicit -m overrides (§18). Headless resume matches the TUI here, so the
+	// same conversation picks up the same model either way.
+	ref := *model
+	if ref == "" && *resume != "" {
+		if info, err := session.Describe(dataDir, *resume); err == nil {
+			ref = info.Model
+		}
+	}
+	prov, modelName, err := cfg.Resolve(ref)
 	if err != nil {
 		return ExitError, err
 	}
@@ -93,6 +102,12 @@ func Run(args []string) (int, error) {
 		}
 	}
 	defer store.Close()
+
+	// Record the model this run is on, mirroring the TUI: last-write-wins on
+	// read, so the remembered model tracks every run, headless or interactive.
+	if err := store.WriteModel(config.ModelRef(modelName, prov.Name())); err != nil {
+		return ExitError, err
+	}
 
 	// Skills reach headless too. Without this a `run` cannot load a skill at
 	// all, which is how the selfdev verification discovered the gap: the model

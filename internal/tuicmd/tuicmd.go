@@ -80,7 +80,19 @@ func runOnce(args []string) (string, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return "", err
 	}
-	prov, modelName, err := cfg.Resolve(*model)
+
+	// A resumed session remembers the model it left off with (§18). Use it
+	// unless an explicit -m overrides, so /resume lands on the same model the
+	// conversation was having rather than the config default. A session with no
+	// recorded model (recorded before the field existed) falls through to the
+	// default, which is the prior behaviour.
+	ref := *model
+	if ref == "" && *resume != "" {
+		if info, err := session.Describe(dataDir, *resume); err == nil {
+			ref = info.Model
+		}
+	}
+	prov, modelName, err := cfg.Resolve(ref)
 	if err != nil {
 		return "", err
 	}
@@ -97,6 +109,13 @@ func runOnce(args []string) (string, error) {
 		if store, err = session.Create(dataDir); err != nil {
 			return "", err
 		}
+	}
+
+	// Record the model this run is on. Last-write-wins on read, so this updates
+	// the remembered model for a resume even when the ref came from the session
+	// itself — and it back-fills the field for sessions created before it.
+	if err := store.WriteModel(config.ModelRef(modelName, prov.Name())); err != nil {
+		return "", err
 	}
 	defer store.Close()
 

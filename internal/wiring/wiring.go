@@ -64,6 +64,23 @@ type Options struct {
 	Bank  *memory.Store
 }
 
+// modelRefForResume returns the model reference to resolve for this build: an
+// explicit Model wins, and a resume with no explicit model reuses the one the
+// session remembers, so a daemon or headless resume lands on the same model the
+// conversation left off with (§18). Empty falls through to the config default.
+func modelRefForResume(dataDir string, opts Options) string {
+	if opts.Model != "" {
+		return opts.Model
+	}
+	if opts.Resume == "" {
+		return ""
+	}
+	if info, err := session.Describe(dataDir, opts.Resume); err == nil {
+		return info.Model
+	}
+	return ""
+}
+
 // Session is everything a caller has to hold onto and close.
 type Session struct {
 	Agent  *agent.Agent
@@ -120,7 +137,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		return nil, err
 	}
 
-	prov, modelName, err := cfg.Resolve(opts.Model)
+	prov, modelName, err := cfg.Resolve(modelRefForResume(dataDir, opts))
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +162,13 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 	out.Store, out.Prior = store, len(prior)
 	out.closers = append(out.closers, func() { store.Close() })
+
+	// Record the model this build is on, so the session remembers it for a later
+	// resume (§18). Matches the TUI and headless paths; last-write-wins on read.
+	if err := store.WriteModel(config.ModelRef(modelName, prov.Name())); err != nil {
+		store.Close()
+		return nil, err
+	}
 
 	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
 	conv.Append(prior...)

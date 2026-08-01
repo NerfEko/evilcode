@@ -317,6 +317,13 @@ func (s *Store) WriteMeta(m Meta) error {
 	return s.Append(Entry{Type: TypeMeta, Data: data})
 }
 
+// WriteModel records the model a session is on, as a `model@provider` ref. The
+// last such entry wins on read, so a resumed session picks up the model it ended
+// on rather than the one it began with (plan.md §18).
+func (s *Store) WriteModel(ref string) error {
+	return s.WriteMeta(Meta{Kind: MetaModel, Model: ref})
+}
+
 // Reopen points the store back at its path.
 //
 // Compact and Rewind replace the log with a temp file and a rename, which
@@ -492,6 +499,12 @@ type Info struct {
 	// Cwd is where the session was started, so the picker can flag the ones
 	// belonging to the directory you are in now.
 	Cwd string
+
+	// Model is the model reference the session was last using, as a
+	// `model@provider` ref (or a bare name). The last model meta entry wins, so a
+	// resumed run reflects the model the previous one switched to. Empty for
+	// sessions recorded before the field existed.
+	Model string
 }
 
 // List returns every stored session, most recently modified first.
@@ -583,6 +596,10 @@ func Describe(dataDir, name string) (Info, error) {
 				info.Saved = true
 			case MetaUnsaved:
 				info.Saved = false
+			case MetaModel:
+				// Last-write-wins: a session switched models mid-run, and a resume
+				// wants the one it ended on, not the first one it started with.
+				info.Model = m.Model
 			}
 		}
 	}

@@ -214,6 +214,9 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 
 	// The second row is the quiet detail: what this session actually was.
 	detail := fmt.Sprintf("%d messages", row.Info.Messages)
+	if row.Info.Model != "" {
+		detail += " · " + row.Info.Model
+	}
 	if row.Recalled != "" {
 		// A row the literal filter never would have found needs to say why it
 		// is here, or it reads as the picker ignoring what was typed.

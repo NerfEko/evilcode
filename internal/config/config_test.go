@@ -164,6 +164,27 @@ func TestSplitModelRef(t *testing.T) {
 	}
 }
 
+// TestModelRefRoundTrip checks that ModelRef rebuilds what SplitModelRef took
+// apart, which is what makes a remembered model resolve back to the same
+// provider on resume.
+func TestModelRefRoundTrip(t *testing.T) {
+	tests := []struct{ ref, model, prov string }{
+		{"qwen3-coder:480b-cloud@ollama-cloud", "qwen3-coder:480b-cloud", "ollama-cloud"},
+		{"org/model@v2@openrouter", "org/model@v2", "openrouter"},
+		{"mistral", "mistral", ""},
+	}
+	for _, tt := range tests {
+		got := ModelRef(tt.model, tt.prov)
+		if got != tt.ref {
+			t.Errorf("ModelRef(%q, %q) = %q, want %q", tt.model, tt.prov, got, tt.ref)
+		}
+		// A bare name with no provider round-trips to itself, not to "name@".
+		if tt.prov == "" && got != tt.model {
+			t.Errorf("ModelRef(%q, \"\") = %q, want the bare name", tt.model, got)
+		}
+	}
+}
+
 func TestResolveBuildsTheRightClient(t *testing.T) {
 	t.Setenv(EnvOllamaKey, "sk-cloud")
 	cfg := Default()
