@@ -84,3 +84,28 @@ func TestReadExistingFileUnaffectedBySuggestions(t *testing.T) {
 		t.Errorf("output = %q, want the file's contents", res.Output)
 	}
 }
+
+// A case-only typo (FS.GO when fs.go exists on a case-sensitive filesystem) is
+// suggested: the skip is on the exact name, not the case-folded one.
+func TestReadMissingPathSuggestsCaseTypo(t *testing.T) {
+	f := tempFS(t, map[string]string{"fs.go": "x"})
+	_, err := run(t, f.Tools(), "read", map[string]any{"path": "FS.GO"})
+	if err == nil {
+		t.Fatal("want an error for the case-typo path")
+	}
+	if !strings.Contains(err.Error(), "Did you mean:") || !strings.Contains(err.Error(), "fs.go") {
+		t.Errorf("error = %q, want fs.go suggested for the case typo", err)
+	}
+}
+
+// Suggestions still work under confinement, scanning through the confined open.
+func TestReadMissingPathSuggestsUnderConfine(t *testing.T) {
+	f := tempFS(t, map[string]string{"fs.go": "x", "fs_test.go": "x"}).WithConfine(true)
+	_, err := run(t, f.Tools(), "read", map[string]any{"path": "fs.goo"})
+	if err == nil {
+		t.Fatal("want an error for a missing path")
+	}
+	if !strings.Contains(err.Error(), "Did you mean:") || !strings.Contains(err.Error(), "fs.go") {
+		t.Errorf("error = %q, want fs.go suggested under confine", err)
+	}
+}

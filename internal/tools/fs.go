@@ -209,23 +209,29 @@ func (f *FS) rel(full string) string {
 // one ReadDir on a path that was already an error, so a miss costs almost
 // nothing and a typo gets the model pointed at its neighbour instead of a bare
 // "no such file". Mirrors jcode's `find_similar_files` (read.rs:307-330).
+//
+// The scan goes through the confined open when Confine is on, so a symlink
+// swapped into the parent after resolve cannot list names outside the workspace.
+// A case-only typo (FS.GO when fs.go exists) is still suggested: the skip is on
+// the exact original name, not the case-folded one.
 func (f *FS) suggestNear(full string) []string {
 	parent := filepath.Dir(full)
-	target := strings.ToLower(filepath.Base(full))
-	if target == "" {
+	base := filepath.Base(full)
+	if base == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(parent)
+	entries, err := f.readDirConfined(parent)
 	if err != nil {
 		return nil
 	}
+	ltarget := strings.ToLower(base)
 	var out []string
 	for _, e := range entries {
-		name := strings.ToLower(e.Name())
-		if name == target {
+		if e.Name() == base {
 			continue
 		}
-		if strings.Contains(name, target) || strings.Contains(target, name) {
+		name := strings.ToLower(e.Name())
+		if strings.Contains(name, ltarget) || strings.Contains(ltarget, name) {
 			out = append(out, f.rel(filepath.Join(parent, e.Name())))
 			if len(out) >= 3 {
 				break
@@ -233,6 +239,25 @@ func (f *FS) suggestNear(full string) []string {
 		}
 	}
 	return out
+}
+
+// readDirConfined lists a directory through the confined open when Confine is
+// on, so a parent swapped for an external symlink after resolve cannot expose
+// names outside the workspace. Mirrors openConfined's check shape.
+func (f *FS) readDirConfined(parent string) ([]os.DirEntry, error) {
+	if !f.Confine {
+		return os.ReadDir(parent)
+	}
+	root := f.Root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	dir, err := openBeneath(root, resolveExisting(parent), os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	return dir.ReadDir(-1)
 }
 
 // Tools returns the filesystem tool set.
