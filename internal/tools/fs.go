@@ -818,8 +818,12 @@ func (f *FS) editTool() Tool {
 
 			name := f.rel(full)
 			diff, stat := makeDiff(name, before, after)
+			// Three lines of context either side of the change, so a consecutive
+			// edit to the same region needs no re-read (§1.2).
+			firstIdx := strings.Index(before, a.Old)
+			around := editContext(after, a.New, firstIdx, 3)
 			return Result{
-				Output:   fmt.Sprintf("edited %s (+%d -%d)", name, stat.Added, stat.Removed),
+				Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 				Diff:     diff,
 				DiffStat: &stat,
 				Intent:   fmt.Sprintf("editing %s", name),

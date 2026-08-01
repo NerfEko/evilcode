@@ -51,3 +51,47 @@ func TestEditFailedMatchNotFound(t *testing.T) {
 		t.Errorf("error = %q, a true miss should not claim a looser match", err)
 	}
 }
+
+// J1.5: a successful edit returns three lines of context either side, so a
+// consecutive edit to the same region needs no re-read.
+func TestEditReturnsContextAroundChange(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		b.WriteString("line ")
+		b.WriteString(itoa(i))
+		b.WriteString("\n")
+	}
+	f := tempFS(t, map[string]string{"a.txt": b.String()})
+	res, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "line 10", "new": "line ten",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The change is at line 10; context spans lines 7-13 (3 either side),
+	// and the changed line reads "line ten".
+	if !strings.Contains(res.Output, "10\tline ten") {
+		t.Errorf("output missing the changed line 10:\n%s", res.Output)
+	}
+	if !strings.Contains(res.Output, "7\tline 7") || !strings.Contains(res.Output, "13\tline 13") {
+		t.Errorf("output = %q, want context lines 7 and 13", res.Output)
+	}
+	if strings.Contains(res.Output, "6\tline 6") || strings.Contains(res.Output, "14\tline 14") {
+		t.Errorf("output = %q, context must be exactly 3 lines either side", res.Output)
+	}
+}
+
+// itoa avoids pulling strconv for a tiny test helper.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [4]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
