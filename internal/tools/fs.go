@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -203,6 +204,37 @@ func (f *FS) rel(full string) string {
 	return full
 }
 
+// suggestNear scans the parent directory of a missing path for names that
+// contain, or are contained by, the requested one, and names up to three. It is
+// one ReadDir on a path that was already an error, so a miss costs almost
+// nothing and a typo gets the model pointed at its neighbour instead of a bare
+// "no such file". Mirrors jcode's `find_similar_files` (read.rs:307-330).
+func (f *FS) suggestNear(full string) []string {
+	parent := filepath.Dir(full)
+	target := strings.ToLower(filepath.Base(full))
+	if target == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		name := strings.ToLower(e.Name())
+		if name == target {
+			continue
+		}
+		if strings.Contains(name, target) || strings.Contains(target, name) {
+			out = append(out, f.rel(filepath.Join(parent, e.Name())))
+			if len(out) >= 3 {
+				break
+			}
+		}
+	}
+	return out
+}
+
 // Tools returns the filesystem tool set.
 func (f *FS) Tools() Set {
 	return Set{f.readTool(), f.writeTool(), f.editTool(), f.globTool()}
@@ -239,6 +271,12 @@ func (f *FS) readTool() Tool {
 			}
 			info, err := os.Stat(full)
 			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					if s := f.suggestNear(full); len(s) > 0 {
+						return Result{}, fmt.Errorf("%s: %w\nDid you mean: %s",
+							a.Path, err, strings.Join(s, ", "))
+					}
+				}
 				return Result{}, err
 			}
 			if info.IsDir() {
