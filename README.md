@@ -58,6 +58,13 @@ evilcode run --remote "..."   # submit into a running daemon
 `evilcode run` writes the model's text to stdout and everything else to stderr, so it
 composes with other tools. It exits 130 on interrupt.
 
+The filesystem tools are agent-friendly: `read` attaches supported images to vision
+models, truncates oversized individual lines while preserving paging, and suggests
+nearby names for a missing path. `multiedit` applies ordered edits with one atomic write;
+common argument spellings such as `file_path` are repaired and shown in the tool row.
+Kitty-compatible terminals draw images inline; sixel terminals use `img2sixel`, and
+other terminals show a captioned placeholder.
+
 Sessions are the source of truth: every message is written as it lands, `/compact` and
 `/rewind` rewrite the log atomically — a backup is written and synced before the
 primary is replaced, and the live session follows the rewrite — and a turn that could

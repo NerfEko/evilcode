@@ -1,10 +1,9 @@
 // Package graphics puts images in the terminal (plan.md Phase 5).
 //
 // Three tiers, in order of preference: the kitty graphics protocol, sixel
-// through libsixel's img2sixel, and a text placeholder. Only the first is
-// implemented here — the protocol is a base64 payload in an escape sequence and
-// nothing more. Sixel is a genuine encoder, so it shells out to the tool that
-// already exists rather than being reimplemented (plan.md §17).
+// through libsixel's img2sixel, and a text placeholder. Kitty is a base64
+// payload in an escape sequence; sixel shells out to the encoder that already
+// exists rather than being reimplemented (plan.md §17).
 package graphics
 
 import (
@@ -18,6 +17,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 )
 
 // Protocol is how images reach this terminal.
@@ -78,6 +80,19 @@ func InTmux() bool { return os.Getenv("TMUX") != "" }
 // error, it corrupts — the terminal reads a truncated image and draws garbage.
 const ChunkSize = 4096
 
+// CursorPosition moves the terminal cursor to a 1-based cell coordinate. Image
+// protocols draw at the current cursor, so callers use this immediately before
+// an image sequence instead of letting the payload land after the whole frame.
+func CursorPosition(row, col int) string {
+	if row < 1 {
+		row = 1
+	}
+	if col < 1 {
+		col = 1
+	}
+	return fmt.Sprintf("\x1b[%d;%dH", row, col)
+}
+
 // Image is a decoded picture ready to place.
 type Image struct {
 	// PNG is the encoded file. The kitty protocol takes PNG directly (f=100),
@@ -136,6 +151,31 @@ func KittySequence(img Image) string {
 	return b.String()
 }
 
+// ImageSequence renders an image using the protocol selected for the terminal.
+// Kitty is encoded directly; sixel uses the installed img2sixel encoder and
+// reads the PNG from stdin, so the application does not carry a second image
+// encoder or write a temporary file for every transcript repaint.
+func ImageSequence(proto Protocol, img Image) string {
+	switch proto {
+	case ProtoKitty:
+		return KittySequence(img)
+	case ProtoSixel:
+		cmdline := SixelCommand(img.Cols, img.Rows)
+		if len(cmdline) == 0 {
+			return ""
+		}
+		cmd := exec.Command(cmdline[0], cmdline[1:]...)
+		cmd.Stdin = bytes.NewReader(img.PNG)
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		return wrap(string(out))
+	default:
+		return ""
+	}
+}
+
 // DeleteSequence removes a previously placed image by id.
 //
 // Images outlive the frame that drew them: the terminal keeps them until told
@@ -181,11 +221,8 @@ func SixelCommand(cols, rows int) []string {
 }
 
 // Dimensions reads an image's width and height from its header without decoding
-// the whole picture. PNG, JPEG and GIF are handled by the standard library
-// (registered by the blank imports above); anything else — webp, bmp — returns
-// ok=false, matching jcode's `get_image_dimensions_from_data`, which only parses
-// those three. A wrong or missing dimension is acceptable; an expensive decode is
-// not.
+// the whole picture. The standard library plus x/image decoders cover every
+// image extension accepted by the read tool.
 func Dimensions(data []byte) (w, h int, ok bool) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
@@ -198,11 +235,8 @@ func Dimensions(data []byte) (w, h int, ok bool) {
 }
 
 // ToPNG re-encodes an image as PNG. The kitty graphics protocol's `f=100`
-// declares PNG data, so a JPEG, GIF or BMP read off disk has to be converted
-// before it is transmitted or a kitty-compatible terminal rejects it. webp and
-// bmp decode through the standard library only when a decoder is registered,
-// so they return ok=false and the caller renders a placeholder — the model
-// still receives the original bytes through the vision path.
+// declares PNG data, so a JPEG, GIF, WebP or BMP read off disk has to be
+// converted before it is transmitted or a kitty-compatible terminal rejects it.
 //
 // A compressed image under the terminal transmit cap can still decode to
 // hundreds of megabytes of pixels, so the decoded dimensions are bounded first
@@ -213,7 +247,7 @@ func ToPNG(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	const maxPixels = 16 << 20 // 16M px ≈ 64 MB RGBA, the upper bound on decode.
-	if int64(cfg.Width)*int64(cfg.Height) > maxPixels {
+	if int64(cfg.Width) > maxPixels/int64(cfg.Height) {
 		return nil, false
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))

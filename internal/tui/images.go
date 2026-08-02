@@ -72,7 +72,10 @@ func (m *Model) toggleImages() tea.Cmd {
 		m.notice = "🖼 Images OFF · placeholders only"
 		// Whatever is on screen has to go now: leaving it means pictures
 		// floating over text after the toggle said they were off.
-		m.pendingImages = graphics.DeleteAllSequence()
+		if m.graphics == graphics.ProtoKitty {
+			m.pendingImages = graphics.DeleteAllSequence()
+		}
+		m.drawnImages = map[int]imagePlacement{}
 	}
 	return nil
 }
@@ -94,9 +97,7 @@ func LoadImage(path string, cols, rows int) (ImageBlock, error) {
 // loadImageBytes builds an inline image block from in-memory bytes — the path a
 // `read` tool returns a picture from — rather than re-reading the file. The
 // kitty protocol declares its payload as PNG (`f=100`), so a JPEG, GIF or BMP is
-// re-encoded first; a format the standard library cannot decode (webp, bmp)
-// keeps no PNG and renders as a placeholder, the model having already received
-// the original bytes through the vision path. Over the terminal transmit cap
+// re-encoded first. Over the terminal transmit cap
 // the block keeps no PNG for the same reason — the placeholder names it rather
 // than the pty stalling on a large base64 payload.
 func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
@@ -114,8 +115,8 @@ func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
 // its aspect ratio across `cols` columns. A terminal cell is about twice as
 // tall as it is wide, so the row count is the column count scaled by the
 // picture's height/width and halved. Capped so a tall screenshot does not take
-// over the whole transcript, and floored at one row. Unknown dimensions (webp,
-// bmp, or an unreadable header) fall back to a square box.
+// over the whole transcript, and floored at one row. An unreadable header falls
+// back to a square box.
 func imageRows(data []byte, cols int) int {
 	const maxRows = 30
 	w, h, ok := graphics.Dimensions(data)
@@ -400,9 +401,6 @@ func (m *Model) drainDiagrams() {
 	img.ID = m.nextImageID
 	m.blocks = append(m.blocks, Block{Kind: BlockImage, Image: img})
 	m.invalidateTranscriptCache()
-	m.pendingImages += graphics.KittySequence(graphics.Image{
-		PNG: img.PNG, Cols: img.Cols, Rows: img.Rows, ID: img.ID,
-	})
 	m.followIfPinned()
 }
 

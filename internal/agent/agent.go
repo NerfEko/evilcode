@@ -771,6 +771,14 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 
 	e := a.newEvent(EventToolResult)
 	c := call
+	if len(res.EffectiveArgs) > 0 {
+		// Keep the assistant's original tool call in the conversation, but let
+		// event consumers inspect the repaired object the tool actually ran.
+		// Daemon conflict tracking and the TUI quick view both use this event
+		// payload, so leaving the misspelled path here would make a successful
+		// write invisible to them.
+		c.Args = res.EffectiveArgs
+	}
 	e.Call = &c
 	e.Output = output
 	e.Err = err

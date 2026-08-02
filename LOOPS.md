@@ -4986,3 +4986,47 @@ list, run against the real tool set:
 tool-level tests above all pass. Tagged `jcode-1`. Every J1 commit was pushed
 to forgejo (origin, git.evileko.dev). Stopping here per instruction — J2 not
 started.
+
+## 2026-08-01 J1 follow-up review — close the remaining parity gaps
+
+The first J1 pass was functionally green but its review ledger had three gaps that
+were still visible in use: image payloads were queued after the frame without a cursor
+move, sixel was detected but never dispatched, and a two-megabyte single line still
+hit the old scanner ceiling. A nested jcode-shaped `multiedit` (`file_path`,
+`old_string`, `new_string`, `replace_all`) also failed because repair only walked the
+top-level object; when repair did succeed, live daemon/TUI events still carried the
+misspelled path.
+
+This follow-up makes the shared paths explicit. Image blocks reserve their transcript
+rows and are painted with a 1-based cursor move; visible placements are cached, stale
+Kitty IDs are deleted, toggling back on redraws retained blocks, and Sixel routes PNG
+bytes through `img2sixel`. BMP/WebP decoders are registered for dimensions and PNG
+conversion. OpenAI keeps `role:tool` content text-only and emits tool-result images as
+an adjacent user content message, while Ollama continues to use its native image
+field. `readWindow` now streams arbitrary-length lines, hashing the original bytes
+while retaining only the display prefix, so paging remains bounded without a scanner
+error and anchored reads keep the real-line hash.
+CRLF line endings retain their carriage return in the streamed hash as well, so a
+paged anchored read validates against the same bytes as a full read.
+
+Argument repair now recurses through nested objects and arrays, records deterministic
+dotted repair paths, and carries the repaired JSON on the result event for daemon
+conflict tracking and the TUI quick view. The original assistant call remains intact
+in the model conversation; only consumers that need the effective path use the repaired
+copy.
+
+Verification: `go build ./...`, `go vet ./...`, `go test ./...`, focused TUI/provider/
+graphics/tools suites, and the targeted race suite are green. New regression coverage
+includes OpenAI tool-image transport, BMP conversion, Sixel dispatch, inline image
+placement/cache, nested multiedit aliases, effective event arguments, and a two-megabyte
+single-line paged read.
+
+parity: crates/jcode-app-core/src/tool/read.rs:346-421 and
+        crates/jcode-app-core/src/tool/multiedit.rs:78-161 — better
+        (all required image, paging, and ordered-edit cases are covered; arbitrary
+         single-line paging, nested alias repair, atomic writes, and protocol-specific
+         inline placement add guarantees beyond the reference path; PDF remains the
+         deliberate DEVIATIONS entry)
+codex: follow-up review findings were worked in this change: cursor-positioned inline
+        images, sixel dispatch, decoder registration, arbitrary-line paging, recursive
+        argument repair, and effective repaired paths for event consumers.

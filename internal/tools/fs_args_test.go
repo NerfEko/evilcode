@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
 )
 
 // J1.7: a known alias is repaired before the strict decode, and the repair is
@@ -74,6 +76,36 @@ func TestGrepPatternUnaffectedByQueryAlias(t *testing.T) {
 	}
 }
 
+func TestMultiEditRepairsNestedJcodeAliases(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "one\none\n"})
+	outcome := f.Tools().RunOne(context.Background(), Call{
+		Name: "multiedit",
+		Args: json.RawMessage(`{"file_path":"a.txt","edits":[{"old_string":"one","new_string":"ONE","replace_all":true}]}`),
+	})
+	if outcome.Err != nil {
+		t.Fatalf("jcode-shaped multiedit rejected: %v", outcome.Err)
+	}
+	data, err := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ONE\nONE\n" {
+		t.Errorf("file = %q, want both occurrences replaced", data)
+	}
+	for _, want := range []string{"file_path→path", "edits.old_string→edits.old", "edits.new_string→edits.new", "edits.replace_all→edits.all"} {
+		if !containsJoin(outcome.Result.Repairs, want) {
+			t.Errorf("repairs = %v, want %q", outcome.Result.Repairs, want)
+		}
+	}
+	var args map[string]any
+	if err := json.Unmarshal(outcome.Result.EffectiveArgs, &args); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := args["path"]; !ok {
+		t.Errorf("effective args = %s, want canonical path", outcome.Result.EffectiveArgs)
+	}
+}
+
 // A call that already uses the real name pays no repair.
 func TestNoRepairWhenRealNameUsed(t *testing.T) {
 	f := tempFS(t, map[string]string{"a.txt": "x\n"})
@@ -94,6 +126,7 @@ func containsJoin(parts []string, want string) bool {
 	}
 	return false
 }
+
 // A non-finite numeric string ("NaN") must not be coerced: leaving it a string
 // makes strict decode reject the call, which is the honest outcome for an
 // argument that is not a real number.

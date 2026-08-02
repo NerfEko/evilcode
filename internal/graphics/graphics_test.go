@@ -7,8 +7,12 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/image/bmp"
 )
 
 func TestKittySequenceCarriesThePNG(t *testing.T) {
@@ -25,6 +29,15 @@ func TestKittySequenceCarriesThePNG(t *testing.T) {
 	}
 	if !strings.Contains(got, base64.StdEncoding.EncodeToString(png)) {
 		t.Error("the payload is not the base64 of the PNG")
+	}
+}
+
+func TestCursorPositionIsOneBased(t *testing.T) {
+	if got := CursorPosition(7, 3); got != "\x1b[7;3H" {
+		t.Errorf("CursorPosition = %q", got)
+	}
+	if got := CursorPosition(0, 0); got != "\x1b[1;1H" {
+		t.Errorf("CursorPosition clamps = %q", got)
 	}
 }
 
@@ -161,6 +174,20 @@ func TestSixelCommandScalesToTheCellBox(t *testing.T) {
 	}
 }
 
+func TestImageSequenceUsesSixelEncoder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "img2sixel")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '\\033Pqfake\\033\\\\'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("TMUX", "")
+	got := ImageSequence(ProtoSixel, Image{PNG: []byte("png"), Cols: 4})
+	if got != "\x1bPqfake\x1b\\" {
+		t.Errorf("sixel sequence = %q, want encoder output", got)
+	}
+}
+
 // ToPNG re-encodes any decodable format as PNG for the kitty protocol, and
 // rejects an image whose pixel count would balloon past the cap on decode.
 func TestToPNGConvertsAndBoundsPixels(t *testing.T) {
@@ -182,6 +209,15 @@ func TestToPNGConvertsAndBoundsPixels(t *testing.T) {
 	}
 	if out, ok := ToPNG(jpgBuf.Bytes()); !ok || len(out) == 0 {
 		t.Fatalf("ToPNG(jpeg) = %v ok=%v, want PNG bytes", out, ok)
+	}
+
+	// BMP is one of the read tool's accepted image formats too.
+	var bmpBuf bytes.Buffer
+	if err := bmp.Encode(&bmpBuf, small); err != nil {
+		t.Fatal(err)
+	}
+	if out, ok := ToPNG(bmpBuf.Bytes()); !ok || len(out) == 0 {
+		t.Fatalf("ToPNG(bmp) = %v ok=%v, want PNG bytes", out, ok)
 	}
 
 	// An image past the pixel cap is refused without decoding the bitmap.

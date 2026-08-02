@@ -21,7 +21,11 @@ func LineAnchor(line string) string {
 	// Leading and trailing whitespace is content for an anchor: two lines that
 	// differ only in indentation are different lines to an edit.
 	h.Write([]byte(line))
-	return fmt.Sprintf("%0*x", AnchorLen, h.Sum32()&(1<<(AnchorLen*4)-1))
+	return anchorFromSum(h.Sum32())
+}
+
+func anchorFromSum(sum uint32) string {
+	return fmt.Sprintf("%0*x", AnchorLen, sum&(1<<(AnchorLen*4)-1))
 }
 
 // readState records what a file looked like when it was last read, so an edit
@@ -61,6 +65,20 @@ func (s *anchorStore) recordAt(path string, info os.FileInfo, lines []string, of
 		a := LineAnchor(line)
 		anchors[a] = append(anchors[a], offset+i+1)
 	}
+	s.recordAtAnchors(path, info, anchors)
+}
+
+func (s *anchorStore) recordAtHashes(path string, info os.FileInfo, hashes []string, offset int) {
+	anchors := make(map[string][]int, len(hashes))
+	for i, hash := range hashes {
+		if hash != "" {
+			anchors[hash] = append(anchors[hash], offset+i+1)
+		}
+	}
+	s.recordAtAnchors(path, info, anchors)
+}
+
+func (s *anchorStore) recordAtAnchors(path string, info os.FileInfo, anchors map[string][]int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.files[path] = readState{ModTime: info.ModTime(), Size: info.Size(), Anchors: anchors}
@@ -245,11 +263,31 @@ func truncateForError(s string) string {
 // while the display text is truncated — a long line keeps its real anchor and a
 // cut display, not a hash of the truncated text the edit path would reject.
 func AnnotateLines(lines []string, start int) string {
+	hashes := make([]string, len(lines))
+	for i, line := range lines {
+		hashes[i] = LineAnchor(line)
+	}
+	return annotateLinesWithHashes(lines, hashes, start)
+}
+
+// AnnotateLinesWithHashes renders display lines with anchors computed from the
+// original content. The paged reader uses this for a line too large to retain in
+// memory: its display is bounded, but its streamed hash still validates an
+// anchored edit against the real file.
+func AnnotateLinesWithHashes(lines, hashes []string, start int) string {
+	return annotateLinesWithHashes(lines, hashes, start)
+}
+
+func annotateLinesWithHashes(lines, hashes []string, start int) string {
 	width := len(fmt.Sprint(start + len(lines)))
 	var b strings.Builder
 	for i, line := range lines {
 		disp, _ := truncateLine(line)
-		fmt.Fprintf(&b, "%s|%*d| %s\n", LineAnchor(line), width, start+i, disp)
+		anchor := LineAnchor(line)
+		if i < len(hashes) && hashes[i] != "" {
+			anchor = hashes[i]
+		}
+		fmt.Fprintf(&b, "%s|%*d| %s\n", anchor, width, start+i, disp)
 	}
 	return b.String()
 }

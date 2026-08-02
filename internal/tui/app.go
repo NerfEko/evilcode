@@ -265,6 +265,7 @@ type Model struct {
 	graphics      graphics.Protocol
 	imagesOn      bool
 	pendingImages string
+	drawnImages   map[int]imagePlacement
 
 	// diagrams maps mermaid source to its rendered PNG, so an unchanged
 	// diagram is never re-rendered — mmdc starts a headless browser.
@@ -389,7 +390,13 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		welcomeFocus: true,
 		artVariant:   PickVariant(h.SessionName),
 		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
+		drawnImages:  map[int]imagePlacement{},
 	}
+}
+
+type imagePlacement struct {
+	row, col   int
+	cols, rows int
 }
 
 // Asker returns the presenter the `ask` tool uses. The question is handed to
@@ -737,11 +744,6 @@ func (m *Model) applyEvent(e agent.Event) {
 				ib := loadImageBytes(img, b.ToolPath, cols, rows)
 				ib.ID = m.nextImageID
 				m.blocks = append(m.blocks, Block{Kind: BlockImage, Image: ib})
-				if m.imagesOn && len(ib.PNG) > 0 {
-					m.pendingImages += graphics.KittySequence(graphics.Image{
-						PNG: ib.PNG, Cols: ib.Cols, Rows: ib.Rows, ID: ib.ID,
-					})
-				}
 			}
 		}
 		// A todo write re-arms the poke cycle and shows what changed. The
@@ -2647,6 +2649,94 @@ func (m *Model) transcriptHeightOnly() int {
 	return height
 }
 
+// imageGraphics returns protocol sequences for image blocks that are visible
+// in the current transcript window. The frame itself stays printable-only; each
+// image is drawn after it with a cursor move to the block's screen row. Keeping
+// placements lets scrolling, resizing, and the image toggle redraw only what
+// changed instead of retransmitting every picture on every tick.
+func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int) string {
+	if m.drawnImages == nil {
+		m.drawnImages = map[int]imagePlacement{}
+	}
+	visible := make(map[int]imagePlacement)
+	first := make(map[int]int)
+	counts := make(map[int]int)
+	for line, owner := range tr.Owner {
+		if owner < 0 || owner >= len(m.blocks) || m.blocks[owner].Kind != BlockImage {
+			continue
+		}
+		if _, ok := first[owner]; !ok {
+			first[owner] = line
+		}
+		counts[owner]++
+	}
+
+	if m.imagesOn && m.graphics != graphics.ProtoNone {
+		_, pad := ContentWidth(m.width, m.centered)
+		col := pad + 1
+		for i := range m.blocks {
+			b := &m.blocks[i]
+			if b.Kind != BlockImage || len(b.Image.PNG) == 0 {
+				continue
+			}
+			line, ok := first[i]
+			count := counts[i]
+			if !ok || count == 0 || line < start || line+count > end || line-start+count > transcriptRows {
+				continue
+			}
+			visible[b.Image.ID] = imagePlacement{
+				row: line - start + 1, col: col,
+				cols: b.Image.Cols, rows: b.Image.Rows,
+			}
+		}
+	}
+
+	var out strings.Builder
+	for id := range m.drawnImages {
+		if _, ok := visible[id]; ok {
+			continue
+		}
+		if m.graphics == graphics.ProtoKitty {
+			out.WriteString(graphics.DeleteSequence(id))
+		}
+		delete(m.drawnImages, id)
+	}
+	for i := range m.blocks {
+		b := &m.blocks[i]
+		if b.Kind != BlockImage {
+			continue
+		}
+		id := b.Image.ID
+		placement, ok := visible[id]
+		if !ok {
+			continue
+		}
+		if old, ok := m.drawnImages[id]; ok && old == placement {
+			continue
+		}
+		if _, ok := m.drawnImages[id]; ok && m.graphics == graphics.ProtoKitty {
+			out.WriteString(graphics.DeleteSequence(id))
+		}
+		seq := graphics.ImageSequence(m.graphics, graphics.Image{
+			PNG: b.Image.PNG, ID: id,
+			Cols: placement.cols, Rows: placement.rows,
+		})
+		if seq == "" {
+			continue
+		}
+		out.WriteString(graphics.CursorPosition(placement.row, placement.col))
+		out.WriteString(seq)
+		m.drawnImages[id] = placement
+	}
+	if out.Len() > 0 && frameRows > 0 {
+		// Leave the cursor in the frame's final row after drawing an image. This
+		// prevents a terminal that does not clear between differential frames
+		// from starting the next write at the image's cursor position.
+		out.WriteString(graphics.CursorPosition(frameRows, 1))
+	}
+	return out.String()
+}
+
 func (m *Model) composerState() ComposerState {
 	return ComposerState{
 		Text:         m.editor.Text,
@@ -2868,15 +2958,17 @@ func (m *Model) View() tea.View {
 	m.observeSmoothness(rows[:min(res.Transcript, len(rows))],
 		max(len(content)-res.Transcript-m.scroll.Offset, 0))
 
+	imageSeq := m.imageGraphics(tr, start, end, res.Transcript, len(rows))
 	frame := strings.Join(rows, "\n")
 	// Image escape sequences ride after the frame, never inside it: they carry
 	// no printable cells, so a row holding one would measure wrong everywhere
-	// the layout looks at widths. The terminal draws them at the cursor, which
-	// is wherever the frame left it.
+	// the layout looks at widths. imageGraphics moves the cursor to each
+	// BlockImage's reserved rows before restoring it to the frame tail.
 	if m.pendingImages != "" {
 		frame += m.pendingImages
 		m.pendingImages = ""
 	}
+	frame += imageSeq
 	m.lastFrame = frame
 	m.autoCapture(frame)
 

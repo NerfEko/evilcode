@@ -75,6 +75,37 @@ func TestImageReservesItsRowsWhenDrawn(t *testing.T) {
 	}
 }
 
+func TestImageGraphicsPositionsAndCachesVisibleImage(t *testing.T) {
+	m := NewModel(nil, HeaderState{SessionName: "s", Model: "m"})
+	m.width, m.height = 80, 30
+	m.graphics, m.imagesOn = graphics.ProtoKitty, true
+	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+	m.blocks = []Block{{Kind: BlockImage, Image: ImageBlock{
+		Path: "photo.png", PNG: []byte("png"), Cols: 20, Rows: 2, ID: 7,
+	}}}
+	tr := m.transcriptLines()
+	got := m.imageGraphics(tr, 0, len(tr.Lines), 20, len(tr.Lines))
+	imageLine := -1
+	for line, owner := range tr.Owner {
+		if owner == 0 {
+			imageLine = line
+			break
+		}
+	}
+	if imageLine < 0 {
+		t.Fatal("transcript did not contain the image block")
+	}
+	if !strings.Contains(got, graphics.CursorPosition(imageLine+1, 2)) {
+		t.Errorf("graphics = %q, want a cursor move to the image block", got)
+	}
+	if !strings.Contains(got, "i=7") {
+		t.Errorf("graphics = %q, want image id 7", got)
+	}
+	if again := m.imageGraphics(tr, 0, len(tr.Lines), 20, len(tr.Lines)); again != "" {
+		t.Errorf("cached image was retransmitted: %q", again)
+	}
+}
+
 func TestImagesOffFallsBackToThePlaceholder(t *testing.T) {
 	r := testRenderer(80)
 	rows := r.RenderImagePlaceholder(

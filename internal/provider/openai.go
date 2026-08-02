@@ -68,13 +68,10 @@ type oaiImageURL struct {
 // at its own edge.
 //
 // Tool-result messages cannot carry image parts on strict OpenAI-compatible
-// endpoints — a role:tool content array must be text only, or the request
-// fails validation. jcode drops tool-result media to a text placeholder on
-// this provider for the same reason. The descriptive result text the model
-// reads ("Image: … Dimensions: … sent to model for vision analysis") is what
-// survives, which is the honest outcome on a backend that cannot take the
-// bytes. The image still reaches a vision model on Ollama, which accepts
-// attachments on any role.
+// endpoints — a role:tool content array must be text only. toOAIMessages keeps
+// the tool results contiguous (as the API requires), then emits one adjacent
+// user message containing their images. This is the chat-completions shape that
+// carries tool media without invalidating the tool-call exchange.
 func oaiContent(m Message) any {
 	if len(m.Images) == 0 || m.Role == RoleTool {
 		return m.Content
@@ -84,6 +81,19 @@ func oaiContent(m Message) any {
 		parts = append(parts, oaiPart{Type: "text", Text: m.Content})
 	}
 	for _, img := range m.Images {
+		parts = append(parts, oaiPart{
+			Type: "image_url",
+			ImageURL: &oaiImageURL{URL: "data:" + DetectImageMIME(img) +
+				";base64," + base64.StdEncoding.EncodeToString(img)},
+		})
+	}
+	return parts
+}
+
+func oaiImageParts(images [][]byte) []oaiPart {
+	parts := make([]oaiPart, 0, len(images)+1)
+	parts = append(parts, oaiPart{Type: "text", Text: "[Attached image from tool result]"})
+	for _, img := range images {
 		parts = append(parts, oaiPart{
 			Type: "image_url",
 			ImageURL: &oaiImageURL{URL: "data:" + DetectImageMIME(img) +
@@ -148,7 +158,18 @@ type oaiStreamResp struct {
 
 func toOAIMessages(msgs []Message) []oaiMessage {
 	out := make([]oaiMessage, 0, len(msgs))
+	var toolImages [][]byte
+	flushToolImages := func() {
+		if len(toolImages) == 0 {
+			return
+		}
+		out = append(out, oaiMessage{Role: string(RoleUser), Content: oaiImageParts(toolImages)})
+		toolImages = nil
+	}
 	for _, m := range msgs {
+		if m.Role != RoleTool {
+			flushToolImages()
+		}
 		om := oaiMessage{
 			Role:       string(m.Role),
 			Content:    oaiContent(m),
@@ -165,7 +186,11 @@ func toOAIMessages(msgs []Message) []oaiMessage {
 			om.ToolCalls = append(om.ToolCalls, otc)
 		}
 		out = append(out, om)
+		if m.Role == RoleTool && len(m.Images) > 0 {
+			toolImages = append(toolImages, m.Images...)
+		}
 	}
+	flushToolImages()
 	return out
 }
 

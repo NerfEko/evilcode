@@ -182,6 +182,28 @@ func TestToolResultAppendedEvenOnError(t *testing.T) {
 	}
 }
 
+func TestToolResultEventUsesEffectiveRepairedArgs(t *testing.T) {
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	call := provider.ToolCall{
+		ID: "call_repaired", Name: "read",
+		Args: json.RawMessage(`{"file_path":"main.go"}`),
+	}
+	effective := json.RawMessage(`{"path":"main.go"}`)
+	a.appendToolResult(call, "ok", nil, tools.Result{EffectiveArgs: effective})
+
+	select {
+	case e := <-a.Events():
+		if e.Kind != EventToolResult || e.Call == nil {
+			t.Fatalf("event = %+v, want a tool result with a call", e)
+		}
+		if string(e.Call.Args) != string(effective) {
+			t.Errorf("event args = %s, want effective args %s", e.Call.Args, effective)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for tool result event")
+	}
+}
+
 func TestBatchToolCallsAllResolve(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644)

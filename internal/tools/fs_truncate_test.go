@@ -142,3 +142,59 @@ func TestPagedReadEmitsASingleLineLargerThanTheCap(t *testing.T) {
 		t.Errorf("paging did not advance past the long line (looping hint present):\n%s", res.Output)
 	}
 }
+
+func TestPagedReadHandlesLinesPastFormerScannerLimit(t *testing.T) {
+	f := tempFS(t, nil)
+	f.MaxReadBytes = 4096
+	giant := strings.Repeat("d", 2<<20) + "\n"
+	full := filepath.Join(f.Root, "two-meg.js")
+	if err := os.WriteFile(full, []byte(giant), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, f.Tools(), "read", map[string]any{"path": "two-meg.js", "offset": 1, "limit": 1})
+	if err != nil {
+		t.Fatalf("a line beyond the scanner limit should still page: %v", err)
+	}
+	if !strings.Contains(res.Output, "truncated at") {
+		t.Errorf("output = %q, want a truncation summary", res.Output)
+	}
+}
+
+func TestPagedAnchorsPreserveCRLFLineContent(t *testing.T) {
+	f := tempFS(t, nil)
+	f.MaxReadBytes = 32
+	body := "first\r\n" + strings.Repeat("x", 64) + "\r\n"
+	full := filepath.Join(f.Root, "crlf.txt")
+	if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, f.WithAnchors(true).Tools(), "read", map[string]any{
+		"path": "crlf.txt", "offset": 1, "limit": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := f.anchors.lookup(full)
+	if !ok {
+		t.Fatal("paged read did not record anchors")
+	}
+	want := LineAnchor("first\r")
+	if got := state.Anchors[want]; len(got) != 1 || got[0] != 1 {
+		t.Errorf("CRLF anchor = %v, want %q at line 1", state.Anchors, want)
+	}
+}
+
+func TestPagedReadStillRefusesBinaryWithOneNUL(t *testing.T) {
+	f := tempFS(t, nil)
+	f.MaxReadBytes = 32
+	full := filepath.Join(f.Root, "data.bin")
+	body := append([]byte(strings.Repeat("x", 64)), 0)
+	body = append(body, '\n')
+	if err := os.WriteFile(full, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, f.Tools(), "read", map[string]any{
+		"path": "data.bin", "offset": 1, "limit": 1,
+	}); err == nil {
+		t.Fatal("paged read accepted a binary line containing one NUL")
+	}
+}

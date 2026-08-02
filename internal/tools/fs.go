@@ -2,10 +2,12 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
@@ -341,7 +343,7 @@ func (f *FS) readTool() Tool {
 			if isBinary(data) {
 				return Result{}, fmt.Errorf(
 					"%s looks like a binary file (%d bytes); if it is an image, "+
-						"give it the right extension (.png, .jpg, .gif, .webp, .bmp) "+
+						"give it the right extension (.png, .jpg, .jpeg, .gif, .webp, .bmp) "+
 						"and read will attach it to the vision path", a.Path, len(data))
 			}
 
@@ -441,18 +443,26 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 		limit = -1
 	}
 
-	// The scanner buffer must hold one whole line, even a minified bundle line
-	// far larger than the output cap, or the scanner errors "token too long"
-	// before truncation can run. 1 MiB covers realistic single-line bundles; a
-	// line past that surfaces a scan error rather than hanging.
-	sc := bufio.NewScanner(file)
-	sc.Buffer(make([]byte, 0, 64*1024), max(cap, 1<<20))
+	// ReadSlice returns fragments for arbitrarily long lines. We retain only the
+	// prefix needed for display while hashing and counting the complete line, so
+	// a minified bundle larger than any fixed scanner token limit still pages.
+	r := bufio.NewReaderSize(file, 64*1024)
 
 	var lines []string
+	var hashes []string
+	var longLines []bool
 	size := 0
 	n := 0
 	truncated := false
-	for sc.Scan() {
+	var selectedBytes, selectedNULs int
+	for {
+		line, hash, lineSize, nulCount, ok, readErr := readWindowLine(r)
+		if readErr != nil {
+			return Result{}, fmt.Errorf("reading %s: %w", f.rel(full), readErr)
+		}
+		if !ok {
+			break
+		}
 		if n < start {
 			n++
 			continue
@@ -461,25 +471,27 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 			truncated = true
 			break
 		}
-		line := sc.Text()
 		// Always emit at least the first line of the window, even a single
 		// line larger than the cap: truncating it for display keeps the output
 		// bounded, and paging advances past it instead of returning
 		// "re-read with offset=1" forever.
-		if len(lines) > 0 && size+len(line)+1 > cap {
+		if len(lines) > 0 && size+lineSize+1 > cap {
 			truncated = true
 			break
 		}
 		lines = append(lines, line)
-		size += len(line) + 1
+		hashes = append(hashes, hash)
+		longLines = append(longLines, lineSize > MaxLineLen)
+		selectedBytes += lineSize + 1
+		selectedNULs += nulCount
+		size += lineSize + 1
 		n++
 	}
-	if err := sc.Err(); err != nil {
-		return Result{}, fmt.Errorf("reading %s: %w", f.rel(full), err)
-	}
-	// Binary detection looks at the whole window rather than its first line:
-	// checking one line means a file whose NULs start further in reads as text.
-	if isBinary([]byte(strings.Join(lines, "\n"))) {
+	// Binary detection looks at the whole selected window rather than only its
+	// retained display prefix. A single NUL is the same refusal signal as the
+	// unpaged path; the streamed reader must not make a binary file look like
+	// text merely because the NUL landed after the first few retained bytes.
+	if selectedBytes > 0 && selectedNULs > 0 {
 		return Result{}, fmt.Errorf("%s looks like a binary file (%s)",
 			f.rel(full), humanBytes(info.Size()))
 	}
@@ -487,17 +499,17 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 	// Anchors describe what the model saw, and the model sees these lines
 	// numbered from the offset — recording them from 1 would make an anchor
 	// the model quotes back point at a different line.
-	f.anchors.recordAt(full, info, lines, start)
+	f.anchors.recordAtHashes(full, info, hashes, start)
 
 	var b strings.Builder
 	truncatedLines := 0
 	if f.Anchors {
-		for _, line := range lines {
-			if len(line) > MaxLineLen {
+		for _, long := range longLines {
+			if long {
 				truncatedLines++
 			}
 		}
-		b.WriteString(AnnotateLines(lines, start+1))
+		b.WriteString(AnnotateLinesWithHashes(lines, hashes, start+1))
 	} else {
 		for i, line := range lines {
 			if t, ok := truncateLine(line); ok {
@@ -517,6 +529,51 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 		Output: b.String(),
 		Intent: fmt.Sprintf("reading %s", f.rel(full)),
 	}, nil
+}
+
+// readWindowLine reads one logical line without imposing a maximum line size.
+// ReadSlice fragments are hashed and scanned for NULs as they arrive, while
+// only MaxLineLen+1 bytes are retained for the eventual display. ReadLine
+// deliberately removes a carriage return before a newline; ReadSlice does not,
+// which keeps anchors for CRLF files identical to the full-file edit path.
+func readWindowLine(r *bufio.Reader) (line, anchor string, size, nulCount int, ok bool, err error) {
+	h := fnv.New32a()
+	prefix := make([]byte, 0, MaxLineLen+1)
+	seen := false
+	appendPart := func(part []byte) {
+		if len(part) == 0 {
+			return
+		}
+		seen = true
+		_, _ = h.Write(part)
+		size += len(part)
+		nulCount += bytes.Count(part, []byte{0})
+		if len(prefix) < cap(prefix) {
+			need := min(cap(prefix)-len(prefix), len(part))
+			prefix = append(prefix, part[:need]...)
+		}
+	}
+	for {
+		frag, readErr := r.ReadSlice('\n')
+		switch readErr {
+		case nil:
+			// The delimiter belongs to the stream, not the logical line. Keep a
+			// preceding carriage return: strings.Split in the non-paged path does.
+			appendPart(frag[:len(frag)-1])
+			return string(prefix), anchorFromSum(h.Sum32()), size, nulCount, true, nil
+		case bufio.ErrBufferFull:
+			appendPart(frag)
+			continue
+		case io.EOF:
+			appendPart(frag)
+			if !seen {
+				return "", "", 0, 0, false, nil
+			}
+			return string(prefix), anchorFromSum(h.Sum32()), size, nulCount, true, nil
+		default:
+			return "", "", 0, 0, false, readErr
+		}
+	}
 }
 
 // humanBytes renders a size the way an error message wants to say it.
@@ -977,6 +1034,7 @@ func (f *FS) multiEditTool() Tool {
 		},
 	}
 }
+
 // applyAnchoredEdit resolves anchor patches against the version the model read,
 // refusing loudly rather than fuzzily matching. Silently best-effort applying a
 // patch to a file that moved underneath corrupts it, which is strictly worse

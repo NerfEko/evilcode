@@ -47,6 +47,30 @@ func TestOpenAIWantsContentParts(t *testing.T) {
 	}
 }
 
+func TestOpenAIToolImagesBecomeAnAdjacentUserMessage(t *testing.T) {
+	got := toOAIMessages([]Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call_a", Name: "read"}}},
+		{Role: RoleTool, Content: "Image sent", ToolCallID: "call_a", ToolName: "read", Images: [][]byte{pngBytes}},
+		{Role: RoleAssistant, Content: "I can inspect it now."},
+	})
+	if len(got) != 4 {
+		t.Fatalf("messages = %d, want assistant/tool/user-image/assistant", len(got))
+	}
+	if got[1].Role != string(RoleTool) {
+		t.Fatalf("tool role = %q", got[1].Role)
+	}
+	if _, ok := got[1].Content.(string); !ok {
+		t.Fatalf("tool content = %T, want text-only string", got[1].Content)
+	}
+	parts, ok := got[2].Content.([]oaiPart)
+	if !ok || len(parts) != 2 || parts[1].Type != "image_url" {
+		t.Fatalf("image message = %#v, want text + image_url parts", got[2].Content)
+	}
+	if !strings.Contains(parts[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Errorf("image URL = %q", parts[1].ImageURL.URL)
+	}
+}
+
 func TestOpenAIKeepsABareStringWithoutImages(t *testing.T) {
 	// Every text-only request must keep emitting a plain string. Switching
 	// everything to content parts would change the shape of every call to serve

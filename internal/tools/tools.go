@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,12 @@ type Result struct {
 	// silent to the model — the output is unchanged — and shown in the tool row
 	// so a quietly rewritten argument is findable later (§1.4).
 	Repairs []string
+
+	// EffectiveArgs is the repaired argument object used to run the tool. It is
+	// kept out of the model result, but the agent copies it onto the finished
+	// event so consumers such as daemon file-conflict tracking inspect the same
+	// path the tool actually touched rather than the misspelled input.
+	EffectiveArgs json.RawMessage `json:"-"`
 }
 
 // Tool is one callable capability.
@@ -215,6 +222,7 @@ func (s Set) RunOne(ctx context.Context, call Call) (outcome Outcome) {
 	res.Output = Truncate(res.Output)
 	if len(repairs) > 0 {
 		res.Repairs = repairs
+		res.EffectiveArgs = repaired
 	}
 	outcome.Result = res
 	outcome.Err = err
@@ -267,11 +275,12 @@ func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
 // applied when the real name is absent, and the decode is still strict after, so
 // a name this tool does not have is still an error.
 var argAliases = map[string]string{
-	"command":    "cmd",
-	"file_path":  "path",
-	"filePath":   "path",
-	"old_string": "old",
-	"new_string": "new",
+	"command":     "cmd",
+	"file_path":   "path",
+	"filePath":    "path",
+	"old_string":  "old",
+	"new_string":  "new",
+	"replace_all": "all",
 }
 
 // repairAliases extends argAliases with names that are real fields in some
@@ -322,34 +331,10 @@ func repairArgs(raw json.RawMessage, schema json.RawMessage) (json.RawMessage, [
 		return raw, nil
 	}
 	var repairs []string
-	props := schemaProperties(schema)
-
-	// Aliases: rename only when the real name is absent AND the tool's schema
-	// actually has the real field. The schema check is what makes `pattern`→
-	// `query` safe — grep's real field is `pattern`, so the alias is skipped
-	// for grep and applied only for a tool that has `query`.
-	for alias, real := range repairAliases {
-		if !props[real] {
-			continue
-		}
-		v, ok := fields[alias]
-		if !ok {
-			continue
-		}
-		if _, taken := fields[real]; taken {
-			continue
-		}
-		delete(fields, alias)
-		fields[real] = v
-		repairs = append(repairs, alias+"→"+real)
-	}
-
-	// Numeric coercion: a model often sends "5" for an integer field. Coerce
-	// string-wrapped numbers for the schema's numeric fields, recursing into
-	// object properties and array items (todo's items[].confidence, plan.*,
-	// goals[].* are nested); strict decode validates the type afterwards (a
-	// "1.5" on an integer field still fails).
-	coerceNumeric(fields, schema, "", &repairs)
+	// Repair aliases and numeric strings at every object level. Nested repair is
+	// important for tools whose schemas contain arrays of argument objects, such
+	// as multiedit.edits[].old_string/new_string/replace_all.
+	repairObject(fields, schema, "", &repairs)
 
 	if len(repairs) == 0 {
 		return raw, nil
@@ -361,17 +346,45 @@ func repairArgs(raw json.RawMessage, schema json.RawMessage) (json.RawMessage, [
 	return out, repairs
 }
 
-// coerceNumeric walks a JSON object against its JSON-schema properties and
-// coerces string-wrapped numbers onto numeric fields, recursing into nested
-// objects and arrays. prefix is the dotted path for the repair label.
-func coerceNumeric(obj map[string]json.RawMessage, schema json.RawMessage, prefix string, repairs *[]string) {
+// repairObject walks one JSON object against its schema, applying conditional
+// aliases and coercing string-wrapped numbers. Aliases are conditional on the
+// current schema, so grep's real `pattern` field is never renamed to `query`.
+func repairObject(obj map[string]json.RawMessage, schema json.RawMessage, prefix string, repairs *[]string) {
 	var s struct {
 		Properties map[string]json.RawMessage `json:"properties"`
 	}
 	if json.Unmarshal(schema, &s) != nil {
 		return
 	}
-	for name, prop := range s.Properties {
+	props := schemaProperties(schema)
+	for _, alias := range sortedRepairAliases() {
+		real := repairAliases[alias]
+		if !props[real] {
+			continue
+		}
+		v, ok := obj[alias]
+		if !ok {
+			continue
+		}
+		if _, taken := obj[real]; taken {
+			continue
+		}
+		delete(obj, alias)
+		obj[real] = v
+		name := joinPath(prefix, alias) + "→" + joinPath(prefix, real)
+		if prefix == "" {
+			name = alias + "→" + real
+		}
+		*repairs = append(*repairs, name)
+	}
+
+	names := make([]string, 0, len(s.Properties))
+	for name := range s.Properties {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		prop := s.Properties[name]
 		v, ok := obj[name]
 		if !ok {
 			continue
@@ -391,7 +404,7 @@ func coerceNumeric(obj map[string]json.RawMessage, schema json.RawMessage, prefi
 			case isObject(v):
 				var m map[string]json.RawMessage
 				if json.Unmarshal(v, &m) == nil {
-					coerceNumeric(m, child, joinPath(prefix, name), repairs)
+					repairObject(m, child, joinPath(prefix, name), repairs)
 					if b, err := json.Marshal(m); err == nil {
 						obj[name] = b
 					}
@@ -402,7 +415,7 @@ func coerceNumeric(obj map[string]json.RawMessage, schema json.RawMessage, prefi
 					for i, item := range arr {
 						var m map[string]json.RawMessage
 						if json.Unmarshal(item, &m) == nil {
-							coerceNumeric(m, child, joinPath(prefix, name), repairs)
+							repairObject(m, child, joinPath(prefix, name), repairs)
 							if b, err := json.Marshal(m); err == nil {
 								arr[i] = b
 							}
@@ -415,6 +428,15 @@ func coerceNumeric(obj map[string]json.RawMessage, schema json.RawMessage, prefi
 			}
 		}
 	}
+}
+
+func sortedRepairAliases() []string {
+	out := make([]string, 0, len(repairAliases))
+	for alias := range repairAliases {
+		out = append(out, alias)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // childSchema returns the schema to validate a property's value against: the
