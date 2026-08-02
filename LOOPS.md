@@ -5034,3 +5034,71 @@ codex: the local review covered cursor-positioned inline images, sixel dispatch,
         cannot bind the IPv6 loopback listener used by an existing provider test
         (`operation not permitted`) before producing a verdict; that test passes in
         the unrestricted shell, and the full and targeted race suites are green.
+
+## 2026-08-01 J1.1 fix — the inline image never reached the terminal
+
+Phase J1 was marked done without the frame check step 9 of the loop requires
+for a TUI-visible change, so this is that check and what it found.
+
+**Reproduction.** New probe scenario `image` (`internal/provider/mock.go`,
+`probe/scenarios/tui-image.txt`, `testdata/probe.png` — a 96x60 four-quadrant
+test card): the model reads the picture and answers under it. `probe.sh boot`
+gained `--graphics=<proto>`, forwarded as `EVILCODE_GRAPHICS`, because the pane's
+`TERM` is `xterm-256color` and a scenario about images has nothing to show under
+a terminal that has none. The probe answers the layout question; it cannot answer
+whether a picture is painted, because tmux swallows the payload and
+`internal/ansirender` draws text. That half was checked by running evilcode in a
+real kitty window under niri and screenshotting it (`niri msg action
+screenshot-window`).
+
+Two failures, neither visible to any unit test:
+
+1. **The picture was never drawn — in any terminal, since J1.1 was written.**
+   The kitty escape sequence was appended to the view string. Bubble Tea v2
+   renders a view through a cell buffer (`charm.land/bubbletea/v2@v2.0.8`, which
+   parses `View.Content` as a styled string), and an APC payload carries no
+   cells, so it was dropped on the floor. The screenshot showed the tool row,
+   the reserved rows and the caption — and no picture. Fixed by queueing the
+   payload on `Model.rawOut` and writing it from `Update` through `tea.Raw`,
+   which is bubbletea's documented path for exactly this. The tick re-arms every
+   80ms so a payload waits at most one tick, and the placement is an absolute
+   cursor move, so arriving a frame late does not move the picture. The
+   `Alt+Shift+I` delete-all sequence took the same broken path and is fixed with
+   it.
+
+2. **Every picture was blown up to the full chat width.** `imageRows` derived
+   the height from the chat width, so the 96x60 card was drawn at 130 columns and
+   reserved 30 of the pane's 40 rows. Replaced by `imageBox`, which takes the
+   picture's natural size in cells (a cell is ~8px wide) and only falls back to
+   the chat width when the picture is wider than it, capping the height at 30
+   rows by taking the width that height allows rather than squashing the image.
+   The card now draws at 12x3.
+
+Stale goldens found on the way: `tui-diff` and `panel-file` still held the
+pre-J1.5 `edit` output (`8 tok`, no context lines). The probe suite had not been
+run since J1.5 added the ±3 lines of context. Refreshed; `go test -tags probe
+./probe/...` is green across all 21 scenarios.
+
+`config.applyEnv` now gives the mock model `vision = true`. Without it `read`
+reports "this model cannot see images" and the rig can never reach the image
+path at all.
+
+Verification: `go build ./... && go vet ./... && go test ./...` green;
+`internal/tui/images_test.go` `TestImageBoxKeepsASmallPictureSmall` (natural
+size, clamp to chat width, height cap keeps the ratio, unreadable header);
+`go test -tags probe ./probe/...` green including the new `tui-image` golden;
+`probe/frames/tui-image.png` looked at — reserved rows, caption, reply under the
+picture rather than over it; and the real-kitty screenshot showing the test card
+drawn at 12x3 in place.
+
+parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par
+        (this is not a jcode gap: jcode's `read` puts the image on the model's
+         turn and its TUI draws it. evilcode reported "terminal display via the
+         graphics protocol" in the J1.1 entry on the strength of unit tests over
+         escape-sequence strings, and the frame proves that was wrong until now.
+         The parity line stands only now that a picture actually appears)
+codex:  `codex review --commit 59e3c74` did not produce a verdict — the first
+        attempt died in its restricted runner's test phase (IPv6 loopback bind),
+        and a second attempt through the plugin runtime timed out at 10 minutes
+        with no output. Re-run pending; the review debt is recorded here rather
+        than silently dropped.

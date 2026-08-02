@@ -267,6 +267,11 @@ type Model struct {
 	pendingImages string
 	drawnImages   map[int]imagePlacement
 
+	// rawOut is what the next Update writes straight to the terminal through
+	// tea.Raw: image transmissions and deletions, which the cell renderer drops
+	// if they are handed to it inside a view.
+	rawOut string
+
 	// diagrams maps mermaid source to its rendered PNG, so an unchanged
 	// diagram is never re-rendered — mmdc starts a headless browser.
 	diagrams   map[string]string
@@ -497,7 +502,27 @@ func (m *Model) waitForEvent() tea.Cmd {
 	}
 }
 
+// Update handles one message and, alongside whatever that produced, flushes any
+// image protocol payload the last frame produced.
+//
+// The payload cannot ride the frame. Bubble Tea v2 parses a view into cells, so
+// an image escape sequence inside the view string is dropped on the floor —
+// which is why `read` on a picture reserved its rows, drew its caption, and
+// showed nothing, in every terminal, since the feature was written. tea.Raw is
+// the documented way out: it writes to the terminal without going through the
+// cell renderer. The tick re-arms itself every 80ms, so a payload waits at most
+// one tick, and the kitty placement is an absolute cursor move, so arriving a
+// frame late does not move the picture.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	if raw := m.rawOut; raw != "" {
+		m.rawOut = ""
+		cmd = tea.Batch(cmd, tea.Raw(raw))
+	}
+	return model, cmd
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Tick only advances clocks. Every other message may change transcript
 	// content, layout, or renderer settings, so invalidate once at the shared
 	// boundary instead of trying to remember every mutation site.
@@ -737,9 +762,9 @@ func (m *Model) applyEvent(e agent.Event) {
 		// on. Over the terminal transmit cap the block keeps no PNG, so it
 		// renders as a placeholder naming the file rather than stalling the pty.
 		if len(e.Images) > 0 {
-			cols := m.chatWidth()
+			width := m.chatWidth()
 			for _, img := range e.Images {
-				rows := imageRows(img, cols)
+				cols, rows := imageBox(img, width)
 				m.nextImageID++
 				ib := loadImageBytes(img, b.ToolPath, cols, rows)
 				ib.ID = m.nextImageID
@@ -2960,15 +2985,13 @@ func (m *Model) View() tea.View {
 
 	imageSeq := m.imageGraphics(tr, start, end, res.Transcript, len(rows))
 	frame := strings.Join(rows, "\n")
-	// Image escape sequences ride after the frame, never inside it: they carry
-	// no printable cells, so a row holding one would measure wrong everywhere
-	// the layout looks at widths. imageGraphics moves the cursor to each
+	// Image escape sequences never go into the frame: they carry no printable
+	// cells, and Bubble Tea v2 renders a view through a cell buffer that drops
+	// them outright. They are queued here and written straight to the terminal
+	// by the next Update through tea.Raw. imageGraphics moves the cursor to each
 	// BlockImage's reserved rows before restoring it to the frame tail.
-	if m.pendingImages != "" {
-		frame += m.pendingImages
-		m.pendingImages = ""
-	}
-	frame += imageSeq
+	m.rawOut += m.pendingImages + imageSeq
+	m.pendingImages = ""
 	m.lastFrame = frame
 	m.autoCapture(frame)
 

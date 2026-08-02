@@ -5,23 +5,17 @@
  skills: /agent-architect /agent-browser /commit /dreaming +15 more
  <repo> (main)
 
- 1› fix the clamp
+ 1› look at the screenshot
 
- Fixing the off-by-one.
+ Let me look at the screenshot.
 
-   ✓ edit testdata/clamp.go · 72 tok (+1 -1)
- ┌─ diff
- │  // makes every scenario's edit fail with "old string not found", and the
- │  // goldens then bake in the failure — which is exactly what happened once.
- │  func clamp(offset, max int) int {
- │ -    if offset > max {
- │ +    if offset >= max {
- │          return max
- │      }
- │      return offset
- └─ (+1 -1 total)
+   ✓ read testdata/probe.png · 24 tok
 
- That was the clamp bug.
+
+
+ 🖼 probe.png
+
+ Four quadrants with a white cross through them — that is the test card, not a rendering fault.
  💡 Ctrl+R searches your prompt history
  2>
-   mock-large · 386/200k ctx · dracula
+   mock-large · 358/200k ctx · dracula

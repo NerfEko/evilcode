@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +76,54 @@ func TestImageReservesItsRowsWhenDrawn(t *testing.T) {
 	if !strings.Contains(plain(rows[7]), "d.png") {
 		t.Errorf("last row = %q, want the caption", plain(rows[7]))
 	}
+}
+
+func TestImageBoxKeepsASmallPictureSmall(t *testing.T) {
+	// The probe frame for the image scenario showed a 96x60 test card drawn at
+	// the full chat width, reserving 30 of 40 rows. A picture smaller than the
+	// chat area is drawn at its own size.
+	small := pngOfSize(t, 96, 60)
+	cols, rows := imageBox(small, 130)
+	if cols != 12 || rows != 3 {
+		t.Errorf("imageBox(96x60, 130) = %d cols, %d rows; want 12, 3", cols, rows)
+	}
+
+	// Wider than the chat area: clamped to it, and since the height that width
+	// implies is past the cap, the width comes down with it — 120x30 is 2:1,
+	// the ratio it went in with.
+	wide := pngOfSize(t, 4000, 2000)
+	cols, rows = imageBox(wide, 130)
+	if cols != 120 || rows != maxImageRows {
+		t.Errorf("imageBox(4000x2000, 130) = %d cols, %d rows; want 120, %d",
+			cols, rows, maxImageRows)
+	}
+
+	// Taller than the transcript allows: the height caps and the width comes
+	// down with it rather than the picture being squashed.
+	tall := pngOfSize(t, 800, 6000)
+	cols, rows = imageBox(tall, 130)
+	if rows != maxImageRows {
+		t.Errorf("rows = %d, want the %d-row cap", rows, maxImageRows)
+	}
+	if cols >= 130 || cols < 1 {
+		t.Errorf("cols = %d, want the width the capped height allows", cols)
+	}
+
+	// An unreadable header still reserves a sane box rather than zero rows.
+	cols, rows = imageBox([]byte("not an image"), 130)
+	if cols != 130 || rows < 1 || rows > maxImageRows {
+		t.Errorf("imageBox(garbage) = %d cols, %d rows", cols, rows)
+	}
+}
+
+// pngOfSize encodes a blank PNG of the given pixel size.
+func pngOfSize(t *testing.T, w, h int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestImageGraphicsPositionsAndCachesVisibleImage(t *testing.T) {

@@ -111,20 +111,38 @@ func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
 	return block
 }
 
-// imageRows picks a cell-box height for an inline image that roughly preserves
-// its aspect ratio across `cols` columns. A terminal cell is about twice as
-// tall as it is wide, so the row count is the column count scaled by the
-// picture's height/width and halved. Capped so a tall screenshot does not take
-// over the whole transcript, and floored at one row. An unreadable header falls
-// back to a square box.
-func imageRows(data []byte, cols int) int {
-	const maxRows = 30
+// maxImageRows caps how much of the transcript one picture can take.
+const maxImageRows = 30
+
+// cellPxWide is the assumed width of a terminal cell. The real one is not
+// knowable from inside the program; 8 is the common case, and guessing high
+// only ever draws a picture smaller than its pixels, never stretched past them.
+const cellPxWide = 8
+
+// imageBox picks the cell box an inline image is drawn into: its natural size
+// in cells where that fits, the chat width where it does not. A terminal cell is
+// about twice as tall as it is wide, so the row count is the column count scaled
+// by the picture's height/width and halved.
+//
+// Clamping to the natural size is the point. Drawing every picture at the full
+// chat width blew a 96x60 test card up to 130 columns and made it reserve 30
+// rows of a 40-row terminal — the probe frame for the image scenario is what
+// showed it. Floored at one row, and an unreadable header falls back to a box
+// half as tall as it is wide.
+func imageBox(data []byte, maxCols int) (cols, rows int) {
 	w, h, ok := graphics.Dimensions(data)
-	if !ok || w <= 0 {
-		return min(max(cols/2, 1), maxRows)
+	if !ok || w <= 0 || h <= 0 {
+		return maxCols, min(max(maxCols/2, 1), maxImageRows)
 	}
-	rows := int(float64(cols) * float64(h) / float64(w) / 2)
-	return max(min(rows, maxRows), 1)
+	cols = min(max(w/cellPxWide, 1), maxCols)
+	rows = max(int(float64(cols)*float64(h)/float64(w)/2), 1)
+	if rows > maxImageRows {
+		// Too tall for the transcript: keep the aspect ratio by taking the
+		// width the capped height allows rather than squashing the picture.
+		rows = maxImageRows
+		cols = min(max(rows*2*w/h, 1), maxCols)
+	}
+	return cols, rows
 }
 
 // humanBytes renders a size the way a person reads it.

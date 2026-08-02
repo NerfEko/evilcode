@@ -482,6 +482,12 @@ func applyEnv(cfg *Config) {
 			cfg.Providers = append(cfg.Providers, ProviderConfig{Name: "mock", Kind: KindMock})
 		}
 		cfg.DefaultModel = "mock-large@mock"
+		// The mock model stands in for a frontier one, vision included: without
+		// this `read` on an image reports "this model cannot see images" and the
+		// probe rig could never capture the inline-image frame.
+		if cfg.ModelOverrides(cfg.DefaultModel).Name == "" {
+			cfg.Models = append(cfg.Models, ModelConfig{Name: "mock-large@mock", Vision: true})
+		}
 	}
 }
 

@@ -5,7 +5,7 @@
                                                                       │     │-    if offset > max {
  Fixing the off-by-one.                                               │  11 │+    if offset >= max {
                                                                       │  12 │         return max
-   ✓ edit testdata/clamp.go · 8 tok (+1 -1)                           │  13 │     }
+   ✓ edit testdata/clamp.go · 72 tok (+1 -1)                          │  13 │     }
                                                                       │  14 │     return offset
  That was the clamp bug.                                              │
                                                                       │

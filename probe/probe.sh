@@ -106,11 +106,21 @@ cmd_boot() {
     # The scenario is an explicit argument rather than inherited environment.
     # Relying on the env let one golden run leak a scenario into the next,
     # which produced goldens containing another scenario's transcript.
+    # The graphics protocol is forced the same way, because the pane's TERM says
+    # xterm-256color and a scenario about images has nothing to show under a
+    # terminal that has none. tmux swallows the payload either way; what the
+    # frame proves is the rows the image block reserves and where the text after
+    # it lands.
     local scenario="${PROBE_SCENARIO:-chat}"
-    if [[ "${1:-}" == --scenario=* ]]; then
-        scenario="${1#--scenario=}"
+    local gfx="${EVILCODE_GRAPHICS:-}"
+    while true; do
+        case "${1:-}" in
+        --scenario=*) scenario="${1#--scenario=}" ;;
+        --graphics=*) gfx="${1#--graphics=}" ;;
+        *) break ;;
+        esac
         shift
-    fi
+    done
 
     local app=("$BIN" probe hello)
     [[ $# -gt 0 ]] && app=("$BIN" "$@")
@@ -123,6 +133,7 @@ cmd_boot() {
              XDG_STATE_HOME='$FAKEHOME/.local/state' \
              TERM=xterm-256color COLORTERM=truecolor \
              EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
+             EVILCODE_GRAPHICS='$gfx' \
              EVILCODE_SCENARIO='$scenario' ${app[*]}"
     settle
 }

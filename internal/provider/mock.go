@@ -487,6 +487,22 @@ var mockScenarios = map[string][][]Chunk{
 			"  D --> E[commit]\n```\n\nThat is the whole discipline."), done(300, 60)),
 	},
 
+	// A `read` of an image (§1.1). The tool attaches the bytes for the vision
+	// path and the transcript grows an image block: on a kitty-capable terminal
+	// the picture is painted over the rows the block reserves, and everywhere
+	// else those rows are the placeholder. The frame is the only way to see
+	// that the reserved rows are the right height and that the reply lands
+	// under them rather than on top of them.
+	"image": {
+		{
+			{Text: "Let me look at the screenshot."},
+			call("call_1", "read", map[string]any{"path": "testdata/probe.png"}),
+			done(220, 16),
+		},
+		append(text("Four quadrants with a white cross through them — that is the test card, "+
+			"not a rendering fault."), done(340, 18)),
+	},
+
 	// A diff taller than the side panel, which is where a panel that cannot
 	// scroll shows the top and silently drops everything below it.
 	"diff-long": {

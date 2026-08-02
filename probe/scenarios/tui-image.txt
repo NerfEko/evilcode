@@ -1,0 +1,11 @@
+# `read` on an image (§1.1): the tool attaches the bytes and the transcript
+# grows an image block. On a kitty terminal the picture is painted over the rows
+# the block reserves; tmux swallows the payload, so what this frame proves is
+# the reserved rows, the caption, and the reply landing under them rather than
+# over them.
+#
+scenario image
+boot --graphics=kitty tui
+keys "look at the screenshot"
+keys Enter
+capture tui-image
