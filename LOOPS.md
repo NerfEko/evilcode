@@ -5102,3 +5102,32 @@ codex:  `codex review --commit 59e3c74` did not produce a verdict — the first
         and a second attempt through the plugin runtime timed out at 10 minutes
         with no output. Re-run pending; the review debt is recorded here rather
         than silently dropped.
+
+## 2026-08-02 J1.1 verification — a real vision model, not the mock
+
+The frame check proved the terminal draws the picture. It could not prove the
+model receives it: the probe runs the mock provider, whose reply is scripted, so
+"four quadrants with a white cross" was written into `mockScenarios`, not seen.
+
+Ran the real path instead: `evilcode run -m kimi-k2.6:cloud@ollama-cloud` (vision
+capability per `ollama show`, `[[model]] vision = true` in a throwaway config)
+with the prompt "call the read tool on testdata/probe.png, then tell me what the
+picture shows". The answer:
+
+    4 coloured regions, separated by two white diagonal lines crossing in an X.
+    Red top-left, green top-right, blue bottom-left, yellow bottom-right.
+
+That is `testdata/probe.png` exactly, and none of it is in the tool's text
+result, which says only `Image: testdata/probe.png (644B) / Dimensions: 96x60 /
+Image sent to model for vision analysis`. The colours and their corners exist
+only in the pixels, so the bytes reached the model through
+`Result.Images` → `provider.Message.Images` → the Ollama native image field.
+
+Worth writing down: the first attempt failed with "I cannot see the image — the
+tools available to me are designed for reading text files", because the model
+answered without ever calling `read`. Not a harness bug; the same prompt with
+"call the read tool right now" produced the description above.
+
+Still unverified by a live model: the OpenAI transport (tool-result images as an
+adjacent user message). Neither configured OpenAI-kind provider (deepseek) has
+vision, so that path rests on `internal/provider` unit tests alone.
