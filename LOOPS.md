@@ -5027,6 +5027,10 @@ parity: crates/jcode-app-core/src/tool/read.rs:346-421 and
          single-line paging, nested alias repair, atomic writes, and protocol-specific
          inline placement add guarantees beyond the reference path; PDF remains the
          deliberate DEVIATIONS entry)
-codex: follow-up review findings were worked in this change: cursor-positioned inline
-        images, sixel dispatch, decoder registration, arbitrary-line paging, recursive
-        argument repair, and effective repaired paths for event consumers.
+codex: the local review covered cursor-positioned inline images, sixel dispatch,
+        decoder registration, arbitrary-line paging, recursive argument repair, and
+        effective repaired paths for event consumers. `codex review --commit 59e3c74`
+        was attempted in its restricted runner, but its repository-wide test phase
+        cannot bind the IPv6 loopback listener used by an existing provider test
+        (`operation not permitted`) before producing a verdict; that test passes in
+        the unrestricted shell, and the full and targeted race suites are green.
