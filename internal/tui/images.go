@@ -71,9 +71,13 @@ func (m *Model) toggleImages() tea.Cmd {
 	} else {
 		m.notice = "🖼 Images OFF · placeholders only"
 		// Whatever is on screen has to go now: leaving it means pictures
-		// floating over text after the toggle said they were off.
+		// floating over text after the toggle said they were off. Kitty deletes
+		// by id; sixel has no deletion at all, so the only way to take a raster
+		// off is a full redraw.
 		if m.graphics == graphics.ProtoKitty {
 			m.pendingImages = graphics.DeleteAllSequence()
+		} else if len(m.drawnImages) > 0 {
+			m.needsRepaint = true
 		}
 		m.drawnImages = map[int]imagePlacement{}
 	}

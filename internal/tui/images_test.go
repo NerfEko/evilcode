@@ -157,6 +157,51 @@ func TestImageGraphicsPositionsAndCachesVisibleImage(t *testing.T) {
 	}
 }
 
+func TestOverlayTakesImagesOffTheScreen(t *testing.T) {
+	// An overlay is spliced over the finished frame, but a picture is painted
+	// over the whole screen and would cover it.
+	m := NewModel(nil, HeaderState{SessionName: "s", Model: "m"})
+	m.width, m.height = 80, 30
+	m.graphics, m.imagesOn = graphics.ProtoKitty, true
+	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+	m.blocks = []Block{{Kind: BlockImage, Image: ImageBlock{
+		Path: "photo.png", PNG: []byte("png"), Cols: 12, Rows: 3, ID: 7,
+	}}}
+	tr := m.transcriptLines()
+	if got := m.imageGraphics(tr, 0, len(tr.Lines), 20, len(tr.Lines)); !strings.Contains(got, "i=7") {
+		t.Fatalf("image was not drawn to begin with: %q", got)
+	}
+
+	m.editor.Text = "/" // the palette is open
+	got := m.imageGraphics(tr, 0, len(tr.Lines), 20, len(tr.Lines))
+	if !strings.Contains(got, graphics.DeleteSequence(7)) {
+		t.Errorf("graphics = %q, want the image deleted while the overlay is open", got)
+	}
+
+	// Closing it puts the picture back rather than leaving a hole.
+	m.editor.Text = ""
+	if got := m.imageGraphics(tr, 0, len(tr.Lines), 20, len(tr.Lines)); !strings.Contains(got, "i=7") {
+		t.Errorf("graphics = %q, want the image redrawn once the overlay closed", got)
+	}
+}
+
+func TestRelayoutImagesFollowsTheChatWidth(t *testing.T) {
+	// The box is picked when the tool result arrives. A narrower window has to
+	// move it, or the picture overhangs the chat area it was sized for.
+	m := NewModel(nil, HeaderState{SessionName: "s", Model: "m"})
+	wide := pngOfSize(t, 4000, 2000)
+	m.blocks = []Block{{Kind: BlockImage, Image: ImageBlock{
+		Path: "wide.png", PNG: wide, Cols: 120, Rows: 30, ID: 1,
+	}}}
+	m.relayoutImages(40)
+	if got := m.blocks[0].Image.Cols; got != 40 {
+		t.Errorf("cols = %d after a resize to 40, want 40", got)
+	}
+	if got := m.blocks[0].Image.Rows; got != 10 {
+		t.Errorf("rows = %d, want 10 — the ratio the new width implies", got)
+	}
+}
+
 func TestImagesOffFallsBackToThePlaceholder(t *testing.T) {
 	r := testRenderer(80)
 	rows := r.RenderImagePlaceholder(

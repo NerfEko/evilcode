@@ -8,15 +8,18 @@ package graphics
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
@@ -160,20 +163,60 @@ func ImageSequence(proto Protocol, img Image) string {
 	case ProtoKitty:
 		return KittySequence(img)
 	case ProtoSixel:
-		cmdline := SixelCommand(img.Cols, img.Rows)
-		if len(cmdline) == 0 {
+		out, ok := encodeSixel(img)
+		if !ok {
 			return ""
 		}
-		cmd := exec.Command(cmdline[0], cmdline[1:]...)
-		cmd.Stdin = bytes.NewReader(img.PNG)
-		out, err := cmd.Output()
-		if err != nil {
-			return ""
-		}
-		return wrap(string(out))
+		return wrap(out)
 	default:
 		return ""
 	}
+}
+
+// SixelTimeout bounds one img2sixel run, and MaxSixelBytes bounds what it may
+// hand back.
+//
+// The encoder runs on the render path, so an encoder that hangs — a broken
+// build, a machine under load, a picture it cannot handle — would stop the whole
+// UI from drawing, and one that decides to be verbose would spend memory the
+// program never asked for. A picture that misses either bound is not drawn; the
+// placeholder names it instead.
+const (
+	SixelTimeout  = 3 * time.Second
+	MaxSixelBytes = 8 << 20
+)
+
+// encodeSixel converts a PNG to sixel through img2sixel, bounded in both time
+// and output size.
+func encodeSixel(img Image) (string, bool) {
+	cmdline := SixelCommand(img.Cols, img.Rows)
+	if len(cmdline) == 0 {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), SixelTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, cmdline[0], cmdline[1:]...)
+	cmd.Stdin = bytes.NewReader(img.PNG)
+	// WaitDelay stops Wait from blocking on an encoder that ignores the kill
+	// because it is stuck writing into a pipe nobody is draining.
+	cmd.WaitDelay = time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", false
+	}
+	if err := cmd.Start(); err != nil {
+		return "", false
+	}
+	out, readErr := io.ReadAll(io.LimitReader(stdout, MaxSixelBytes+1))
+	// Drain whatever is left so the child can exit instead of blocking on a
+	// full pipe until the timeout fires.
+	_, _ = io.Copy(io.Discard, stdout)
+	if err := cmd.Wait(); err != nil || readErr != nil || len(out) == 0 ||
+		len(out) > MaxSixelBytes {
+		return "", false
+	}
+	return string(out), true
 }
 
 // DeleteSequence removes a previously placed image by id.

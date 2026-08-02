@@ -269,8 +269,19 @@ type Model struct {
 
 	// rawOut is what the next Update writes straight to the terminal through
 	// tea.Raw: image transmissions and deletions, which the cell renderer drops
-	// if they are handed to it inside a view.
-	rawOut string
+	// if they are handed to it inside a view. needsRepaint asks for a full
+	// redraw, which is the only way to take a sixel raster off the screen —
+	// there is no delete-by-id outside the kitty protocol. imageWidth is the
+	// chat width the current image boxes were computed against.
+	rawOut       string
+	needsRepaint bool
+	imageWidth   int
+
+	// sixelCache holds encoded sixel payloads by image id and cell box.
+	// Encoding shells out to img2sixel, and placement changes on every scrolled
+	// line, so without this a sixel terminal re-encodes every picture on screen
+	// for every line of scroll.
+	sixelCache map[string]string
 
 	// diagrams maps mermaid source to its rendered PNG, so an unchanged
 	// diagram is never re-rendered — mmdc starts a headless browser.
@@ -515,11 +526,32 @@ func (m *Model) waitForEvent() tea.Cmd {
 // frame late does not move the picture.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
-	if raw := m.rawOut; raw != "" {
-		m.rawOut = ""
-		cmd = tea.Batch(cmd, tea.Raw(raw))
+	if m.rawOut != "" {
+		cmd = tea.Batch(cmd, tea.Raw(rawFlush{m}))
+	}
+	if m.needsRepaint {
+		m.needsRepaint = false
+		cmd = tea.Batch(cmd, tea.ClearScreen)
 	}
 	return model, cmd
+}
+
+// rawFlush hands the queued payload over at execute time rather than at queue
+// time.
+//
+// Batched commands run concurrently, so two payloads queued a frame apart can
+// reach the program out of order — and an image deletion arriving after the
+// transmission it was meant to precede leaves a picture on screen that the
+// cache thinks is gone. Draining when Bubble Tea prints the message means
+// whichever RawMsg lands first writes everything pending, in the order View
+// queued it. Both Update and the print happen on the event loop, so the drain
+// needs no lock.
+type rawFlush struct{ m *Model }
+
+func (r rawFlush) String() string {
+	out := r.m.rawOut
+	r.m.rawOut = ""
+	return out
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2696,7 +2728,11 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		counts[owner]++
 	}
 
-	if m.imagesOn && m.graphics != graphics.ProtoNone {
+	// An open overlay is spliced over the finished frame, but a picture is
+	// painted over the whole screen and would cover it — so while one is open
+	// nothing is visible, the loop below deletes what is on screen, and closing
+	// the overlay redraws it because the cache is empty again.
+	if m.imagesOn && m.graphics != graphics.ProtoNone && !m.overlayOpen() {
 		_, pad := ContentWidth(m.width, m.centered)
 		col := pad + 1
 		for i := range m.blocks {
@@ -2723,6 +2759,11 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		}
 		if m.graphics == graphics.ProtoKitty {
 			out.WriteString(graphics.DeleteSequence(id))
+		} else {
+			// Sixel has no delete-by-id: the raster is on the screen and only a
+			// full redraw takes it off. Without this a picture scrolled out of
+			// the window stays floating over whatever text took its place.
+			m.needsRepaint = true
 		}
 		delete(m.drawnImages, id)
 	}
@@ -2742,10 +2783,7 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		if _, ok := m.drawnImages[id]; ok && m.graphics == graphics.ProtoKitty {
 			out.WriteString(graphics.DeleteSequence(id))
 		}
-		seq := graphics.ImageSequence(m.graphics, graphics.Image{
-			PNG: b.Image.PNG, ID: id,
-			Cols: placement.cols, Rows: placement.rows,
-		})
+		seq := m.imageSequence(b.Image, id, placement)
 		if seq == "" {
 			continue
 		}
@@ -2760,6 +2798,79 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		out.WriteString(graphics.CursorPosition(frameRows, 1))
 	}
 	return out.String()
+}
+
+// clearDrawnImages takes every picture off the terminal and forgets it, so the
+// next frame that wants one transmits it again.
+func (m *Model) clearDrawnImages() {
+	for id := range m.drawnImages {
+		if m.graphics == graphics.ProtoKitty {
+			m.rawOut += graphics.DeleteSequence(id)
+		} else {
+			m.needsRepaint = true
+		}
+		delete(m.drawnImages, id)
+	}
+}
+
+// overlayOpen reports whether something is drawn over the transcript. A picture
+// is painted over the screen rather than into it, so it would cover any of
+// these.
+func (m *Model) overlayOpen() bool {
+	return m.paletteOpen() || m.history.Active || m.pickerOpen ||
+		m.loginPickerOpen || m.sessionsOpen || m.helpOpen || m.ask != nil
+}
+
+// imageSequence encodes one placement, memoizing sixel.
+//
+// Kitty encoding is base64 in this process and costs nothing worth caching.
+// Sixel shells out to img2sixel, and placement changes on every scrolled line,
+// so re-encoding per frame would put a subprocess on the render path for every
+// line of scroll.
+func (m *Model) imageSequence(img ImageBlock, id int, at imagePlacement) string {
+	build := func() string {
+		return graphics.ImageSequence(m.graphics, graphics.Image{
+			PNG: img.PNG, ID: id, Cols: at.cols, Rows: at.rows,
+		})
+	}
+	if m.graphics != graphics.ProtoSixel {
+		return build()
+	}
+	key := fmt.Sprintf("%d:%dx%d", id, at.cols, at.rows)
+	if seq, ok := m.sixelCache[key]; ok {
+		return seq
+	}
+	seq := build()
+	if m.sixelCache == nil || len(m.sixelCache) > 32 {
+		// Bounded rather than evicted precisely: the cost of a miss is one
+		// re-encode, and a transcript with more than 32 live placements has
+		// bigger problems than a cache.
+		m.sixelCache = map[string]string{}
+	}
+	m.sixelCache[key] = seq
+	return seq
+}
+
+// relayoutImages recomputes every image's cell box against the current chat
+// width. The box is chosen when the tool result arrives; without this a picture
+// keeps the width it was born with, and opening the side pane or narrowing the
+// window leaves it overhanging both.
+func (m *Model) relayoutImages(width int) {
+	if width <= 0 {
+		return
+	}
+	for i := range m.blocks {
+		b := &m.blocks[i]
+		if b.Kind != BlockImage || len(b.Image.PNG) == 0 {
+			continue
+		}
+		cols, rows := imageBox(b.Image.PNG, width)
+		if cols == b.Image.Cols && rows == b.Image.Rows {
+			continue
+		}
+		b.Image.Cols, b.Image.Rows = cols, rows
+		m.invalidateTranscriptCache()
+	}
 }
 
 func (m *Model) composerState() ComposerState {
@@ -2799,7 +2910,18 @@ func (m *Model) View() tea.View {
 	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 	m.drainDiagrams()
 
+	// One place to catch every reason the chat width moves — a resize, the side
+	// pane, centering — rather than a hook per cause.
+	if w := m.chatWidth(); w != m.imageWidth {
+		m.imageWidth = w
+		m.relayoutImages(w)
+	}
+
+	// The session picker and help take the whole screen and return before the
+	// transcript is laid out at all, so the pictures have to be taken down here
+	// — imageGraphics, which normally does it, is never reached.
 	if m.sessionsOpen {
+		m.clearDrawnImages()
 		v := tea.NewView(strings.Join(
 			m.renderer.RenderSessionPicker(m.sessions, m.width, m.height), "\n"))
 		v.AltScreen = true
@@ -2807,6 +2929,7 @@ func (m *Model) View() tea.View {
 	}
 
 	if m.helpOpen {
+		m.clearDrawnImages()
 		v := tea.NewView(strings.Join(
 			m.renderer.RenderHelp(m.helpScroll, m.width, m.height), "\n"))
 		v.AltScreen = true

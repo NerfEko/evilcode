@@ -5131,3 +5131,57 @@ answered without ever calling `read`. Not a harness bug; the same prompt with
 Still unverified by a live model: the OpenAI transport (tool-result images as an
 adjacent user message). Neither configured OpenAI-kind provider (deepseek) has
 vision, so that path rests on `internal/provider` unit tests alone.
+
+## 2026-08-02 J1.1 fixes — the codex review of the image pipeline
+
+`codex review --commit` never produced a verdict (its runner's test phase cannot
+bind an IPv6 loopback listener, and the plugin path timed out at ten minutes).
+Ran `codex exec --sandbox read-only` over 59e3c74 and 3f0ac9e instead, with the
+test phase kept out of it. Five findings, all real, all in the image pipeline,
+all fixed here:
+
+1. **Raw payloads could be delivered out of order.** `tea.Batch` runs commands
+   concurrently, so two payloads queued a frame apart could reach the program in
+   either order — and a deletion arriving after the transmission it was meant to
+   precede leaves a picture on screen the cache believes is gone. The payload is
+   now handed over as `rawFlush{m}`, whose `String` drains `rawOut` when Bubble
+   Tea prints it: whichever RawMsg lands first writes everything pending, in
+   queue order. Both ends run on the event loop, so no lock.
+2. **`img2sixel` ran unbounded on the render path.** `exec.Command(...).Output()`
+   with no timeout and no output cap, called from `View`: a hung encoder stops
+   the UI drawing and a verbose one spends memory nobody asked for. Now
+   `SixelTimeout` (3s), `MaxSixelBytes` (8 MB), `WaitDelay`, and a drain so the
+   child can exit. A picture that misses either bound is not drawn. The encode is
+   also memoized per id and cell box — placement changes on every scrolled line,
+   so without it a sixel terminal re-encoded every visible picture per line.
+3. **The cell box never followed the chat width.** `imageBox` ran once, when the
+   tool result arrived. Opening the side pane or narrowing the window left the
+   picture overhanging both. `relayoutImages` recomputes every box when
+   `chatWidth` moves, called from one place in `View` so every cause — resize,
+   pane, centering — is covered.
+4. **Images covered overlays.** The palette, history search, picker and ask are
+   spliced over the finished frame; a picture is painted over the screen, so it
+   sat on top of them. The session picker and help return before the transcript
+   is laid out at all, so their images were never taken down. `overlayOpen`
+   makes everything invisible while one is open — the existing delete loop then
+   removes it — and the two full-screen returns call `clearDrawnImages`.
+5. **Sixel had no removal path.** Deletion was kitty-only, so a sixel raster
+   scrolled out of the window, or left behind by Alt+Shift+I, stayed floating
+   over the text that replaced it. There is no delete-by-id outside kitty, so
+   those cases now set `needsRepaint` and `Update` returns `tea.ClearScreen`.
+
+Verification: `go build ./... && go vet ./... && go test ./...` green, `-race`
+green on `internal/tui` and `internal/graphics`; new tests
+`TestOverlayTakesImagesOffTheScreen` (drawn → deleted with the palette open →
+redrawn when it closes) and `TestRelayoutImagesFollowsTheChatWidth`. Checked in a
+real kitty window under niri: the test card draws, opening the palette takes it
+off the screen and leaves the palette readable, closing the palette puts it back
+(`/tmp/verify-image.png`, `/tmp/verify-palette.png`, `/tmp/verify-restored.png`).
+
+parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par
+        (unchanged by this: the findings are all evilcode's own TUI pipeline,
+         which jcode does not have an equivalent of — its renderer is not Bubble
+         Tea and it has no sixel path)
+codex:  5 findings — all 5 fixed in this commit; none dismissed. The review that
+        found them is `codex exec --sandbox read-only` over both commits, after
+        `codex review --commit` failed twice for runner reasons recorded above.
