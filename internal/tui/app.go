@@ -64,6 +64,17 @@ type Model struct {
 	transcriptCacheWidth int
 	transcriptCacheValid bool
 
+	// altHeight is the content height measured at an alternate wrap width, the
+	// probe the scrollbar-hysteresis decision runs every frame. Without this the
+	// probe walked every block on every 80ms tick — and as the conversation
+	// grew, each tick's per-block cache-key build and compare made the frame
+	// steadily slower, which is the lag that accumulates over a long session.
+	// It is cleared alongside the transcript cache: only a content or width
+	// change moves the height, and those already invalidate.
+	altHeight      int
+	altHeightWidth int
+	altHeightValid bool
+
 	editor Editor
 
 	// pastes holds collapsed paste contents, restored on send.
@@ -113,6 +124,14 @@ type Model struct {
 	// across every provider and rebuild the live one when a selection crosses
 	// providers. Empty falls back to the active provider only.
 	providers []config.ProviderConfig
+
+	// modelPrefs are the picker's persisted preferences (§5.3): the default
+	// model ref, the favorite refs in pin order, and the function that writes
+	// them back to the config file. A nil saver means the picker shows the
+	// state but cannot persist changes.
+	defaultModel   string
+	favorites      []string
+	saveModelPrefs func(defaultModel string, favorites []string) error
 
 	// sawEscapeHint keeps the trailing-backslash tip to once per session.
 	sawEscapeHint bool
@@ -266,6 +285,15 @@ type Model struct {
 	imagesOn      bool
 	pendingImages string
 	drawnImages   map[int]imagePlacement
+
+	// imgOwner, imgFirst and imgCounts memoize the image block's transcript
+	// geometry — first line and row count per image block — across frames. Idle
+	// ticks hand View the same cached owner slice every frame, and the scan
+	// otherwise walks the whole transcript on every 80ms tick even when there
+	// is not a single image in it. Cleared with the transcript cache.
+	imgOwner  []int
+	imgFirst  map[int]int
+	imgCounts map[int]int
 
 	// rawOut is what the next Update writes straight to the terminal through
 	// tea.Raw: image transmissions and deletions, which the cell renderer drops
@@ -447,6 +475,17 @@ func (m *Model) WithProviders(provs []config.ProviderConfig) *Model {
 	return m
 }
 
+// WithModelPrefs wires the picker's persisted preferences (§5.3): the default
+// model ref, the favorite refs in pin order, and the function that writes them
+// back to the config file. Ctrl+O and Ctrl+N in the picker both re-render the
+// list through these and call save, so the change survives the session.
+func (m *Model) WithModelPrefs(defaultModel string, favorites []string, save func(string, []string) error) *Model {
+	m.defaultModel = defaultModel
+	m.favorites = append([]string(nil), favorites...)
+	m.saveModelPrefs = save
+	return m
+}
+
 // bgCompletion is a finished background task waiting to be announced.
 type bgCompletion struct {
 	Label  string
@@ -555,6 +594,17 @@ func (r rawFlush) String() string {
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// A wheel event only moves the scroll window — handleWheel touches nothing
+	// but scroll and overscroll state, never content, layout settings, or the
+	// renderer. Letting it skip the blanket invalidation keeps a fast flick on
+	// a long conversation (several wheel events a second, each of which used to
+	// rebuild the entire transcript) from paying O(transcript) per event. If
+	// the scrollbar decision flips as a result, applyWrapWidth invalidates the
+	// cache when the width change reaches it on the next frame.
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		return m.handleWheel(wheel)
+	}
+
 	// Tick only advances clocks. Every other message may change transcript
 	// content, layout, or renderer settings, so invalidate once at the shared
 	// boundary instead of trying to remember every mutation site.
@@ -673,9 +723,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastPaste = time.Now()
 		return m, nil
-
-	case tea.MouseWheelMsg:
-		return m.handleWheel(msg)
 	}
 	return m, nil
 }
@@ -1072,6 +1119,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.helpScroll += PageLines
 		}
 		return m, nil
+	}
+
+	// Shift+Tab cycles the active model through the favorites wherever the
+	// picker is open or not (§5.3), so it is handled before the picker claims
+	// the keyboard for itself.
+	if key == "shift+tab" {
+		return m.switchToNextFavorite()
 	}
 
 	// The picker owns the keyboard while it is open.
@@ -1729,43 +1783,71 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 				m.notice = sel.Name + " is unavailable"
 				return m, nil
 			}
-			if sel.Provider != "" && sel.Provider != m.header.Provider {
-				// Crossing providers rebuilds the live client. The picker lists
-				// models from every configured provider, so a selection can name
-				// one the session did not start on.
-				if pc := m.providerConfig(sel.Provider); pc != nil {
-					if p, err := pc.Build(); err == nil {
-						m.agent.Provider = p
-						m.header.Provider = sel.Provider
-					}
-				}
-			}
-			m.header.Model = sel.Name
-			if sel.Provider != "" {
-				m.header.Provider = sel.Provider
-			}
-			m.agent.Model = sel.Name
-			// A model switch can change vision capability; re-evaluate both
-			// the user-attachment gate and the read-tool gate against the new
-			// model so neither is stale.
-			if m.visionFor != nil {
-				m.vision.Store(m.visionFor(sel.Name))
-			}
-			m.notice = "Model: " + sel.Name
-			// Record the switch so a later /resume picks up this model rather than
-			// the one the session started with (§18). The ref is rebuilt from the
-			// header, which the lines above just updated. A failed write is
-			// surfaced the way WriteCheckpoint does: a success notice would hide
-			// that the resume path lost the switch.
-			if m.store != nil {
-				if werr := m.store.WriteModel(config.ModelRef(m.header.Model, m.header.Provider)); werr != nil {
-					m.notice = "could not record model: " + werr.Error()
-				}
-			}
+			m.applyModel(sel)
 		}
 		m.pickerOpen = false
 		m.picker.Filter = ""
 		return m, nil
+
+	case "ctrl+o":
+		// Set default (§5.3). A no-op on the current default would be noise, so
+		// it returns before touching the file.
+		if len(entries) == 0 {
+			return m, nil
+		}
+		sel := entries[clamp(m.picker.Selected, 0, len(entries)-1)]
+		if sel.Unavailable {
+			m.notice = sel.Name + " is unavailable"
+			return m, nil
+		}
+		ref := config.ModelRef(sel.Name, sel.Provider)
+		if ref == m.defaultModel {
+			return m, nil
+		}
+		if !m.saveModelPrefsRef(ref, m.favorites) {
+			return m, nil
+		}
+		m.defaultModel = ref
+		m.applyModelPrefs()
+		m.notice = "Default model: " + sel.Name
+		return m, nil
+
+	case "ctrl+n":
+		// Toggle favorite (§5.3). The save happens before the in-memory toggle,
+		// so a failed write leaves the picker exactly as it was.
+		if len(entries) == 0 {
+			return m, nil
+		}
+		sel := entries[clamp(m.picker.Selected, 0, len(entries)-1)]
+		if sel.Unavailable {
+			m.notice = sel.Name + " is unavailable"
+			return m, nil
+		}
+		ref := config.ModelRef(sel.Name, sel.Provider)
+		wasFavorite := m.isFavorite(ref)
+		next := append([]string(nil), m.favorites...)
+		if wasFavorite {
+			next = removeString(next, ref)
+		} else {
+			next = append(next, ref)
+		}
+		if !m.saveModelPrefsRef(m.defaultModel, next) {
+			return m, nil
+		}
+		if wasFavorite {
+			m.favorites = next
+			m.notice = sel.Name + " removed from favorites"
+		} else {
+			m.favorites = next
+			m.notice = "♥ " + sel.Name + " favorited"
+		}
+		m.applyModelPrefs()
+		return m, nil
+
+	case "shift+tab":
+		// Cycle the active model to the next favorite (§5.3). The hint calls it
+		// a global binding, so the same key works with the picker closed.
+		return m.switchToNextFavorite()
 
 	case "backspace":
 		if r := []rune(m.picker.Filter); len(r) > 0 {
@@ -1781,6 +1863,133 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 		m.picker.Selected = 0
 	}
 	return m, nil
+}
+
+// applyModel switches the live session to the selected model: rebuilds the
+// provider when the selection crosses providers, updates the header, the
+// agent, the vision gate, and records the switch so a later /resume picks up
+// this model rather than the one the session started with (§18). A failed
+// meta write is surfaced the way WriteCheckpoint does: a success notice would
+// hide that the resume path lost the switch.
+func (m *Model) applyModel(sel ModelEntry) {
+	if sel.Provider != "" && sel.Provider != m.header.Provider {
+		// Crossing providers rebuilds the live client. The picker lists
+		// models from every configured provider, so a selection can name
+		// one the session did not start on.
+		if pc := m.providerConfig(sel.Provider); pc != nil {
+			if p, err := pc.Build(); err == nil {
+				m.agent.Provider = p
+				m.header.Provider = sel.Provider
+			}
+		}
+	}
+	m.header.Model = sel.Name
+	if sel.Provider != "" {
+		m.header.Provider = sel.Provider
+	}
+	m.agent.Model = sel.Name
+	// A model switch can change vision capability; re-evaluate both
+	// the user-attachment gate and the read-tool gate against the new
+	// model so neither is stale.
+	if m.visionFor != nil {
+		m.vision.Store(m.visionFor(sel.Name))
+	}
+	m.notice = "Model: " + sel.Name
+	if m.store != nil {
+		if werr := m.store.WriteModel(config.ModelRef(m.header.Model, m.header.Provider)); werr != nil {
+			m.notice = "could not record model: " + werr.Error()
+		}
+	}
+}
+
+// applyModelPrefs re-marks the Default and Favorite flags everywhere the
+// picker reads them after Ctrl+O / Ctrl+N changed one, so the row marks
+// follow the saved config without refetching the model list.
+func (m *Model) applyModelPrefs() {
+	for i := range m.models {
+		ref := config.ModelRef(m.models[i].Name, m.models[i].Provider)
+		m.models[i].Default = ref == m.defaultModel
+		m.models[i].Favorite = m.isFavorite(ref)
+	}
+	for i := range m.picker.Entries {
+		ref := config.ModelRef(m.picker.Entries[i].Name, m.picker.Entries[i].Provider)
+		m.picker.Entries[i].Default = ref == m.defaultModel
+		m.picker.Entries[i].Favorite = m.isFavorite(ref)
+	}
+}
+
+func (m *Model) isFavorite(ref string) bool {
+	for _, f := range m.favorites {
+		if f == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// saveModelPrefsRef writes the given prefs through the configured saver and
+// reports whether it succeeded. A nil saver — headless or test builds that
+// never wired one — cannot persist, so it says so rather than pretending.
+func (m *Model) saveModelPrefsRef(defaultModel string, favorites []string) bool {
+	if m.saveModelPrefs == nil {
+		m.notice = "cannot save model prefs: no config backend"
+		return false
+	}
+	if err := m.saveModelPrefs(defaultModel, favorites); err != nil {
+		m.notice = "could not save model prefs: " + err.Error()
+		return false
+	}
+	return true
+}
+
+// switchToNextFavorite moves the active model to the next favorite ref,
+// wrapping around, the Shift+Tab binding of §5.3. It works with the picker
+// open or closed, and no-ops with a notice when nothing is favorited yet.
+func (m *Model) switchToNextFavorite() (tea.Model, tea.Cmd) {
+	if len(m.favorites) == 0 {
+		m.notice = "no favorites yet — pin one in /model with Ctrl+N"
+		return m, nil
+	}
+	cur := config.ModelRef(m.header.Model, m.header.Provider)
+	idx := -1
+	for i, f := range m.favorites {
+		if f == cur {
+			idx = i
+			break
+		}
+	}
+	next := m.favorites[(idx+1)%len(m.favorites)]
+	// Prefer the model-list entry so display metadata (size, availability) is
+	// not lost; fall back to splitting the ref when the list has not loaded.
+	sel := ModelEntry{}
+	name, prov := config.SplitModelRef(next)
+	for _, e := range m.models {
+		if config.ModelRef(e.Name, e.Provider) == next {
+			sel = e
+			break
+		}
+	}
+	if sel.Name == "" {
+		sel = ModelEntry{Name: name, Provider: prov}
+	}
+	m.applyModel(sel)
+	// The picker stays open across a Shift+Tab cycle, so the Current mark on
+	// the row the session just moved to has to follow the header.
+	current := config.ModelRef(m.header.Model, m.header.Provider)
+	for i := range m.picker.Entries {
+		ref := config.ModelRef(m.picker.Entries[i].Name, m.picker.Entries[i].Provider)
+		m.picker.Entries[i].Current = ref == current
+	}
+	return m, nil
+}
+
+func removeString(xs []string, x string) []string {
+	for i, s := range xs {
+		if s == x {
+			return append(xs[:i], xs[i+1:]...)
+		}
+	}
+	return xs
 }
 
 // modelsLoaded carries a fetched model list back into the update loop.
@@ -1824,6 +2033,14 @@ func (m *Model) applyModels(msg modelsLoaded) {
 }
 
 func (m *Model) showPicker(entries []ModelEntry) {
+	// The picker carries the persisted preferences as row marks: the default
+	// model gets the `default` suffix, favorites the ♥ (§5.3). Marked in place
+	// so the stored m.models list and the rendered picker never disagree.
+	for i := range entries {
+		ref := config.ModelRef(entries[i].Name, entries[i].Provider)
+		entries[i].Default = ref == m.defaultModel
+		entries[i].Favorite = m.isFavorite(ref)
+	}
 	m.picker = PickerState{Entries: entries, Height: DefaultPickerHeight}
 	for i, e := range m.picker.Entries {
 		if e.Name == m.header.Model {
@@ -2530,6 +2747,13 @@ func (m *Model) invalidateTranscriptCache() {
 	m.transcriptCache = Rows{}
 	m.transcriptCacheWidth = 0
 	m.transcriptCacheValid = false
+	m.altHeightValid = false
+	// The dock and image-placement memos are keyed on the cached slices; any
+	// content or width change makes them stale.
+	if m.dock != nil {
+		m.dock.invalidateMemo()
+	}
+	m.imgOwner, m.imgFirst, m.imgCounts = nil, nil, nil
 }
 
 // transcriptLines renders every block to lines plus the provenance of each line
@@ -2547,6 +2771,13 @@ func (m *Model) transcriptLines() Rows {
 		}
 		m.invalidateTranscriptCache()
 	}
+	// The cache is only stored when nothing was streaming or animating, and
+	// both conditions invalidate the moment they begin — so the hit can be
+	// taken before the streaming scan, which would otherwise walk every block
+	// on every 80ms tick of an idle long session for nothing.
+	if len(m.blocks) > 0 && m.transcriptCacheValid && m.transcriptCacheWidth == m.renderer.Width {
+		return m.transcriptCache
+	}
 	animT, animating := m.entryAnim.Progress(time.Now())
 	cacheable := len(m.blocks) > 0 && !animating
 	for i := range m.blocks {
@@ -2554,9 +2785,6 @@ func (m *Model) transcriptLines() Rows {
 			cacheable = false
 			break
 		}
-	}
-	if cacheable && m.transcriptCacheValid && m.transcriptCacheWidth == m.renderer.Width {
-		return m.transcriptCache
 	}
 
 	if len(m.blocks) == 0 {
@@ -2674,7 +2902,16 @@ func (m *Model) stackFor(contentHeight int) Stack {
 // full Rows value. The old path built every line and every Owner slice again
 // just to count them, which made a long transcript increasingly expensive on
 // every 80ms tick.
+//
+// The height only moves when content or the wrap width changes, and both
+// already invalidate the transcript cache — which clears this memo too. So a
+// tick that changes neither (the common case in a long idle session) returns
+// the cached height instead of walking every block again, which is what kept
+// the frame time climbing as the conversation grew.
 func (m *Model) contentHeightAtWidth(width int) int {
+	if m.altHeightValid && m.altHeightWidth == width {
+		return m.altHeight
+	}
 	old := m.renderer.Width
 	if old != width {
 		m.renderer.SetWidth(max(width, 1))
@@ -2683,6 +2920,9 @@ func (m *Model) contentHeightAtWidth(width int) int {
 	if old != width {
 		m.renderer.SetWidth(old)
 	}
+	m.altHeight = height
+	m.altHeightWidth = width
+	m.altHeightValid = true
 	return height
 }
 
@@ -2715,19 +2955,8 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 	if m.drawnImages == nil {
 		m.drawnImages = map[int]imagePlacement{}
 	}
+	first, counts := m.imageBlockLines(tr.Owner)
 	visible := make(map[int]imagePlacement)
-	first := make(map[int]int)
-	counts := make(map[int]int)
-	for line, owner := range tr.Owner {
-		if owner < 0 || owner >= len(m.blocks) || m.blocks[owner].Kind != BlockImage {
-			continue
-		}
-		if _, ok := first[owner]; !ok {
-			first[owner] = line
-		}
-		counts[owner]++
-	}
-
 	// An open overlay is spliced over the finished frame, but a picture is
 	// painted over the whole screen and would cover it — so while one is open
 	// nothing is visible, the loop below deletes what is on screen, and closing
@@ -2735,14 +2964,10 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 	if m.imagesOn && m.graphics != graphics.ProtoNone && !m.overlayOpen() {
 		_, pad := ContentWidth(m.width, m.centered)
 		col := pad + 1
-		for i := range m.blocks {
-			b := &m.blocks[i]
-			if b.Kind != BlockImage || len(b.Image.PNG) == 0 {
-				continue
-			}
-			line, ok := first[i]
-			count := counts[i]
-			if !ok || count == 0 || line < start || line+count > end || line-start+count > transcriptRows {
+		for block, line := range first {
+			b := &m.blocks[block]
+			count := counts[block]
+			if len(b.Image.PNG) == 0 || count == 0 || line < start || line+count > end || line-start+count > transcriptRows {
 				continue
 			}
 			visible[b.Image.ID] = imagePlacement{
@@ -2767,11 +2992,10 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		}
 		delete(m.drawnImages, id)
 	}
-	for i := range m.blocks {
-		b := &m.blocks[i]
-		if b.Kind != BlockImage {
-			continue
-		}
+	// Only image blocks can be drawn, and first maps exactly those that have
+	// rows in the transcript — no need to scan every block on the frame.
+	for block := range first {
+		b := &m.blocks[block]
 		id := b.Image.ID
 		placement, ok := visible[id]
 		if !ok {
@@ -2798,6 +3022,30 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		out.WriteString(graphics.CursorPosition(frameRows, 1))
 	}
 	return out.String()
+}
+
+// imageBlockLines returns each image block's first transcript line and row
+// count. The scan walks every row of the transcript, so it is memoized by the
+// owner slice's identity: an idle frame hands View the same cached slice every
+// time, and rebuilding the maps on every 80ms tick would pay the full
+// transcript length for a transcript that has not changed.
+func (m *Model) imageBlockLines(owner []int) (first, counts map[int]int) {
+	if m.imgFirst != nil && sameSlice(m.imgOwner, owner) {
+		return m.imgFirst, m.imgCounts
+	}
+	first, counts = map[int]int{}, map[int]int{}
+	for line, block := range owner {
+		if block < 0 || block >= len(m.blocks) || m.blocks[block].Kind != BlockImage {
+			continue
+		}
+		if _, ok := first[block]; !ok {
+			first[block] = line
+		}
+		counts[block]++
+	}
+	m.imgOwner = owner
+	m.imgFirst, m.imgCounts = first, counts
+	return first, counts
 }
 
 // clearDrawnImages takes every picture off the terminal and forgets it, so the

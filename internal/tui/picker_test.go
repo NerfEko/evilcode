@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"evilcode/internal/agent"
+	"evilcode/internal/provider"
 )
 
 func sampleEntries() []ModelEntry {
@@ -183,5 +186,90 @@ func TestBoxTitledFitsLongTitles(t *testing.T) {
 		if len([]rune(row)) > 40 {
 			t.Errorf("row %d overflows the renderer width: %d cells", i, len([]rune(row)))
 		}
+	}
+}
+
+// TestPickerSetDefaultAndFavoritePersist drives the Ctrl+O / Ctrl+N bindings
+// the way a keypress does and checks that the saved prefs land in the config
+// saver, the in-memory state, and the row marks the picker renders.
+func TestPickerSetDefaultAndFavoritePersist(t *testing.T) {
+	var savedDefault string
+	var savedFavs []string
+	m := NewModel(nil, HeaderState{Model: "qwen3-coder:480b-cloud", Provider: "ollama-cloud"})
+	m.pickerOpen = true
+	m.picker.Entries = []ModelEntry{
+		{Name: "qwen3-coder:480b-cloud", Provider: "ollama-cloud", Current: true},
+		{Name: "deepseek-chat", Provider: "deepseek"},
+	}
+	m.models = m.picker.Entries
+	m.picker.Selected = 1
+	m.defaultModel = "qwen3-coder:480b-cloud@ollama-cloud"
+	m.saveModelPrefs = func(defaultModel string, favorites []string) error {
+		savedDefault = defaultModel
+		savedFavs = append([]string(nil), favorites...)
+		return nil
+	}
+
+	if _, _ = m.handlePickerKey("ctrl+o"); savedDefault != "deepseek-chat@deepseek" {
+		t.Errorf("saved default = %q, want deepseek-chat@deepseek", savedDefault)
+	}
+	if m.defaultModel != "deepseek-chat@deepseek" {
+		t.Errorf("in-memory default = %q, want deepseek-chat@deepseek", m.defaultModel)
+	}
+	if !m.picker.Entries[1].Default {
+		t.Error("the new default row should carry the default mark")
+	}
+	if m.notice != "Default model: deepseek-chat" {
+		t.Errorf("notice = %q, want a set-default confirmation", m.notice)
+	}
+
+	if _, _ = m.handlePickerKey("ctrl+n"); len(savedFavs) != 1 || savedFavs[0] != "deepseek-chat@deepseek" {
+		t.Errorf("saved favorites = %v, want the pinned ref", savedFavs)
+	}
+	if !m.picker.Entries[1].Favorite {
+		t.Error("the favorited row should carry the ♥ mark")
+	}
+	if m.notice != "♥ deepseek-chat favorited" {
+		t.Errorf("notice = %q, want a favorite confirmation", m.notice)
+	}
+
+	// Toggling again must unpin and persist the removal.
+	if _, _ = m.handlePickerKey("ctrl+n"); len(savedFavs) != 0 {
+		t.Errorf("saved favorites after unpin = %v, want none", savedFavs)
+	}
+	if m.picker.Entries[1].Favorite {
+		t.Error("the row should lose its ♥ mark after unpinning")
+	}
+}
+
+// TestPickerShiftTabCyclesFavorites checks the global favorite cycle: the
+// active model steps through the pinned refs and wraps around the end.
+func TestPickerShiftTabCyclesFavorites(t *testing.T) {
+	a := agent.New("s", provider.NewMock("mock", "chat"), "m1", nil,
+		agent.NewConversation("system"))
+	t.Cleanup(a.Close)
+	m := NewModel(a, HeaderState{Model: "m1", Provider: "mock"})
+	m.models = []ModelEntry{
+		{Name: "m1", Provider: "mock"},
+		{Name: "m2", Provider: "mock"},
+		{Name: "m3", Provider: "mock"},
+	}
+	m.favorites = []string{"m2@mock", "m3@mock"}
+	m.pickerOpen = true
+	m.picker.Entries = m.models
+
+	for _, want := range []string{"m2", "m3", "m2"} {
+		if _, _ = m.handlePickerKey("shift+tab"); m.header.Model != want {
+			t.Fatalf("header.Model = %q, want %q", m.header.Model, want)
+		}
+	}
+
+	// With no favorites the cycle says so instead of doing nothing silently.
+	m.favorites = nil
+	if _, _ = m.handlePickerKey("shift+tab"); m.header.Model != "m2" {
+		t.Errorf("no-op cycle must not move the active model")
+	}
+	if !strings.Contains(m.notice, "no favorites") {
+		t.Errorf("notice = %q, want a no-favorites hint", m.notice)
 	}
 }

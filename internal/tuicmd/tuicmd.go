@@ -249,6 +249,7 @@ func runOnce(args []string) (string, error) {
 		WithDisplay(cfg.Display).
 		WithSessions(dataDir, cwd, store).
 		WithProviders(cfg.Providers).
+		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
 		WithBackground(execTools.Bg).
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
 		WithMemory(mem).

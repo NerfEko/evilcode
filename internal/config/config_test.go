@@ -603,6 +603,103 @@ base_url = "http://localhost:1"
 	}
 }
 
+func TestSaveModelPrefsReplacesAndPreserves(t *testing.T) {
+	path := write(t, `# my config
+unknown_setting = "keep me"
+
+default_model = "old@ollama-local"
+
+[[provider]]
+name = "ollama-local"
+kind = "ollama"
+base_url = "http://localhost:11434"
+
+[[provider]]
+name = "ollama-cloud"
+kind = "ollama"
+base_url = "https://ollama.com"
+api_key_env = "OLLAMA_API_KEY"
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+	if err := SaveModelPrefs("m2@ollama-cloud", []string{"m1@ollama-local", "m2@ollama-cloud"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !containsAll(text, "unknown_setting = \"keep me\"", "# my config",
+		"name = \"ollama-local\"", "api_key_env = \"OLLAMA_API_KEY\"") {
+		t.Fatalf("writer dropped unrelated TOML: %s", text)
+	}
+	if !containsAll(text, "default_model = \"m2@ollama-cloud\"",
+		"favorite_models = [\"m1@ollama-local\", \"m2@ollama-cloud\"]") {
+		t.Fatalf("writer did not update model prefs: %s", text)
+	}
+	// The replaced keys must not linger as duplicates inside the tables.
+	if strings.Count(text, "default_model") != 1 || strings.Count(text, "favorite_models") != 1 {
+		t.Fatalf("old keys not removed: %s", text)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != "m2@ollama-cloud" {
+		t.Errorf("default = %q, want m2@ollama-cloud", cfg.DefaultModel)
+	}
+	if len(cfg.FavoriteModels) != 2 || cfg.FavoriteModels[1] != "m2@ollama-cloud" {
+		t.Errorf("favorites = %v, want the saved two", cfg.FavoriteModels)
+	}
+}
+
+func TestSaveModelPrefsOnAFreshMachineStillLoads(t *testing.T) {
+	// Ctrl+O on a machine with no config file must write a file the next launch
+	// can load, and must not drag the defaults in (there is nothing to replace).
+	path := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+	if err := SaveModelPrefs("glm-5.2:cloud@ollama-cloud", nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("config written by the picker does not load: %v", err)
+	}
+	if cfg.DefaultModel != "glm-5.2:cloud@ollama-cloud" {
+		t.Errorf("default = %q, want the saved one", cfg.DefaultModel)
+	}
+	if len(cfg.FavoriteModels) != 0 {
+		t.Errorf("favorites = %v, want none", cfg.FavoriteModels)
+	}
+}
+
+func TestSaveModelPrefsEmptyFavoritesRemovesTheKey(t *testing.T) {
+	path := write(t, `default_model = "a@ollama-local"
+favorite_models = ["a@ollama-local", "b@ollama-local"]
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+	if err := SaveModelPrefs("a@ollama-local", nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "favorite_models") {
+		t.Fatalf("empty favorites should drop the key, got: %s", data)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.FavoriteModels) != 0 {
+		t.Errorf("favorites = %v, want none after clearing", cfg.FavoriteModels)
+	}
+}
+
 func TestConfiguredCloudKeyRoutesToTheCloud(t *testing.T) {
 	// The symptom this guards: /login saves the key into the config file, but
 	// Default() picks the route before that file is decoded and could only read

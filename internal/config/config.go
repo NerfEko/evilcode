@@ -146,13 +146,18 @@ const DefaultThinkingLines = 6
 
 // Config is the whole configuration.
 type Config struct {
-	DefaultModel string            `toml:"default_model"`
-	Providers    []ProviderConfig  `toml:"provider"`
-	Models       []ModelConfig     `toml:"model"`
-	Roles        Roles             `toml:"roles"`
-	Display      Display           `toml:"display"`
-	Features     Features          `toml:"features"`
-	Keybindings  map[string]string `toml:"keybindings"`
+	DefaultModel string `toml:"default_model"`
+
+	// FavoriteModels are model refs pinned in the picker (plan.md §5.3). They
+	// render with a ♥ marker and Shift+Tab cycles the active model through
+	// them. Empty until the user pins something.
+	FavoriteModels []string          `toml:"favorite_models"`
+	Providers      []ProviderConfig  `toml:"provider"`
+	Models         []ModelConfig     `toml:"model"`
+	Roles          Roles             `toml:"roles"`
+	Display        Display           `toml:"display"`
+	Features       Features          `toml:"features"`
+	Keybindings    map[string]string `toml:"keybindings"`
 
 	// Dictate is the speech-to-text command `evilcode dictate` runs. A command
 	// rather than a bundled engine: STT setups are personal — a local
@@ -324,6 +329,81 @@ func SaveProviderAPIKey(providerName, key string) error {
 		}
 	}
 	return writeConfigAtomic(path, []byte(updated))
+}
+
+// SaveModelPrefs writes the model picker's preferences — the default model and
+// the favorite list — preserving every other line of the file. A full
+// decode/encode round trip would silently delete settings newer than this
+// binary knows about, so the update is a targeted text edit, exactly like
+// SaveProviderAPIKey.
+func SaveModelPrefs(defaultModel string, favorites []string) error {
+	path := os.Getenv(EnvConfigPath)
+	if path == "" {
+		path = filepath.Join(ConfigDir(), "config.toml")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	updated := updateModelPrefs(string(data), defaultModel, favorites)
+	return writeConfigAtomic(path, []byte(updated))
+}
+
+// updateModelPrefs rewrites the `default_model` and `favorite_models` keys,
+// leaving everything else — comments, unknown keys, provider tables — byte for
+// byte alone. Both keys are top-level, so when absent they are inserted before
+// the first table header: in TOML a bare key after `[[provider]]` would belong
+// to that table and silently never load as the config's own field.
+func updateModelPrefs(text, defaultModel string, favorites []string) string {
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	var lead, keep []string
+	atTopLevel := true
+	for _, line := range strings.SplitAfter(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			if atTopLevel && len(keep) == 0 {
+				lead = append(lead, line)
+				continue
+			}
+			keep = append(keep, line)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			atTopLevel = false
+			keep = append(keep, line)
+			continue
+		}
+		name, _, ok := strings.Cut(trimmed, "=")
+		if atTopLevel && ok {
+			switch strings.TrimSpace(name) {
+			case "default_model", "favorite_models":
+				continue // replaced by the new values written above the file
+			}
+		}
+		keep = append(keep, line)
+	}
+
+	var b strings.Builder
+	for _, l := range lead {
+		b.WriteString(l)
+	}
+	b.WriteString("default_model = " + strconv.Quote(defaultModel) + "\n")
+	if len(favorites) > 0 {
+		b.WriteString("favorite_models = [")
+		for i, f := range favorites {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(strconv.Quote(f))
+		}
+		b.WriteString("]\n")
+	}
+	for _, l := range keep {
+		b.WriteString(l)
+	}
+	return b.String()
 }
 
 // newProviderSections is the provider tables to append when the file has no

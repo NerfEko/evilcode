@@ -5185,3 +5185,53 @@ parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par
 codex:  5 findings — all 5 fixed in this commit; none dismissed. The review that
         found them is `codex exec --sandbox read-only` over both commits, after
         `codex review --commit` failed twice for runner reasons recorded above.
+
+## 2026-08-02 — The picker keys that did nothing
+
+User report: Ctrl+O (set default) and Ctrl+N (favorite) in the model picker
+were dead keys, and the picker never showed the default or favorite marks
+anyway.
+
+Root cause: §5.3 was rendered and documented but only half-wired. The hint
+line advertised the keys, `ModelEntry` had `Favorite`/`Default` flags and the
+row styles, and the plan spelled out the semantics — but `handlePickerKey` had
+no cases for `ctrl+o` / `ctrl+n` / `shift+tab`, nothing ever set the flags
+from persistence, and there was no favorites storage to persist to. `Default`
+only appeared on the single-row fetch fallback, so a real model list never
+showed it.
+
+Fix:
+
+- `config`: new `favorite_models` key plus `SaveModelPrefs`, a targeted text
+  rewrite of `default_model` and `favorite_models` that preserves every other
+  line (same shape as `SaveProviderAPIKey`). Both keys are top-level, so an
+  absent key is inserted before the first `[`/`[[` header — appending after a
+  provider table would have made the key belong to that table and silently
+  never load.
+- `tui`: `WithModelPrefs` wires default + favorites + saver into the model;
+  `showPicker` marks `default`/`♥` rows from them; Ctrl+O and Ctrl+N save
+  first and mutate memory only on success (a failed write leaves the picker
+  exactly as it was); Shift+Tab cycles the active model through the favorites,
+  wired both globally and while the picker is open; the enter-case switch was
+  extracted into `applyModel` so the cycle and the picker share one switch
+  path, including the `/resume` meta write.
+- Wiring in both `tuicmd` and `attachcmd`.
+
+What broke along the way: the probe golden suite fails in this environment on
+a *skills* line (`/agent-architect …` vs `/commit /find-skills …`) — repro'd
+on a clean tree, unrelated to this change. The `tui-picker` scenario passes
+unchanged because its golden captures the "loading…" placeholder, which is
+written after `showPicker` and so bypasses the flag-marking.
+
+Verified: `go build ./... && go vet ./... && go test ./...` green; new config
+tests (replace-and-preserve, fresh machine, empty-favorites drops the key) and
+TUI tests (Ctrl+O/Ctrl+N persist through the saver and re-mark rows; Shift+Tab
+cycles and wraps). Booted the probe: the default suffix renders, Ctrl+O moved
+the `default` mark to the selected row, Ctrl+N added `♥` with the notice, and
+the throwaway HOME's `config.toml` contained exactly
+`default_model = "qwen3.5:latest@ollama-local"` +
+`favorite_models = ["qwen3.5:latest@ollama-local"]` at 0600.
+
+parity: n/a — the picker is evilcode's own TUI (§5.3); jcode has no equivalent
+        interaction.
+codex:  n/a (advisory review not run for this user-reported fix).

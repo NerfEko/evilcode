@@ -88,6 +88,7 @@ func Run(args []string) error {
 		WithSwarm(swarm, func(task string) (string, error) {
 			return summon(path, task)
 		}).
+		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
 		WithGraphics(graphics.Detect(), filepath.Join(config.DataDir(), "diagrams"))
 	m.RebuildFrom(conv.Messages())
 	go pollRoster(path, snap.Session, swarm)

@@ -431,3 +431,26 @@ or `mutool`); a built-in extractor is not the cheaper option here.
 The 2026-07-30 P0.3 entry said the codex CLI was absent. It is present now
 (`codex` at `/home/eko/.local/bin/codex`, model `gpt-5.6-sol`, reasoning
 `high`); every plan4 commit is reviewed with `codex review --commit <SHA>`.
+
+## 2026-08-02 — model picker prefs storage: `favorite_models` + text-preserving writer
+
+**Spec** (§5.3): Ctrl+O sets the default model, Ctrl+N toggles a favorite,
+Shift+Tab cycles favorites — with no statement of where either is persisted.
+
+**Built instead**: favorites live in a new top-level `favorite_models` array in
+`config.toml`; Ctrl+O writes `default_model` the same way `/login` writes a
+key — a targeted text rewrite (`SaveModelPrefs`/`updateModelPrefs`) that
+preserves every other line, including unknown keys newer than the binary. An
+empty favorites list drops the key rather than writing `[]`.
+
+**Why**: `default_model` already had a home; favorites needed one, and a
+`[[model]]` block per pinned model would have conflated "the user pinned this"
+with "this model has overrides". The text-preserving writer is inherited from
+`SaveProviderAPIKey`, where a full decode/encode round trip was already known
+to delete forward-unknown settings. Repo-pinned `default_model` (roles.go)
+still wins on the next launch, since `LoadRepoOverrides` runs after the file
+is read — Ctrl+O changes the user's own config, and a repo that pins a model
+keeps pinning it.
+
+**Worth revisiting if**: favorites ever need ordering metadata (e.g. grouping),
+or a second writer appears and the two text-editors should be unified.
