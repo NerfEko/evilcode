@@ -240,7 +240,7 @@ func (e *Exec) cleanBashOutput(output, marker string) string {
 }
 
 func (e *Exec) finishForeground(runErr error, output, workingDir, marker string) (Result, error) {
-	output = e.cleanBashOutput(output, marker)
+	output = Truncate(e.cleanBashOutput(output, marker))
 	if runErr != nil {
 		return Result{
 			Output: output,
@@ -314,6 +314,8 @@ func (e *Exec) runBackground(command, stdin string) Result {
 type ringWriter struct {
 	mu       sync.Mutex
 	buf      []byte
+	start    int
+	size     int
 	overflow bool
 }
 
@@ -326,40 +328,92 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n := len(p)
-	if len(p) > MaxOutputBytes {
-		p = p[len(p)-MaxOutputBytes:]
-		w.buf = append(w.buf[:0], p...)
+	if n == 0 {
+		return 0, nil
+	}
+	if w.buf == nil {
+		w.buf = make([]byte, MaxOutputBytes)
+	}
+	if n >= MaxOutputBytes {
+		copy(w.buf, p[n-MaxOutputBytes:])
+		w.start = 0
+		w.size = MaxOutputBytes
 		w.overflow = true
 		return n, nil
 	}
-	if len(w.buf)+len(p) > MaxOutputBytes {
-		drop := len(w.buf) + len(p) - MaxOutputBytes
-		w.buf = append(w.buf[:0], w.buf[drop:]...)
+	if drop := w.size + n - MaxOutputBytes; drop > 0 {
+		w.start = (w.start + drop) % MaxOutputBytes
+		w.size -= drop
 		w.overflow = true
 	}
-	w.buf = append(w.buf, p...)
+	end := (w.start + w.size) % MaxOutputBytes
+	first := min(n, MaxOutputBytes-end)
+	copy(w.buf[end:end+first], p[:first])
+	copy(w.buf[:n-first], p[first:])
+	w.size += n
 	return n, nil
 }
 
-// String returns a bounded tail of what was kept, marked if anything was
-// dropped. Keeping the live snapshot at the tool result limit is important:
-// a fast writer can otherwise make every 200ms progress refresh allocate a
-// megabyte even though the model can only receive 50 KiB.
+func (w *ringWriter) snapshotLocked() []byte {
+	if w.size == 0 {
+		return nil
+	}
+	out := make([]byte, w.size)
+	first := min(w.size, MaxOutputBytes-w.start)
+	copy(out, w.buf[w.start:w.start+first])
+	copy(out[first:], w.buf[:w.size-first])
+	return out
+}
+
+func (w *ringWriter) tailLocked(n int) []byte {
+	if n > w.size {
+		n = w.size
+	}
+	if n <= 0 {
+		return nil
+	}
+	start := (w.start + w.size - n) % MaxOutputBytes
+	out := make([]byte, n)
+	first := min(n, MaxOutputBytes-start)
+	copy(out, w.buf[start:start+first])
+	copy(out[first:], w.buf[:n-first])
+	return out
+}
+
+// String returns what was kept, marked if anything was dropped. Foreground
+// completion uses this full ring so the ordinary Result truncator can retain
+// both the head and tail of a command's output.
 func (w *ringWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.buf) <= MaxResultBytes && !w.overflow {
-		return string(w.buf)
+	buf := w.snapshotLocked()
+	if !w.overflow {
+		return string(buf)
 	}
-	tailStart := len(w.buf) - MaxResultBytes
-	for tailStart < len(w.buf) && !utf8Start(w.buf[tailStart]) {
+	return "[earlier output dropped: the command produced more than " +
+		humanBytes(MaxOutputBytes) + "]\n" + string(buf)
+}
+
+// Tail returns a bounded live snapshot. Keeping the live snapshot at the tool
+// result limit is important: a fast writer can otherwise make every 200ms
+// progress refresh allocate a megabyte even though the model can only receive
+// 50 KiB.
+func (w *ringWriter) Tail() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.size <= MaxResultBytes && !w.overflow {
+		return string(w.snapshotLocked())
+	}
+	buf := w.tailLocked(MaxResultBytes)
+	tailStart := 0
+	for tailStart < len(buf) && !utf8Start(buf[tailStart]) {
 		tailStart++
 	}
 	prefix := "[output tail kept: the command produced more than " + humanBytes(MaxResultBytes) + "]\n"
 	if w.overflow {
 		prefix = "[earlier output dropped: the command produced more than " + humanBytes(MaxOutputBytes) + "]\n"
 	}
-	return prefix + string(w.buf[tailStart:])
+	return prefix + string(buf[tailStart:])
 }
 
 // BackgroundTimeout is the ceiling on a detached command, so a runaway watcher

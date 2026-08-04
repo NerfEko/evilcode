@@ -86,7 +86,7 @@ func (t *BackgroundTask) refreshOutput() {
 	if writer == nil || done {
 		return
 	}
-	output := writer.String()
+	output := writer.Tail()
 	t.mu.Lock()
 	if !t.done {
 		t.output = output
