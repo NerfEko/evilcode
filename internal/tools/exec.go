@@ -18,6 +18,11 @@ import (
 type Exec struct {
 	Root string
 
+	// lspServer enriches grep hits with document symbols when a language
+	// server is configured for the hit's file. It is optional: the declaration
+	// scanner is deliberately the fallback for repositories without one.
+	lspServer LSPServer
+
 	// Bg tracks detached commands.
 	Bg *Background
 
@@ -56,6 +61,14 @@ func NewExec(root string) *Exec {
 		root = abs
 	}
 	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root, Bg: &Background{}}
+}
+
+// WithLSP lets grep ask the configured language server for enclosing symbols.
+// Starting a server remains lazy because a session that never searches should
+// not pay the indexing cost.
+func (e *Exec) WithLSP(server LSPServer) *Exec {
+	e.lspServer = server
+	return e
 }
 
 // Cwd reports the working directory subsequent commands will run in.
@@ -377,7 +390,8 @@ func (e *Exec) grepTool() Tool {
 	return Tool{
 		Name: "grep",
 		Desc: "Search file contents with a regular expression, via ripgrep. " +
-			"Returns matching lines with their file and line number.",
+			"Returns matching lines with their file, line number, and enclosing symbol. " +
+			"With a file path and no pattern, returns that file's symbol outline.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -387,15 +401,33 @@ func (e *Exec) grepTool() Tool {
     "context": {"type": "integer", "description": "Lines of context around each match"},
     "limit":   {"type": "integer", "description": "Maximum matching lines to return"}
   },
-  "required": ["pattern"]
+  "required": []
 }`),
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			var a grepArgs
 			if err := unmarshalArgs(raw, &a); err != nil {
 				return Result{}, err
 			}
+			target := e.Root
+			if a.Path != "" {
+				if !filepath.IsAbs(a.Path) {
+					target = filepath.Join(e.Root, a.Path)
+				} else {
+					target = a.Path
+				}
+			}
 			if a.Pattern == "" {
-				return Result{}, fmt.Errorf("pattern is required")
+				if a.Path == "" {
+					return Result{}, fmt.Errorf("pattern is required unless path names a file for outline mode")
+				}
+				info, err := os.Stat(target)
+				if err != nil {
+					return Result{}, err
+				}
+				if info.IsDir() {
+					return Result{}, fmt.Errorf("outline mode needs a file path; %s is a directory", a.Path)
+				}
+				return e.grepOutline(ctx, target, a.Path), nil
 			}
 			// Never reimplement ripgrep (plan.md §17).
 			if _, err := exec.LookPath("rg"); err != nil {
@@ -406,7 +438,10 @@ func (e *Exec) grepTool() Tool {
 			if limit <= 0 {
 				limit = 200
 			}
-			args := []string{"--line-number", "--with-filename", "--color=never", "--max-count=50"}
+			// --null separates the path from the line payload. Without it a
+			// directory named `part:123` is indistinguishable from rg's
+			// `path:line:text` output.
+			args := []string{"--null", "--line-number", "--with-filename", "--color=never", "--max-count=50"}
 			if a.Glob != "" {
 				args = append(args, "--glob", a.Glob)
 			}
@@ -415,14 +450,6 @@ func (e *Exec) grepTool() Tool {
 			}
 			args = append(args, "--regexp", a.Pattern)
 
-			target := e.Root
-			if a.Path != "" {
-				if !filepath.IsAbs(a.Path) {
-					target = filepath.Join(e.Root, a.Path)
-				} else {
-					target = a.Path
-				}
-			}
 			args = append(args, target)
 
 			ctx, cancel := context.WithTimeout(ctx, e.Timeout)
@@ -436,28 +463,117 @@ func (e *Exec) grepTool() Tool {
 			err := cmd.Run()
 
 			out := buf.String()
+			records := parseRGRecords(out)
 			// ripgrep exits 1 for "no matches", which is an answer, not a fault.
+			// An explicitly named binary file also exits 1 while emitting a
+			// useful `binary file matches` record, so only call it no-match when
+			// no record survived parsing.
 			var ee *exec.ExitError
-			if err != nil && errors.As(err, &ee) && ee.ExitCode() == 1 {
+			if err != nil && errors.As(err, &ee) && ee.ExitCode() == 1 && len(records) == 0 {
 				return Result{Output: "no matches for " + a.Pattern}, nil
 			}
-			if err != nil {
+			if err != nil && !(errors.As(err, &ee) && ee.ExitCode() == 1 && len(records) > 0) {
 				return Result{Output: out}, fmt.Errorf("ripgrep failed: %w", err)
 			}
 
-			lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 			note := ""
-			if len(lines) > limit {
-				note = fmt.Sprintf("\n[%d more matching lines; narrow the pattern]", len(lines)-limit)
-				lines = lines[:limit]
+			matchCount := 0
+			for _, record := range records {
+				if !record.Context {
+					matchCount++
+				}
 			}
-			// Paths come back absolute; relative reads better and costs fewer tokens.
-			for i, l := range lines {
-				lines[i] = strings.TrimPrefix(l, e.Root+string(filepath.Separator))
+			if matchCount > limit {
+				note = fmt.Sprintf("\n[%d more matching lines; narrow the pattern]", matchCount-limit)
+				kept := make([]grepRecord, 0, len(records))
+				pendingContext := make([]grepRecord, 0)
+				seen := 0
+				group := records[0].Group
+				retainedGroup := group
+				for _, record := range records {
+					if record.Group != group {
+						// Flush only the trailing context of the last retained
+						// group. Leading context in the next group belongs to a
+						// match that may be omitted by the limit.
+						if group == retainedGroup {
+							kept = append(kept, pendingContext...)
+						}
+						pendingContext = pendingContext[:0]
+						group = record.Group
+					}
+					if record.Context {
+						pendingContext = append(pendingContext, record)
+						continue
+					}
+					if seen >= limit {
+						// These lines trail the last retained match and are still
+						// part of its requested context. Drop only the omitted
+						// match itself and anything after it.
+						if group == retainedGroup {
+							kept = append(kept, pendingContext...)
+						}
+						break
+					}
+					kept = append(kept, pendingContext...)
+					pendingContext = pendingContext[:0]
+					seen++
+					retainedGroup = group
+					kept = append(kept, record)
+				}
+				records = kept
+			}
+			lines := make([]string, 0, len(records))
+			symbols := make(map[string][]grepSymbol)
+			lspUnavailable := make(map[string]bool)
+			maxLines := make(map[string]int)
+			for _, record := range records {
+				if record.Binary {
+					continue
+				}
+				path := record.Path
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(e.Root, path)
+				}
+				if record.Line > maxLines[path] {
+					maxLines[path] = record.Line
+				}
+			}
+			for _, record := range records {
+				if record.Binary {
+					rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
+					if filepath.IsAbs(rel) {
+						rel = filepath.Clean(rel)
+					}
+					lines = append(lines, fmt.Sprintf("%s: %s", rel, record.Text))
+					continue
+				}
+				// Paths come back absolute; relative reads better and costs fewer
+				// tokens. Context records are enriched too, so --context remains
+				// useful without reverting to unstructured output.
+				rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
+				if filepath.IsAbs(rel) {
+					rel = filepath.Clean(rel)
+				}
+				path := record.Path
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(e.Root, path)
+				}
+				if _, ok := symbols[path]; !ok {
+					symbols[path] = e.grepSymbols(ctx, path, lspUnavailable, maxLines[path])
+				}
+				symbol := enclosingGrepSymbol(symbols[path], record.Line)
+				label := "top level"
+				if symbol != "" {
+					label = symbol
+				}
+				if record.Context {
+					label = "context · " + label
+				}
+				lines = append(lines, fmt.Sprintf("%s:%d: [%s] %s", rel, record.Line, label, record.Text))
 			}
 			return Result{
 				Output: strings.Join(lines, "\n") + note,
-				Intent: fmt.Sprintf("%d matches for %s", len(lines), a.Pattern),
+				Intent: fmt.Sprintf("%d matches for %s", matchCount, a.Pattern),
 			}, nil
 		},
 	}

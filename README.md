@@ -211,6 +211,11 @@ repository's pinned model or roles never leak into another session's.
 servers adapted into the same interface. Batches dispatch through a fixed worker pool
 with a cap on both concurrency and total size.
 
+`grep` includes the enclosing function, method, or type beside every hit. It asks the
+configured language server for that structure and falls back to a small declaration scan
+when the repository has no server or the server is unavailable. Give it a file path without
+a pattern to get a numbered symbol outline instead of reading the whole file.
+
 `edit` has a hash-anchored mode: `read` prints a short content hash beside each line,
 and an edit names the anchor instead of reproducing surrounding context. Stale anchors
 are refused rather than fuzzily matched.

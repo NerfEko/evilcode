@@ -681,11 +681,11 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J2 — Search that pays for itself
 
-- [ ] **J2.1** `internal/tools/exec.go:341` `Exec.grepTool` — hits carry no structure.
+- [x] **J2.1** `internal/tools/exec.go:341` `Exec.grepTool` — hits carry no structure.
       Attach the enclosing symbol per hit, via `internal/lsp` `documentSymbol` where a
       server is configured and a declaration-pattern scan otherwise. §2.1. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/agentgrep.rs:1-120 and its `outline` mode⟩
-- [ ] **J2.2** `internal/tools/exec.go:341` `Exec.grepTool` — no way to ask what is in a
+- [x] **J2.2** `internal/tools/exec.go:341` `Exec.grepTool` — no way to ask what is in a
       file short of reading it. `grep` with a path and no pattern returns the symbol
       outline. §2.2. ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/agentgrep.rs, `run_outline`⟩
 - [ ] **J2.3** `internal/tools/tools.go:26` `Result` — nothing tracks what the model has

@@ -227,6 +227,7 @@ func runOnce(args []string) (string, error) {
 	// indexes the module, and a session that never asks should never pay.
 	lsps := lsp.NewManager(pc.Root, cfg.LSP)
 	defer lsps.Close()
+	execTools.WithLSP(lsps)
 
 	// The advisor is a second, cheap voice, so it goes through the smol role
 	// like every other ambient call (§16, §21).

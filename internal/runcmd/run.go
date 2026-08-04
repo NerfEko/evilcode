@@ -18,6 +18,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/core"
+	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
@@ -130,15 +131,26 @@ func Run(args []string) (int, error) {
 	// per-model settings at all, which is how anchor_edits appeared to be
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
+	var lsps *lsp.Manager
+	if !*noTools {
+		// Keep grep's symbol enrichment available to headless runs without
+		// starting a language server until a search actually needs it.
+		lsps = lsp.NewManager(pc.Root, cfg.LSP)
+		defer lsps.Close()
+	}
 
 	var ts tools.Set
 	if !*noTools {
 		if canned, ok := provider.DemoCannedTools(); ok {
 			ts = tools.Canned(canned)
 		} else {
+			execTools := tools.NewExec(cwd)
+			if lsps != nil {
+				execTools.WithLSP(lsps)
+			}
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
 				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).Tools(),
-				tools.NewExec(cwd).Tools()...)
+				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 			if len(promptSkills) > 0 {
 				ts = append(ts, tools.NewSkillTool(skills))

@@ -407,6 +407,128 @@ func TestGrep(t *testing.T) {
 	}
 }
 
+func TestGrepCarriesEnclosingFallbackSymbol(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(path, []byte("package sample\n\ntype Widget struct{}\n\nfunc (w Widget) Render() {\n\tneedle()\n}\n\nfunc Other() {\n\tneedle()\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := NewExec(dir)
+	res, err := run(t, e.Tools(), "grep", map[string]any{"pattern": "needle"})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "[func Widget.Render]") {
+		t.Errorf("method hit lost its enclosing symbol: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "[func Other]") {
+		t.Errorf("function hit lost its enclosing symbol: %q", res.Output)
+	}
+}
+
+func TestGrepOutlineWithoutPattern(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(path, []byte("package sample\n\ntype Widget struct{}\n\nfunc (w Widget) Render() {}\n\nfunc Other() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{"path": filepath.Base(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "3: type Widget") ||
+		!strings.Contains(res.Output, "5: func Widget.Render") ||
+		!strings.Contains(res.Output, "7: func Other") {
+		t.Errorf("outline = %q", res.Output)
+	}
+}
+
+func TestGrepOutlineRequiresAFilePath(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{}); err == nil {
+		t.Fatal("grep without a pattern or path must fail")
+	}
+	if _, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{"path": "."}); err == nil {
+		t.Fatal("outline mode must reject a directory")
+	}
+}
+
+func TestGrepLimitKeepsTrailingContextForLastHit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(path, []byte("before\nneedle first\nafter first\nneedle second\nafter second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{
+		"pattern": "needle",
+		"path":    filepath.Base(path),
+		"context": 1,
+		"limit":   1,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "after first") {
+		t.Errorf("last retained match lost trailing context: %q", res.Output)
+	}
+	if strings.Contains(res.Output, "needle second") {
+		t.Errorf("omitted match was retained: %q", res.Output)
+	}
+}
+
+func TestGrepLimitDoesNotBorrowContextFromOmittedGroup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("before a\nneedle a\nafter a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("before b\nneedle b\nafter b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{
+		"pattern": "needle",
+		"context": 1,
+		"limit":   1,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "after a") || strings.Contains(res.Output, "before b") || strings.Contains(res.Output, "after b") {
+		t.Errorf("limit crossed a ripgrep context group: %q", res.Output)
+	}
+}
+
+func TestGrepPreservesExplicitBinaryMatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "foo:123:bar.bin")
+	if err := os.WriteFile(path, []byte{'n', 'e', 'e', 'd', 'l', 'e', 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{
+		"pattern": "needle",
+		"path":    filepath.Base(path),
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "foo:123:bar.bin: binary file matches") || strings.Contains(res.Output, dir) {
+		t.Errorf("binary match was dropped: %q", res.Output)
+	}
+}
+
 func TestGrepNoMatchesIsNotAnError(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("nothing here\n"), 0o644)

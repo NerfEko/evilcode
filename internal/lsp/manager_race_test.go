@@ -101,3 +101,96 @@ func TestCloseDoesNotPublishASlowStartingClient(t *testing.T) {
 		t.Fatalf("closed manager published %d clients", len(m.clients))
 	}
 }
+
+func TestCanceledStartupIsRetriedForLaterLSPCall(t *testing.T) {
+	var attempts int
+	m := &Manager{
+		Root:     t.TempDir(),
+		Commands: map[string][]string{"go": {"gopls"}},
+		clients:  map[string]*Client{},
+		failed:   map[string]error{},
+		start: func(ctx context.Context, name, root string, command []string) (*Client, error) {
+			attempts++
+			if attempts == 1 {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return &Client{Name: name, Root: root}, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.For(ctx, "main.go"); err == nil {
+		t.Fatal("a canceled startup unexpectedly succeeded")
+	}
+	if _, err := m.For(context.Background(), "main.go"); err != nil {
+		t.Fatalf("later LSP call did not retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("startup attempts = %d, want one retry", attempts)
+	}
+}
+
+func TestDeadlineStartupUsesCooldown(t *testing.T) {
+	var attempts int
+	m := &Manager{
+		Root:       t.TempDir(),
+		Commands:   map[string][]string{"go": {"gopls"}},
+		clients:    map[string]*Client{},
+		failed:     map[string]error{},
+		retryAfter: map[string]time.Time{},
+		start: func(ctx context.Context, name, root string, command []string) (*Client, error) {
+			attempts++
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if _, err := m.For(ctx, "main.go"); err == nil {
+		t.Fatal("a timed-out startup unexpectedly succeeded")
+	}
+	if _, err := m.For(context.Background(), "main.go"); err == nil {
+		t.Fatal("cooldown lookup unexpectedly started a server")
+	}
+	if attempts != 1 {
+		t.Fatalf("startup attempts = %d, want one attempt during cooldown", attempts)
+	}
+}
+
+func TestTimedOutClientWriteIsReplaced(t *testing.T) {
+	first := &Client{Name: "gopls", in: &blockingWriteCloser{closed: make(chan struct{})}}
+	second := &Client{Name: "gopls"}
+	attempts := 0
+	m := &Manager{
+		Root:     t.TempDir(),
+		Commands: map[string][]string{"go": {"gopls"}},
+		clients:  map[string]*Client{},
+		failed:   map[string]error{},
+		start: func(context.Context, string, string, []string) (*Client, error) {
+			attempts++
+			if attempts == 1 {
+				return first, nil
+			}
+			return second, nil
+		},
+	}
+	client, err := m.For(context.Background(), "main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if err := client.writeContext(ctx, map[string]any{"method": "stuck"}); err == nil {
+		t.Fatal("blocked write unexpectedly succeeded")
+	}
+	replacement, err := m.For(context.Background(), "main.go")
+	if err != nil {
+		t.Fatalf("replacement lookup failed: %v", err)
+	}
+	if replacement != second || attempts != 2 {
+		t.Fatalf("replacement = %p, attempts = %d; want second client after one retry", replacement, attempts)
+	}
+}
