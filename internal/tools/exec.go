@@ -512,7 +512,7 @@ func (e *Exec) grepTool() Tool {
 			// --null separates the path from the line payload. Without it a
 			// directory named `part:123` is indistinguishable from rg's
 			// `path:line:text` output.
-			args := []string{"--null", "--line-number", "--with-filename", "--color=never", "--max-count=50"}
+			args := []string{"--null", "--line-number", "--with-filename", "--color=never", "--sort", "path", "--max-count=50"}
 			if a.Glob != "" {
 				args = append(args, "--glob", a.Glob)
 			}
