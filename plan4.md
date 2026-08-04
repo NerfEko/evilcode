@@ -688,7 +688,7 @@ Line numbers as-of §0.5. Trust the symbol.
 - [x] **J2.2** `internal/tools/exec.go:341` `Exec.grepTool` — no way to ask what is in a
       file short of reading it. `grep` with a path and no pattern returns the symbol
       outline. §2.2. ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/agentgrep.rs, `run_outline`⟩
-- [ ] **J2.3** `internal/tools/tools.go:26` `Result` — nothing tracks what the model has
+- [x] **J2.3** `internal/tools/tools.go:26` `Result` — nothing tracks what the model has
       already been shown, so `grep` after `read` repeats lines that are already in context.
       Record shown `file:line` ranges per session; collapse a hit inside one to a reference;
       reset at compaction. §2.3. ⟨build⟩

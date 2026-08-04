@@ -215,6 +215,9 @@ with a cap on both concurrency and total size.
 configured language server for that structure and falls back to a small declaration scan
 when the repository has no server or the server is unavailable. Give it a file path without
 a pattern to get a numbered symbol outline instead of reading the whole file.
+The session remembers source ranges already shown by `read`, `grep`, or file/line
+diagnostics in `bash`, and later matching hits collapse to `shown above`; compaction
+clears that ledger for the fresh context.
 
 `edit` has a hash-anchored mode: `read` prints a short content hash beside each line,
 and an edit names the anchor instead of reproducing surrounding context. Stale anchors

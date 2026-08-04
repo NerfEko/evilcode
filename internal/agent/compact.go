@@ -54,6 +54,10 @@ type Compactor struct {
 	// full history.
 	Persist func(summary string) ([]provider.Message, error)
 
+	// OnCompaction resets session-local caches whose contents are no longer in
+	// the model context (for example the tool exposure ledger).
+	OnCompaction func()
+
 	mu    sync.Mutex
 	count int
 }
@@ -125,6 +129,9 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 		}
 	}
 	conv.Reset(replay)
+	if c.OnCompaction != nil {
+		c.OnCompaction()
+	}
 
 	c.mu.Lock()
 	c.count++

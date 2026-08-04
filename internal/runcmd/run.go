@@ -131,6 +131,7 @@ func Run(args []string) (int, error) {
 	// per-model settings at all, which is how anchor_edits appeared to be
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
+	exposure := tools.NewExposure()
 	var lsps *lsp.Manager
 	if !*noTools {
 		// Keep grep's symbol enrichment available to headless runs without
@@ -144,12 +145,13 @@ func Run(args []string) (int, error) {
 		if canned, ok := provider.DemoCannedTools(); ok {
 			ts = tools.Canned(canned)
 		} else {
-			execTools := tools.NewExec(cwd)
+			execTools := tools.NewExec(cwd).WithExposure(exposure)
 			if lsps != nil {
 				execTools.WithLSP(lsps)
 			}
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).Tools(),
+				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
+				WithExposure(exposure).Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 			if len(promptSkills) > 0 {
@@ -181,6 +183,7 @@ func Run(args []string) (int, error) {
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		OnCompaction: exposure.Reset,
 	}
 	defer a.Close()
 

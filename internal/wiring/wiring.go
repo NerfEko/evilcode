@@ -180,6 +180,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	// Overrides are looked up by the *resolved* model, not the flag: a session
 	// relying on default_model would otherwise silently get none of them.
 	overrides := cfg.ModelOverrides(modelName)
+	exposure := tools.NewExposure()
 	var lsps *lsp.Manager
 	if !opts.NoTools {
 		// Search can use the same lazy language-server manager as the interactive
@@ -198,12 +199,13 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 			// model side of this; this is the same idea for tools).
 			ts = tools.Canned(canned)
 		} else {
-			execTools := tools.NewExec(cwd)
+			execTools := tools.NewExec(cwd).WithExposure(exposure)
 			if lsps != nil {
 				execTools.WithLSP(lsps)
 			}
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).Tools(),
+				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
+				WithExposure(exposure).Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 		}
@@ -228,6 +230,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		OnCompaction: exposure.Reset,
 	}
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)

@@ -183,6 +183,7 @@ func runOnce(args []string) (string, error) {
 	memoryHook := agent.NewMemoryHook(mem)
 	defer memoryHook.Close()
 	a.Hooks = agent.Chain{memoryHook, poke}
+	exposure := tools.NewExposure()
 
 	// Compaction persists through the session store rather than only in memory:
 	// assigning the message slice was what made a compacted session come back
@@ -194,6 +195,7 @@ func runOnce(args []string) (string, error) {
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		OnCompaction: exposure.Reset,
 	}
 	a.Compactor = compactor
 
@@ -220,8 +222,8 @@ func runOnce(args []string) (string, error) {
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-		WithConfine(cfg.Features.ConfineToWorkspace)
-	execTools := tools.NewExec(cwd)
+		WithConfine(cfg.Features.ConfineToWorkspace).WithExposure(exposure)
+	execTools := tools.NewExec(cwd).WithExposure(exposure)
 
 	// Language servers start on first use, not here: gopls costs seconds and
 	// indexes the module, and a session that never asks should never pay.

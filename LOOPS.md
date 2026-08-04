@@ -5185,3 +5185,37 @@ parity: crates/jcode-app-core/src/tool/read.rs:346-421 — on par
 codex:  5 findings — all 5 fixed in this commit; none dismissed. The review that
         found them is `codex exec --sandbox read-only` over both commits, after
         `codex review --commit` failed twice for runner reasons recorded above.
+
+## 2026-08-04 J2 — structure, outlines, and exposure tracking
+
+J2.1 and J2.2 are complete. `grep` parses ripgrep's NUL-delimited records,
+preserves context and binary matches, annotates each hit with its enclosing LSP
+symbol (or the bounded declaration scanner), and accepts `path` without a
+pattern for a numbered outline. J2.3 adds a per-session `file:line` exposure
+ledger shared by `read`, `grep`, and file/line diagnostics in `bash`; repeated
+hits become `shown above` references, and every compactor resets the ledger after
+replacing the conversation.
+
+The final review pass also bounded legacy LSP document refreshes for diagnostics
+and rename, invalidated stale diagnostics after an on-disk change, and made the
+LSP manager evict a client whose protocol write timed out. New tests cover
+newline/colon paths, context-group limits, binary records, generic receivers,
+outline fallback, exposure collapse/reset, compactor callbacks, document-sync
+variants, and manager/client timeout races.
+
+Verification: `go build ./...`, `go vet ./...`, and `go test ./...` are green;
+J2-focused race tests and the tools race suite with the two long stress cases
+(`TestForegroundOutputIsBounded`, `TestWriteIsAtomicForAReader`) skipped are
+green. The unfiltered tools race suite reached the pre-existing process-group
+stress test and did not finish in 210s; its stack was blocked in `runGroup` while
+`TestForegroundOutputIsBounded` was still running.
+
+parity: crates/jcode-app-core/src/tool/agentgrep.rs:1-380 and
+        crates/jcode-app-core/src/tool/agentgrep_tests.rs:610-705 — on par
+        (jcode's outline and context ledger are present; evilcode adds LSP
+         enclosing symbols, binary/context-preserving ripgrep parsing, and a
+         compaction callback so exposure resets with the conversation epoch)
+codex:  the long `codex review --uncommitted` runner was interrupted without a
+        verdict after exhausting its test phase; the changed paths were manually
+        reviewed, and every finding from the earlier J2.1 pass was fixed with
+        focused regression tests. No finding was silently dismissed.

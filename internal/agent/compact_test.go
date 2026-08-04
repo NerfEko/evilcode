@@ -80,6 +80,22 @@ func TestCompactUsesWhatPersistReturned(t *testing.T) {
 	}
 }
 
+func TestCompactCallsOnCompactionAfterReset(t *testing.T) {
+	conv := NewConversation("sys")
+	conv.Append(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	called := 0
+	c := &Compactor{
+		Summarize:    summarizer("fresh context", nil),
+		OnCompaction: func() { called++ },
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Fatalf("OnCompaction called %d times, want once", called)
+	}
+}
+
 func TestAutoCompactHasABreaker(t *testing.T) {
 	// Invariant 6. A summary that is itself over the threshold would otherwise
 	// compact forever without ever sending a request — which presents as a hang

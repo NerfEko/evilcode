@@ -23,6 +23,9 @@ type Exec struct {
 	// scanner is deliberately the fallback for repositories without one.
 	lspServer LSPServer
 
+	// exposure is shared with the filesystem tools for one session.
+	exposure *Exposure
+
 	// Bg tracks detached commands.
 	Bg *Background
 
@@ -60,7 +63,7 @@ func NewExec(root string) *Exec {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root, Bg: &Background{}}
+	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root, Bg: &Background{}, exposure: NewExposure()}
 }
 
 // WithLSP lets grep ask the configured language server for enclosing symbols.
@@ -68,6 +71,12 @@ func NewExec(root string) *Exec {
 // not pay the indexing cost.
 func (e *Exec) WithLSP(server LSPServer) *Exec {
 	e.lspServer = server
+	return e
+}
+
+// WithExposure shares a session's shown-range ledger with filesystem tools.
+func (e *Exec) WithExposure(exposure *Exposure) *Exec {
+	e.exposure = exposure
 	return e
 }
 
@@ -173,7 +182,8 @@ func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
 
 func (e *Exec) bashTool() Tool {
 	return Tool{
-		Name: "bash",
+		Name:     "bash",
+		Exposure: e.exposure,
 		Desc: "Run a shell command in the workspace. The working directory persists " +
 			"between calls, so cd carries over. Output is combined stdout and stderr.",
 		Schema: json.RawMessage(`{
@@ -208,6 +218,7 @@ func (e *Exec) bashTool() Tool {
 			// budget waiting for the shell to be free.
 			e.run.Lock()
 			defer e.run.Unlock()
+			workingDir := e.Cwd()
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -219,7 +230,7 @@ func (e *Exec) bashTool() Tool {
 			script := a.Cmd + "\n__evilcode_status=$?\nprintf '\\n" + marker + "%s\\n' \"$PWD\"\nexit $__evilcode_status"
 
 			cmd := exec.CommandContext(ctx, "bash", "-c", script)
-			cmd.Dir = e.Cwd()
+			cmd.Dir = workingDir
 			var buf ringWriter
 			cmd.Stdout = &buf
 			cmd.Stderr = &buf
@@ -246,7 +257,7 @@ func (e *Exec) bashTool() Tool {
 			}
 
 			if ctx.Err() == context.DeadlineExceeded {
-				return Result{Output: out}, fmt.Errorf(
+				return Result{Output: out, Shown: RangesFromBash(out, workingDir)}, fmt.Errorf(
 					"command timed out after %s; if it is meant to run long, raise timeout", timeout)
 			}
 			if runErr != nil {
@@ -255,6 +266,7 @@ func (e *Exec) bashTool() Tool {
 				return Result{
 					Output: out,
 					Intent: bashIntent(exitStatus(runErr), out),
+					Shown:  RangesFromBash(out, workingDir),
 				}, fmt.Errorf("exit status %s", exitStatus(runErr))
 			}
 			// The intent measures what the command actually produced, so it is
@@ -263,7 +275,7 @@ func (e *Exec) bashTool() Tool {
 			if strings.TrimSpace(out) == "" {
 				out = "(no output)"
 			}
-			return Result{Output: out, Intent: intent}, nil
+			return Result{Output: out, Intent: intent, Shown: RangesFromBash(out, workingDir)}, nil
 		},
 	}
 }
@@ -388,7 +400,8 @@ type grepArgs struct {
 
 func (e *Exec) grepTool() Tool {
 	return Tool{
-		Name: "grep",
+		Name:     "grep",
+		Exposure: e.exposure,
 		Desc: "Search file contents with a regular expression, via ripgrep. " +
 			"Returns matching lines with their file, line number, and enclosing symbol. " +
 			"With a file path and no pattern, returns that file's symbol outline.",
@@ -523,6 +536,7 @@ func (e *Exec) grepTool() Tool {
 				records = kept
 			}
 			lines := make([]string, 0, len(records))
+			shown := make([]LineRange, 0, len(records))
 			symbols := make(map[string][]grepSymbol)
 			lspUnavailable := make(map[string]bool)
 			maxLines := make(map[string]int)
@@ -558,6 +572,15 @@ func (e *Exec) grepTool() Tool {
 				if !filepath.IsAbs(path) {
 					path = filepath.Join(e.Root, path)
 				}
+				shown = append(shown, LineRange{Path: path, Start: record.Line, End: record.Line})
+				if e.exposure != nil && e.exposure.Contains(path, record.Line) {
+					rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
+					if filepath.IsAbs(rel) {
+						rel = filepath.Clean(rel)
+					}
+					lines = append(lines, fmt.Sprintf("%s:%d — shown above", rel, record.Line))
+					continue
+				}
 				if _, ok := symbols[path]; !ok {
 					symbols[path] = e.grepSymbols(ctx, path, lspUnavailable, maxLines[path])
 				}
@@ -574,6 +597,7 @@ func (e *Exec) grepTool() Tool {
 			return Result{
 				Output: strings.Join(lines, "\n") + note,
 				Intent: fmt.Sprintf("%d matches for %s", matchCount, a.Pattern),
+				Shown:  shown,
 			}, nil
 		},
 	}

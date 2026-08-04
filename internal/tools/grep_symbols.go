@@ -208,12 +208,15 @@ func (e *Exec) grepOutline(ctx context.Context, path, display string) Result {
 		return symbols[i].Name < symbols[j].Name
 	})
 	var b strings.Builder
+	shown := make([]LineRange, 0, len(symbols))
 	for _, symbol := range symbols {
 		fmt.Fprintf(&b, "%d: %s\n", symbol.Start, symbol.label())
+		shown = append(shown, LineRange{Path: path, Start: symbol.Start, End: symbol.Start})
 	}
 	return Result{
 		Output: strings.TrimRight(b.String(), "\n"),
 		Intent: fmt.Sprintf("%d symbols", len(symbols)),
+		Shown:  shown,
 	}
 }
 
