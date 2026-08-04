@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -145,7 +146,9 @@ func Run(args []string) (int, error) {
 		if canned, ok := provider.DemoCannedTools(); ok {
 			ts = tools.Canned(canned)
 		} else {
-			execTools := tools.NewExec(cwd).WithExposure(exposure)
+			execTools := tools.NewExec(cwd).
+				WithExposure(exposure).
+				WithScratchDir(filepath.Join(dataDir, "scratch"))
 			if lsps != nil {
 				execTools.WithLSP(lsps)
 			}

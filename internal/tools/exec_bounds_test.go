@@ -134,8 +134,16 @@ func TestATimeoutKillsTheWholeProcessGroup(t *testing.T) {
 	})
 
 	out := e.Tools().RunOne(context.Background(), Call{ID: "c", Name: "bash", Args: raw})
-	if out.Err == nil || !strings.Contains(out.Err.Error(), "timed out") {
-		t.Fatalf("want a timeout, got %v", out.Err)
+	if out.Err != nil || !strings.Contains(out.Result.Output, "background task 1") {
+		t.Fatalf("want an adopted task, got %+v", out)
+	}
+	if err := e.Bg.Cancel(1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := e.Bg.Wait(ctx, 1); err != nil {
+		t.Fatal(err)
 	}
 
 	// Well past when the grandchild would have written.

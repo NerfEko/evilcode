@@ -3391,7 +3391,7 @@ func (m *Model) activeWidgets() []Widget {
 		var tasks []BackgroundTask
 		for _, t := range m.bg.Tasks() {
 			done, failed, _ := t.Snapshot()
-			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed})
+			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed, Progress: t.Progress().String()})
 		}
 		add(m.renderer.BackgroundTasksWidget(tasks, int(time.Since(m.started)/SpinnerInterval)))
 	}

@@ -234,9 +234,10 @@ func (r *Renderer) GitStatusWidget(branch string, staged, unstaged, untracked in
 
 // BackgroundTask is one entry in the background-task widget.
 type BackgroundTask struct {
-	Label string
-	Done  bool
-	Err   bool
+	Label    string
+	Done     bool
+	Err      bool
+	Progress string
 }
 
 // BackgroundTasksWidget lists running and finished background commands.
@@ -259,7 +260,11 @@ func (r *Renderer) BackgroundTasksWidget(tasks []BackgroundTask, elapsedFrame in
 		default:
 			glyph = meta.Render(SpinnerFrames[elapsedFrame%len(SpinnerFrames)])
 		}
-		lines = append(lines, glyph+" "+meta.Render(truncateCells(t.Label, 28)))
+		label := truncateCells(t.Label, 28)
+		if t.Progress != "" {
+			label += " · " + truncateCells(t.Progress, 24)
+		}
+		lines = append(lines, glyph+" "+meta.Render(label))
 	}
 	return Widget{Kind: WidgetBackgroundTasks, Lines: lines}
 }

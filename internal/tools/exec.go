@@ -18,6 +18,11 @@ import (
 type Exec struct {
 	Root string
 
+	// ScratchDir is exported to bash children as TMPDIR and
+	// EVILCODE_SCRATCH_DIR. Production wiring points it under the data dir;
+	// tests and embedders may leave it empty to inherit the environment.
+	ScratchDir string
+
 	// lspServer enriches grep hits with document symbols when a language
 	// server is configured for the hit's file. It is optional: the declaration
 	// scanner is deliberately the fallback for repositories without one.
@@ -80,6 +85,31 @@ func (e *Exec) WithExposure(exposure *Exposure) *Exec {
 	return e
 }
 
+// WithScratchDir keeps large child-created temporary files off the machine's
+// RAM-backed /tmp when a session supplies a durable data directory.
+func (e *Exec) WithScratchDir(dir string) *Exec {
+	e.ScratchDir = dir
+	return e
+}
+
+func (e *Exec) commandEnv() []string {
+	env := os.Environ()
+	if e.ScratchDir == "" {
+		return env
+	}
+	if err := os.MkdirAll(e.ScratchDir, 0o700); err != nil {
+		return env
+	}
+	filtered := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "TMPDIR=") || strings.HasPrefix(entry, "EVILCODE_SCRATCH_DIR=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, "TMPDIR="+e.ScratchDir, "EVILCODE_SCRATCH_DIR="+e.ScratchDir)
+}
+
 // Cwd reports the working directory subsequent commands will run in.
 func (e *Exec) Cwd() string {
 	e.mu.Lock()
@@ -89,95 +119,14 @@ func (e *Exec) Cwd() string {
 
 // Tools returns the shell and search tools.
 func (e *Exec) Tools() Set {
-	return Set{e.bashTool(), e.grepTool()}
+	return Set{e.bashTool(), e.grepTool(), e.bgTool()}
 }
 
 type bashArgs struct {
 	Cmd        string `json:"cmd"`
 	Timeout    int    `json:"timeout,omitempty"`
 	Background bool   `json:"background,omitempty"`
-}
-
-// BackgroundTask is a command still running after its tool call returned.
-type BackgroundTask struct {
-	ID      int
-	Label   string
-	Started time.Time
-
-	mu     sync.Mutex
-	done   bool
-	failed bool
-	output string
-}
-
-// Snapshot returns the task's current state.
-func (t *BackgroundTask) Snapshot() (done, failed bool, output string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.done, t.failed, t.output
-}
-
-// Background tracks detached commands.
-//
-// The registry lives here rather than in the UI because a background task
-// outlives the tool call that started it, and the agent loop must be able to
-// report completion whether or not anything is watching (plan.md §17).
-type Background struct {
-	mu    sync.Mutex
-	next  int
-	tasks []*BackgroundTask
-
-	// OnDone is called when a task finishes, so the UI can raise a notice.
-	OnDone func(*BackgroundTask)
-}
-
-// MaxCompletedBackgroundTasks bounds finished task metadata and captured
-// output retained for the widget. Running tasks are never evicted.
-const MaxCompletedBackgroundTasks = 8
-
-// Tasks returns the tracked tasks.
-func (b *Background) Tasks() []*BackgroundTask {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	completed := 0
-	kept := make([]*BackgroundTask, 0, len(b.tasks))
-	for i := len(b.tasks) - 1; i >= 0; i-- {
-		t := b.tasks[i]
-		done, _, _ := t.Snapshot()
-		if done {
-			completed++
-			if completed > MaxCompletedBackgroundTasks {
-				continue
-			}
-		}
-		kept = append(kept, t)
-	}
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
-	}
-	b.tasks = kept
-	return append([]*BackgroundTask(nil), kept...)
-}
-
-// add registers a task.
-func (b *Background) add(label string) *BackgroundTask {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.next++
-	t := &BackgroundTask{ID: b.next, Label: label, Started: time.Now()}
-	b.tasks = append(b.tasks, t)
-	return t
-}
-
-// finish records a task's result and notifies.
-func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
-	t.mu.Lock()
-	t.done, t.failed, t.output = true, failed, output
-	t.mu.Unlock()
-
-	if b.OnDone != nil {
-		b.OnDone(t)
-	}
+	Stdin      string `json:"stdin,omitempty"`
 }
 
 func (e *Exec) bashTool() Tool {
@@ -185,14 +134,16 @@ func (e *Exec) bashTool() Tool {
 		Name:     "bash",
 		Exposure: e.exposure,
 		Desc: "Run a shell command in the workspace. The working directory persists " +
-			"between calls, so cd carries over. Output is combined stdout and stderr.",
+			"between calls, so cd carries over. Output is combined stdout and stderr. " +
+			"Commands needing input can use stdin; child temporary files use the configured scratch directory.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "cmd":     {"type": "string",  "description": "Shell command to run"},
     "timeout": {"type": "integer", "description": "Timeout in seconds; defaults to 120"},
     "background": {"type": "boolean",
-                   "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."}
+                   "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."},
+    "stdin":    {"type": "string", "description": "Optional input written to the command's stdin"}
   },
   "required": ["cmd"]
 }`),
@@ -206,7 +157,7 @@ func (e *Exec) bashTool() Tool {
 			}
 
 			if a.Background {
-				return e.runBackground(a.Cmd), nil
+				return e.runBackground(a.Cmd, a.Stdin), nil
 			}
 
 			timeout := e.Timeout
@@ -229,55 +180,79 @@ func (e *Exec) bashTool() Tool {
 			const marker = "__evilcode_cwd__"
 			script := a.Cmd + "\n__evilcode_status=$?\nprintf '\\n" + marker + "%s\\n' \"$PWD\"\nexit $__evilcode_status"
 
-			cmd := exec.CommandContext(ctx, "bash", "-c", script)
-			cmd.Dir = workingDir
 			var buf ringWriter
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Dir = workingDir
+			cmd.Env = e.commandEnv()
+			if a.Stdin != "" {
+				cmd.Stdin = strings.NewReader(a.Stdin)
+			}
 			cmd.Stdout = &buf
 			cmd.Stderr = &buf
-			// Its own process group, so cancelling kills the descendants too.
-			// Killing the shell alone leaves a grandchild running in the
-			// workspace after the tool call has already returned a timeout.
 			setProcessGroup(cmd)
-			// Killing bash does not close the output pipes if a grandchild
-			// still holds them open, so Run would block past the timeout
-			// waiting on `sleep 10` rather than returning. WaitDelay forces
-			// the pipes shut shortly after cancellation.
 			cmd.WaitDelay = 2 * time.Second
-			runErr := runGroup(ctx, cmd)
+			if err := cmd.Start(); err != nil {
+				return Result{}, err
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
 
-			out := buf.String()
-			if idx := strings.LastIndex(out, marker); idx >= 0 {
-				newCwd := strings.TrimSpace(out[idx+len(marker):])
-				out = strings.TrimRight(out[:idx], "\n")
-				if newCwd != "" {
-					e.mu.Lock()
-					e.cwd = newCwd
-					e.mu.Unlock()
+			select {
+			case runErr := <-done:
+				return e.finishForeground(runErr, buf.String(), workingDir, marker)
+			case <-ctx.Done():
+				if ctx.Err() == context.DeadlineExceeded {
+					if e.Bg == nil {
+						e.Bg = &Background{}
+					}
+					task := e.Bg.add(shortCmd(a.Cmd))
+					e.Bg.attach(task, &buf, func() { killProcessGroup(cmd) })
+					go func() {
+						runErr := <-done
+						out := Truncate(e.cleanBashOutput(buf.String(), marker))
+						e.Bg.finish(task, out, runErr != nil)
+					}()
+					return Result{
+						Output: fmt.Sprintf("command exceeded %s and is still running as background task %d; output is accumulating there — use bg status/output/wait, and do not re-run it", timeout, task.ID),
+						Intent: fmt.Sprintf("adopted as background task %d", task.ID),
+					}, nil
 				}
+				killProcessGroup(cmd)
+				runErr := <-done
+				result, _ := e.finishForeground(runErr, buf.String(), workingDir, marker)
+				return result, ctx.Err()
 			}
-
-			if ctx.Err() == context.DeadlineExceeded {
-				return Result{Output: out, Shown: RangesFromBash(out, workingDir)}, fmt.Errorf(
-					"command timed out after %s; if it is meant to run long, raise timeout", timeout)
-			}
-			if runErr != nil {
-				// A non-zero exit is information, not a harness failure: the
-				// model needs the output to act on it.
-				return Result{
-					Output: out,
-					Intent: bashIntent(exitStatus(runErr), out),
-					Shown:  RangesFromBash(out, workingDir),
-				}, fmt.Errorf("exit status %s", exitStatus(runErr))
-			}
-			// The intent measures what the command actually produced, so it is
-			// taken before the empty-output placeholder stands in for nothing.
-			intent := bashIntent("0", out)
-			if strings.TrimSpace(out) == "" {
-				out = "(no output)"
-			}
-			return Result{Output: out, Intent: intent, Shown: RangesFromBash(out, workingDir)}, nil
 		},
 	}
+}
+
+func (e *Exec) cleanBashOutput(output, marker string) string {
+	if idx := strings.LastIndex(output, marker); idx >= 0 {
+		newCwd := strings.TrimSpace(output[idx+len(marker):])
+		output = strings.TrimRight(output[:idx], "\n")
+		if newCwd != "" {
+			e.mu.Lock()
+			e.cwd = newCwd
+			e.mu.Unlock()
+		}
+	}
+	return output
+}
+
+func (e *Exec) finishForeground(runErr error, output, workingDir, marker string) (Result, error) {
+	output = e.cleanBashOutput(output, marker)
+	if runErr != nil {
+		return Result{
+			Output: output,
+			Intent: bashIntent(exitStatus(runErr), output),
+			Shown:  RangesFromBash(output, workingDir),
+		}, fmt.Errorf("exit status %s", exitStatus(runErr))
+	}
+	intent := bashIntent("0", output)
+	if strings.TrimSpace(output) == "" {
+		output = "(no output)"
+	}
+	return Result{Output: output, Intent: intent, Shown: RangesFromBash(output, workingDir)}, nil
 }
 
 // runBackground starts a detached command and returns immediately.
@@ -285,23 +260,42 @@ func (e *Exec) bashTool() Tool {
 // It deliberately does not inherit the caller's context: the point is to
 // outlive the tool call. It gets a generous ceiling of its own instead, so a
 // runaway watcher still cannot run forever.
-func (e *Exec) runBackground(command string) Result {
+func (e *Exec) runBackground(command, stdin string) Result {
+	if e.Bg == nil {
+		e.Bg = &Background{}
+	}
 	task := e.Bg.add(shortCmd(command))
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), BackgroundTimeout)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		cmd := exec.Command("bash", "-c", command)
 		cmd.Dir = e.Cwd()
+		cmd.Env = e.commandEnv()
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
 		var buf ringWriter
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
 		cmd.WaitDelay = 2 * time.Second
 		setProcessGroup(cmd)
-
-		err := runGroup(ctx, cmd)
-		e.Bg.finish(task, Truncate(buf.String()), err != nil)
+		if err := cmd.Start(); err != nil {
+			e.Bg.finish(task, err.Error(), true)
+			return
+		}
+		e.Bg.attach(task, &buf, func() { killProcessGroup(cmd) })
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			e.Bg.finish(task, Truncate(buf.String()), err != nil)
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+			err := <-done
+			e.Bg.finish(task, Truncate(buf.String()), err != nil)
+		}
 	}()
 
 	return Result{
@@ -347,15 +341,25 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// String returns what was kept, marked if anything was dropped.
+// String returns a bounded tail of what was kept, marked if anything was
+// dropped. Keeping the live snapshot at the tool result limit is important:
+// a fast writer can otherwise make every 200ms progress refresh allocate a
+// megabyte even though the model can only receive 50 KiB.
 func (w *ringWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.overflow {
+	if len(w.buf) <= MaxResultBytes && !w.overflow {
 		return string(w.buf)
 	}
-	return "[earlier output dropped: the command produced more than " +
-		humanBytes(MaxOutputBytes) + "]\n" + string(w.buf)
+	tailStart := len(w.buf) - MaxResultBytes
+	for tailStart < len(w.buf) && !utf8Start(w.buf[tailStart]) {
+		tailStart++
+	}
+	prefix := "[output tail kept: the command produced more than " + humanBytes(MaxResultBytes) + "]\n"
+	if w.overflow {
+		prefix = "[earlier output dropped: the command produced more than " + humanBytes(MaxOutputBytes) + "]\n"
+	}
+	return prefix + string(w.buf[tailStart:])
 }
 
 // BackgroundTimeout is the ceiling on a detached command, so a runaway watcher

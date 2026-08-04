@@ -223,7 +223,9 @@ func runOnce(args []string) (string, error) {
 	overrides := cfg.ModelOverrides(modelName)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
 		WithConfine(cfg.Features.ConfineToWorkspace).WithExposure(exposure)
-	execTools := tools.NewExec(cwd).WithExposure(exposure)
+	execTools := tools.NewExec(cwd).
+		WithExposure(exposure).
+		WithScratchDir(filepath.Join(dataDir, "scratch"))
 
 	// Language servers start on first use, not here: gopls costs seconds and
 	// indexes the module, and a session that never asks should never pay.

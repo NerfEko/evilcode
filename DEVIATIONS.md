@@ -431,3 +431,19 @@ or `mutool`); a built-in extractor is not the cheaper option here.
 The 2026-07-30 P0.3 entry said the codex CLI was absent. It is present now
 (`codex` at `/home/eko/.local/bin/codex`, model `gpt-5.6-sol`, reasoning
 `high`); every plan4 commit is reviewed with `codex review --commit <SHA>`.
+
+## 2026-08-04 — J3.4 uses explicit stdin instead of prompt detection
+
+**Spec** (§3.4): inspect a blocked child process tree and surface an interactive
+prompt in the composer, then write the answer to the child's stdin.
+
+**Built instead**: `bash` accepts an explicit `stdin` string for foreground and
+background commands. Linux `wchan`/state is not a reliable enough signal to
+distinguish an interactive read from a CPU-bound process without occasionally
+prompting at the wrong time, so no heuristic was shipped. The tool description
+documents the parameter and regression coverage proves that supplied input
+reaches the child.
+
+**Worth revisiting**: add prompt detection only with a deterministic process
+probe and a composer-to-task input channel; do not infer it from elapsed time or
+an empty output buffer.

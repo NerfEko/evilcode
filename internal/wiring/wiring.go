@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
@@ -199,7 +200,9 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 			// model side of this; this is the same idea for tools).
 			ts = tools.Canned(canned)
 		} else {
-			execTools := tools.NewExec(cwd).WithExposure(exposure)
+			execTools := tools.NewExec(cwd).
+				WithExposure(exposure).
+				WithScratchDir(filepath.Join(dataDir, "scratch"))
 			if lsps != nil {
 				execTools.WithLSP(lsps)
 			}

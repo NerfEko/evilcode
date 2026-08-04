@@ -207,9 +207,15 @@ repository's pinned model or roles never leak into another session's.
 
 ### Tools
 
-`read`, `write`, `edit`, `glob`, `grep`, `bash`, `ask`, `todo`, git helpers, and MCP
+`read`, `write`, `edit`, `glob`, `grep`, `bash`, `bg`, `ask`, `todo`, git helpers, and MCP
 servers adapted into the same interface. Batches dispatch through a fixed worker pool
 with a cap on both concurrency and total size.
+
+`bash` adopts a command that exceeds its timeout into the background instead of
+starting it over. Use `bg status`, `bg output`/`tail`, `bg wait`, or `bg cancel`; long
+commands can also be started with `background: true`. Commands that need input accept
+`stdin`, and children receive a durable `TMPDIR`/`EVILCODE_SCRATCH_DIR` under the data
+directory.
 
 `grep` includes the enclosing function, method, or type beside every hit. It asks the
 configured language server for that structure and falls back to a small declaration scan
