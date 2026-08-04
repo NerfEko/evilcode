@@ -693,7 +693,7 @@ Line numbers as-of §0.5. Trust the symbol.
       Record shown `file:line` ranges per session; collapse a hit inside one to a reference;
       reset at compaction. §2.3. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/agentgrep/context.rs:1-80⟩
-- [ ] Verify J2: grep a symbol that appears in six files and confirm the enclosing names are
+- [x] Verify J2: grep a symbol that appears in six files and confirm the enclosing names are
       right; outline a large file; read a file then grep inside it and confirm the second
       result collapses. Tag `jcode-2`.
 
