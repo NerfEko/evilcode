@@ -5219,3 +5219,59 @@ codex:  the long `codex review --uncommitted` runner was interrupted without a
         verdict after exhausting its test phase; the changed paths were manually
         reviewed, and every finding from the earlier J2.1 pass was fixed with
         focused regression tests. No finding was silently dismissed.
+
+## 2026-08-04 J3 — bash survives long work
+
+J3.1 adopts a foreground command when its deadline expires instead of killing
+it: the result names the background task and explicitly says not to re-run it.
+J3.2 adds bounded live output and progress parsing for explicit
+`EVILCODE_PROGRESS` JSON, percentages, fractions, `of` counters, decimal units,
+and build phase prefixes; the TUI background widget renders the latest progress.
+J3.3 exposes `bg` actions `list`, `status`, `output`, `tail`, `wait`, and `cancel`,
+including pending cancellation before the process has attached. J3.4 ships the
+safe explicit `stdin` fallback documented in `DEVIATIONS.md`; J3.5 wires a
+data-directory scratch path into every production `Exec` and exports both
+`TMPDIR` and `EVILCODE_SCRATCH_DIR`.
+
+Verification: `TestTimedOutForegroundIsAdopted`, `TestBashTimeout`,
+`TestATimeoutKillsTheWholeProcessGroup`, `TestBackgroundProgressParsing`,
+`TestBGToolWaitAndTail`, `TestBackgroundCancelBeforeProcessAttach`,
+`TestBashStdinAndScratchEnvironment`, `TestForegroundOutputIsBounded`, and
+`TestBackgroundOutputIsBounded`; `go build ./...`, `go vet ./...`, and
+`go test ./...` are green. `go test -race ./internal/tools -skip
+'TestForegroundOutputIsBounded|TestWriteIsAtomicForAReader'` and the focused
+TUI/agent/wiring/runcmd/tuicmd race pass are green. The full tools race run
+still reaches the pre-existing long process-group stress cases, so those two
+are documented skips. The real widget was rendered with determinate progress
+and visually inspected in `/tmp/evilcode-j3-widget2.png`.
+
+parity: crates/jcode-app-core/src/tool/bash.rs:167-398,885-925 and
+        crates/jcode-app-core/src/tool/bg.rs:34-120,460-501 — on par
+        (the required timeout adoption, output progress shapes, six bg controls,
+         wait timeout/tail behavior, scratch environment, and stdin fallback
+         are covered; jcode's durable output files, checkpoint wakeups, and
+         multi-task/watch actions are outside §3.1–§3.5; interactive prompt
+         detection is deliberately deferred in DEVIATIONS.md)
+codex:  `codex review --commit a836d68` reached its diff and test phases but
+        timed out without a verdict; its test phase failed only on the known
+        sandbox IPv6-listener restriction. A read-only `codex exec` review also
+        timed out before a final message. Manual second review found the live
+        ring snapshot could allocate repeatedly under race, fixed in d93d1eb
+        with a circular buffer and bounded live tails; no unresolved finding
+        was dismissed.
+
+## 2026-08-04 J2 follow-up — deterministic grep context groups
+
+The full J3 gate caught a low-frequency ripgrep traversal-order flake in
+`TestGrepLimitDoesNotBorrowContextFromOmittedGroup`: when `b.go` arrived first,
+the limit quite correctly retained that first group but the test expected the
+filesystem's usual `a.go` order. `grep` now passes `--sort path`, making the
+context-limit contract deterministic; the regression was run 100 times green.
+
+parity: crates/jcode-app-core/src/tool/agentgrep.rs:1-380 — on par
+        (the ordering is an evilcode/ripgrep integration detail; the retained
+         group still follows the same first-match limit and trailing-context
+         rule as the J2 comparison)
+codex:  no separate codex verdict; the one-line ordering fix in cb5955b was
+        manually reviewed and covered by the 100-run regression before the
+        final build/test gate.

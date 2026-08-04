@@ -699,30 +699,30 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J3 — `bash` that survives long work
 
-- [ ] **J3.1** `internal/tools/exec.go:140` `Exec.bashTool` — a command past its timeout is
+- [x] **J3.1** `internal/tools/exec.go:140` `Exec.bashTool` — a command past its timeout is
       killed and the work is lost. Adopt it into `Exec.Bg` instead; return the task id and
       where output is landing, and tell the model not to re-run it. §3.1. ⟨fix⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:885-925⟩
-- [ ] **J3.2** `internal/tools/exec.go:239` `Exec.runBackground` — background output is
+- [x] **J3.2** `internal/tools/exec.go:239` `Exec.runBackground` — background output is
       opaque until the task ends. Parse progress: explicit `EVILCODE_PROGRESS {json}` first,
       then `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, phase prefixes. Expose on
       `BackgroundTask`. §3.2. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:167-398⟩
-- [ ] **J3.3** `internal/tools/exec.go:69` `Exec.Tools` — the model cannot see its own
+- [x] **J3.3** `internal/tools/exec.go:69` `Exec.Tools` — the model cannot see its own
       background tasks. Add a `bg` tool: `list`, `status`, `output`, `tail`, `wait`,
       `cancel`. `wait` blocks to completion or a timeout — without it a model polls and
       each poll costs a turn. §3.3. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bg.rs:34-120,460-501⟩
-- [ ] **J3.4** `internal/tools/exec.go:140` `Exec.bashTool` — a command blocking on stdin
+- [x] **J3.4** `internal/tools/exec.go:140` `Exec.bashTool` — a command blocking on stdin
       hangs to the timeout with no output. Detect via the child process tree and prompt in
       the composer; write the answer to the child's stdin. Unreliable → fall back to a
       `stdin` parameter and log it. §3.4. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:799-860, and its `stdin_detect` module⟩
-- [ ] **J3.5** `internal/tools/exec.go:140` `Exec.bashTool` — children inherit `/tmp`, which
+- [x] **J3.5** `internal/tools/exec.go:140` `Exec.bashTool` — children inherit `/tmp`, which
       is RAM-backed here. Export `TMPDIR` and `EVILCODE_SCRATCH_DIR` under the data dir and
       say so in the description. §3.5. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:453-472,32⟩
-- [ ] Verify J3: run a command that exceeds its timeout and confirm it finishes in the
+- [x] Verify J3: run a command that exceeds its timeout and confirm it finishes in the
       background and the model is told; `bg wait` on it; run `sleep 1 && read x` and answer
       the prompt; check `$TMPDIR` inside a `bash` call. PNG of the background-task widget
       mid-progress. Tag `jcode-3`.
