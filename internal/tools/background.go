@@ -27,7 +27,6 @@ type Progress struct {
 	Indeterminate bool
 	Checkpoint    bool
 	ETASeconds    int
-	PercentSet    bool
 	Known         bool
 }
 
@@ -36,7 +35,7 @@ func (p Progress) String() string {
 		return ""
 	}
 	var parts []string
-	if p.PercentSet || p.Percent != 0 || p.Total > 0 {
+	if p.Percent != 0 || p.Total > 0 {
 		parts = append(parts, fmt.Sprintf("%.0f%%", p.Percent))
 	} else if p.Current != 0 {
 		parts = append(parts, fmt.Sprintf("%.0f%%", p.Percent))
@@ -352,7 +351,6 @@ func parseProgressMarker(line string) (Progress, bool) {
 	}
 	if raw.Percent != nil {
 		p.Percent = clampPercent(*raw.Percent)
-		p.PercentSet = true
 	}
 	if raw.Current != nil {
 		p.Current = max(0, *raw.Current)
@@ -394,7 +392,7 @@ func parseCheckpointMarker(line string) (Progress, bool) {
 		if json.Unmarshal([]byte(match[1]), &raw) == nil {
 			p.Message, p.Unit, p.ETASeconds = raw.Message, raw.Unit, raw.ETASeconds
 			if raw.Percent != nil {
-				p.Percent, p.PercentSet, p.Indeterminate = clampPercent(*raw.Percent), true, false
+				p.Percent, p.Indeterminate = clampPercent(*raw.Percent), false
 			}
 			if raw.Current != nil {
 				p.Current = max(0, *raw.Current)
@@ -402,7 +400,7 @@ func parseCheckpointMarker(line string) (Progress, bool) {
 			if raw.Total != nil {
 				p.Total = max(0, *raw.Total)
 			}
-			if p.Total > 0 && p.Current <= p.Total && !p.PercentSet {
+			if p.Total > 0 && p.Current <= p.Total {
 				p.Percent = clampPercent(p.Current / p.Total * 100)
 			}
 		}
@@ -421,7 +419,7 @@ func parsePercentProgress(line string) (Progress, bool) {
 	if err != nil {
 		return Progress{}, false
 	}
-	return Progress{Percent: clampPercent(percent), PercentSet: true, Message: strings.TrimSpace(line), Known: true}, true
+	return Progress{Percent: clampPercent(percent), Message: strings.TrimSpace(line), Known: true}, true
 }
 
 func parseFractionProgress(line string) (Progress, bool) {
