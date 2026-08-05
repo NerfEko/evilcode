@@ -318,7 +318,7 @@ func parseProgress(output string) Progress {
 
 var (
 	progressMarker   = regexp.MustCompile(`(?i)(?:EVILCODE_PROGRESS|JCODE_PROGRESS)\s+(\{.*\})\s*$`)
-	checkpointMarker = regexp.MustCompile(`(?i)JCODE_CHECKPOINT(?:\s+(\{.*\}))?\s*$`)
+	checkpointMarker = regexp.MustCompile(`(?i)JCODE_CHECKPOINT(?:\s+(.*))?\s*$`)
 	percentPattern   = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*%`)
 	fractionPattern  = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
 	ofPattern        = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s+of\s+([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
@@ -378,7 +378,11 @@ func parseCheckpointMarker(line string) (Progress, bool) {
 		return Progress{}, false
 	}
 	p := Progress{Checkpoint: true, Indeterminate: true, Known: true}
-	if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+	payload := ""
+	if len(match) > 1 {
+		payload = strings.TrimSpace(match[1])
+	}
+	if strings.HasPrefix(payload, "{") {
 		var raw struct {
 			Message    string   `json:"message"`
 			Percent    *float64 `json:"percent"`
@@ -402,8 +406,8 @@ func parseCheckpointMarker(line string) (Progress, bool) {
 				p.Percent = clampPercent(p.Current / p.Total * 100)
 			}
 		}
-	} else {
-		p.Message = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "JCODE_CHECKPOINT"))
+	} else if payload != "" {
+		p.Message = payload
 	}
 	return p, true
 }

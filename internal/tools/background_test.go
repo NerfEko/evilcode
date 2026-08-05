@@ -60,6 +60,9 @@ func TestBackgroundCheckpointProgress(t *testing.T) {
 	if !p.Known || !p.Checkpoint || !p.Indeterminate || p.Message != "tests passed" {
 		t.Fatalf("checkpoint progress = %+v", p)
 	}
+	if p = parseProgress("JCODE_CHECKPOINT tests passed"); !p.Known || p.Message != "tests passed" {
+		t.Fatalf("text checkpoint progress = %+v", p)
+	}
 }
 
 func TestBackgroundFinishedTaskRetainsProgressAfterHidingMarker(t *testing.T) {
