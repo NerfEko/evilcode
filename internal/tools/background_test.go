@@ -42,6 +42,8 @@ func TestBackgroundProgressParsing(t *testing.T) {
 		{name: "of", out: "3 of 10 steps", want: 30},
 		{name: "decimal", out: "1.5/3.0 GiB", want: 50},
 		{name: "phase", out: "Compiling internal/tools", phase: "Compiling internal/tools"},
+		{name: "resolving", out: "Resolving dependencies", phase: "Resolving dependencies"},
+		{name: "jcode-marker", out: `JCODE_PROGRESS {"percent":12}`, want: 12},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,6 +53,65 @@ func TestBackgroundProgressParsing(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBackgroundCheckpointProgress(t *testing.T) {
+	p := parseProgress(`JCODE_CHECKPOINT {"message":"tests passed"}`)
+	if !p.Known || !p.Checkpoint || !p.Indeterminate || p.Message != "tests passed" {
+		t.Fatalf("checkpoint progress = %+v", p)
+	}
+}
+
+func TestBackgroundFinishedTaskRetainsProgressAfterHidingMarker(t *testing.T) {
+	b := &Background{}
+	task := b.add("finished")
+	b.finish(task, `EVILCODE_PROGRESS {"percent":75,"message":"Testing"}`+"\n", false)
+	if progress := task.Progress(); !progress.Known || progress.Percent != 75 {
+		t.Fatalf("finished progress = %+v", progress)
+	}
+	_, _, output := task.Snapshot()
+	if strings.Contains(output, "EVILCODE_PROGRESS") {
+		t.Fatalf("marker leaked into finished output: %q", output)
+	}
+}
+
+func TestBackgroundProgressNormalizesAndSurvivesOutputTail(t *testing.T) {
+	if got := parseProgress(`EVILCODE_PROGRESS {"percent":140,"message":"done"}`).Percent; got != 100 {
+		t.Fatalf("percent was not clamped: %v", got)
+	}
+	if p, ok := parseFractionProgress("11/10 steps"); ok || p.Known {
+		t.Fatalf("invalid counter was accepted: %+v", p)
+	}
+
+	e := NewExec(t.TempDir())
+	raw, _ := json.Marshal(map[string]any{
+		"cmd":        "printf '%s\\n' 'EVILCODE_PROGRESS {\"percent\":25,\"message\":\"Building\"}'; head -c 60000 /dev/zero | tr '\\0' x; sleep 0.5",
+		"background": true,
+	})
+	started := e.Tools().RunOne(context.Background(), Call{Name: "bash", Args: raw})
+	if started.Err != nil {
+		t.Fatal(started.Err)
+	}
+	task, ok := e.Bg.Task(1)
+	if !ok {
+		t.Fatal("background task was not registered")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		task.refreshOutput()
+		if progress := task.Progress(); progress.Known {
+			if progress.Percent != 25 {
+				t.Fatalf("progress = %+v", progress)
+			}
+			_, _, output := task.Snapshot()
+			if strings.Contains(output, "EVILCODE_PROGRESS") {
+				t.Fatalf("control marker leaked into live output: %q", output[:min(len(output), 120)])
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("progress marker was lost after it left the live output tail")
 }
 
 func TestBashStdinAndScratchEnvironment(t *testing.T) {
@@ -89,6 +150,21 @@ func TestBackgroundCancelBeforeProcessAttach(t *testing.T) {
 		t.Fatal("pending cancellation was not delivered after attach")
 	}
 	b.finish(task, "", false)
+}
+
+func TestBackgroundPrunesFinishedTasksOnDirectAccess(t *testing.T) {
+	b := &Background{}
+	var first *BackgroundTask
+	for i := 0; i < MaxCompletedBackgroundTasks+1; i++ {
+		task := b.add("task")
+		if i == 0 {
+			first = task
+		}
+		b.finish(task, "done", false)
+	}
+	if _, ok := b.Task(first.ID); ok {
+		t.Fatalf("old finished task %d remained addressable after the retention bound", first.ID)
+	}
 }
 
 func TestBGToolWaitAndTail(t *testing.T) {

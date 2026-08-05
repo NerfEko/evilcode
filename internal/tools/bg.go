@@ -85,6 +85,10 @@ func (e *Exec) bgTool() Tool {
 				if finished == nil {
 					return Result{}, err
 				}
+				// A timeout returns the live task pointer. Refresh once after the
+				// wait so output written during the blocked interval is visible in
+				// the timeout preview instead of lagging by one poll.
+				finished.refreshOutput()
 				_, failed, output := finished.Snapshot()
 				if err != nil {
 					return Result{Output: fmt.Sprintf("background task %d is still running\n%s", args.ID, tailLines(output, 40)), Intent: fmt.Sprintf("wait task %d", args.ID)}, fmt.Errorf("background task %d did not finish: %w", args.ID, err)
@@ -122,12 +126,7 @@ func formatTaskStatus(task *BackgroundTask) string {
 	p := task.Progress()
 	progress := ""
 	if p.Known {
-		if p.Percent > 0 || p.Current > 0 {
-			progress = fmt.Sprintf(" · %.0f%%", p.Percent)
-		}
-		if p.Phase != "" {
-			progress += " · " + p.Phase
-		}
+		progress = " · " + p.String()
 	}
 	return fmt.Sprintf("%d [%s] %s%s", task.ID, state, task.Label, progress)
 }

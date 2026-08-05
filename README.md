@@ -215,7 +215,9 @@ with a cap on both concurrency and total size.
 starting it over. Use `bg status`, `bg output`/`tail`, `bg wait`, or `bg cancel`; long
 commands can also be started with `background: true`. Commands that need input accept
 `stdin`, and children receive a durable `TMPDIR`/`EVILCODE_SCRATCH_DIR` under the data
-directory.
+directory. Long commands can report `EVILCODE_PROGRESS {json}` (the compatible
+`JCODE_PROGRESS` and `JCODE_CHECKPOINT` forms are accepted too); those control lines
+are parsed for the background widget and omitted from captured output.
 
 `grep` includes the enclosing function, method, or type beside every hit. It asks the
 configured language server for that structure and falls back to a small declaration scan

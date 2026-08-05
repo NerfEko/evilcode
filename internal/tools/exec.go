@@ -205,15 +205,16 @@ func (e *Exec) bashTool() Tool {
 					if e.Bg == nil {
 						e.Bg = &Background{}
 					}
-					task := e.Bg.add(shortCmd(a.Cmd))
-					e.Bg.attach(task, &buf, func() { killProcessGroup(cmd) })
+					background := e.Bg
+					task := background.add(shortCmd(a.Cmd))
+					background.attach(task, &buf, func() { killProcessGroup(cmd) })
 					go func() {
 						runErr := <-done
-						out := Truncate(e.cleanBashOutput(buf.String(), marker))
-						e.Bg.finish(task, out, runErr != nil)
+						out := Truncate(e.cleanBashOutputIfCurrent(buf.String(), marker, workingDir))
+						background.finish(task, out, runErr != nil)
 					}()
 					return Result{
-						Output: fmt.Sprintf("command exceeded %s and is still running as background task %d; output is accumulating there — use bg status/output/wait, and do not re-run it", timeout, task.ID),
+						Output: fmt.Sprintf("command exceeded %s and is still running as background task %d; output is accumulating in that task — use bg status/output/wait, and do not re-run it", timeout, task.ID),
 						Intent: fmt.Sprintf("adopted as background task %d", task.ID),
 					}, nil
 				}
@@ -227,12 +228,18 @@ func (e *Exec) bashTool() Tool {
 }
 
 func (e *Exec) cleanBashOutput(output, marker string) string {
+	return e.cleanBashOutputIfCurrent(output, marker, "")
+}
+
+func (e *Exec) cleanBashOutputIfCurrent(output, marker, expectedCwd string) string {
 	if idx := strings.LastIndex(output, marker); idx >= 0 {
 		newCwd := strings.TrimSpace(output[idx+len(marker):])
 		output = strings.TrimRight(output[:idx], "\n")
 		if newCwd != "" {
 			e.mu.Lock()
-			e.cwd = newCwd
+			if expectedCwd == "" || e.cwd == expectedCwd {
+				e.cwd = newCwd
+			}
 			e.mu.Unlock()
 		}
 	}
@@ -240,7 +247,7 @@ func (e *Exec) cleanBashOutput(output, marker string) string {
 }
 
 func (e *Exec) finishForeground(runErr error, output, workingDir, marker string) (Result, error) {
-	output = Truncate(e.cleanBashOutput(output, marker))
+	output = Truncate(cleanProgressOutput(e.cleanBashOutput(output, marker)))
 	if runErr != nil {
 		return Result{
 			Output: output,
@@ -264,14 +271,16 @@ func (e *Exec) runBackground(command, stdin string) Result {
 	if e.Bg == nil {
 		e.Bg = &Background{}
 	}
-	task := e.Bg.add(shortCmd(command))
+	background := e.Bg
+	workingDir := e.Cwd()
+	task := background.add(shortCmd(command))
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), BackgroundTimeout)
 		defer cancel()
 
 		cmd := exec.Command("bash", "-c", command)
-		cmd.Dir = e.Cwd()
+		cmd.Dir = workingDir
 		cmd.Env = e.commandEnv()
 		if stdin != "" {
 			cmd.Stdin = strings.NewReader(stdin)
@@ -282,25 +291,25 @@ func (e *Exec) runBackground(command, stdin string) Result {
 		cmd.WaitDelay = 2 * time.Second
 		setProcessGroup(cmd)
 		if err := cmd.Start(); err != nil {
-			e.Bg.finish(task, err.Error(), true)
+			background.finish(task, err.Error(), true)
 			return
 		}
-		e.Bg.attach(task, &buf, func() { killProcessGroup(cmd) })
+		background.attach(task, &buf, func() { killProcessGroup(cmd) })
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
 		select {
 		case err := <-done:
-			e.Bg.finish(task, Truncate(buf.String()), err != nil)
+			background.finish(task, Truncate(buf.String()), err != nil)
 		case <-ctx.Done():
 			killProcessGroup(cmd)
 			err := <-done
-			e.Bg.finish(task, Truncate(buf.String()), err != nil)
+			background.finish(task, Truncate(buf.String()), err != nil)
 		}
 	}()
 
 	return Result{
 		Output: fmt.Sprintf("started in the background as task %d; "+
-			"its result will be reported when it finishes", task.ID),
+			"output is retained there — use bg status/output/wait to inspect it when it finishes", task.ID),
 		Intent: "bg: " + shortCmd(command),
 	}
 }
@@ -317,6 +326,8 @@ type ringWriter struct {
 	start    int
 	size     int
 	overflow bool
+	lineBuf  []byte
+	progress Progress
 }
 
 // MaxOutputBytes bounds what one command may hold in memory. Well above
@@ -339,6 +350,7 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 		w.start = 0
 		w.size = MaxOutputBytes
 		w.overflow = true
+		w.observeProgressLocked(p)
 		return n, nil
 	}
 	if drop := w.size + n - MaxOutputBytes; drop > 0 {
@@ -351,7 +363,55 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	copy(w.buf[end:end+first], p[:first])
 	copy(w.buf[:n-first], p[first:])
 	w.size += n
+	w.observeProgressLocked(p)
 	return n, nil
+}
+
+const maxProgressLineBytes = 64 << 10
+
+func (w *ringWriter) observeProgressLocked(p []byte) {
+	for len(p) > 0 {
+		idx := bytes.IndexByte(p, '\n')
+		if idx < 0 {
+			w.appendProgressFragmentLocked(p)
+			return
+		}
+		w.appendProgressFragmentLocked(p[:idx])
+		w.recordProgressLineLocked(string(w.lineBuf))
+		w.lineBuf = w.lineBuf[:0]
+		p = p[idx+1:]
+	}
+}
+
+func (w *ringWriter) appendProgressFragmentLocked(fragment []byte) {
+	if len(fragment) >= maxProgressLineBytes {
+		w.lineBuf = append(w.lineBuf[:0], fragment[len(fragment)-maxProgressLineBytes:]...)
+		return
+	}
+	if overflow := len(w.lineBuf) + len(fragment) - maxProgressLineBytes; overflow > 0 {
+		w.lineBuf = append(w.lineBuf[:0], w.lineBuf[overflow:]...)
+	}
+	w.lineBuf = append(w.lineBuf, fragment...)
+}
+
+func (w *ringWriter) recordProgressLineLocked(line string) {
+	if progress := parseProgress(line); progress.Known {
+		w.progress = progress
+	}
+}
+
+// Progress returns the latest marker observed, including markers that have
+// already scrolled out of the bounded live output tail.
+func (w *ringWriter) Progress() Progress {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	progress := w.progress
+	if len(w.lineBuf) > 0 {
+		if current := parseProgress(string(w.lineBuf)); current.Known {
+			progress = current
+		}
+	}
+	return progress
 }
 
 func (w *ringWriter) snapshotLocked() []byte {

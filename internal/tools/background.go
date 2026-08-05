@@ -20,7 +20,15 @@ type Progress struct {
 	Unit    string
 	Phase   string
 	Message string
-	Known   bool
+	// Indeterminate is set when a marker reports work without a determinate
+	// counter or percentage. Checkpoint is retained for callers that want to
+	// distinguish a milestone from ordinary progress; bg wait still waits for
+	// terminal completion in this Go implementation.
+	Indeterminate bool
+	Checkpoint    bool
+	ETASeconds    int
+	PercentSet    bool
+	Known         bool
 }
 
 func (p Progress) String() string {
@@ -28,17 +36,21 @@ func (p Progress) String() string {
 		return ""
 	}
 	var parts []string
-	if p.Percent > 0 || p.Current > 0 {
-		if p.Total > 0 {
-			parts = append(parts, fmt.Sprintf("%.0f%%", p.Percent))
-		} else {
-			parts = append(parts, fmt.Sprintf("%.0f%%", p.Percent))
-		}
+	if p.PercentSet || p.Percent != 0 || p.Total > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f%%", p.Percent))
+	} else if p.Current != 0 {
+		parts = append(parts, fmt.Sprintf("%.0f%%", p.Percent))
 	}
 	if p.Phase != "" {
 		parts = append(parts, p.Phase)
 	} else if p.Message != "" && len(parts) == 0 {
 		parts = append(parts, p.Message)
+	}
+	if len(parts) == 0 {
+		if p.Indeterminate {
+			return "working"
+		}
+		return "progress reported"
 	}
 	return strings.Join(parts, " · ")
 }
@@ -53,6 +65,7 @@ type BackgroundTask struct {
 	done            bool
 	failed          bool
 	output          string
+	progress        Progress
 	writer          *ringWriter
 	cancel          func()
 	cancelRequested bool
@@ -70,8 +83,19 @@ func (t *BackgroundTask) Snapshot() (done, failed bool, output string) {
 // Progress returns the latest parsed progress marker.
 func (t *BackgroundTask) Progress() Progress {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return parseProgress(t.currentOutputLocked())
+	writer := t.writer
+	output := t.currentOutputLocked()
+	progress := t.progress
+	t.mu.Unlock()
+	if writer != nil {
+		if progress := writer.Progress(); progress.Known {
+			return progress
+		}
+	}
+	if progress.Known {
+		return progress
+	}
+	return parseProgress(output)
 }
 
 func (t *BackgroundTask) currentOutputLocked() string {
@@ -86,10 +110,14 @@ func (t *BackgroundTask) refreshOutput() {
 	if writer == nil || done {
 		return
 	}
-	output := writer.Tail()
+	output := cleanProgressOutput(writer.Tail())
+	progress := writer.Progress()
 	t.mu.Lock()
 	if !t.done {
 		t.output = output
+		if progress.Known {
+			t.progress = progress
+		}
 	}
 	t.mu.Unlock()
 }
@@ -112,10 +140,7 @@ type Background struct {
 // output retained for the widget. Running tasks are never evicted.
 const MaxCompletedBackgroundTasks = 8
 
-// Tasks returns the tracked tasks.
-func (b *Background) Tasks() []*BackgroundTask {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Background) pruneLocked() {
 	completed := 0
 	kept := make([]*BackgroundTask, 0, len(b.tasks))
 	for i := len(b.tasks) - 1; i >= 0; i-- {
@@ -133,13 +158,21 @@ func (b *Background) Tasks() []*BackgroundTask {
 		kept[i], kept[j] = kept[j], kept[i]
 	}
 	b.tasks = kept
-	return append([]*BackgroundTask(nil), kept...)
+}
+
+// Tasks returns the tracked tasks.
+func (b *Background) Tasks() []*BackgroundTask {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pruneLocked()
+	return append([]*BackgroundTask(nil), b.tasks...)
 }
 
 // Task returns a task by id.
 func (b *Background) Task(id int) (*BackgroundTask, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.pruneLocked()
 	for _, task := range b.tasks {
 		if task.ID == id {
 			return task, true
@@ -189,6 +222,7 @@ func (b *Background) Cancel(id int) error {
 func (b *Background) add(label string) *BackgroundTask {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.pruneLocked()
 	b.next++
 	t := &BackgroundTask{ID: b.next, Label: label, Started: time.Now(), doneCh: make(chan struct{})}
 	b.tasks = append(b.tasks, t)
@@ -221,11 +255,29 @@ func (b *Background) attach(t *BackgroundTask, writer *ringWriter, cancel func()
 
 // finish records a task's result and notifies.
 func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
+	progress := parseProgress(output)
 	t.mu.Lock()
-	t.output = output
+	writer := t.writer
+	t.mu.Unlock()
+	if writer != nil {
+		if observed := writer.Progress(); observed.Known {
+			progress = observed
+		}
+	}
+	t.mu.Lock()
+	// Keep the registry bounded even for callers that finish a task directly;
+	// command execution already truncates, but the registry is the last line of
+	// defense against an accidental unbounded completion payload.
+	t.output = Truncate(cleanProgressOutput(output))
+	if progress.Known {
+		t.progress = progress
+	}
 	t.done, t.failed = true, failed
 	t.mu.Unlock()
 	t.doneOnce.Do(func() { close(t.doneCh) })
+	b.mu.Lock()
+	b.pruneLocked()
+	b.mu.Unlock()
 
 	if b.OnDone != nil {
 		b.OnDone(t)
@@ -237,6 +289,10 @@ func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
 func parseProgress(output string) Progress {
 	var latest Progress
 	for _, line := range strings.Split(output, "\n") {
+		if p, ok := parseCheckpointMarker(line); ok {
+			latest = p
+			continue
+		}
 		if p, ok := parseProgressMarker(line); ok {
 			latest = p
 			continue
@@ -261,11 +317,12 @@ func parseProgress(output string) Progress {
 }
 
 var (
-	progressMarker  = regexp.MustCompile(`EVILCODE_PROGRESS\s+(\{.*\})\s*$`)
-	percentPattern  = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*%`)
-	fractionPattern = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
-	ofPattern       = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s+of\s+([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
-	phasePattern    = regexp.MustCompile(`(?i)^(compiling|building|running|testing|linking|downloading|installing|checking|fetching)\b.*`)
+	progressMarker   = regexp.MustCompile(`(?i)(?:EVILCODE_PROGRESS|JCODE_PROGRESS)\s+(\{.*\})\s*$`)
+	checkpointMarker = regexp.MustCompile(`(?i)JCODE_CHECKPOINT(?:\s+(\{.*\}))?\s*$`)
+	percentPattern   = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*%`)
+	fractionPattern  = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
+	ofPattern        = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s+of\s+([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
+	phasePattern     = regexp.MustCompile(`(?i)^(compiling|building|running|testing|linking|downloading|installing|checking|fetching|resolving)\b.*`)
 )
 
 func parseProgressMarker(line string) (Progress, bool) {
@@ -274,28 +331,79 @@ func parseProgressMarker(line string) (Progress, bool) {
 		return Progress{}, false
 	}
 	var raw struct {
-		Percent *float64 `json:"percent"`
-		Current *float64 `json:"current"`
-		Total   *float64 `json:"total"`
-		Unit    string   `json:"unit"`
-		Phase   string   `json:"phase"`
-		Message string   `json:"message"`
+		Percent    *float64 `json:"percent"`
+		Current    *float64 `json:"current"`
+		Total      *float64 `json:"total"`
+		Unit       string   `json:"unit"`
+		Phase      string   `json:"phase"`
+		Message    string   `json:"message"`
+		Kind       string   `json:"kind"`
+		Checkpoint bool     `json:"checkpoint"`
+		ETASeconds int      `json:"eta_seconds"`
 	}
 	if json.Unmarshal([]byte(match[1]), &raw) != nil {
 		return Progress{}, false
 	}
-	p := Progress{Unit: raw.Unit, Phase: raw.Phase, Message: raw.Message, Known: true}
+	p := Progress{
+		Unit: raw.Unit, Phase: raw.Phase, Message: raw.Message,
+		Indeterminate: strings.EqualFold(raw.Kind, "indeterminate"),
+		Checkpoint:    raw.Checkpoint || strings.EqualFold(raw.Kind, "checkpoint"),
+		ETASeconds:    raw.ETASeconds, Known: true,
+	}
 	if raw.Percent != nil {
-		p.Percent = *raw.Percent
+		p.Percent = clampPercent(*raw.Percent)
+		p.PercentSet = true
 	}
 	if raw.Current != nil {
-		p.Current = *raw.Current
+		p.Current = max(0, *raw.Current)
 	}
 	if raw.Total != nil {
-		p.Total = *raw.Total
-		if raw.Percent == nil && raw.Current != nil && *raw.Total > 0 {
-			p.Percent = *raw.Current / *raw.Total * 100
+		p.Total = max(0, *raw.Total)
+		if raw.Percent == nil && raw.Current != nil && p.Total > 0 {
+			if p.Current > p.Total {
+				p.Current = p.Total
+			}
+			p.Percent = clampPercent(p.Current / p.Total * 100)
 		}
+	}
+	if p.Total > 0 && p.Current > p.Total {
+		p.Current = p.Total
+	}
+	return p, true
+}
+
+func parseCheckpointMarker(line string) (Progress, bool) {
+	match := checkpointMarker.FindStringSubmatch(strings.TrimSpace(line))
+	if len(match) == 0 {
+		return Progress{}, false
+	}
+	p := Progress{Checkpoint: true, Indeterminate: true, Known: true}
+	if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+		var raw struct {
+			Message    string   `json:"message"`
+			Percent    *float64 `json:"percent"`
+			Current    *float64 `json:"current"`
+			Total      *float64 `json:"total"`
+			Unit       string   `json:"unit"`
+			ETASeconds int      `json:"eta_seconds"`
+		}
+		if json.Unmarshal([]byte(match[1]), &raw) == nil {
+			p.Message, p.Unit, p.ETASeconds = raw.Message, raw.Unit, raw.ETASeconds
+			if raw.Percent != nil {
+				p.Percent, p.PercentSet, p.Indeterminate = clampPercent(*raw.Percent), true, false
+			}
+			if raw.Current != nil {
+				p.Current = max(0, *raw.Current)
+			}
+			if raw.Total != nil {
+				p.Total = max(0, *raw.Total)
+			}
+			if p.Total > 0 && p.Current <= p.Total && !p.PercentSet {
+				p.Percent = clampPercent(p.Current / p.Total * 100)
+			}
+		}
+	} else {
+		p.Message = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "JCODE_CHECKPOINT"))
 	}
 	return p, true
 }
@@ -309,7 +417,7 @@ func parsePercentProgress(line string) (Progress, bool) {
 	if err != nil {
 		return Progress{}, false
 	}
-	return Progress{Percent: percent, Message: strings.TrimSpace(line), Known: true}, true
+	return Progress{Percent: clampPercent(percent), PercentSet: true, Message: strings.TrimSpace(line), Known: true}, true
 }
 
 func parseFractionProgress(line string) (Progress, bool) {
@@ -319,11 +427,11 @@ func parseFractionProgress(line string) (Progress, bool) {
 	}
 	current, err1 := strconv.ParseFloat(match[1], 64)
 	total, err2 := strconv.ParseFloat(match[2], 64)
-	if err1 != nil || err2 != nil || total <= 0 {
+	if err1 != nil || err2 != nil || total < 2 || current > total {
 		return Progress{}, false
 	}
 	p := Progress{Current: current, Total: total, Unit: match[3], Message: strings.TrimSpace(line), Known: true}
-	p.Percent = current / total * 100
+	p.Percent = clampPercent(current / total * 100)
 	return p, true
 }
 
@@ -334,12 +442,31 @@ func parseOfProgress(line string) (Progress, bool) {
 	}
 	current, err1 := strconv.ParseFloat(match[1], 64)
 	total, err2 := strconv.ParseFloat(match[2], 64)
-	if err1 != nil || err2 != nil || total <= 0 {
+	if err1 != nil || err2 != nil || total < 2 || current > total {
 		return Progress{}, false
 	}
 	p := Progress{Current: current, Total: total, Unit: match[3], Message: strings.TrimSpace(line), Known: true}
-	p.Percent = current / total * 100
+	p.Percent = clampPercent(current / total * 100)
 	return p, true
 }
 
 func isPhaseLine(line string) bool { return phasePattern.MatchString(line) }
+
+func clampPercent(percent float64) float64 {
+	return min(100, max(0, percent))
+}
+
+func cleanProgressOutput(output string) string {
+	if output == "" {
+		return output
+	}
+	lines := strings.Split(output, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if progressMarker.MatchString(strings.TrimSpace(line)) || checkpointMarker.MatchString(strings.TrimSpace(line)) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}

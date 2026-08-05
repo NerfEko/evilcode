@@ -5275,3 +5275,37 @@ parity: crates/jcode-app-core/src/tool/agentgrep.rs:1-380 — on par
 codex:  no separate codex verdict; the one-line ordering fix in cb5955b was
         manually reviewed and covered by the 100-run regression before the
         final build/test gate.
+
+## 2026-08-04 J3 review follow-up — parity and bounded-state audit
+
+The post-tag review compared every J3 path with jcode's `bash.rs` and `bg.rs`,
+not just the happy-path tests. The audit fixed four edge cases: completed-task
+retention is now enforced through `Task`, `Wait`, `Cancel`, add, and finish
+paths (not only the widget list); progress is recorded independently of the
+50 KiB live-output tail, so an early marker remains visible after later output
+scrolls past it; `bg wait` refreshes output after a timeout; and adopted or
+explicit background commands snapshot their working directory without a late
+completion overwriting a newer foreground `cd`. Registry completion payloads
+are bounded as a final defense, control-marker lines are hidden from output,
+progress is clamped/validated, and the parser also accepts jcode's marker,
+checkpoint, and `Resolving` forms while retaining the J3 `EVILCODE_PROGRESS`
+contract.
+
+New regressions cover marker persistence beyond the live tail, marker hiding,
+checkpoint parsing, normalization, direct-access eviction, and the expanded
+phase/marker forms. The required stdin fallback remains explicit and is still
+documented in `DEVIATIONS.md`; prompt detection/composer input is not claimed.
+
+parity: crates/jcode-app-core/src/tool/bash.rs:167-398,799-860,885-925 and
+        crates/jcode-app-core/src/tool/bg.rs:34-120,460-501 — on par or better
+        for the J3.1–J3.5 contract (timeout adoption, bounded live output,
+        progress shapes, six controls, wait/tail/cancel behavior, stdin
+        fallback, and scratch isolation). Evilcode is stronger on per-command
+        in-memory bounds and latest-progress retention; jcode's durable output
+        files, reload survival, progress/checkpoint wakeups, multi-task waits,
+        and delivery/watch actions remain outside this phase. Interactive prompt
+        detection remains the explicit documented deviation.
+
+codex: no new codex verdict was available; the earlier runner timed out before
+        a final message. This audit was manual against the cited jcode source,
+        with focused regressions plus the full build/vet/test gates below.
