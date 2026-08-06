@@ -233,7 +233,7 @@ func (m *Model) memoryCommand(arg string) tea.Cmd {
 			m.notice = "usage: /memory forget <id> — /memory list shows the ids"
 			break
 		}
-		found, err := m.memory.Store.Forget(id)
+		found, err := m.memory.Forget(id)
 		switch {
 		case err != nil:
 			m.notice = "could not forget #" + rest + ": " + err.Error()
@@ -244,7 +244,12 @@ func (m *Model) memoryCommand(arg string) tea.Cmd {
 		}
 
 	case "list":
-		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: m.memoryList()})
+		listScope := memory.Scope(strings.TrimSpace(rest))
+		if listScope != "" && !listScope.Valid() {
+			m.notice = "usage: /memory list [project|global]"
+			break
+		}
+		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: m.memoryList(listScope)})
 		m.scroll.FollowBottom()
 
 	default:
@@ -264,7 +269,7 @@ func (m *Model) memoryStatus() string {
 	if !m.memory.Enabled() {
 		state = "OFF"
 	}
-	all := m.memory.Store.All()
+	all := m.memory.All()
 
 	counts := map[memory.Kind]int{}
 	for _, r := range all {
@@ -280,7 +285,7 @@ func (m *Model) memoryStatus() string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "🧠 Memory %s · %d remembered\n", state, len(all))
+	fmt.Fprintf(&b, "🧠 Memory %s · %d remembered · %s\n", state, len(all), m.memory.ScopeLabel())
 	if len(parts) > 0 {
 		b.WriteString(strings.Join(parts, " · ") + "\n")
 	}
@@ -292,19 +297,26 @@ func (m *Model) memoryStatus() string {
 	if act := m.memory.Activity(); act.Failed != "" {
 		fmt.Fprintf(&b, "⚠ last error: %s\n", act.Failed)
 	}
-	b.WriteString("\n/memory list · /memory forget <id> · /memory off")
+	b.WriteString("\n/memory list [project|global] · /memory forget <id> · /memory off")
 	return b.String()
 }
 
 // memoryList prints the most recent memories with their ids.
-func (m *Model) memoryList() string {
-	all := m.memory.Store.All()
+func (m *Model) memoryList(scope memory.Scope) string {
+	all := m.memory.List(scope)
 	if len(all) == 0 {
-		return "🧠 Nothing remembered yet."
+		if scope == "" {
+			return "🧠 Nothing remembered in the current project/global view."
+		}
+		return fmt.Sprintf("🧠 Nothing remembered in %s scope.", scope)
 	}
 	const show = 20
 	var b strings.Builder
-	fmt.Fprintf(&b, "🧠 %s, newest first:\n", plural(len(all), "memory"))
+	view := "project + global"
+	if scope != "" {
+		view = string(scope)
+	}
+	fmt.Fprintf(&b, "🧠 %s in %s scope, newest first:\n", plural(len(all), "memory"), view)
 	for i, r := range all {
 		if i == show {
 			fmt.Fprintf(&b, "… and %d more\n", len(all)-show)

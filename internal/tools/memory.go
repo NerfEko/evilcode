@@ -21,8 +21,9 @@ func NewMemory(m *memory.Manager) Set {
 }
 
 type rememberArgs struct {
-	Text string `json:"text"`
-	Kind string `json:"kind,omitempty"`
+	Text  string `json:"text"`
+	Kind  string `json:"kind,omitempty"`
+	Scope string `json:"scope,omitempty"`
 }
 
 const rememberDesc = `Store something worth remembering after this conversation ends.
@@ -33,7 +34,10 @@ output, or anything you can read again in a second — a memory bank full of tho
 buries the memories that matter.
 
 A near-identical memory is merged rather than duplicated, so restating a fact to
-correct it is the right move.`
+correct it is the right move.
+
+Memories are project-scoped by default when a workspace is known. Pass scope
+"global" for a preference or fact that should follow the user everywhere.`
 
 func rememberTool(m *memory.Manager) Tool {
 	return Tool{
@@ -44,7 +48,9 @@ func rememberTool(m *memory.Manager) Tool {
   "properties": {
     "text": {"type": "string", "description": "The fact, stated so it makes sense out of context"},
     "kind": {"type": "string", "enum": ["fact", "preference", "project", "episode"],
-             "description": "fact: durable truth. preference: how the user wants things done. project: a convention of this codebase. episode: something that happened."}
+             "description": "fact: durable truth. preference: how the user wants things done. project: a convention of this codebase. episode: something that happened."},
+    "scope": {"type": "string", "enum": ["project", "global"],
+              "description": "project (default in a workspace) or global (visible in every workspace)"}
   },
   "required": ["text"]
 }`),
@@ -60,7 +66,11 @@ func rememberTool(m *memory.Manager) Tool {
 			if a.Kind == "" {
 				kind = memory.KindFact
 			}
-			rec, merged, err := m.Remember(ctx, a.Text, kind)
+			scope := memory.Scope(a.Scope)
+			if scope != "" && !scope.Valid() {
+				return Result{}, fmt.Errorf("unknown memory scope %q (want project or global)", a.Scope)
+			}
+			rec, merged, err := m.RememberWithScope(ctx, a.Text, kind, scope)
 			if err != nil {
 				return Result{}, err
 			}

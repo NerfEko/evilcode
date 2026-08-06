@@ -281,7 +281,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 	}
 	if bank != nil {
-		mem := memory.NewManagerWithModel(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding")
+		mem := memory.NewManagerWithModelAndScope(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding", pc.Root)
 		out.Memory = mem
 		if owned {
 			out.closers = append(out.closers, func() { bank.Close() })

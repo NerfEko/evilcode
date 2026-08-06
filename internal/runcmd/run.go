@@ -196,7 +196,7 @@ func Run(args []string) (int, error) {
 	// `evilcode run` would tax scripted use for nothing (plan.md §19).
 	if bank, err := memory.Open(dataDir); err == nil {
 		defer bank.Close()
-		mem := memory.NewManagerWithModel(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding")
+		mem := memory.NewManagerWithModelAndScope(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding", pc.Root)
 		if !*noTools {
 			ts = append(ts, tools.NewMemory(mem)...)
 			a.Tools = ts

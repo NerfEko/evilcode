@@ -59,6 +59,19 @@ func (k Kind) Weight() float64 {
 	}
 }
 
+// Scope controls which workspace can see a memory. Global records are visible
+// everywhere; project records are keyed by the canonical workspace root.
+type Scope string
+
+const (
+	ScopeGlobal  Scope = "global"
+	ScopeProject Scope = "project"
+)
+
+func (s Scope) Valid() bool {
+	return s == ScopeGlobal || s == ScopeProject
+}
+
 // Record is one memory.
 type Record struct {
 	ID      int64     `json:"id"`
@@ -66,6 +79,13 @@ type Record struct {
 	Kind    Kind      `json:"kind"`
 	Session string    `json:"session,omitempty"`
 	TS      time.Time `json:"ts"`
+
+	// Scope is global or project. Empty is treated as global for records written
+	// before J5.6 added scope metadata.
+	Scope Scope `json:"scope,omitempty"`
+	// ProjectRoot is set only for project-scoped records and is canonicalized at
+	// the write boundary so equivalent workspace paths share one bank view.
+	ProjectRoot string `json:"project_root,omitempty"`
 
 	// Vec is the embedding. It may be empty: embedding runs off the hot path
 	// and is allowed to fail, in which case the text is still stored and is
@@ -91,6 +111,14 @@ type Store struct {
 	nextID  int64
 	file    *os.File
 	w       *bufio.Writer
+}
+
+// AddOptions selects the vector space and visibility scope for a new record.
+// A non-empty ProjectRoot implies project scope unless ScopeGlobal is explicit.
+type AddOptions struct {
+	EmbeddingModel string
+	Scope          Scope
+	ProjectRoot    string
 }
 
 // FileName is the bank's file under the data directory.
@@ -242,18 +270,90 @@ func (s *Store) Close() error {
 // facts stay separate.
 const DedupeThreshold = 0.95
 
+// normalizeProjectRoot makes scope keys stable across relative and absolute
+// callers. A failed Abs still gets a cleaned path, so scope matching remains
+// deterministic even for a workspace that has just been removed.
+func normalizeProjectRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	root = filepath.Clean(root)
+	if abs, err := filepath.Abs(root); err == nil {
+		root = filepath.Clean(abs)
+	}
+	return root
+}
+
+func normalizeWriteScope(scope Scope, projectRoot string) (Scope, string, error) {
+	projectRoot = normalizeProjectRoot(projectRoot)
+	switch scope {
+	case "":
+		if projectRoot != "" {
+			return ScopeProject, projectRoot, nil
+		}
+		return ScopeGlobal, "", nil
+	case ScopeGlobal:
+		return ScopeGlobal, "", nil
+	case ScopeProject:
+		if projectRoot == "" {
+			return "", "", fmt.Errorf("project memory requires a workspace root")
+		}
+		return ScopeProject, projectRoot, nil
+	default:
+		return "", "", fmt.Errorf("unknown memory scope %q (want global or project)", scope)
+	}
+}
+
+func recordScope(r Record) Scope {
+	if r.Scope == ScopeProject && normalizeProjectRoot(r.ProjectRoot) != "" {
+		return ScopeProject
+	}
+	return ScopeGlobal
+}
+
+func sameScope(r Record, scope Scope, projectRoot string) bool {
+	if recordScope(r) != scope {
+		return false
+	}
+	if scope == ScopeProject {
+		return normalizeProjectRoot(r.ProjectRoot) == projectRoot
+	}
+	return true
+}
+
+// visibleInProject implements project ∪ global. An empty query root retains
+// the legacy unscoped Store API and returns every live record.
+func visibleInProject(r Record, projectRoot string) bool {
+	projectRoot = normalizeProjectRoot(projectRoot)
+	if projectRoot == "" {
+		return true
+	}
+	if recordScope(r) == ScopeGlobal {
+		return true
+	}
+	return normalizeProjectRoot(r.ProjectRoot) == projectRoot
+}
+
 // Add stores a memory, merging it into a near-duplicate if one exists.
 //
 // It returns the stored record and whether it merged. Merging keeps the newer
 // text, because a restated fact is usually a corrected one.
 func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts time.Time) (Record, bool, error) {
-	return s.AddWithModel(text, kind, session, vec, "", ts)
+	return s.AddWithOptions(text, kind, session, vec, AddOptions{}, ts)
 }
 
-// AddWithModel stores a memory and records the embedding model that produced
-// its vector. Exact-text duplicates still merge across model changes, while
-// cosine deduplication is limited to one model's vector space.
+// AddWithModel stores a global memory and records the embedding model that
+// produced its vector. Exact-text duplicates merge across model changes within
+// that scope, while cosine deduplication is limited to one model's vector space.
 func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float32, model string, ts time.Time) (Record, bool, error) {
+	return s.AddWithOptions(text, kind, session, vec, AddOptions{EmbeddingModel: model}, ts)
+}
+
+// AddWithOptions stores a memory with model and scope metadata. Scope is part
+// of deduplication: a project preference must not merge into a global fact (or
+// into the same text from another workspace).
+func (s *Store) AddWithOptions(text string, kind Kind, session string, vec []float32, options AddOptions, ts time.Time) (Record, bool, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Record{}, false, fmt.Errorf("memory text is empty")
@@ -261,11 +361,15 @@ func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float
 	if !kind.Valid() {
 		return Record{}, false, fmt.Errorf("unknown memory kind %q (want fact, preference, project, or episode)", kind)
 	}
+	scope, projectRoot, err := normalizeWriteScope(options.Scope, options.ProjectRoot)
+	if err != nil {
+		return Record{}, false, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if i := s.findDuplicate(text, vec, model); i >= 0 {
+	if i := s.findDuplicate(text, vec, options.EmbeddingModel, scope, projectRoot); i >= 0 {
 		merged := s.records[i]
 		merged.Text = text
 		merged.Kind = kind
@@ -273,7 +377,7 @@ func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float
 		merged.TS = ts
 		if len(vec) > 0 {
 			merged.Vec = vec
-			merged.EmbeddingModel = model
+			merged.EmbeddingModel = options.EmbeddingModel
 		}
 		if err := s.append(merged); err != nil {
 			return Record{}, false, err
@@ -282,7 +386,17 @@ func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float
 		return merged, true, nil
 	}
 
-	r := Record{ID: s.nextID, Text: text, Kind: kind, Session: session, TS: ts, Vec: vec, EmbeddingModel: model}
+	r := Record{
+		ID:             s.nextID,
+		Text:           text,
+		Kind:           kind,
+		Session:        session,
+		TS:             ts,
+		Scope:          scope,
+		ProjectRoot:    projectRoot,
+		Vec:            vec,
+		EmbeddingModel: options.EmbeddingModel,
+	}
 	if err := s.append(r); err != nil {
 		return Record{}, false, err
 	}
@@ -292,10 +406,13 @@ func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float
 }
 
 // findDuplicate returns the index of a near-identical memory, or -1.
-func (s *Store) findDuplicate(text string, vec []float32, model string) int {
+func (s *Store) findDuplicate(text string, vec []float32, model string, scope Scope, projectRoot string) int {
 	lower := strings.ToLower(text)
 	for i, r := range s.records {
 		if r.Deleted {
+			continue
+		}
+		if !sameScope(r, scope, projectRoot) {
 			continue
 		}
 		// Exact text is a duplicate whether or not either side embedded, which
@@ -312,10 +429,17 @@ func (s *Store) findDuplicate(text string, vec []float32, model string) int {
 
 // Forget tombstones a memory by ID.
 func (s *Store) Forget(id int64) (bool, error) {
+	return s.ForgetScoped(id, "")
+}
+
+// ForgetScoped tombstones a memory only when it belongs to the current
+// project/global view. IDs are global, but a hidden project's id should not be
+// writable through another workspace's `/memory forget` command.
+func (s *Store) ForgetScoped(id int64, projectRoot string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, r := range s.records {
-		if r.ID != id || r.Deleted {
+		if r.ID != id || r.Deleted || !visibleInProject(r, projectRoot) {
 			continue
 		}
 		r.Deleted = true
@@ -330,11 +454,37 @@ func (s *Store) Forget(id int64) (bool, error) {
 
 // All returns the live records, newest first.
 func (s *Store) All() []Record {
+	return s.AllScoped("")
+}
+
+// AllScoped returns live records visible to a project manager, newest first.
+// Global records and records keyed to projectRoot are included.
+func (s *Store) AllScoped(projectRoot string) []Record {
+	return s.AllByScope(projectRoot, "")
+}
+
+// AllByScope returns live records for one explicit scope. An empty scope is the
+// project ∪ global view; project scope requires a non-empty workspace root.
+func (s *Store) AllByScope(projectRoot string, scope Scope) []Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	projectRoot = normalizeProjectRoot(projectRoot)
 	out := make([]Record, 0, len(s.records))
 	for _, r := range s.records {
-		if !r.Deleted {
+		if r.Deleted {
+			continue
+		}
+		visible := false
+		switch scope {
+		case "":
+			visible = visibleInProject(r, projectRoot)
+		case ScopeGlobal:
+			visible = recordScope(r) == ScopeGlobal
+		case ScopeProject:
+			visible = projectRoot != "" && recordScope(r) == ScopeProject &&
+				normalizeProjectRoot(r.ProjectRoot) == projectRoot
+		}
+		if visible {
 			out = append(out, r)
 		}
 	}
@@ -344,11 +494,16 @@ func (s *Store) All() []Record {
 
 // Len is the number of live memories.
 func (s *Store) Len() int {
+	return s.LenScoped("")
+}
+
+// LenScoped counts live records visible to a project manager.
+func (s *Store) LenScoped(projectRoot string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, r := range s.records {
-		if !r.Deleted {
+		if !r.Deleted && visibleInProject(r, projectRoot) {
 			n++
 		}
 	}
@@ -371,6 +526,9 @@ type SearchOptions struct {
 	// EmbeddingModel limits cosine comparisons to vectors from this model. An
 	// empty value preserves the pre-J5 behavior for callers without model data.
 	EmbeddingModel string
+	// ProjectRoot selects the project ∪ global view. Empty preserves the legacy
+	// unscoped Store API and includes every live record.
+	ProjectRoot string
 }
 
 // RecallThreshold is the minimum score for passive recall. Below it a memory is
@@ -391,7 +549,7 @@ func (s *Store) Search(query string, vec []float32, n int, threshold float64, op
 
 	records := make([]Record, 0, len(s.records))
 	for _, r := range s.records {
-		if !r.Deleted {
+		if !r.Deleted && visibleInProject(r, opts.ProjectRoot) {
 			records = append(records, r)
 		}
 	}

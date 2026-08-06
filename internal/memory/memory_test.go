@@ -169,6 +169,92 @@ func TestMismatchedModelRemainsLexicallyReachable(t *testing.T) {
 	}
 }
 
+func TestProjectScopeIncludesGlobalButNotOtherProject(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	rootA := filepath.Join(t.TempDir(), "repo-a")
+	rootB := filepath.Join(t.TempDir(), "repo-b")
+	if _, _, err := s.AddWithOptions("global release policy", KindFact, "s", nil,
+		AddOptions{Scope: ScopeGlobal}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddWithOptions("repo a release convention", KindProject, "s", nil,
+		AddOptions{Scope: ScopeProject, ProjectRoot: rootA}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddWithOptions("repo b release convention", KindProject, "s", nil,
+		AddOptions{Scope: ScopeProject, ProjectRoot: rootB}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManagerWithModelAndScope(s, nil, nil, "s", true, "", rootA)
+	hits := m.Search("release convention", nil, 10, 0.55)
+	if len(hits) != 2 {
+		t.Fatalf("project A recall = %#v, want project A + global", hits)
+	}
+	for _, hit := range hits {
+		if hit.Text == "repo b release convention" {
+			t.Fatalf("project B memory leaked into project A: %#v", hits)
+		}
+	}
+	if got := m.All(); len(got) != 2 {
+		t.Fatalf("project A list = %#v, want project A + global", got)
+	}
+	if got := m.List(ScopeGlobal); len(got) != 1 || got[0].Scope != ScopeGlobal {
+		t.Fatalf("global-only list = %#v, want one global record", got)
+	}
+	if got := m.List(ScopeProject); len(got) != 1 || got[0].ProjectRoot != normalizeProjectRoot(rootA) {
+		t.Fatalf("project-only list = %#v, want project A record", got)
+	}
+
+	mB := NewManagerWithModelAndScope(s, nil, nil, "s", true, "", rootB)
+	if got := mB.All(); len(got) != 2 {
+		t.Fatalf("project B list = %#v, want project B + global", got)
+	}
+}
+
+func TestRememberDefaultsToProjectAndCanWriteGlobal(t *testing.T) {
+	s := openTemp(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	m := NewManagerWithModelAndScope(s, nil, nil, "sess", true, "model", root)
+
+	project, _, err := m.Remember(context.Background(), "project convention", KindProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Scope != ScopeProject || project.ProjectRoot != normalizeProjectRoot(root) {
+		t.Fatalf("default remember = %#v, want project scope rooted at %q", project, root)
+	}
+	global, _, err := m.RememberWithScope(context.Background(), "global preference", KindPreference, ScopeGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Scope != ScopeGlobal || global.ProjectRoot != "" {
+		t.Fatalf("global remember = %#v, want global scope", global)
+	}
+	if got := len(m.All()); got != 2 {
+		t.Fatalf("manager view has %d records, want both scopes", got)
+	}
+}
+
+func TestScopedForgetCannotDeleteAnotherProject(t *testing.T) {
+	s := openTemp(t)
+	rootA := filepath.Join(t.TempDir(), "repo-a")
+	rootB := filepath.Join(t.TempDir(), "repo-b")
+	rec, _, err := s.AddWithOptions("repo b only", KindProject, "s", nil,
+		AddOptions{Scope: ScopeProject, ProjectRoot: rootB}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManagerWithModelAndScope(s, nil, nil, "s", true, "", rootA)
+	if found, err := m.Forget(rec.ID); err != nil || found {
+		t.Fatalf("hidden forget = found %v err %v, want no-op", found, err)
+	}
+	if got := s.Len(); got != 1 {
+		t.Fatalf("hidden forget changed bank length to %d", got)
+	}
+}
+
 func TestAdaptiveRecallCutoffDropsWeakTail(t *testing.T) {
 	hits := []Hit{
 		{Score: 0.9, Relevance: 0.92},

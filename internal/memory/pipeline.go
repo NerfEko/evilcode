@@ -92,6 +92,10 @@ type Manager struct {
 	// current embedder. It is separate from the chat model: providers may use a
 	// fixed embedding endpoint for several chat models.
 	EmbeddingModel string
+	// ProjectRoot keys project-scoped memories. A manager with a root searches
+	// that project together with global records; an empty root preserves the
+	// legacy unscoped view used by tests and callers without workspace context.
+	ProjectRoot string
 
 	// EmbedTimeout bounds an embed call. Passive recall sits in front of every
 	// user message, so a hung local daemon must not hang the composer.
@@ -116,19 +120,26 @@ type Manager struct {
 // NewManager builds a manager. A nil store yields a disabled manager, which is
 // how `memory = false` is expressed without nil checks at every call site.
 func NewManager(store *Store, emb Embedder, router SideCaller, session string, enabled bool) *Manager {
-	return NewManagerWithModel(store, emb, router, session, enabled, "")
+	return NewManagerWithModelAndScope(store, emb, router, session, enabled, "", "")
 }
 
 // NewManagerWithModel builds a manager with an explicit embedding model id.
 // Keeping NewManager as a compatibility wrapper lets tests and embedders that
 // predate model tagging continue to use legacy unqualified vectors.
 func NewManagerWithModel(store *Store, emb Embedder, router SideCaller, session string, enabled bool, model string) *Manager {
+	return NewManagerWithModelAndScope(store, emb, router, session, enabled, model, "")
+}
+
+// NewManagerWithModelAndScope builds a manager with an embedding model id and
+// project scope. The older constructors remain wrappers for compatibility.
+func NewManagerWithModelAndScope(store *Store, emb Embedder, router SideCaller, session string, enabled bool, model, projectRoot string) *Manager {
 	return &Manager{
 		Store:          store,
 		Embedder:       emb,
 		Router:         router,
 		Session:        session,
 		EmbeddingModel: model,
+		ProjectRoot:    normalizeProjectRoot(projectRoot),
 		EmbedTimeout:   5 * time.Second,
 		enabled:        enabled && store != nil,
 	}
@@ -152,8 +163,54 @@ func (m *Manager) Search(query string, vec []float32, n int, threshold float64) 
 	}
 	m.mu.Lock()
 	model := m.EmbeddingModel
+	projectRoot := m.ProjectRoot
 	m.mu.Unlock()
-	return m.Store.Search(query, vec, n, threshold, SearchOptions{EmbeddingModel: model})
+	return m.Store.Search(query, vec, n, threshold, SearchOptions{
+		EmbeddingModel: model,
+		ProjectRoot:    projectRoot,
+	})
+}
+
+// All returns the live project ∪ global view for this manager.
+func (m *Manager) All() []Record {
+	return m.List("")
+}
+
+// List returns the manager's visible records. An empty scope is project ∪
+// global; ScopeGlobal and ScopeProject select one side for `/memory list`.
+func (m *Manager) List(scope Scope) []Record {
+	if m == nil || m.Store == nil {
+		return nil
+	}
+	m.mu.Lock()
+	projectRoot := m.ProjectRoot
+	m.mu.Unlock()
+	return m.Store.AllByScope(projectRoot, scope)
+}
+
+// ScopeLabel is a short status-surface description of the manager's view.
+func (m *Manager) ScopeLabel() string {
+	if m == nil {
+		return "unscoped"
+	}
+	m.mu.Lock()
+	root := m.ProjectRoot
+	m.mu.Unlock()
+	if root == "" {
+		return "all scopes"
+	}
+	return "project + global"
+}
+
+// Forget removes a visible memory by id.
+func (m *Manager) Forget(id int64) (bool, error) {
+	if m == nil || m.Store == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	projectRoot := m.ProjectRoot
+	m.mu.Unlock()
+	return m.Store.ForgetScoped(id, projectRoot)
 }
 
 // PendingEmbeddings counts live records with no vector or a vector from a
@@ -166,8 +223,9 @@ func (m *Manager) PendingEmbeddings() int {
 	}
 	m.mu.Lock()
 	model := m.EmbeddingModel
+	projectRoot := m.ProjectRoot
 	m.mu.Unlock()
-	all := m.Store.All()
+	all := m.Store.AllScoped(projectRoot)
 	n := 0
 	for _, r := range all {
 		if len(r.Vec) == 0 || (model != "" && r.EmbeddingModel != model) {
@@ -287,8 +345,11 @@ func (m *Manager) Recall(ctx context.Context, userMsg string) (string, []Hit) {
 		return "", nil
 	}
 
+	m.mu.Lock()
+	projectRoot := m.ProjectRoot
+	m.mu.Unlock()
 	m.setStage(StageFind, func(a *Activity) {
-		a.Candidates = m.Store.Len()
+		a.Candidates = m.Store.LenScoped(projectRoot)
 		a.Relevant, a.Tokens = 0, 0
 	})
 
@@ -372,14 +433,25 @@ func EstimateTokens(s string) int { return (len(s) + 3) / 4 }
 // Remember stores a memory, embedding it first. It is the `remember` tool's
 // implementation and the ambient extractor's sink.
 func (m *Manager) Remember(ctx context.Context, text string, kind Kind) (Record, bool, error) {
+	return m.RememberWithScope(ctx, text, kind, "")
+}
+
+// RememberWithScope stores a memory in the requested scope. An empty scope
+// uses project scope when the manager has a workspace root, otherwise global.
+func (m *Manager) RememberWithScope(ctx context.Context, text string, kind Kind, scope Scope) (Record, bool, error) {
 	if m == nil || m.Store == nil {
 		return Record{}, false, fmt.Errorf("memory is not available in this session")
 	}
 	vec := m.embed(ctx, text)
 	m.mu.Lock()
 	model := m.EmbeddingModel
+	projectRoot := m.ProjectRoot
 	m.mu.Unlock()
-	rec, merged, err := m.Store.AddWithModel(text, kind, m.Session, vec, model, time.Now())
+	rec, merged, err := m.Store.AddWithOptions(text, kind, m.Session, vec, AddOptions{
+		EmbeddingModel: model,
+		Scope:          scope,
+		ProjectRoot:    projectRoot,
+	}, time.Now())
 	if err == nil {
 		m.setStage(StageUpdate, func(a *Activity) { a.Saved++ })
 	}
