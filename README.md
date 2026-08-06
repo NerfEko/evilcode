@@ -69,10 +69,11 @@ Sessions are the source of truth: every message is written as it lands, `/compac
 `/rewind` rewrite the log atomically — a backup is written and synced before the
 primary is replaced, and the live session follows the rewrite. Compaction summarizes
 older turns but keeps the ten most recent turns verbatim, including complete tool-call
-pairs, so a task in progress survives both the live rewrite and resume. A turn that
-could not be fully written says so rather than leaving a session that comes back short
-on resume. Closing a session waits for its in-flight turn to finish, so a shutdown or a
-closed terminal does not drop the messages the turn was still writing.
+pairs, so a task in progress survives both the live rewrite and resume. It also watches
+recent context growth and can compact on a projection before the fixed 85% boundary.
+A turn that could not be fully written says so rather than leaving a session that comes
+back short on resume. Closing a session waits for its in-flight turn to finish, so a
+shutdown or a closed terminal does not drop the messages the turn was still writing.
 
 ## Configuration
 

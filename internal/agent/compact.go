@@ -28,11 +28,31 @@ const CompactMessageCap = 2000
 const RecentTurnsToKeep = 10
 
 // CompactThreshold is the fraction of the context window at which a turn
-// compacts before dispatching (plan.md §9.9).
+// compacts before dispatching when the projection has not fired first
+// (plan.md §9.9).
 //
 // A constant rather than a config knob: it is the kind of setting nobody tunes
 // and everybody would have to understand to tune correctly.
 const CompactThreshold = 0.85
+
+// CompactProjectionLookahead is how many future turns the token-growth
+// projection covers. Fifteen matches jcode's proactive default: a long-running
+// coding session gets time to summarize before the turn that fills the window.
+const CompactProjectionLookahead = 15
+
+// CompactEWMAAlpha controls how quickly the projected per-turn growth follows
+// recent observations. A smaller value smooths one unusually large response
+// without ignoring a sustained increase.
+const CompactEWMAAlpha = 0.3
+
+// CompactProjectionMinSamples is the number of context observations needed for
+// one per-turn delta and therefore a meaningful projection.
+const CompactProjectionMinSamples = 2
+
+// CompactProjectionFloor avoids spending a summarizer call on a tiny context
+// merely because an early request was unusually large. This mirrors jcode's
+// proactive floor while the fixed threshold remains the safety fallback.
+const CompactProjectionFloor = 0.40
 
 // MaxAutoCompactions bounds automatic compaction for a session.
 //
@@ -73,6 +93,14 @@ type Compactor struct {
 
 	mu    sync.Mutex
 	count int
+
+	// Projection state is sampled once per turn by ShouldCompact. Keeping the
+	// state on the compactor, rather than the agent, makes all frontends use the
+	// same prediction and keeps it resettable after a successful rewrite.
+	projectionWindow  int
+	projectionLast    int
+	projectionSamples int
+	projectionEWMA    float64
 }
 
 // Count is how many times this session has been compacted.
@@ -162,6 +190,7 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 
 	c.mu.Lock()
 	c.count++
+	c.resetProjectionLocked()
 	c.mu.Unlock()
 	return summary, nil
 }
@@ -299,8 +328,63 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 	if !c.Enabled() || window <= 0 || used <= 0 {
 		return false
 	}
-	if c.Count() >= MaxAutoCompactions {
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.count >= MaxAutoCompactions {
 		return false
 	}
-	return float64(used)/float64(window) >= CompactThreshold
+
+	// A provider/model switch can change the window between turns. An old
+	// slope has no meaning in the new coordinate system, so start a fresh
+	// projection rather than carrying it across the boundary.
+	if c.projectionWindow != window {
+		c.resetProjectionLocked()
+		c.projectionWindow = window
+	}
+
+	if c.projectionSamples > 0 {
+		if used < c.projectionLast {
+			// A drop is usually provider-side trimming or an implicit reset. The
+			// previous growth trend no longer describes the live context.
+			c.projectionEWMA = 0
+			c.projectionSamples = 1
+		} else {
+			delta := float64(used - c.projectionLast)
+			if c.projectionSamples == 1 {
+				c.projectionEWMA = delta
+			} else {
+				c.projectionEWMA = CompactEWMAAlpha*delta +
+					(1-CompactEWMAAlpha)*c.projectionEWMA
+			}
+			c.projectionSamples++
+		}
+	}
+	c.projectionLast = used
+	if c.projectionSamples == 0 {
+		c.projectionSamples = 1
+	}
+
+	current := float64(used)
+	threshold := CompactThreshold * float64(window)
+	if current >= threshold {
+		return true
+	}
+	if current < CompactProjectionFloor*float64(window) ||
+		c.projectionSamples < CompactProjectionMinSamples {
+		return false
+	}
+
+	projected := current + c.projectionEWMA*CompactProjectionLookahead
+	return projected >= threshold
+}
+
+// resetProjectionLocked clears the EWMA after a successful compaction. The
+// caller must hold c.mu; the current context is a new coordinate system and
+// must not inherit the pre-compaction growth slope.
+func (c *Compactor) resetProjectionLocked() {
+	c.projectionWindow = 0
+	c.projectionLast = 0
+	c.projectionSamples = 0
+	c.projectionEWMA = 0
 }

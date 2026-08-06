@@ -398,7 +398,7 @@ func (m *Model) contextCommand() tea.Cmd {
 		fmt.Fprintf(&b, "compacted %d %s this session\n", n, timeNoun(n))
 	}
 	if m.compactor.Enabled() {
-		fmt.Fprintf(&b, "\nAuto-compacts past %d%% · /compact to do it now",
+		fmt.Fprintf(&b, "\nAuto-compacts at %d%% or on projected growth · /compact to do it now",
 			int(agent.CompactThreshold*100))
 	} else {
 		b.WriteString("\nCompaction is not configured")

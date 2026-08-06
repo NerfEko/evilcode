@@ -188,6 +188,49 @@ func TestShouldCompactOnlyNearTheLimit(t *testing.T) {
 	}
 }
 
+func TestShouldCompactProjectsAheadOfTheThreshold(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	if c.ShouldCompact(50, 100) {
+		t.Fatal("compacted before collecting a growth delta")
+	}
+	if c.ShouldCompact(52, 100) {
+		t.Fatal("compacted when the projection still fits below the threshold")
+	}
+	if !c.ShouldCompact(55, 100) {
+		t.Fatal("did not compact on a projection that crosses the threshold")
+	}
+}
+
+func TestCompactionResetsTheGrowthProjection(t *testing.T) {
+	conv := compactableConversation()
+	c := &Compactor{Summarize: summarizer("summary", nil)}
+	if c.ShouldCompact(50, 100) || !c.ShouldCompact(55, 100) {
+		t.Fatal("expected the rising context to trigger a projected compaction")
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if c.ShouldCompact(50, 100) {
+		t.Fatal("the pre-compaction growth slope leaked into the new context")
+	}
+	if c.ShouldCompact(52, 100) {
+		t.Fatal("a fresh projection compacted before it had enough headroom evidence")
+	}
+}
+
+func TestShouldCompactDropsStaleGrowthAfterContextShrinks(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	if c.ShouldCompact(50, 100) || !c.ShouldCompact(55, 100) {
+		t.Fatal("expected the rising context to trigger a projected compaction")
+	}
+	if c.ShouldCompact(40, 100) {
+		t.Fatal("a lower context should discard the stale growth projection")
+	}
+	if c.ShouldCompact(42, 100) {
+		t.Fatal("a fresh low context should not compact immediately")
+	}
+}
+
 func TestNilCompactorIsInert(t *testing.T) {
 	var c *Compactor
 	if c.Enabled() || c.ShouldCompact(99, 100) || c.Count() != 0 {
