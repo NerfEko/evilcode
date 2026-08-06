@@ -74,7 +74,7 @@ func TestCompactWithTailSurvivesResume(t *testing.T) {
 
 	tail := []provider.Message{
 		{Role: provider.RoleUser, Content: "current prompt"},
-		{Role: provider.RoleAssistant, Content: "current answer"},
+		{Role: provider.RoleAssistant, Content: "current answer", Images: [][]byte{[]byte("vision-tail")}},
 	}
 	replay, err := CompactWithTail(dir, name, "old work summary", tail)
 	if err != nil {
@@ -93,6 +93,9 @@ func TestCompactWithTailSurvivesResume(t *testing.T) {
 	}
 	if len(resumed) != 3 || resumed[1].Content != "current prompt" || resumed[2].Content != "current answer" {
 		t.Fatalf("resumed = %#v, want summary + preserved tail", resumed)
+	}
+	if len(resumed[2].Images) != 1 || string(resumed[2].Images[0]) != "vision-tail" {
+		t.Fatalf("resumed tail images = %#v, want the preserved image", resumed[2].Images)
 	}
 }
 

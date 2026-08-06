@@ -418,7 +418,10 @@ func CompactWithTail(dataDir, name, summary string, tail []provider.Message) ([]
 		if kept.Role == provider.RoleSystem {
 			continue
 		}
-		data, err := json.Marshal(kept)
+		// Use the normal message encoder so preserved vision turns keep the
+		// session's content-addressed blob format instead of expanding raw image
+		// bytes inline during compaction.
+		data, err := encodeMessage(path, kept)
 		if err != nil {
 			return nil, err
 		}
