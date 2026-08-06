@@ -753,17 +753,17 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J5 — Retrieval that ranks correctly
 
-- [ ] **J5.1** `internal/memory/store.go:293` `Store.Search` — vectors from different models
+- [x] **J5.1** `internal/memory/store.go:293` `Store.Search` — vectors from different models
       with equal dimension are compared and produce noise. Store the model id on `Record`;
       dense scoring considers only the active model; mismatched records stay reachable
       lexically; `/memory` reports how many are pending. §5.1. ⟨fix⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:830-897 — read the comment at :843⟩
-- [ ] **J5.2** `internal/memory/store.go:293,329` `Store.Search`, `substringHits` — lexical
+- [x] **J5.2** `internal/memory/store.go:293,329` `Store.Search`, `substringHits` — lexical
       matching runs only when the semantic path found nothing, so an exact term match is
       invisible whenever recall works. Run both always; fuse by reciprocal rank (`k=60`);
       apply kind weights after fusion. Replace `substringHits` with BM25. §5.2. ⟨port⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:668-728 (RRF), 1991-2055 (BM25)⟩
-- [ ] **J5.3** `internal/memory/pipeline.go:68,219` `RecallCount`, `Manager.Recall` — a fixed
+- [x] **J5.3** `internal/memory/pipeline.go:68,219` `RecallCount`, `Manager.Recall` — a fixed
       four injects the fourth memory whether or not it is any good. Cut at the first score
       drop wider than a quarter of the range from top to threshold; keep the count as a
       ceiling. §5.3. ⟨port⟩ ⟨jcode: crates/jcode-base/src/memory.rs:899-927⟩
@@ -776,14 +776,14 @@ Line numbers as-of §0.5. Trust the symbol.
       availability floor; the local runtime is skipped per J5.4 and `DEVIATIONS.md`.
       §5.4. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:815-828⟩
-- [ ] **J5.6** `internal/memory/store.go:60` `Record` — one flat bank means a preference
+- [x] **J5.6** `internal/memory/store.go:60` `Record` — one flat bank means a preference
       stated in one repo surfaces in every unrelated one. Add scope (project keyed on
       workspace root, or global); recall searches project ∪ global; `/memory` filters.
       §5.5. ⟨build⟩ ⟨jcode: crates/jcode-base/src/memory.rs:734-791 (`MemoryScope`)⟩
-- [ ] Verify J5: two banks embedded by different models with equal dimension, confirm no
+- [x] Verify J5: two banks embedded by different models with equal dimension, confirm no
       cross-scoring; a memory matching by exact term but not semantically now recalls; a
       query with one strong and four weak hits injects one; a project memory does not leak
-      into another workspace. Tag `jcode-5`.
+      into another workspace. Tag `jcode-5`. Serial full test/build/vet gates are green.
 
 ## Phase J6 — Compaction that keeps the present
 

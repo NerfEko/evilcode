@@ -5400,3 +5400,73 @@ parity: crates/jcode-embedding/src/lib.rs:89-250 — on par (the same MiniLM
         see DEVIATIONS)
 codex: no code was changed; the prep answer was manually checked against the
         cited jcode implementation and the repository's provider/embedder APIs.
+
+## 2026-08-06 J5.1 — model-safe dense recall
+
+`Record` now persists the embedding model id. Dense scoring only compares the
+active model's vectors; equal-dimension vectors from another model remain in
+the BM25 path, and the memory status exposes the pending re-embedding count.
+Legacy untagged vectors retain the local-model compatibility default.
+
+parity: crates/jcode-base/src/memory.rs:830-897 — on par (active-model dense
+        eligibility, lexical reachability for mismatches, and pending status)
+codex: no separate external codex verdict; manual source comparison and the
+        serial focused/full test gates found no unresolved J5.1 issue.
+
+## 2026-08-06 J5.2 — hybrid lexical and dense retrieval
+
+Memory search now runs BM25 and dense retrieval together and fuses their ranks
+with reciprocal rank fusion (`k=60`). Kind weights are applied after fusion,
+so an exact lexical hit remains visible even when semantic recall also returns
+results. The old substring-only fallback is gone.
+
+parity: crates/jcode-base/src/memory.rs:668-728 and :1991-2055 — on par
+        (both retrievers always run, RRF ranking, BM25 token/DF scoring, and
+        post-fusion kind weighting)
+codex: no separate external codex verdict; manual source comparison and the
+        serial focused/full test gates found no unresolved J5.2 issue.
+
+## 2026-08-06 J5.3 — score-tail cutoff
+
+Recall now treats `RecallCount` as a ceiling. After ranking, it stops at the
+first score drop wider than a quarter of the top-to-threshold range, preserving
+one strong hit while retaining a genuinely close group of hits.
+
+parity: crates/jcode-base/src/memory.rs:899-927 — on par (range-based tail
+        cutoff with the configured result cap retained as a ceiling)
+codex: no separate external codex verdict; manual source comparison and the
+        serial focused/full test gates found no unresolved J5.3 issue.
+
+## 2026-08-06 J5.6 — project and global memory scope
+
+Memories now carry `global` or `project` scope. Project records are keyed by
+the normalized workspace root; a manager's normal view is project + global,
+while `/memory list project` and `/memory list global` inspect either side.
+`remember` defaults to the current project when a workspace is known and accepts
+`scope: "global"` for cross-repository facts. Forgetting is manager-scoped, so
+an id from another project cannot be tombstoned through the current TUI.
+Legacy records without scope metadata remain global, preserving old banks.
+
+parity: crates/jcode-base/src/memory.rs:734-791 — on par (project/global
+        storage semantics, project ∪ global recall, explicit list scopes, and
+        project isolation; evilcode retains one append-only bank and treats
+        legacy unscoped records as global)
+codex: no separate external verdict was available; the read-only review runner
+        was stopped after it exceeded twelve minutes without a final message.
+        Manual comparison against the cited jcode source plus the serial gates
+        found no unresolved J5.6 issue.
+
+## 2026-08-06 Verify J5 — retrieval acceptance gate
+
+The complete J5 path was checked serially: model-tag mismatch tests prove equal
+dimensions never cross-score; BM25 + dense fusion preserves exact lexical hits;
+adaptive cutoff drops weak tails; project A sees project A + global but not
+project B; explicit global/project listing and scoped forget are covered by
+regressions. `go test -p 1 ./... -count=1`, `go build -p 1 ./...`, and
+`go vet -p 1 ./...` all pass, and `git diff --check` is clean.
+
+parity: crates/jcode-base/src/memory.rs:668-728, 734-791, 830-927 — on par or
+        better for §5's shipped scope; the local embedder floor remains the
+        documented J5.4/J5.5 deviation.
+codex: no final external codex verdict; manual source comparison and the
+        serial full-repository gates found no unresolved J5 issue.

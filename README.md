@@ -182,9 +182,9 @@ one you cannot correct.
 Ambient extraction mines facts every eight turns through the `smol` role, and a session
 summary is written on exit, which is what makes the session picker searchable by what a
 session was about rather than by its name. A dead embedder degrades recall to lexical
-BM25 matching rather than switching it off. Memories are project-scoped by the
-detected workspace root and recall also includes global memories; `/memory list
-project` and `/memory list global` can inspect either side of that view. The `remember` tool accepts
+BM25 matching rather than switching it off. Memories are project-scoped by the detected
+workspace root and recall also includes global memories; `/memory list project` and
+`/memory list global` can inspect either side of that view. The `remember` tool accepts
 `scope: "global"` for facts that should follow the user across repositories.
 
 ### Daemon and swarms

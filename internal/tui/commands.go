@@ -62,7 +62,7 @@ var Commands = []Command{
 	{Name: "memory", Help: "Long-term memory on/off/status",
 		Long: "  /memory          show what memory knows\n" +
 			"  /memory on|off   stop or resume recalling and remembering\n" +
-			"  /memory list     show the most recent memories\n" +
+			"  /memory list [project|global]  show the selected memory view\n" +
 			"  /memory forget <id>  drop one"},
 
 	{Name: "clear", Help: "Clear the transcript"},
