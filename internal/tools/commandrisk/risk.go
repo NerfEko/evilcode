@@ -32,6 +32,13 @@ func (r RiskLevel) String() string {
 	}
 }
 
+// RunsImmediately reports whether the gate can execute this risk tier without
+// a reflection turn.
+func (r RiskLevel) RunsImmediately() bool { return r == Safe || r == Low }
+
+// IsAbsoluteDeny reports whether justification can never unlock this tier.
+func (r RiskLevel) IsAbsoluteDeny() bool { return r == Catastrophic }
+
 // Finding explains one reason the command was elevated. Target is retained
 // for a useful reflection prompt and audit transcript.
 type Finding struct {
@@ -109,7 +116,7 @@ var wrapperCommands = map[string]bool{
 	"time": true, "timeout": true, "nohup": true, "xargs": true,
 	"command": true, "builtin": true, "exec": true, "setsid": true,
 	"stdbuf": true, "chroot": true, "su": true, "watch": true,
-	"eval": true,
+	"eval": true, "busybox": true, "toybox": true,
 }
 
 var shellCommands = map[string]bool{
@@ -161,10 +168,22 @@ func wrapperOptionTakesValue(name, option string) bool {
 	case "stdbuf":
 		return option == "-i" || option == "-o" || option == "-e"
 	case "xargs":
-		return option == "-n" || option == "--max-args" || option == "-s" || option == "--max-chars" || option == "-P" || option == "--max-procs"
+		return option == "-n" || option == "--max-args" || option == "-s" || option == "--max-chars" || option == "-P" || option == "--max-procs" || option == "-I" || option == "--replace" || option == "-d" || option == "--delimiter" || option == "-E" || option == "--eof" || option == "-a" || option == "--arg-file" || option == "-L" || option == "--max-lines"
 	default:
 		return false
 	}
+}
+
+func isNumericWrapperOperand(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if (r < '0' || r > '9') && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func assessSegment(segment []Token, ctx Context) Assessment {
@@ -220,11 +239,16 @@ func assessSegment(segment []Token, ctx Context) Assessment {
 					assessment.add(Finding{Level: Confirm, Reason: "eval wrapper has no complete script"})
 					return assessment
 				}
-				if shellScriptHasUnknownExpansion(segment[idx].Text) {
+				parts := make([]string, 0, len(segment)-idx)
+				for _, token := range segment[idx:] {
+					parts = append(parts, token.Text)
+				}
+				script := strings.Join(parts, " ")
+				if shellScriptHasUnknownExpansion(script) {
 					assessment.add(Finding{Level: Confirm, Reason: "eval wrapper contains an unresolved runtime expansion"})
 					return assessment
 				}
-				assessment.merge(Assess(segment[idx].Text, ctx))
+				assessment.merge(Assess(script, ctx))
 				return assessment
 			}
 			// These wrappers have one required positional argument before the
@@ -256,6 +280,10 @@ func assessSegment(segment []Token, ctx Context) Assessment {
 					if consumes && idx < len(segment) {
 						idx++
 					}
+					continue
+				}
+				if isNumericWrapperOperand(text) {
+					idx++
 					continue
 				}
 				if name == "env" && strings.Contains(text, "=") {
@@ -365,14 +393,19 @@ func assessSegment(segment []Token, ctx Context) Assessment {
 
 	if name == "find" {
 		deleteAction := false
-		actionIndex := -1
+		var actionIndexes []int
 		var paths []string
+		actionSeen := false
 		for i := 0; i < len(args); i++ {
 			text := args[i].Text
 			if text == "-delete" || text == "-exec" || text == "-execdir" {
 				deleteAction = true
-				actionIndex = i
-				break
+				actionSeen = true
+				actionIndexes = append(actionIndexes, i)
+				continue
+			}
+			if actionSeen {
+				continue
 			}
 			if isFlag(text) {
 				// Common find options consume one following value.
@@ -390,7 +423,10 @@ func assessSegment(segment []Token, ctx Context) Assessment {
 			for _, target := range paths {
 				appendTarget(&assessment, target, true, ctx)
 			}
-			if args[actionIndex].Text == "-exec" || args[actionIndex].Text == "-execdir" {
+			for _, actionIndex := range actionIndexes {
+				if args[actionIndex].Text != "-exec" && args[actionIndex].Text != "-execdir" {
+					continue
+				}
 				end := actionIndex + 1
 				for end < len(args) && args[end].Text != ";" {
 					end++
@@ -406,6 +442,9 @@ func assessSegment(segment []Token, ctx Context) Assessment {
 
 	if name == "chmod" || name == "chown" {
 		targets, recursive := targetArgs(args, 0)
+		if !recursive {
+			return assessment
+		}
 		if len(targets) > 0 {
 			// The first non-option argument is a mode/owner, not a path.
 			targets = targets[1:]
@@ -424,7 +463,7 @@ func assessSegment(segment []Token, ctx Context) Assessment {
 }
 
 func shellScriptHasUnknownExpansion(script string) bool {
-	if strings.Contains(script, "`") {
+	if strings.Contains(script, "`") || hasOpaqueExpansion(script) {
 		return true
 	}
 	for _, match := range envPattern.FindAllStringSubmatch(script, -1) {

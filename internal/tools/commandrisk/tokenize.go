@@ -117,6 +117,11 @@ func Tokenize(command string) []Token {
 				word.WriteByte(command[i+1])
 				i++
 				substitutionDepth = 1
+			} else if i+1 < len(command) && (command[i+1] == '\'' || command[i+1] == '"') {
+				// Bash ANSI-C/locale quoting is not represented by this
+				// tokenizer. Keep the command fail-closed instead of turning
+				// $'/etc' into a harmless-looking workspace-relative word.
+				malformed = true
 			}
 		case ' ', '\t', '\r':
 			flush()
@@ -132,6 +137,9 @@ func Tokenize(command string) []Token {
 		case '|':
 			if i+1 < len(command) && command[i+1] == '|' {
 				operator("||")
+				i++
+			} else if i+1 < len(command) && command[i+1] == '&' {
+				operator("|&")
 				i++
 			} else {
 				operator("|")
@@ -170,9 +178,12 @@ func Tokenize(command string) []Token {
 	if redirectTarget {
 		tokens = append(tokens, Token{Text: "<missing redirect target>", IsOperator: true, Malformed: true})
 	}
+	if validateOperators(tokens) {
+		malformed = true
+	}
 	if len(tokens) > 0 && tokens[len(tokens)-1].IsOperator {
 		switch tokens[len(tokens)-1].Text {
-		case "&&", "||", "|", "(":
+		case "&&", "||", "|", "|&", "(":
 			tokens[len(tokens)-1].Malformed = true
 		}
 	}
@@ -196,6 +207,32 @@ func Tokenize(command string) []Token {
 	return tokens
 }
 
+func validateOperators(tokens []Token) bool {
+	bad := false
+	previousOperator := ""
+	for i := range tokens {
+		tok := &tokens[i]
+		if !tok.IsOperator {
+			previousOperator = ""
+			continue
+		}
+		switch tok.Text {
+		case ";", "&&", "||", "|", "|&", "&":
+			if i == 0 || previousOperator == ";" || previousOperator == "&&" || previousOperator == "||" || previousOperator == "|" || previousOperator == "|&" || previousOperator == "&" || previousOperator == "(" {
+				tok.Malformed = true
+				bad = true
+			}
+		case ")":
+			if previousOperator == "(" {
+				tok.Malformed = true
+				bad = true
+			}
+		}
+		previousOperator = tok.Text
+	}
+	return bad
+}
+
 // SplitSegments returns command words grouped around shell command
 // separators. Operators themselves are omitted. The first word after a pipe
 // (and its arguments) is marked as receiving piped input.
@@ -213,7 +250,7 @@ func SplitSegments(tokens []Token) [][]Token {
 		if tok.IsOperator {
 			flush()
 			switch tok.Text {
-			case "|":
+			case "|", "|&":
 				receivesPipe = true
 			default:
 				receivesPipe = false

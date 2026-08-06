@@ -5344,3 +5344,29 @@ parity: crates/jcode-command-risk/src/{tokenize,paths,gate}.rs and
 codex: no separate external codex verdict; manual comparison against the cited
         jcode sources plus the serial build/vet/test gates found no unresolved
         J4 finding.
+
+## 2026-08-06 J4 review follow-up — command-risk parity audit
+
+The post-tag review rechecked the entire J4 section against jcode's tokenizer,
+path classifier, gate, and bash integration rather than relying only on the
+initial happy-path tests. It found and fixed several real edge cases: plain
+`~` and `~/` expansion, the distinction between protected roots and ordinary
+configuration/data files, safe standard device redirects, glob and temporary
+path handling, repository metadata outside the workspace, malformed operator
+chains, `|&`, numeric wrapper operands, `busybox`/`toybox`, multi-action
+`find`, `eval` scripts, opaque shell substitutions, and recursive-only
+`chmod`/`chown` handling. Explanations now name expanded protected targets,
+and the parity corpus covers the tier boundaries and wrapper paths.
+
+Verification was run serially to avoid competing test processes:
+`go test -p 1 ./...`, `go build -p 1 ./...`, and `go vet -p 1 ./...` all pass;
+`git diff --check` is clean.
+
+parity: crates/jcode-command-risk/src/{tokenize,paths,risk,gate}.rs and
+        crates/jcode-app-core/src/tool/bash_destructive_gate.rs — on par or
+        better for §4 after the follow-up edge-case audit; evilcode retains
+        the same conservative tiers while covering more wrapper and transcript
+        integration cases. It remains lexical by design and is not a full shell
+        parser.
+codex: no separate external codex verdict; manual source comparison and the
+        serial full-repository test/build/vet gate found no unresolved J4 issue.
