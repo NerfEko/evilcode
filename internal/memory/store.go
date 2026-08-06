@@ -21,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // Kind classifies a memory. The kinds are the plan's, and they exist to let
@@ -357,7 +358,11 @@ func (s *Store) Len() int {
 // Hit is one search result.
 type Hit struct {
 	Record
-	Score float64
+	// Score is the final RRF score after kind weighting. Relevance is a
+	// human-scale signal from the dense/lexical retrievers used by the adaptive
+	// recall cutoff; it is not used to order the fused results.
+	Score     float64
+	Relevance float64
 }
 
 // SearchOptions qualifies dense scoring without changing the legacy Search
@@ -372,12 +377,10 @@ type SearchOptions struct {
 // noise, and injecting noise into every turn is worse than injecting nothing.
 const RecallThreshold = 0.55
 
-// Search ranks memories against a query embedding, returning the top n above
-// the threshold.
-//
-// When the query has no embedding — the embedder was down, or the caller only
-// has text — it falls back to substring matching, so recall degrades to
-// something useful rather than to nothing.
+// Search ranks memories with both dense cosine and lexical BM25 retrieval.
+// Their rank lists are fused with reciprocal rank fusion (RRF), so an exact
+// term match remains visible even when semantic retrieval also returned hits.
+// A query without an embedding simply contributes no dense rank list.
 func (s *Store) Search(query string, vec []float32, n int, threshold float64, options ...SearchOptions) []Hit {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -386,33 +389,95 @@ func (s *Store) Search(query string, vec []float32, n int, threshold float64, op
 		opts = options[0]
 	}
 
-	var hits []Hit
-	if len(vec) > 0 {
-		for _, r := range s.records {
-			if r.Deleted || len(r.Vec) != len(vec) || (opts.EmbeddingModel != "" && r.EmbeddingModel != opts.EmbeddingModel) {
-				continue
-			}
-			score := Cosine(r.Vec, vec)
-			if score < threshold {
-				continue
-			}
-			hits = append(hits, Hit{Record: r, Score: score * r.Kind.Weight()})
+	records := make([]Record, 0, len(s.records))
+	for _, r := range s.records {
+		if !r.Deleted {
+			records = append(records, r)
 		}
-	} else {
-		// Only the no-embedding case degrades to substring matching. A working
-		// embedder that found nothing above threshold means nothing is
-		// relevant — falling back here would silently override a correct
-		// "nothing relevant" with the far looser lexical fallback, recalling
-		// something on almost every message.
-		hits = s.substringHits(query)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	pool := len(records)
+	if n > 0 {
+		pool = n * 5
+		if pool < 50 {
+			pool = 50
+		}
+		if pool > len(records) {
+			pool = len(records)
+		}
+	}
+
+	dense := make([]rankedMemory, 0, len(records))
+	for i, r := range records {
+		if len(vec) == 0 || len(r.Vec) != len(vec) || (opts.EmbeddingModel != "" && r.EmbeddingModel != opts.EmbeddingModel) {
+			continue
+		}
+		score := Cosine(r.Vec, vec)
+		// Keep the existing threshold as a dense candidate floor. Lexical
+		// ranking is independent, so a low-cosine exact term still survives.
+		if score < threshold {
+			continue
+		}
+		dense = append(dense, rankedMemory{index: i, score: score})
+	}
+	sortRankedMemory(dense, records)
+	if len(dense) > pool {
+		dense = dense[:pool]
+	}
+
+	lexical := bm25Rank(records, query, pool)
+	const rrfK = 60.0
+	fused := make(map[int]float64, len(dense)+len(lexical))
+	denseScores := make(map[int]float64, len(dense))
+	lexicalScores := make(map[int]float64, len(lexical))
+	for rank, hit := range dense {
+		fused[hit.index] += 1 / (rrfK + float64(rank) + 1)
+		denseScores[hit.index] = hit.score
+	}
+	for rank, hit := range lexical {
+		fused[hit.index] += 1 / (rrfK + float64(rank) + 1)
+		lexicalScores[hit.index] = hit.score
+	}
+
+	hits := make([]Hit, 0, len(fused))
+	for index, fusedScore := range fused {
+		relevance := denseScores[index]
+		if lexicalScore := lexicalScores[index]; lexicalScore > 0 {
+			// BM25 is unbounded; compress it into a signal near the same
+			// 0..1 range as cosine while keeping lexical-only hits visible.
+			base := threshold
+			if base < 0 {
+				base = 0
+			}
+			if base > 1 {
+				base = 1
+			}
+			lexicalRelevance := base + (1-base)*(lexicalScore/(lexicalScore+1))
+			if lexicalRelevance > relevance {
+				relevance = lexicalRelevance
+			}
+		}
+		hits = append(hits, Hit{
+			Record:    records[index],
+			Score:     fusedScore * records[index].Kind.Weight(),
+			Relevance: relevance,
+		})
 	}
 
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].Score != hits[j].Score {
 			return hits[i].Score > hits[j].Score
 		}
-		// A tie goes to the more recent memory.
-		return hits[i].TS.After(hits[j].TS)
+		if hits[i].Relevance != hits[j].Relevance {
+			return hits[i].Relevance > hits[j].Relevance
+		}
+		if !hits[i].TS.Equal(hits[j].TS) {
+			return hits[i].TS.After(hits[j].TS)
+		}
+		return hits[i].ID < hits[j].ID
 	})
 	if n > 0 && len(hits) > n {
 		hits = hits[:n]
@@ -420,34 +485,110 @@ func (s *Store) Search(query string, vec []float32, n int, threshold float64, op
 	return hits
 }
 
-// substringHits is the no-embedding fallback. Scores sit just above the recall
-// threshold so a lexical hit is usable but never outranks a semantic one.
-func (s *Store) substringHits(query string) []Hit {
-	words := strings.Fields(strings.ToLower(query))
-	if len(words) == 0 {
+type rankedMemory struct {
+	index int
+	score float64
+}
+
+func sortRankedMemory(hits []rankedMemory, records []Record) {
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
+		}
+		if !records[hits[i].index].TS.Equal(records[hits[j].index].TS) {
+			return records[hits[i].index].TS.After(records[hits[j].index].TS)
+		}
+		return records[hits[i].index].ID < records[hits[j].index].ID
+	})
+}
+
+// bm25Rank returns lexical rank positions and raw BM25 scores. It is a small
+// one-pass scorer: the bank is intentionally a few thousand short records,
+// where rebuilding document frequencies per query is cheaper than maintaining
+// another persistent index.
+func bm25Rank(records []Record, query string, limit int) []rankedMemory {
+	queryTerms := uniqueTerms(query)
+	if len(queryTerms) == 0 || len(records) == 0 {
 		return nil
 	}
-	var hits []Hit
-	for _, r := range s.records {
-		if r.Deleted {
-			continue
-		}
-		text := strings.ToLower(r.Text)
-		matched := 0
-		for _, w := range words {
-			if len(w) > 2 && strings.Contains(text, w) {
-				matched++
+	docs := make([][]string, len(records))
+	lengthTotal := 0
+	df := make(map[string]float64)
+	for i, record := range records {
+		docs[i] = searchTerms(record.Text)
+		lengthTotal += len(docs[i])
+		seen := make(map[string]struct{}, len(docs[i]))
+		for _, term := range docs[i] {
+			if _, ok := seen[term]; ok {
+				continue
 			}
+			seen[term] = struct{}{}
+			df[term]++
 		}
-		if matched == 0 {
+	}
+	avgdl := float64(lengthTotal) / float64(len(records))
+	if avgdl == 0 {
+		return nil
+	}
+
+	const k1 = 1.2
+	const b = 0.75
+	scored := make([]rankedMemory, 0, len(records))
+	for i, doc := range docs {
+		if len(doc) == 0 {
 			continue
 		}
-		hits = append(hits, Hit{
-			Record: r,
-			Score:  RecallThreshold + 0.3*float64(matched)/float64(len(words)),
-		})
+		tf := make(map[string]float64, len(doc))
+		for _, term := range doc {
+			tf[term]++
+		}
+		dl := float64(len(doc))
+		score := 0.0
+		for _, term := range queryTerms {
+			frequency := tf[term]
+			if frequency == 0 {
+				continue
+			}
+			docFrequency := df[term]
+			idf := math.Log((float64(len(records))-docFrequency+0.5)/(docFrequency+0.5) + 1)
+			denom := frequency + k1*(1-b+b*dl/avgdl)
+			score += idf * frequency * (k1 + 1) / denom
+		}
+		if score > 0 {
+			scored = append(scored, rankedMemory{index: i, score: score})
+		}
 	}
-	return hits
+	sortRankedMemory(scored, records)
+	if limit > 0 && len(scored) > limit {
+		scored = scored[:limit]
+	}
+	return scored
+}
+
+func uniqueTerms(text string) []string {
+	seen := make(map[string]struct{})
+	var terms []string
+	for _, term := range searchTerms(text) {
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+func searchTerms(text string) []string {
+	text = strings.ToLower(text)
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Fields(b.String())
 }
 
 // Cosine is the cosine similarity of two equal-length vectors.

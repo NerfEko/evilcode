@@ -140,6 +140,35 @@ func TestPendingEmbeddingsCountsMissingAndStaleModels(t *testing.T) {
 	}
 }
 
+func TestSearchFusesLexicalAndDenseCandidates(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	s.AddWithModel("semantic guidance for release work", KindFact, "sess", vec(1, 0), "model-a", now)
+	s.AddWithModel("exact release token is required", KindProject, "sess", vec(0, 1), "model-a", now.Add(time.Second))
+
+	hits := s.Search("exact release token", vec(1, 0), 4, 0.5, SearchOptions{EmbeddingModel: "model-a"})
+	if len(hits) != 2 {
+		t.Fatalf("hybrid hits = %d, want dense + lexical candidates: %#v", len(hits), hits)
+	}
+	seen := map[string]bool{}
+	for _, hit := range hits {
+		seen[hit.Text] = true
+	}
+	if !seen["semantic guidance for release work"] || !seen["exact release token is required"] {
+		t.Fatalf("hybrid search dropped one retriever's candidate: %#v", hits)
+	}
+}
+
+func TestMismatchedModelRemainsLexicallyReachable(t *testing.T) {
+	s := openTemp(t)
+	s.AddWithModel("remember the forgejo deployment path", KindProject, "sess", vec(1, 0), "model-old", time.Now())
+
+	hits := s.Search("forgejo deployment", vec(1, 0), 4, 0.5, SearchOptions{EmbeddingModel: "model-new"})
+	if len(hits) != 1 || hits[0].EmbeddingModel != "model-old" {
+		t.Fatalf("mismatched model lexical search = %#v, want the old vector via BM25", hits)
+	}
+}
+
 func TestAddMergesNearDuplicates(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
