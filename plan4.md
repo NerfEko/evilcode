@@ -771,9 +771,10 @@ Line numbers as-of §0.5. Trust the symbol.
       without cgo, and at what model size and startup cost. No code. The answer decides
       J5.5. Prep complete; see `LOOPS.md` and `DEVIATIONS.md`.
       ⟨jcode: crates/jcode-embedding/src/lib.rs:89-250 for what it costs them⟩
-- [ ] **J5.5** `internal/memory/pipeline.go:182` `Manager.embed` — recall dies with the
-      provider's embeddings route. Add the local embedder from J5.4 as the floor, provider
-      preferred when present. If J5.4 says no: `DEVIATIONS.md` and skip. §5.4. ⟨build⟩
+- [x] **J5.5** `internal/memory/pipeline.go:182` `Manager.embed` — recall dies with the
+      provider's embeddings route. Provider embeddings remain preferred and BM25 is the
+      availability floor; the local runtime is skipped per J5.4 and `DEVIATIONS.md`.
+      §5.4. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:815-828⟩
 - [ ] **J5.6** `internal/memory/store.go:60` `Record` — one flat bank means a preference
       stated in one repo surfaces in every unrelated one. Add scope (project keyed on
