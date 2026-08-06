@@ -68,6 +68,11 @@ type Activity struct {
 // number: enough to be useful, few enough that a bad match is obvious.
 const RecallCount = 4
 
+// RecallCandidateCount gives the adaptive cutoff enough tail to observe a
+// relevance drop. RecallCount remains the maximum number injected; this is
+// only the per-retriever/candidate budget before the cut.
+const RecallCandidateCount = RecallCount * 5
+
 // ExtractEvery is how many turns pass between ambient extraction side-calls.
 const ExtractEvery = 8
 
@@ -288,7 +293,8 @@ func (m *Manager) Recall(ctx context.Context, userMsg string) (string, []Hit) {
 	})
 
 	vec := m.embed(ctx, userMsg)
-	hits := m.Search(userMsg, vec, RecallCount, RecallThreshold)
+	hits := m.Search(userMsg, vec, RecallCandidateCount, RecallThreshold)
+	hits = cutRecallTail(hits, RecallThreshold, RecallCount)
 
 	m.setStage(StageCheck, func(a *Activity) { a.Relevant = len(hits) })
 	if len(hits) == 0 {
@@ -299,6 +305,48 @@ func (m *Manager) Recall(ctx context.Context, userMsg string) (string, []Hit) {
 	text := FormatMemories(hits)
 	m.setStage(StageInject, func(a *Activity) { a.Tokens = EstimateTokens(text) })
 	return text, hits
+}
+
+// cutRecallTail keeps a contiguous relevant prefix. A fixed top-four cap is a
+// useful ceiling, but it should not force a fourth weak memory into every turn.
+// The first drop larger than a quarter of the top-to-threshold range ends the
+// prefix; one strong result therefore stays one result, while a tight cluster
+// can still fill the cap.
+func cutRecallTail(hits []Hit, threshold float64, cap int) []Hit {
+	if len(hits) <= 1 {
+		return hits
+	}
+	limit := len(hits)
+	if cap > 0 && limit > cap {
+		limit = cap
+	}
+	if limit <= 1 {
+		return hits[:limit]
+	}
+
+	signal := func(hit Hit) float64 {
+		if hit.Relevance > 0 {
+			return hit.Relevance
+		}
+		return hit.Score
+	}
+	top := signal(hits[0])
+	rangeToFloor := top - threshold
+	if rangeToFloor <= 0 {
+		rangeToFloor = top
+	}
+	if rangeToFloor < 0.01 {
+		rangeToFloor = 0.01
+	}
+	maxGap := rangeToFloor * 0.25
+	keep := limit
+	for i := 1; i < limit; i++ {
+		if signal(hits[i-1])-signal(hits[i]) > maxGap {
+			keep = i
+			break
+		}
+	}
+	return hits[:keep]
 }
 
 // FormatMemories renders hits as the `<memories>` tail message.

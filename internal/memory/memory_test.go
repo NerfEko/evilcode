@@ -169,6 +169,54 @@ func TestMismatchedModelRemainsLexicallyReachable(t *testing.T) {
 	}
 }
 
+func TestAdaptiveRecallCutoffDropsWeakTail(t *testing.T) {
+	hits := []Hit{
+		{Score: 0.9, Relevance: 0.92},
+		{Score: 0.8, Relevance: 0.61},
+		{Score: 0.7, Relevance: 0.60},
+		{Score: 0.6, Relevance: 0.59},
+	}
+	got := cutRecallTail(hits, RecallThreshold, RecallCount)
+	if len(got) != 1 {
+		t.Fatalf("adaptive cutoff kept %d hits, want only the strong prefix", len(got))
+	}
+}
+
+func TestAdaptiveRecallCutoffKeepsTightClusterUnderCap(t *testing.T) {
+	hits := []Hit{
+		{Score: 0.9, Relevance: 0.82},
+		{Score: 0.8, Relevance: 0.80},
+		{Score: 0.7, Relevance: 0.78},
+		{Score: 0.6, Relevance: 0.76},
+		{Score: 0.5, Relevance: 0.74},
+	}
+	got := cutRecallTail(hits, RecallThreshold, RecallCount)
+	if len(got) != RecallCount {
+		t.Fatalf("adaptive cutoff kept %d hits, want cap %d", len(got), RecallCount)
+	}
+}
+
+func TestRecallCutsWeakTailBeforeInjection(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	model := "model-a"
+	for i, v := range [][]float32{
+		{1, 0, 0, 0, 0},
+		{0.6, 0.8, 0, 0, 0},
+		{0.59, 0, 0.807, 0, 0},
+		{0.58, 0, 0, 0.815, 0},
+		{0.57, 0, 0, 0, 0.822},
+	} {
+		s.AddWithModel(fmt.Sprintf("memory %d", i), KindFact, "sess", v, model, now.Add(time.Duration(i)*time.Second))
+	}
+	emb := &stubEmbedder{vecs: map[string][]float32{"what matters": vec(1, 0, 0, 0, 0)}}
+	m := NewManagerWithModel(s, emb, nil, "sess", true, model)
+	_, hits := m.Recall(context.Background(), "what matters")
+	if len(hits) != 1 {
+		t.Fatalf("recall injected %d candidates, want one strong memory: %#v", len(hits), hits)
+	}
+}
+
 func TestAddMergesNearDuplicates(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
