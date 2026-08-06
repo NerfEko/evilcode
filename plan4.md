@@ -791,7 +791,7 @@ Line numbers as-of §0.5. Trust the symbol.
       is replaced by a summary, so a compaction mid-task costs the task. Summarize the old
       portion, keep the recent N turns verbatim, never split a tool call from its result.
       §6.1. ⟨fix⟩ ⟨jcode: crates/jcode-base/src/compaction.rs:1143-1281⟩
-- [ ] **J6.2** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — firing at 85%
+- [x] **J6.2** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — firing at 85%
       means the turn that crosses 85% pays. Track per-turn deltas as an EWMA, project
       forward, compact on the projection. §6.2. ⟨port⟩
       ⟨jcode: crates/jcode-base/src/compaction.rs:514-548⟩

@@ -5499,3 +5499,24 @@ codex: no final external verdict; the read-only review runner was stopped after
         6m50s without a final message. Manual comparison against the cited jcode
         source, the attachment regression, and the serial gates found no
         unresolved J6.1 issue.
+
+## 2026-08-06 J6.2 — predictive compaction from context growth
+
+`Compactor.ShouldCompact` now records the context usage observed at each turn,
+smooths the positive per-turn deltas with an EWMA (`alpha = 0.3`), and projects
+fifteen turns ahead. Once the current context is above the proactive 40% floor,
+the projection triggers compaction before the fixed 85% boundary; the fixed
+boundary remains the fallback when the projection has insufficient samples.
+Changing context windows, shrinking context, and successful compaction reset the
+slope so stale provider or pre-compaction growth cannot trigger a false positive.
+The `/context` notice and README describe the predictive behavior.
+
+parity: crates/jcode-base/src/compaction.rs:456-548 and
+        crates/jcode-config-types/src/lib.rs:345-390 — on par (same EWMA growth
+        projection, lookahead default, and proactive floor; evilcode retains a
+        fixed-threshold fallback and resets state on provider/context changes)
+verification: `go test -p 1 ./internal/agent ./internal/tui -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass, serially.
+codex: no separate external verdict; manual comparison against the cited jcode
+        source and the serial focused/full gates found no unresolved J6.2 issue.
