@@ -234,6 +234,9 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTail(dataDir, summary, tail)
+		},
 		OnCompaction: exposure.Reset,
 	}
 	out.Agent = a

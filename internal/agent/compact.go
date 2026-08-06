@@ -20,6 +20,13 @@ Be dense.`
 // summariser, so a single pasted file cannot crowd out the conversation.
 const CompactMessageCap = 2000
 
+// RecentTurnsToKeep is the verbatim tail preserved by compaction. Keeping a
+// real working window means a compaction that lands between a prompt and its
+// answer does not make the model rediscover the task it is in the middle of.
+// Ten matches the jcode compaction floor while remaining small enough to leave
+// room for the fresh request.
+const RecentTurnsToKeep = 10
+
 // CompactThreshold is the fraction of the context window at which a turn
 // compacts before dispatching (plan.md §9.9).
 //
@@ -53,6 +60,12 @@ type Compactor struct {
 	// to do by accident — and why resuming a compacted session restored the
 	// full history.
 	Persist func(summary string) ([]provider.Message, error)
+
+	// PersistWithTail is the durable form used by live sessions. It receives the
+	// exact messages kept verbatim after the summary so a resume sees the same
+	// compacted context as the in-memory conversation. Persist remains for small
+	// callers that only need the legacy summary-only rewrite.
+	PersistWithTail func(summary string, tail []provider.Message) ([]provider.Message, error)
 
 	// OnCompaction resets session-local caches whose contents are no longer in
 	// the model context (for example the tool exposure ledger).
@@ -110,7 +123,15 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 		return "", fmt.Errorf("nothing to compact")
 	}
 
-	summary, err := c.Summarize(ctx, CompactPrompt, Transcript(conv.Messages()))
+	msgs := conv.Messages()
+	cutoff := compactionCutoff(msgs, RecentTurnsToKeep)
+	if cutoff == 0 {
+		return "", fmt.Errorf("not enough history to compact while keeping the most recent %d turns", RecentTurnsToKeep)
+	}
+	old := msgs[:cutoff]
+	tail := cloneMessages(msgs[cutoff:])
+
+	summary, err := c.Summarize(ctx, CompactPrompt, Transcript(old))
 	if err != nil {
 		return "", err
 	}
@@ -118,9 +139,15 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 		return "", fmt.Errorf("the summarizer returned nothing")
 	}
 
-	replay := []provider.Message{CompactMessage(summary)}
-	if c.Persist != nil {
-		stored, err := c.Persist(summary)
+	replay := append([]provider.Message{CompactMessage(summary)}, tail...)
+	var stored []provider.Message
+	if c.PersistWithTail != nil {
+		stored, err = c.PersistWithTail(summary, tail)
+		if err != nil {
+			return "", fmt.Errorf("compaction was not saved: %w", err)
+		}
+	} else if c.Persist != nil {
+		stored, err = c.Persist(summary)
 		if err != nil {
 			return "", fmt.Errorf("compaction was not saved: %w", err)
 		}
@@ -137,6 +164,134 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 	c.count++
 	c.mu.Unlock()
 	return summary, nil
+}
+
+// cloneMessages copies the slice and each variable-length field that a
+// compaction keeps. The conversation owns its message values; retaining the
+// caller's tool-call or image backing arrays would let a later append mutate
+// the exact tail we promised to preserve.
+func cloneMessages(msgs []provider.Message) []provider.Message {
+	out := make([]provider.Message, len(msgs))
+	for i, msg := range msgs {
+		out[i] = msg
+		out[i].ToolCalls = append([]provider.ToolCall(nil), msg.ToolCalls...)
+		for j, call := range msg.ToolCalls {
+			out[i].ToolCalls[j].Args = append(call.Args[:0:0], call.Args...)
+		}
+		out[i].Images = make([][]byte, len(msg.Images))
+		for j, image := range msg.Images {
+			out[i].Images[j] = append([]byte(nil), image...)
+		}
+		out[i].Repairs = append([]string(nil), msg.Repairs...)
+	}
+	return out
+}
+
+// compactionCutoff returns the prefix that can be summarized while retaining
+// the latest user turns. The cutoff is conservative around tool calls: if the
+// requested boundary would leave a tool result without its assistant call, it
+// moves backward to keep the whole pair in the live suffix. A malformed or
+// unanswered pair aborts compaction rather than handing a strict provider an
+// invalid transcript.
+func compactionCutoff(msgs []provider.Message, keepTurns int) int {
+	if keepTurns <= 0 {
+		return 0
+	}
+	users := 0
+	cutoff := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != provider.RoleUser {
+			continue
+		}
+		users++
+		if users == keepTurns {
+			cutoff = i
+			break
+		}
+	}
+	if cutoff <= 0 {
+		return 0
+	}
+	old := msgs[:cutoff]
+	oldContent := false
+	for _, msg := range old {
+		if msg.Role != provider.RoleSystem {
+			oldContent = true
+			break
+		}
+	}
+	if !oldContent {
+		return 0
+	}
+	return safeToolBoundary(msgs, cutoff)
+}
+
+// safeToolBoundary keeps tool-call/result pairs on one side of the cutoff.
+// Provider messages carry the call id on the assistant and result rows rather
+// than a nested content-block tree, so the check is deliberately expressed in
+// terms of those two fields.
+func safeToolBoundary(msgs []provider.Message, initial int) int {
+	cutoff := initial
+	callAt := make(map[string]int)
+	resultAt := make(map[string][]int)
+	for i, msg := range msgs {
+		if msg.Role == provider.RoleAssistant {
+			for _, call := range msg.ToolCalls {
+				if call.ID != "" {
+					if _, exists := callAt[call.ID]; !exists {
+						callAt[call.ID] = i
+					}
+				}
+			}
+		}
+		if msg.Role == provider.RoleTool {
+			if msg.ToolCallID == "" {
+				return 0
+			}
+			resultAt[msg.ToolCallID] = append(resultAt[msg.ToolCallID], i)
+		}
+	}
+
+	for id, positions := range resultAt {
+		call, ok := callAt[id]
+		if !ok {
+			return 0
+		}
+		for _, result := range positions {
+			if result >= cutoff && call < cutoff {
+				// The result is in the kept suffix but its call is in the
+				// summarized prefix. Re-run the check at the call boundary;
+				// the whole assistant message and its results now survive.
+				return safeToolBoundary(msgs, call)
+			}
+			if result < cutoff && call >= cutoff {
+				return 0
+			}
+		}
+	}
+
+	// A tool call in the kept suffix must have at least one result in that
+	// suffix. Live turns normally satisfy this invariant, but manual compaction
+	// must fail closed if it is invoked mid-tool-call.
+	for i := cutoff; i < len(msgs); i++ {
+		if msgs[i].Role != provider.RoleAssistant {
+			continue
+		}
+		for _, call := range msgs[i].ToolCalls {
+			positions := resultAt[call.ID]
+			answered := false
+			for _, result := range positions {
+				if result >= cutoff {
+					answered = true
+					break
+				}
+			}
+			if !answered {
+				return 0
+			}
+		}
+	}
+	return cutoff
 }
 
 // ShouldCompact reports whether a turn should compact before dispatching.

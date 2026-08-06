@@ -195,6 +195,9 @@ func runOnce(args []string) (string, error) {
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTail(dataDir, summary, tail)
+		},
 		OnCompaction: exposure.Reset,
 	}
 	a.Compactor = compactor

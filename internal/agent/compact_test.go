@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -14,25 +15,40 @@ func summarizer(reply string, err error) Summarizer {
 	return func(context.Context, string, string) (string, error) { return reply, err }
 }
 
-func TestCompactReplacesTheConversation(t *testing.T) {
+func compactableConversation() *Conversation {
 	conv := NewConversation("sys")
-	conv.Append(
-		provider.Message{Role: provider.RoleUser, Content: "wire the auth flow"},
-		provider.Message{Role: provider.RoleAssistant, Content: "done"},
-	)
-	c := &Compactor{Summarize: summarizer("we wired auth", nil)}
+	for i := 0; i < RecentTurnsToKeep+2; i++ {
+		conv.Append(
+			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn %02d prompt", i)},
+			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("turn %02d answer", i)},
+		)
+	}
+	return conv
+}
+
+func TestCompactReplacesTheConversation(t *testing.T) {
+	conv := compactableConversation()
+	var summarized string
+	c := &Compactor{Summarize: func(_ context.Context, _, user string) (string, error) {
+		summarized = user
+		return "we wired auth", nil
+	}}
 
 	if _, err := c.Compact(context.Background(), conv); err != nil {
 		t.Fatal(err)
 	}
 	msgs := conv.Messages()
-	if got := msgs[len(msgs)-1].Content; !strings.Contains(got, "we wired auth") {
-		t.Errorf("summary message = %q", got)
+	if !strings.Contains(msgs[1].Content, "we wired auth") {
+		t.Errorf("summary message = %q", msgs[1].Content)
 	}
-	for _, m := range msgs {
-		if strings.Contains(m.Content, "wire the auth flow") {
-			t.Error("the pre-compaction history is still in the conversation")
-		}
+	if strings.Contains(summarized, "turn 11") || !strings.Contains(summarized, "turn 00") {
+		t.Errorf("summarizer saw the wrong portion: %q", summarized)
+	}
+	if strings.Contains(strings.Join(messageContents(msgs), "\n"), "turn 00") {
+		t.Error("the old turn survived instead of being summarized")
+	}
+	if !strings.Contains(strings.Join(messageContents(msgs), "\n"), "turn 11 answer") {
+		t.Error("the newest turn was not preserved verbatim")
 	}
 	if c.Count() != 1 {
 		t.Errorf("count = %d, want 1", c.Count())
@@ -42,8 +58,7 @@ func TestCompactReplacesTheConversation(t *testing.T) {
 func TestCompactKeepsTheConversationWhenPersistFails(t *testing.T) {
 	// The order is the point: dropping the history in memory while nothing
 	// reached storage would lose the session outright.
-	conv := NewConversation("sys")
-	conv.Append(provider.Message{Role: provider.RoleUser, Content: "important work"})
+	conv := compactableConversation()
 	c := &Compactor{
 		Summarize: summarizer("a summary", nil),
 		Persist: func(string) ([]provider.Message, error) {
@@ -55,7 +70,8 @@ func TestCompactKeepsTheConversationWhenPersistFails(t *testing.T) {
 		t.Fatal("a failed persist should be reported")
 	}
 	msgs := conv.Messages()
-	if msgs[len(msgs)-1].Content != "important work" {
+	if !strings.Contains(msgs[len(msgs)-1].Content, "turn 11 answer") ||
+		!strings.Contains(strings.Join(messageContents(msgs), "\n"), "turn 00 prompt") {
 		t.Errorf("history was replaced despite the failure: %v", msgs)
 	}
 }
@@ -63,8 +79,7 @@ func TestCompactKeepsTheConversationWhenPersistFails(t *testing.T) {
 func TestCompactUsesWhatPersistReturned(t *testing.T) {
 	// Storage decides what a resume will replay, so memory follows it rather
 	// than guessing — otherwise the two drift the moment the format changes.
-	conv := NewConversation("sys")
-	conv.Append(provider.Message{Role: provider.RoleUser, Content: "x"})
+	conv := compactableConversation()
 	stored := []provider.Message{{Role: provider.RoleUser, Content: "canonical replay"}}
 	c := &Compactor{
 		Summarize: summarizer("s", nil),
@@ -81,8 +96,7 @@ func TestCompactUsesWhatPersistReturned(t *testing.T) {
 }
 
 func TestCompactCallsOnCompactionAfterReset(t *testing.T) {
-	conv := NewConversation("sys")
-	conv.Append(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	conv := compactableConversation()
 	called := 0
 	c := &Compactor{
 		Summarize:    summarizer("fresh context", nil),
@@ -101,7 +115,7 @@ func TestAutoCompactHasABreaker(t *testing.T) {
 	// compact forever without ever sending a request — which presents as a hang
 	// rather than as a loop, and is the worst shape of runaway.
 	c := &Compactor{Summarize: summarizer("still enormous", nil)}
-	conv := NewConversation("sys")
+	conv := compactableConversation()
 
 	for i := 0; i < MaxAutoCompactions+3; i++ {
 		conv.Append(provider.Message{Role: provider.RoleUser, Content: "x"})
@@ -118,6 +132,46 @@ func TestAutoCompactHasABreaker(t *testing.T) {
 	if c.ShouldCompact(99, 100) {
 		t.Error("still willing to compact after hitting the cap")
 	}
+}
+
+func TestCompactionDoesNotSplitToolCallResult(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read"}}},
+		{Role: provider.RoleTool, ToolCallID: "call-1", ToolName: "read", Content: "ok"},
+		{Role: provider.RoleUser, Content: "continue"},
+	}
+	if got := safeToolBoundary(msgs, 1); got != 0 {
+		t.Fatalf("cutoff = %d, want compaction refused for a split tool pair", got)
+	}
+
+	conv := NewConversation("sys")
+	for i := 0; i < RecentTurnsToKeep+1; i++ {
+		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
+	}
+	conv.Append(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "unfinished", Name: "read"}}})
+	c := &Compactor{Summarize: summarizer("summary", nil)}
+	if _, err := c.Compact(context.Background(), conv); err == nil {
+		t.Fatal("compaction should refuse an unanswered tool call in the kept tail")
+	}
+}
+
+func TestCompactRequiresAnOlderTurn(t *testing.T) {
+	conv := NewConversation("sys")
+	for i := 0; i < RecentTurnsToKeep; i++ {
+		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
+	}
+	c := &Compactor{Summarize: summarizer("summary", nil)}
+	if _, err := c.Compact(context.Background(), conv); err == nil {
+		t.Fatal("compaction should not summarize an empty old prefix")
+	}
+}
+
+func messageContents(msgs []provider.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		out = append(out, msg.Content)
+	}
+	return out
 }
 
 func TestShouldCompactOnlyNearTheLimit(t *testing.T) {

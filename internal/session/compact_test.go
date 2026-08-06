@@ -55,6 +55,47 @@ func TestCompactSurvivesResume(t *testing.T) {
 	}
 }
 
+func TestCompactWithTailSurvivesResume(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []provider.Message{
+		{Role: provider.RoleUser, Content: "old prompt"},
+		{Role: provider.RoleAssistant, Content: "old answer"},
+	} {
+		if err := store.WriteMessage(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := store.Name
+	store.Close()
+
+	tail := []provider.Message{
+		{Role: provider.RoleUser, Content: "current prompt"},
+		{Role: provider.RoleAssistant, Content: "current answer"},
+	}
+	replay, err := CompactWithTail(dir, name, "old work summary", tail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 3 {
+		t.Fatalf("compaction returned %d messages, want summary + two tail messages", len(replay))
+	}
+	if !strings.Contains(replay[0].Content, "old work summary") || replay[1].Content != "current prompt" {
+		t.Fatalf("replay = %#v, want summary followed by the preserved tail", replay)
+	}
+
+	_, resumed, err := Resume(dir, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed) != 3 || resumed[1].Content != "current prompt" || resumed[2].Content != "current answer" {
+		t.Fatalf("resumed = %#v, want summary + preserved tail", resumed)
+	}
+}
+
 func TestCompactIsCountedForThePicker(t *testing.T) {
 	// §5.4's 📦 glyph and §8.2's "≥3 compactions" warning both need this.
 	dir := t.TempDir()
