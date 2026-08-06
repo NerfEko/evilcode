@@ -288,31 +288,129 @@ func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
 func parseProgress(output string) Progress {
 	var latest Progress
 	for _, line := range strings.Split(output, "\n") {
-		if p, ok := parseCheckpointMarker(line); ok {
+		if p, ok := parseProgressLine(line); ok {
 			latest = p
-			continue
-		}
-		if p, ok := parseProgressMarker(line); ok {
-			latest = p
-			continue
-		}
-		if p, ok := parsePercentProgress(line); ok {
-			latest = p
-			continue
-		}
-		if p, ok := parseFractionProgress(line); ok {
-			latest = p
-			continue
-		}
-		if p, ok := parseOfProgress(line); ok {
-			latest = p
-			continue
-		}
-		if phase := strings.TrimSpace(line); isPhaseLine(phase) {
-			latest = Progress{Phase: phase, Message: phase, Known: true}
 		}
 	}
 	return latest
+}
+
+// parseProgressLine is the allocation-free hot path used while a command is
+// streaming. Calling parseProgress (which splits a complete output string) for
+// every line made a verbose command allocate once per line, defeating the
+// bounded ring writer.
+func parseProgressLine(line string) (Progress, bool) {
+	if p, ok := parseCheckpointMarker(line); ok {
+		return p, true
+	}
+	if p, ok := parseProgressMarker(line); ok {
+		return p, true
+	}
+	if p, ok := parsePercentProgress(line); ok {
+		return p, true
+	}
+	if p, ok := parseFractionProgress(line); ok {
+		return p, true
+	}
+	if p, ok := parseOfProgress(line); ok {
+		return p, true
+	}
+	if phase := strings.TrimSpace(line); isPhaseLine(phase) {
+		return Progress{Phase: phase, Message: phase, Known: true}, true
+	}
+	return Progress{}, false
+}
+
+// looksLikeProgressLine avoids invoking the regexp-based parsers for every
+// ordinary output line. A command such as `yes` can produce millions of lines;
+// allocating a regexp match slice for each one defeats the bounded writer.
+func looksLikeProgressLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.ContainsAny(line, "%/") || strings.Contains(line, " of ") {
+		return true
+	}
+	for _, marker := range []string{"EVILCODE_PROGRESS", "JCODE_PROGRESS", "JCODE_CHECKPOINT"} {
+		if hasPrefixFold(line, marker) {
+			return true
+		}
+	}
+	for _, phase := range []string{"compiling", "building", "running", "testing", "linking", "downloading", "installing", "checking", "fetching", "resolving"} {
+		if hasPrefixFold(line, phase) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeProgressBytes(line []byte) bool {
+	start, end := 0, len(line)
+	for start < end && (line[start] == ' ' || line[start] == '\t' || line[start] == '\r') {
+		start++
+	}
+	for end > start && (line[end-1] == ' ' || line[end-1] == '\t' || line[end-1] == '\r') {
+		end--
+	}
+	line = line[start:end]
+	if len(line) == 0 {
+		return false
+	}
+	for _, c := range line {
+		if c == '%' || c == '/' {
+			return true
+		}
+	}
+	for i := 0; i+4 <= len(line); i++ {
+		if line[i] == ' ' && line[i+1] == 'o' && line[i+2] == 'f' && line[i+3] == ' ' {
+			return true
+		}
+	}
+	for _, marker := range []string{"EVILCODE_PROGRESS", "JCODE_PROGRESS", "JCODE_CHECKPOINT", "compiling", "building", "running", "testing", "linking", "downloading", "installing", "checking", "fetching", "resolving"} {
+		if hasPrefixFoldBytes(line, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPrefixFold(value, prefix string) bool {
+	if len(value) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		v, p := value[i], prefix[i]
+		if v >= 'A' && v <= 'Z' {
+			v += 'a' - 'A'
+		}
+		if p >= 'A' && p <= 'Z' {
+			p += 'a' - 'A'
+		}
+		if v != p {
+			return false
+		}
+	}
+	return true
+}
+
+func hasPrefixFoldBytes(value []byte, prefix string) bool {
+	if len(value) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		v, p := value[i], prefix[i]
+		if v >= 'A' && v <= 'Z' {
+			v += 'a' - 'A'
+		}
+		if p >= 'A' && p <= 'Z' {
+			p += 'a' - 'A'
+		}
+		if v != p {
+			return false
+		}
+	}
+	return true
 }
 
 var (

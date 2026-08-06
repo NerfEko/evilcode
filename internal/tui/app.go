@@ -751,7 +751,8 @@ func (m *Model) applyEvent(e agent.Event) {
 			ToolTarget: toolTarget(e.Call.Args),
 			ToolPath:   toolPath(e.Call.Args),
 			ToolTokens: len(e.Output) / 4,
-			Failed:     e.IsError(),
+			Held:       e.Held,
+			Failed:     e.IsError() && !e.Held,
 			Diff:       e.Diff,
 			Repairs:    e.Repairs,
 		}
@@ -783,7 +784,7 @@ func (m *Model) applyEvent(e agent.Event) {
 			}
 		}
 		m.blocks = append(m.blocks, b)
-		if e.IsError() {
+		if e.IsError() && !e.Held {
 			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrText})
 		}
 		// A `read` on an image attaches the bytes for the model's vision path

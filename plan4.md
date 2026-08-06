@@ -729,23 +729,23 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J4 — The destructive-command gate
 
-- [ ] **J4.1** `internal/tools/` — new package `commandrisk`: a tokenizer that finds verbs
+- [x] **J4.1** `internal/tools/` — new package `commandrisk`: a tokenizer that finds verbs
       and targets through pipes, `&&`, `;`, subshells and simple quoting, and **fails
       closed** — unparseable is high risk, never low. §4. ⟨build⟩
       ⟨jcode: crates/jcode-command-risk/src/tokenize.rs and tokenize_tests.rs⟩
-- [ ] **J4.2** `internal/tools/commandrisk` — blast-radius classification of targets: `/`,
+- [x] **J4.2** `internal/tools/commandrisk` — blast-radius classification of targets: `/`,
       `$HOME`, `~/.ssh`, config and data dirs, `.git`, device nodes, outside-workspace, and
       inside-workspace as distinct tiers. §4. ⟨build⟩
       ⟨jcode: crates/jcode-command-risk/src/paths.rs and paths_tests.rs⟩
-- [ ] **J4.3** `internal/tools/commandrisk` — the verdict: run / refuse / reflect. Reflect
+- [x] **J4.3** `internal/tools/commandrisk` — the verdict: run / refuse / reflect. Reflect
       returns a refusal naming the blast radius and requires a `justification`; an identical
       blind retry must not satisfy it. §4. ⟨build⟩
       ⟨jcode: crates/jcode-command-risk/src/gate.rs and gate_tests.rs⟩
-- [ ] **J4.4** `internal/tools/exec.go:140` `Exec.bashTool` — wire the gate ahead of
+- [x] **J4.4** `internal/tools/exec.go:140` `Exec.bashTool` — wire the gate ahead of
       execution and ahead of the background branch, add `justification` to the schema, and
       render a held command distinctly in the transcript. §4. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash_destructive_gate.rs (whole file — 84 lines)⟩
-- [ ] Verify J4: `rm -rf /` refused; `rm -rf $HOME/projects` held then allowed with a
+- [x] Verify J4: `rm -rf /` refused; `rm -rf $HOME/projects` held then allowed with a
       justification; `rm -rf ./build` runs untouched; `git clean -xfd` at a repo root
       classified; a hundred ordinary commands from `LOOPS.md` run with zero false
       positives — **that last one is the acceptance test**, a gate that fires on ordinary

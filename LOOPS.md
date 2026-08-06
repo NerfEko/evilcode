@@ -5309,3 +5309,38 @@ parity: crates/jcode-app-core/src/tool/bash.rs:167-398,799-860,885-925 and
 codex: no new codex verdict was available; the earlier runner timed out before
         a final message. This audit was manual against the cited jcode source,
         with focused regressions plus the full build/vet/test gates below.
+
+## 2026-08-06 J4 — destructive-command gate
+
+Done: `internal/tools/commandrisk` now tokenizes shell segments, quotes,
+redirects, pipes, subshells, wrappers, and command substitutions conservatively.
+Malformed or opaque syntax is confirmation-required. Lexical target expansion
+classifies catastrophic system/device/credential paths, repository metadata,
+application config/data, outside-workspace paths, workspace-root cleanup, and
+bounded workspace cleanup into safe/low/confirm/catastrophic tiers. The gate's
+allow/reflect/refuse verdict is deterministic: catastrophic targets cannot be
+overridden, and reflection requires a substantive justification rather than a
+blind retry.
+
+`Exec.bashTool` runs the gate before both foreground and background execution,
+adds the `justification` schema field, and returns held metadata. Held results
+are persisted through agent events and provider messages and render as a
+warning row in the TUI. The full production wiring supplies config/data roots.
+The bounded progress parser also avoids per-line allocations while streaming,
+preserving J3's output-memory ceiling.
+
+Verification: `go test -p 1 ./...`, `go build -p 1 ./...`, and
+`go vet -p 1 ./...` are green. Focused regressions cover root refusal,
+`$HOME/projects` reflection, justified outside cleanup, workspace cleanup,
+background pre-gating, `git clean -xfd`, 100 ordinary commands, malformed and
+nested shell syntax, and held-row rendering.
+
+parity: crates/jcode-command-risk/src/{tokenize,paths,gate}.rs and
+        crates/jcode-app-core/src/tool/bash_destructive_gate.rs — on par or
+        better for §4 (evilcode keeps the same deterministic three-way gate and
+        adds lexical workspace-root/.git/config-data coverage, nested wrapper
+        handling, persisted held rendering, and explicit fail-closed syntax;
+        it does not attempt to become a full shell parser)
+codex: no separate external codex verdict; manual comparison against the cited
+        jcode sources plus the serial build/vet/test gates found no unresolved
+        J4 finding.

@@ -72,6 +72,11 @@ type Result struct {
 	// Shown records source ranges included in Output. It is bookkeeping for the
 	// session exposure ledger, never additional model-visible text.
 	Shown []LineRange `json:"-"`
+
+	// Held marks a command stopped by a safety gate. It is distinct from a
+	// failed tool call so frontends can render a warning/reflection row without
+	// implying that the command started and then failed.
+	Held bool `json:"held,omitempty"`
 }
 
 // Tool is one callable capability.

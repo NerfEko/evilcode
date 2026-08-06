@@ -381,6 +381,81 @@ func TestBashEmptyCommandRefused(t *testing.T) {
 	}
 }
 
+func TestBashDestructiveGateRefusesHoldsAndAllows(t *testing.T) {
+	root := t.TempDir()
+	e := NewExec(root)
+
+	res, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf /"})
+	if err == nil || !res.Held || !strings.Contains(res.Intent, "blocked") {
+		t.Fatalf("root deletion = result %#v, err %v; want held refusal", res, err)
+	}
+	if len(e.Bg.Tasks()) != 0 {
+		t.Fatal("a refused command must not create a background task")
+	}
+
+	res, err = run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf $HOME/projects"})
+	if err == nil || !res.Held || !strings.Contains(res.Intent, "justification") {
+		t.Fatalf("home project deletion = result %#v, err %v; want held reflection", res, err)
+	}
+
+	build := filepath.Join(root, "build")
+	if err := os.MkdirAll(build, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "artifact"), []byte("temporary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf ./build"}); err != nil {
+		t.Fatalf("workspace cleanup should run: %v", err)
+	}
+	if _, err := os.Stat(build); !os.IsNotExist(err) {
+		t.Fatalf("workspace cleanup left %s (stat err %v)", build, err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, ".evilcode-commandrisk-test")
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	target := filepath.Join(outside, "release-output")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf " + target}); err == nil {
+		t.Fatal("outside cleanup without justification must be held")
+	}
+	if _, err := run(t, e.Tools(), "bash", map[string]any{
+		"cmd":           "rm -rf " + target,
+		"justification": "This is the requested bounded cleanup of temporary release output.",
+	}); err != nil {
+		t.Fatalf("substantially justified outside cleanup should run: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("justified cleanup left %s (stat err %v)", target, err)
+	}
+}
+
+func TestBashDestructiveGateRunsBeforeBackground(t *testing.T) {
+	e := NewExec(t.TempDir())
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, ".evilcode-commandrisk-background-test")
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	res, err := run(t, e.Tools(), "bash", map[string]any{
+		"cmd":        "rm -rf " + outside,
+		"background": true,
+	})
+	if err == nil || !res.Held {
+		t.Fatalf("background outside deletion = result %#v, err %v; want held", res, err)
+	}
+	if tasks := e.Bg.Tasks(); len(tasks) != 0 {
+		t.Fatalf("held background command created tasks: %#v", tasks)
+	}
+}
+
 func TestGrep(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc NewThing() {}\n"), 0o644)

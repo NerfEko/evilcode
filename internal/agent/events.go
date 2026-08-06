@@ -89,6 +89,9 @@ type Event struct {
 	Diff     string          `json:"diff,omitempty"`
 	DiffStat *tools.DiffStat `json:"diff_stat,omitempty"`
 	Intent   string          `json:"intent,omitempty"`
+	// Held marks a tool call stopped by a safety gate rather than a command
+	// that ran and failed. Frontends use it for a distinct warning row.
+	Held bool `json:"held,omitempty"`
 
 	// Display is a tool-specific render payload, carried on the event so the
 	// UI never has to read it from a side channel.

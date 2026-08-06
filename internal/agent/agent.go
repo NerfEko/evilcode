@@ -765,6 +765,7 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
 		IsError:    err != nil,
+		Held:       res.Held,
 		Images:     res.Images,
 		Repairs:    res.Repairs,
 	})
@@ -785,6 +786,7 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 	e.Diff = res.Diff
 	e.DiffStat = res.DiffStat
 	e.Intent = res.Intent
+	e.Held = res.Held
 	e.Display = res.Display
 	e.Images = res.Images
 	e.NoWrite = res.NoWrite

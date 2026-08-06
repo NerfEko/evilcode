@@ -12,11 +12,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"evilcode/internal/tools/commandrisk"
 )
 
 // Exec holds the shell and search tools' shared state.
 type Exec struct {
 	Root string
+
+	// ConfigDir and DataDir let the command-risk gate recognize application
+	// state even when it lives outside the active workspace.
+	ConfigDir string
+	DataDir   string
 
 	// ScratchDir is exported to bash children as TMPDIR and
 	// EVILCODE_SCRATCH_DIR. Production wiring points it under the data dir;
@@ -92,6 +99,15 @@ func (e *Exec) WithScratchDir(dir string) *Exec {
 	return e
 }
 
+// WithRiskPaths supplies the application state roots used by the destructive
+// command gate. Keeping these explicit makes tests and embedders deterministic
+// without making the classifier read the host filesystem.
+func (e *Exec) WithRiskPaths(configDir, dataDir string) *Exec {
+	e.ConfigDir = configDir
+	e.DataDir = dataDir
+	return e
+}
+
 func (e *Exec) commandEnv() []string {
 	env := os.Environ()
 	if e.ScratchDir == "" {
@@ -123,10 +139,11 @@ func (e *Exec) Tools() Set {
 }
 
 type bashArgs struct {
-	Cmd        string `json:"cmd"`
-	Timeout    int    `json:"timeout,omitempty"`
-	Background bool   `json:"background,omitempty"`
-	Stdin      string `json:"stdin,omitempty"`
+	Cmd           string `json:"cmd"`
+	Timeout       int    `json:"timeout,omitempty"`
+	Background    bool   `json:"background,omitempty"`
+	Stdin         string `json:"stdin,omitempty"`
+	Justification string `json:"justification,omitempty"`
 }
 
 func (e *Exec) bashTool() Tool {
@@ -143,7 +160,8 @@ func (e *Exec) bashTool() Tool {
     "timeout": {"type": "integer", "description": "Timeout in seconds; defaults to 120"},
     "background": {"type": "boolean",
                    "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."},
-    "stdin":    {"type": "string", "description": "Optional input written to the command's stdin"}
+    "stdin":    {"type": "string", "description": "Optional input written to the command's stdin"},
+    "justification": {"type": "string", "description": "Substantive reason for a command held by the destructive-command safety gate"}
   },
   "required": ["cmd"]
 }`),
@@ -154,6 +172,15 @@ func (e *Exec) bashTool() Tool {
 			}
 			if strings.TrimSpace(a.Cmd) == "" {
 				return Result{}, fmt.Errorf("cmd is required")
+			}
+
+			workingDir := e.Cwd()
+			_, verdict := commandrisk.Evaluate(a.Cmd, commandrisk.ContextFromPaths(e.Root, workingDir, e.ConfigDir, e.DataDir), a.Justification)
+			switch verdict.Decision {
+			case commandrisk.DecisionReflect:
+				return Result{Output: verdict.Message, Intent: "held · justification required", Held: true}, fmt.Errorf("command held by destructive-command gate")
+			case commandrisk.DecisionRefuse:
+				return Result{Output: verdict.Message, Intent: "held · blocked", Held: true}, fmt.Errorf("command refused by destructive-command gate")
 			}
 
 			if a.Background {
@@ -169,7 +196,7 @@ func (e *Exec) bashTool() Tool {
 			// budget waiting for the shell to be free.
 			e.run.Lock()
 			defer e.run.Unlock()
-			workingDir := e.Cwd()
+			workingDir = e.Cwd()
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -377,7 +404,7 @@ func (w *ringWriter) observeProgressLocked(p []byte) {
 			return
 		}
 		w.appendProgressFragmentLocked(p[:idx])
-		w.recordProgressLineLocked(string(w.lineBuf))
+		w.recordProgressBytesLocked(w.lineBuf)
 		w.lineBuf = w.lineBuf[:0]
 		p = p[idx+1:]
 	}
@@ -395,7 +422,19 @@ func (w *ringWriter) appendProgressFragmentLocked(fragment []byte) {
 }
 
 func (w *ringWriter) recordProgressLineLocked(line string) {
-	if progress := parseProgress(line); progress.Known {
+	if !looksLikeProgressLine(line) {
+		return
+	}
+	if progress, ok := parseProgressLine(line); ok {
+		w.progress = progress
+	}
+}
+
+func (w *ringWriter) recordProgressBytesLocked(line []byte) {
+	if !looksLikeProgressBytes(line) {
+		return
+	}
+	if progress, ok := parseProgressLine(string(line)); ok {
 		w.progress = progress
 	}
 }
