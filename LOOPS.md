@@ -5370,3 +5370,33 @@ parity: crates/jcode-command-risk/src/{tokenize,paths,risk,gate}.rs and
         parser.
 codex: no separate external codex verdict; manual source comparison and the
         serial full-repository test/build/vet gate found no unresolved J4 issue.
+
+## 2026-08-06 J5.4 — local embedding feasibility decision
+
+Prep complete before J5.5 implementation. jcode's local floor is a downloaded
+`all-MiniLM-L6-v2` ONNX model plus `tokenizer.json`: 384-dimensional vectors,
+256-token inputs, mean pooling, and normalization. Its implementation uses the
+`tract-onnx` runtime and downloads the model on first use; the model and
+tokenizer are therefore a substantial startup/download payload rather than a
+small built-in helper.
+
+The pure-Go options checked for this repository split into two groups. ONNX
+bindings that avoid cgo still require a native ONNX Runtime shared library;
+pure-Go ONNX/GGUF interpreters exist, but bringing one in would add a large
+runtime/model/tokenizer surface and a new model distribution/update policy to a
+small single-binary Go application. No option met the current no-native-runtime,
+small-dependency, and maintenance constraints well enough to ship as a reliable
+floor. An ad-hoc hash vector would be deterministic but would not provide the
+semantic behavior J5 is meant to recover.
+
+Decision: keep provider embeddings preferred when available, retain model-tagged
+dense vectors, and use BM25 as the dependable lexical floor when embedding is
+missing or fails. J5.5 is explicitly skipped for this reason; the deviation is
+recorded in `DEVIATIONS.md` before the J5.6 scope work starts.
+
+parity: crates/jcode-embedding/src/lib.rs:89-250 — on par (the same MiniLM
+        model shape, tokenizer, pooling, normalization, and first-use download
+        costs were evaluated; a bundled local runtime is deliberately not carried,
+        see DEVIATIONS)
+codex: no code was changed; the prep answer was manually checked against the
+        cited jcode implementation and the repository's provider/embedder APIs.

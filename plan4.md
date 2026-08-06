@@ -767,9 +767,10 @@ Line numbers as-of §0.5. Trust the symbol.
       four injects the fourth memory whether or not it is any good. Cut at the first score
       drop wider than a quarter of the range from top to threshold; keep the count as a
       ceiling. §5.3. ⟨port⟩ ⟨jcode: crates/jcode-base/src/memory.rs:899-927⟩
-- [ ] **J5.4** ⟨prep⟩ — answer in `LOOPS.md` whether a local embedder can be had in pure Go
+- [x] **J5.4** ⟨prep⟩ — answer in `LOOPS.md` whether a local embedder can be had in pure Go
       without cgo, and at what model size and startup cost. No code. The answer decides
-      J5.5. ⟨jcode: crates/jcode-embedding/src/lib.rs:89-250 for what it costs them⟩
+      J5.5. Prep complete; see `LOOPS.md` and `DEVIATIONS.md`.
+      ⟨jcode: crates/jcode-embedding/src/lib.rs:89-250 for what it costs them⟩
 - [ ] **J5.5** `internal/memory/pipeline.go:182` `Manager.embed` — recall dies with the
       provider's embeddings route. Add the local embedder from J5.4 as the floor, provider
       preferred when present. If J5.4 says no: `DEVIATIONS.md` and skip. §5.4. ⟨build⟩
