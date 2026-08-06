@@ -83,6 +83,10 @@ type Manager struct {
 	Embedder Embedder
 	Router   SideCaller
 	Session  string
+	// EmbeddingModel is the stable identity of the vector space used by the
+	// current embedder. It is separate from the chat model: providers may use a
+	// fixed embedding endpoint for several chat models.
+	EmbeddingModel string
 
 	// EmbedTimeout bounds an embed call. Passive recall sits in front of every
 	// user message, so a hung local daemon must not hang the composer.
@@ -107,14 +111,65 @@ type Manager struct {
 // NewManager builds a manager. A nil store yields a disabled manager, which is
 // how `memory = false` is expressed without nil checks at every call site.
 func NewManager(store *Store, emb Embedder, router SideCaller, session string, enabled bool) *Manager {
+	return NewManagerWithModel(store, emb, router, session, enabled, "")
+}
+
+// NewManagerWithModel builds a manager with an explicit embedding model id.
+// Keeping NewManager as a compatibility wrapper lets tests and embedders that
+// predate model tagging continue to use legacy unqualified vectors.
+func NewManagerWithModel(store *Store, emb Embedder, router SideCaller, session string, enabled bool, model string) *Manager {
 	return &Manager{
-		Store:        store,
-		Embedder:     emb,
-		Router:       router,
-		Session:      session,
-		EmbedTimeout: 5 * time.Second,
-		enabled:      enabled && store != nil,
+		Store:          store,
+		Embedder:       emb,
+		Router:         router,
+		Session:        session,
+		EmbeddingModel: model,
+		EmbedTimeout:   5 * time.Second,
+		enabled:        enabled && store != nil,
 	}
+}
+
+// SetEmbeddingModel updates the vector-space identity after an embedder
+// changes. Existing records remain searchable lexically until re-embedded.
+func (m *Manager) SetEmbeddingModel(model string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.EmbeddingModel = model
+	m.mu.Unlock()
+}
+
+// Search runs a store query with this manager's active embedding model.
+func (m *Manager) Search(query string, vec []float32, n int, threshold float64) []Hit {
+	if m == nil || m.Store == nil {
+		return nil
+	}
+	m.mu.Lock()
+	model := m.EmbeddingModel
+	m.mu.Unlock()
+	return m.Store.Search(query, vec, n, threshold, SearchOptions{EmbeddingModel: model})
+}
+
+// PendingEmbeddings counts live records with no vector or a vector from a
+// different active model. The value is for status surfaces, not a background
+// job: provider/local backfill is intentionally deferred until an embedder is
+// available.
+func (m *Manager) PendingEmbeddings() int {
+	if m == nil || m.Store == nil {
+		return 0
+	}
+	m.mu.Lock()
+	model := m.EmbeddingModel
+	m.mu.Unlock()
+	all := m.Store.All()
+	n := 0
+	for _, r := range all {
+		if len(r.Vec) == 0 || (model != "" && r.EmbeddingModel != model) {
+			n++
+		}
+	}
+	return n
 }
 
 // Enabled reports whether memory is on.
@@ -233,7 +288,7 @@ func (m *Manager) Recall(ctx context.Context, userMsg string) (string, []Hit) {
 	})
 
 	vec := m.embed(ctx, userMsg)
-	hits := m.Store.Search(userMsg, vec, RecallCount, RecallThreshold)
+	hits := m.Search(userMsg, vec, RecallCount, RecallThreshold)
 
 	m.setStage(StageCheck, func(a *Activity) { a.Relevant = len(hits) })
 	if len(hits) == 0 {
@@ -273,7 +328,10 @@ func (m *Manager) Remember(ctx context.Context, text string, kind Kind) (Record,
 		return Record{}, false, fmt.Errorf("memory is not available in this session")
 	}
 	vec := m.embed(ctx, text)
-	rec, merged, err := m.Store.Add(text, kind, m.Session, vec, time.Now())
+	m.mu.Lock()
+	model := m.EmbeddingModel
+	m.mu.Unlock()
+	rec, merged, err := m.Store.AddWithModel(text, kind, m.Session, vec, model, time.Now())
 	if err == nil {
 		m.setStage(StageUpdate, func(a *Activity) { a.Saved++ })
 	}
@@ -430,7 +488,7 @@ func (m *Manager) Reflect(ctx context.Context, question string) (string, error) 
 	vec := m.embed(ctx, question)
 	// A wider net than passive recall: reflection is an explicit, expensive ask,
 	// so it should read broadly rather than only the nearest few.
-	hits := m.Store.Search(question, vec, 24, RecallThreshold-0.15)
+	hits := m.Search(question, vec, 24, RecallThreshold-0.15)
 	if len(hits) == 0 {
 		return "", fmt.Errorf("no memories relate to that")
 	}
@@ -471,7 +529,7 @@ func (m *Manager) SearchSessions(ctx context.Context, query string, n int) []Hit
 	}
 	vec := m.embed(ctx, query)
 	var out []Hit
-	for _, h := range m.Store.Search(query, vec, 0, RecallThreshold-0.15) {
+	for _, h := range m.Search(query, vec, 0, RecallThreshold-0.15) {
 		if h.Kind != KindEpisode || h.Session == "" {
 			continue
 		}

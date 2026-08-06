@@ -171,7 +171,7 @@ func runOnce(args []string) (string, error) {
 		fmt.Fprintln(os.Stderr, "evilcode: memory unavailable:", err)
 	} else {
 		defer bank.Close()
-		mem = memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
+		mem = memory.NewManagerWithModel(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding")
 		a.Recall = func(ctx context.Context, in string) (string, any) {
 			tail, hits := mem.Recall(ctx, in)
 			return tail, hits

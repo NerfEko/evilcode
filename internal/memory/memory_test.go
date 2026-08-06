@@ -96,6 +96,50 @@ func TestMismatchedDimensionsScoreZero(t *testing.T) {
 	}
 }
 
+func TestDenseSearchRequiresMatchingEmbeddingModel(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	s.AddWithModel("model a fact", KindFact, "sess", vec(1, 0), "model-a", now)
+	s.AddWithModel("model b fact", KindFact, "sess", vec(1, 0), "model-b", now.Add(time.Second))
+
+	hits := s.Search("", vec(1, 0), 4, 0.1, SearchOptions{EmbeddingModel: "model-a"})
+	if len(hits) != 1 || hits[0].EmbeddingModel != "model-a" {
+		t.Fatalf("model-a search = %#v, want only model-a vector", hits)
+	}
+	hits = s.Search("", vec(1, 0), 4, 0.1, SearchOptions{EmbeddingModel: "model-b"})
+	if len(hits) != 1 || hits[0].EmbeddingModel != "model-b" {
+		t.Fatalf("model-b search = %#v, want only model-b vector", hits)
+	}
+}
+
+func TestModelTaggedVectorsDoNotCrossDeduplicate(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	first, merged, err := s.AddWithModel("same direction from model a", KindFact, "sess", vec(1, 0), "model-a", now)
+	if err != nil || merged {
+		t.Fatalf("first add: merged=%v err=%v", merged, err)
+	}
+	second, merged, err := s.AddWithModel("same direction from model b", KindFact, "sess", vec(1, 0), "model-b", now.Add(time.Second))
+	if err != nil || merged {
+		t.Fatalf("cross-model add: merged=%v err=%v", merged, err)
+	}
+	if second.ID == first.ID || s.Len() != 2 {
+		t.Fatalf("cross-model vectors were deduplicated: first=%d second=%d len=%d", first.ID, second.ID, s.Len())
+	}
+}
+
+func TestPendingEmbeddingsCountsMissingAndStaleModels(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	s.AddWithModel("current", KindFact, "sess", vec(1, 0), "model-current", now)
+	s.AddWithModel("stale", KindFact, "sess", vec(0, 1), "model-old", now)
+	s.Add("missing", KindFact, "sess", nil, now)
+	m := NewManagerWithModel(s, nil, nil, "sess", true, "model-current")
+	if got := m.PendingEmbeddings(); got != 2 {
+		t.Fatalf("pending embeddings = %d, want stale + missing", got)
+	}
+}
+
 func TestAddMergesNearDuplicates(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()

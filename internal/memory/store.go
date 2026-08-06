@@ -71,6 +71,11 @@ type Record struct {
 	// still reachable by substring search.
 	Vec []float32 `json:"vec,omitempty"`
 
+	// EmbeddingModel identifies the vector space that produced Vec. Empty is
+	// retained for legacy records written before model tagging existed; callers
+	// with an active model deliberately exclude those vectors from dense scoring.
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+
 	// Deleted tombstones a record. The file is append-only, so forgetting is
 	// appending a tombstone rather than rewriting history.
 	Deleted bool `json:"deleted,omitempty"`
@@ -241,6 +246,13 @@ const DedupeThreshold = 0.95
 // It returns the stored record and whether it merged. Merging keeps the newer
 // text, because a restated fact is usually a corrected one.
 func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts time.Time) (Record, bool, error) {
+	return s.AddWithModel(text, kind, session, vec, "", ts)
+}
+
+// AddWithModel stores a memory and records the embedding model that produced
+// its vector. Exact-text duplicates still merge across model changes, while
+// cosine deduplication is limited to one model's vector space.
+func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float32, model string, ts time.Time) (Record, bool, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Record{}, false, fmt.Errorf("memory text is empty")
@@ -252,7 +264,7 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if i := s.findDuplicate(text, vec); i >= 0 {
+	if i := s.findDuplicate(text, vec, model); i >= 0 {
 		merged := s.records[i]
 		merged.Text = text
 		merged.Kind = kind
@@ -260,6 +272,7 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 		merged.TS = ts
 		if len(vec) > 0 {
 			merged.Vec = vec
+			merged.EmbeddingModel = model
 		}
 		if err := s.append(merged); err != nil {
 			return Record{}, false, err
@@ -268,7 +281,7 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 		return merged, true, nil
 	}
 
-	r := Record{ID: s.nextID, Text: text, Kind: kind, Session: session, TS: ts, Vec: vec}
+	r := Record{ID: s.nextID, Text: text, Kind: kind, Session: session, TS: ts, Vec: vec, EmbeddingModel: model}
 	if err := s.append(r); err != nil {
 		return Record{}, false, err
 	}
@@ -278,7 +291,7 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 }
 
 // findDuplicate returns the index of a near-identical memory, or -1.
-func (s *Store) findDuplicate(text string, vec []float32) int {
+func (s *Store) findDuplicate(text string, vec []float32, model string) int {
 	lower := strings.ToLower(text)
 	for i, r := range s.records {
 		if r.Deleted {
@@ -289,7 +302,7 @@ func (s *Store) findDuplicate(text string, vec []float32) int {
 		if strings.EqualFold(r.Text, text) || strings.ToLower(r.Text) == lower {
 			return i
 		}
-		if len(vec) > 0 && len(r.Vec) == len(vec) && Cosine(r.Vec, vec) >= DedupeThreshold {
+		if len(vec) > 0 && len(r.Vec) == len(vec) && r.EmbeddingModel == model && Cosine(r.Vec, vec) >= DedupeThreshold {
 			return i
 		}
 	}
@@ -347,6 +360,14 @@ type Hit struct {
 	Score float64
 }
 
+// SearchOptions qualifies dense scoring without changing the legacy Search
+// call shape used by tools and older embedders.
+type SearchOptions struct {
+	// EmbeddingModel limits cosine comparisons to vectors from this model. An
+	// empty value preserves the pre-J5 behavior for callers without model data.
+	EmbeddingModel string
+}
+
 // RecallThreshold is the minimum score for passive recall. Below it a memory is
 // noise, and injecting noise into every turn is worse than injecting nothing.
 const RecallThreshold = 0.55
@@ -357,14 +378,18 @@ const RecallThreshold = 0.55
 // When the query has no embedding — the embedder was down, or the caller only
 // has text — it falls back to substring matching, so recall degrades to
 // something useful rather than to nothing.
-func (s *Store) Search(query string, vec []float32, n int, threshold float64) []Hit {
+func (s *Store) Search(query string, vec []float32, n int, threshold float64, options ...SearchOptions) []Hit {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var opts SearchOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 
 	var hits []Hit
 	if len(vec) > 0 {
 		for _, r := range s.records {
-			if r.Deleted || len(r.Vec) != len(vec) {
+			if r.Deleted || len(r.Vec) != len(vec) || (opts.EmbeddingModel != "" && r.EmbeddingModel != opts.EmbeddingModel) {
 				continue
 			}
 			score := Cosine(r.Vec, vec)

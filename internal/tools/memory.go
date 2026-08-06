@@ -112,7 +112,7 @@ func recallTool(m *memory.Manager) Tool {
 			if limit <= 0 {
 				limit = 8
 			}
-			hits := m.Store.Search(a.Query, m.QueryVector(ctx, a.Query), limit, memory.RecallThreshold)
+			hits := m.Search(a.Query, m.QueryVector(ctx, a.Query), limit, memory.RecallThreshold)
 			if len(hits) == 0 {
 				return Result{Output: "no memories match " + a.Query}, nil
 			}

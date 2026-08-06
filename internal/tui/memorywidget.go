@@ -267,12 +267,8 @@ func (m *Model) memoryStatus() string {
 	all := m.memory.Store.All()
 
 	counts := map[memory.Kind]int{}
-	unembedded := 0
 	for _, r := range all {
 		counts[r.Kind]++
-		if len(r.Vec) == 0 {
-			unembedded++
-		}
 	}
 
 	var parts []string
@@ -288,10 +284,10 @@ func (m *Model) memoryStatus() string {
 	if len(parts) > 0 {
 		b.WriteString(strings.Join(parts, " · ") + "\n")
 	}
-	if unembedded > 0 {
-		// Worth saying plainly: these are findable by substring and invisible
-		// to semantic recall, which looks like memory silently not working.
-		fmt.Fprintf(&b, "⚠ %d without embeddings — lexical recall only\n", unembedded)
+	if pending := m.memory.PendingEmbeddings(); pending > 0 {
+		// Missing and stale-model vectors remain reachable through lexical
+		// retrieval, but they need re-embedding before dense search can use them.
+		fmt.Fprintf(&b, "⚠ %d pending re-embedding — lexical recall still available\n", pending)
 	}
 	if act := m.memory.Activity(); act.Failed != "" {
 		fmt.Fprintf(&b, "⚠ last error: %s\n", act.Failed)
