@@ -5470,3 +5470,32 @@ parity: crates/jcode-base/src/memory.rs:668-728, 734-791, 830-927 — on par or
         documented J5.4/J5.5 deviation.
 codex: no final external codex verdict; manual source comparison and the
         serial full-repository gates found no unresolved J5 issue.
+
+## 2026-08-06 J6.1 — recent turns survive compaction
+
+`Compactor.Compact` now summarizes only the old prefix and keeps the ten most
+recent user turns verbatim. The cutoff is moved backward when necessary so an
+assistant tool call and every matching result remain together; malformed or
+unanswered calls in the kept suffix fail closed instead of reaching a strict
+provider. The kept tail is cloned before persistence, so later appends cannot
+mutate the in-memory replay.
+
+The TUI, headless, and daemon wiring uses the tail-aware persistence callback.
+Session rewrites retain metadata, message roles, and vision attachments through
+the normal content-addressed blob encoder, and resume reconstructs the summary
+plus preserved tail. Legacy summary-only `Persist`/`Compact` callers remain
+compatible. A source review found and fixed the attachment serialization edge
+case in `40f1a1d`.
+
+parity: crates/jcode-compaction-core/src/lib.rs:18-19,236-290 and
+        crates/jcode-base/src/compaction.rs:1085-1113 — on
+        par or better (same ten-item recent window and fail-closed tool boundary;
+        evilcode keeps complete user turns and persists typed messages plus image
+        blobs across resume)
+verification: `go test -p 1 ./internal/agent ./internal/session -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass, serially.
+codex: no final external verdict; the read-only review runner was stopped after
+        6m50s without a final message. Manual comparison against the cited jcode
+        source, the attachment regression, and the serial gates found no
+        unresolved J6.1 issue.

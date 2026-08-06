@@ -787,7 +787,7 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J6 — Compaction that keeps the present
 
-- [ ] **J6.1** `internal/agent/compact.go:101` `Compactor.Compact` — the whole conversation
+- [x] **J6.1** `internal/agent/compact.go:101` `Compactor.Compact` — the whole conversation
       is replaced by a summary, so a compaction mid-task costs the task. Summarize the old
       portion, keep the recent N turns verbatim, never split a tool call from its result.
       §6.1. ⟨fix⟩ ⟨jcode: crates/jcode-base/src/compaction.rs:1143-1281⟩
