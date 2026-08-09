@@ -450,6 +450,44 @@ func TestReloadSkipsCorruptLines(t *testing.T) {
 	}
 }
 
+func TestReloadSalvagesRecordsGluedToTornTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `{"id":1,"text":"first","kind":"fact","ts":"2026-01-01T00:00:00Z"}` + "\n" +
+		`{"id":2,"text":"torn` +
+		`{"id":3,"text":"second","kind":"fact","ts":"2026-01-01T00:00:02Z"}` +
+		`{"id":4,"text":"third","kind":"preference","ts":"2026-01-01T00:00:03Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("glued memory tail should be recoverable: %v", err)
+	}
+	if s.Len() != 3 {
+		t.Fatalf("recovered %d memories, want first plus two complete tail records", s.Len())
+	}
+	s.Close()
+
+	// Open repairs the file before opening its append descriptor. Reloading
+	// again proves the recovered records were written back, not just held in
+	// memory for this process.
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatalf("repaired memory bank should reload cleanly: %v", err)
+	}
+	defer again.Close()
+	if again.Len() != 3 {
+		t.Fatalf("repaired memory bank has %d records, want 3", again.Len())
+	}
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(data), "torn") {
+		t.Errorf("repair retained torn bytes: %q", data)
+	}
+}
+
 func TestReloadRemovesMalformedTailBeforeTheNextAppend(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)

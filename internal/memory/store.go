@@ -10,9 +10,11 @@ package memory
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -148,11 +150,118 @@ func Open(dataDir string) (*Store, error) {
 	return s, nil
 }
 
+const maxMemoryJSONLine = 8 * 1024 * 1024
+
+var memoryRepairLog = log.New(os.Stderr, "", log.LstdFlags)
+
+// readMemoryLine returns one complete JSONL line and whether it reached EOF.
+// ReadSlice preserves the exact byte count needed to rewrite a repaired tail.
+func readMemoryLine(r *bufio.Reader) ([]byte, bool, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > maxMemoryJSONLine {
+			return nil, false, fmt.Errorf("memory JSONL line exceeds %d bytes", maxMemoryJSONLine)
+		}
+		switch err {
+		case nil:
+			return line, false, nil
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) == 0 {
+				return nil, true, nil
+			}
+			return line, true, nil
+		default:
+			return nil, false, err
+		}
+	}
+}
+
+// salvageMemoryRecords finds complete memory records inside a line that could
+// not be decoded as one record. The required top-level keys avoid promoting a
+// nested JSON object from a record into a new memory.
+func salvageMemoryRecords(line []byte) []Record {
+	var out []Record
+	for cursor := 0; cursor < len(line); {
+		rel := bytes.IndexByte(line[cursor:], '{')
+		if rel < 0 {
+			break
+		}
+		start := cursor + rel
+		dec := json.NewDecoder(bytes.NewReader(line[start:]))
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			cursor = start + 1
+			continue
+		}
+
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["id"]; !ok {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["text"]; !ok {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["kind"]; !ok {
+			cursor = start + 1
+			continue
+		}
+
+		var record Record
+		if err := json.Unmarshal(raw, &record); err != nil {
+			cursor = start + 1
+			continue
+		}
+		out = append(out, record)
+		consumed := int(dec.InputOffset())
+		if consumed <= 0 {
+			cursor = start + 1
+		} else {
+			cursor = start + consumed
+		}
+	}
+	return out
+}
+
+// repairMemoryTail removes a malformed final line and writes any recovered
+// records back in canonical JSONL form so a future append does not erase the
+// recovery.
+func repairMemoryTail(f *os.File, start int64, records []Record) error {
+	if err := f.Truncate(start); err != nil {
+		return err
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		line = append(line, '\n')
+		if _, err := f.Write(line); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}
+
 // load replays the file. A malformed final line is tolerated and dropped —
 // the classic shape of a crash mid-write, and losing the last memory to one
-// is survivable — but a malformed line anywhere earlier is corruption further
-// back in the log, and returns an error naming its line number rather than
-// vanishing silently before the next write buries the evidence.
+// is survivable — but a torn prefix glued to one or more complete records is
+// salvaged and the repaired tail is persisted. A malformed line anywhere
+// earlier is corruption further back in the log, and returns an error naming
+// its line number when nothing recoverable is present rather than vanishing
+// silently before the next write buries the evidence.
 func (s *Store) load(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
@@ -164,17 +273,7 @@ func (s *Store) load(path string) error {
 	defer f.Close()
 
 	byID := map[int64]int{}
-	apply := func(lineNo int, line []byte, final bool) error {
-		if len(line) == 0 {
-			return nil
-		}
-		var r Record
-		if json.Unmarshal(line, &r) != nil {
-			if final {
-				return nil
-			}
-			return fmt.Errorf("%s:%d: malformed memory record", path, lineNo)
-		}
+	applyRecord := func(r Record) {
 		if r.ID >= s.nextID {
 			s.nextID = r.ID + 1
 		}
@@ -182,54 +281,67 @@ func (s *Store) load(path string) error {
 		// a merge or a tombstone lands without rewriting the file.
 		if i, ok := byID[r.ID]; ok {
 			s.records[i] = r
-			return nil
+			return
 		}
 		byID[r.ID] = len(s.records)
 		s.records = append(s.records, r)
+	}
+
+	apply := func(lineNo int, raw []byte, final bool, start int64) error {
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 {
+			return nil
+		}
+		var r Record
+		if err := json.Unmarshal(line, &r); err != nil {
+			salvaged := salvageMemoryRecords(line)
+			if len(salvaged) > 0 {
+				for _, record := range salvaged {
+					applyRecord(record)
+				}
+				memoryRepairLog.Printf("memory: salvaged %d records from malformed line %d in %s", len(salvaged), lineNo, path)
+				if final {
+					return repairMemoryTail(f, start, salvaged)
+				}
+				return nil
+			}
+			if final {
+				return repairMemoryTail(f, start, nil)
+			}
+			return fmt.Errorf("%s:%d: malformed memory record", path, lineNo)
+		}
+		applyRecord(r)
 		return nil
 	}
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	var havePending bool
+	r := bufio.NewReaderSize(f, 64*1024)
 	var pendingLine []byte
 	var pendingNo int
+	var pendingStart int64
+	var offset int64
 	lineNo := 0
-	for sc.Scan() {
-		lineNo++
-		if havePending {
-			if err := apply(pendingNo, pendingLine, false); err != nil {
-				return err
-			}
-		}
-		pendingLine = append([]byte(nil), sc.Bytes()...)
-		pendingNo = lineNo
-		havePending = true
-	}
-	if err := sc.Err(); err != nil {
-		return err
-	}
-	if havePending {
-		var probe Record
-		badFinal := json.Unmarshal(pendingLine, &probe) != nil
-		if err := apply(pendingNo, pendingLine, true); err != nil {
+	for {
+		raw, eof, err := readMemoryLine(r)
+		if err != nil {
 			return err
 		}
-		if badFinal {
-			end, err := f.Seek(0, io.SeekEnd)
-			if err != nil {
-				return err
+		if raw != nil {
+			lineNo++
+			if pendingLine != nil {
+				if err := apply(pendingNo, pendingLine, false, pendingStart); err != nil {
+					return err
+				}
 			}
-			cut := end - int64(len(pendingLine))
-			if cut < 0 {
-				return fmt.Errorf("%s: malformed final memory record has an invalid offset", path)
-			}
-			if err := f.Truncate(cut); err != nil {
-				return err
-			}
-			if err := f.Sync(); err != nil {
-				return err
-			}
+			pendingLine, pendingNo, pendingStart = raw, lineNo, offset
+			offset += int64(len(raw))
+		}
+		if eof {
+			break
+		}
+	}
+	if pendingLine != nil {
+		if err := apply(pendingNo, pendingLine, true, pendingStart); err != nil {
+			return err
 		}
 	}
 	return nil

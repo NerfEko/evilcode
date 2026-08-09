@@ -811,7 +811,7 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J7 — Sessions that survive and can be found
 
-- [ ] **J7.1** `internal/session/store.go:379` `Read` — a torn append glued to the next one
+- [x] **J7.1** `internal/session/store.go:379` `Read` — a torn append glued to the next one
       drops both and every entry on that line. Scan a failed line for entry starts,
       stream-parse the complete entries out of it, log the salvage count. Same for
       `internal/memory/store.go:113` `Store.load`. §7.1. ⟨fix⟩
