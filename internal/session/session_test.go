@@ -895,6 +895,24 @@ func TestReadSalvagesEntryAfterTornOuterObject(t *testing.T) {
 	}
 }
 
+func TestReadDoesNotSalvageArrayElement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `[` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"array"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("malformed array tail should be tolerated: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("recovered %d array elements, want none", len(entries))
+	}
+}
+
 func TestReadDoesNotSalvageNestedEnvelope(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bat.jsonl")

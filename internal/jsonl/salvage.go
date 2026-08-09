@@ -11,10 +11,11 @@ import (
 // object found by Salvage. Callers can use it to reject a schema-valid object
 // that is still clearly a value nested under an unrelated field.
 type Candidate struct {
-	Line     []byte
-	Start    int
-	Depth    int
-	InString bool
+	Line      []byte
+	Start     int
+	Depth     int
+	InString  bool
+	Container byte
 }
 
 // CandidateFilter is an optional caller-specific guard for ambiguous records.
@@ -46,12 +47,15 @@ func Salvage[T any](line, prefix []byte, decode func([]byte) (T, bool), filter C
 		candidateState.advance(line[cursor:start])
 		raw, end, ok := object(line, start)
 		candidate := Candidate{
-			Line:     line,
-			Start:    start,
-			Depth:    candidateState.depth,
-			InString: candidateState.inString,
+			Line:      line,
+			Start:     start,
+			Depth:     candidateState.depth,
+			InString:  candidateState.inString,
+			Container: candidateState.openContainer(),
 		}
-		if ok && (candidate.Depth <= 1 || candidate.InString) && (filter == nil || filter(candidate)) {
+		if ok && (candidate.Depth == 0 || candidate.InString ||
+			(candidate.Depth == 1 && candidate.Container == '{')) &&
+			(filter == nil || filter(candidate)) {
 			if value, accepted := decode(raw); accepted {
 				out = append(out, value)
 				state = candidateState
@@ -119,9 +123,10 @@ func isJSONSpace(c byte) bool {
 }
 
 type lexer struct {
-	depth    int
-	inString bool
-	escaped  bool
+	depth      int
+	inString   bool
+	escaped    bool
+	containers []byte
 }
 
 func (l *lexer) advance(data []byte) {
@@ -145,12 +150,23 @@ func (l *lexer) advance(data []byte) {
 			l.inString = true
 		case '{', '[':
 			l.depth++
+			l.containers = append(l.containers, c)
 		case '}', ']':
 			if l.depth > 0 {
 				l.depth--
+				if n := len(l.containers); n > 0 {
+					l.containers = l.containers[:n-1]
+				}
 			}
 		}
 	}
+}
+
+func (l lexer) openContainer() byte {
+	if len(l.containers) == 0 {
+		return 0
+	}
+	return l.containers[len(l.containers)-1]
 }
 
 // object returns the balanced object beginning at start. It intentionally
