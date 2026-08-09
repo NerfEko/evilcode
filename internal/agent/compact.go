@@ -80,6 +80,14 @@ const CompactTopicShiftThreshold = 0.45
 // or leave a goroutine behind indefinitely.
 const CompactEmbeddingTimeout = 5 * time.Second
 
+// CompactRelevanceGoalMessages is the recent message window used to represent
+// the work that is still active when choosing a semantic compaction boundary.
+const CompactRelevanceGoalMessages = 5
+
+// CompactRelevanceKeepThreshold matches jcode's default semantic relevance
+// threshold. A message at or above this similarity is kept verbatim.
+const CompactRelevanceKeepThreshold = 0.65
+
 // MaxAutoCompactions bounds automatic compaction for a session.
 //
 // Invariant 6. Without it, a summary that is itself over the threshold compacts
@@ -201,6 +209,7 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 	if cutoff == 0 {
 		return "", fmt.Errorf("not enough history to compact while keeping the most recent %d turns", RecentTurnsToKeep)
 	}
+	cutoff = c.relevanceCutoff(ctx, msgs, cutoff)
 	old := msgs[:cutoff]
 	tail := cloneMessages(msgs[cutoff:])
 
@@ -239,6 +248,148 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 	c.resetEmbeddingHistoryLocked()
 	c.mu.Unlock()
 	return summary, nil
+}
+
+// relevanceCutoff keeps an old message that is still close to the current
+// goal. Embedding failure is deliberately a no-op: the ordinary recency
+// cutoff is safer than allowing an optional semantic service to prevent
+// compaction entirely.
+func (c *Compactor) relevanceCutoff(ctx context.Context, msgs []provider.Message, standardCutoff int) int {
+	if standardCutoff <= 0 || standardCutoff > len(msgs) {
+		return standardCutoff
+	}
+	goal := relevanceGoalText(msgs)
+	if goal == "" {
+		return standardCutoff
+	}
+
+	c.mu.Lock()
+	embedder := c.Embedding
+	epoch := c.embeddingEpoch
+	c.mu.Unlock()
+	if embedder == nil {
+		return standardCutoff
+	}
+
+	texts := []string{goal}
+	candidateIndexes := make([]int, 0, standardCutoff)
+	for i := 0; i < standardCutoff; i++ {
+		text := relevanceMessageText(msgs[i])
+		if text == "" {
+			continue
+		}
+		texts = append(texts, text)
+		candidateIndexes = append(candidateIndexes, i)
+	}
+	if len(candidateIndexes) == 0 {
+		return standardCutoff
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	embedCtx, cancel := context.WithTimeout(ctx, CompactEmbeddingTimeout)
+	vectors, err := embedder.Embed(embedCtx, texts)
+	cancel()
+	if err != nil || len(vectors) < len(texts) {
+		return standardCutoff
+	}
+
+	c.mu.Lock()
+	currentEpoch := c.embeddingEpoch
+	c.mu.Unlock()
+	if currentEpoch != epoch {
+		return standardCutoff
+	}
+
+	goalVector := vectors[0]
+	earliest := standardCutoff
+	highRelevance := 0
+	for i, messageIndex := range candidateIndexes {
+		similarity, ok := cosineSimilarity32(goalVector, vectors[i+1])
+		if ok && similarity >= CompactRelevanceKeepThreshold {
+			highRelevance++
+			earliest = min(earliest, messageIndex)
+		}
+	}
+	if highRelevance == 0 {
+		return standardCutoff
+	}
+
+	// The cutoff is moved before the earliest relevant message. Re-run the
+	// tool-boundary check because a relevant tool result must also retain its
+	// assistant call. If that would leave fewer than two real messages to
+	// summarize, keep the standard boundary so compaction remains meaningful.
+	adjusted := safeToolBoundary(msgs, earliest)
+	if adjusted <= 0 || adjusted >= standardCutoff || nonSystemMessageCount(msgs[:adjusted]) < 2 {
+		return standardCutoff
+	}
+	return adjusted
+}
+
+// relevanceGoalText joins short excerpts from the latest messages. Tool
+// results get a smaller excerpt, matching jcode's goal representation while
+// keeping the embedding request bounded.
+func relevanceGoalText(msgs []provider.Message) string {
+	indices := make([]int, 0, CompactRelevanceGoalMessages)
+	for i := len(msgs) - 1; i >= 0 && len(indices) < CompactRelevanceGoalMessages; i-- {
+		if relevanceGoalExcerpt(msgs[i]) != "" {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for i := len(indices) - 1; i >= 0; i-- {
+		if excerpt := relevanceGoalExcerpt(msgs[indices[i]]); excerpt != "" {
+			if b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(excerpt)
+		}
+	}
+	return b.String()
+}
+
+func relevanceGoalExcerpt(msg provider.Message) string {
+	if msg.Role == provider.RoleSystem {
+		return ""
+	}
+	cap := 200
+	if msg.Role == provider.RoleTool {
+		cap = 100
+	}
+	return relevanceExcerpt(msg.Content, cap)
+}
+
+func relevanceMessageText(msg provider.Message) string {
+	if msg.Role == provider.RoleSystem {
+		return ""
+	}
+	return relevanceExcerpt(msg.Content, CompactEmbeddingMessageCap)
+}
+
+func relevanceExcerpt(text string, cap int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if len(text) > cap {
+		return truncateAtRune(text, cap)
+	}
+	return text
+}
+
+func nonSystemMessageCount(msgs []provider.Message) int {
+	count := 0
+	for _, msg := range msgs {
+		if msg.Role != provider.RoleSystem {
+			count++
+		}
+	}
+	return count
 }
 
 // AddEmbeddingSnapshot records one already-computed assistant-turn embedding.
@@ -637,6 +788,28 @@ func cosineSimilarity(a, b []float64) (float64, bool) {
 		dot += value * b[i]
 		normA += value * value
 		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0, false
+	}
+	return dot / math.Sqrt(normA*normB), true
+}
+
+func cosineSimilarity32(a, b []float32) (float64, bool) {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, false
+	}
+	var dot, normA, normB float64
+	for i, value := range a {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) ||
+			math.IsNaN(float64(b[i])) || math.IsInf(float64(b[i]), 0) {
+			return 0, false
+		}
+		aValue := float64(value)
+		bValue := float64(b[i])
+		dot += aValue * bValue
+		normA += aValue * aValue
+		normB += bValue * bValue
 	}
 	if normA == 0 || normB == 0 {
 		return 0, false

@@ -96,6 +96,137 @@ func TestCompactUsesWhatPersistReturned(t *testing.T) {
 	}
 }
 
+func TestCompactKeepsARelevantOlderMessage(t *testing.T) {
+	conv := NewConversation("sys")
+	for i := 0; i < RecentTurnsToKeep+2; i++ {
+		user := fmt.Sprintf("ordinary setup turn %02d", i)
+		if i == 1 {
+			user = "critical OAuth migration requirement"
+		}
+		if i >= RecentTurnsToKeep {
+			user = fmt.Sprintf("current OAuth migration work turn %02d", i)
+		}
+		conv.Append(
+			provider.Message{Role: provider.RoleUser, Content: user},
+			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
+		)
+	}
+
+	var summarized string
+	c := &Compactor{
+		Summarize: func(_ context.Context, _, user string) (string, error) {
+			summarized = user
+			return "summary", nil
+		},
+		Embedding: keywordCompactionEmbedder{},
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(summarized, "critical OAuth migration requirement") {
+		t.Fatal("the relevant older message was summarized away")
+	}
+	if !strings.Contains(summarized, "ordinary setup turn 00") {
+		t.Fatal("the unrelated older prefix was not summarized")
+	}
+	if !strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "critical OAuth migration requirement") {
+		t.Fatal("the relevant older message did not survive in the kept tail")
+	}
+}
+
+func TestCompactFallsBackToTheRecencyCutoffWhenRelevanceFails(t *testing.T) {
+	conv := compactableConversation()
+	var summarized string
+	c := &Compactor{
+		Summarize: func(_ context.Context, _, user string) (string, error) {
+			summarized = user
+			return "summary", nil
+		},
+		Embedding: failingCompactionEmbedder{},
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summarized, "turn 00 prompt") {
+		t.Fatal("recency fallback did not summarize the old prefix")
+	}
+}
+
+func TestCompactKeepsARelevantToolPairTogether(t *testing.T) {
+	conv := NewConversation("sys")
+	for i := 0; i < RecentTurnsToKeep+2; i++ {
+		user := fmt.Sprintf("ordinary turn %02d", i)
+		if i >= RecentTurnsToKeep {
+			user = fmt.Sprintf("current OAuth turn %02d", i)
+		}
+		conv.Append(provider.Message{
+			Role:    provider.RoleUser,
+			Content: user,
+		})
+		if i == 1 {
+			conv.Append(provider.Message{
+				Role:      provider.RoleAssistant,
+				ToolCalls: []provider.ToolCall{{ID: "oauth-call", Name: "read"}},
+			})
+			conv.Append(provider.Message{
+				Role:       provider.RoleTool,
+				ToolCallID: "oauth-call",
+				Content:    "critical OAuth migration details",
+			})
+		} else {
+			conv.Append(provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"})
+		}
+	}
+
+	var summarized string
+	c := &Compactor{
+		Summarize: func(_ context.Context, _, user string) (string, error) {
+			summarized = user
+			return "summary", nil
+		},
+		Embedding: keywordCompactionEmbedder{},
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(summarized, "critical OAuth migration details") {
+		t.Fatal("the relevant tool result was summarized away")
+	}
+	msgs := conv.Messages()
+	foundCall, foundResult := false, false
+	for _, msg := range msgs {
+		if msg.Role == provider.RoleAssistant && len(msg.ToolCalls) == 1 && msg.ToolCalls[0].ID == "oauth-call" {
+			foundCall = true
+		}
+		if msg.Role == provider.RoleTool && msg.ToolCallID == "oauth-call" {
+			foundResult = true
+		}
+	}
+	if !foundCall || !foundResult {
+		t.Fatalf("relevant tool pair was not kept together: call=%t result=%t", foundCall, foundResult)
+	}
+}
+
+type keywordCompactionEmbedder struct{}
+
+func (keywordCompactionEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for i, text := range texts {
+		if strings.Contains(strings.ToLower(text), "oauth") {
+			vectors[i] = []float32{1, 0}
+		} else {
+			vectors[i] = []float32{0, 1}
+		}
+	}
+	return vectors, nil
+}
+
+type failingCompactionEmbedder struct{}
+
+func (failingCompactionEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("embedding unavailable")
+}
+
 func TestCompactCallsOnCompactionAfterReset(t *testing.T) {
 	conv := compactableConversation()
 	called := 0
