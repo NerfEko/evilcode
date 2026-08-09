@@ -72,8 +72,10 @@ older turns but keeps the ten most recent turns verbatim, including complete too
 pairs, so a task in progress survives both the live rewrite and resume. It also watches
 recent context growth and recent assistant-turn embeddings: a detected topic shift can
 compact at a natural boundary, while growth still projects ahead of the fixed 85% limit.
-Embedding is best-effort and asynchronous, so an unavailable or slow provider leaves the
-predictive path in charge rather than delaying a turn.
+A bounded background relevance pass can also move the cutoff back before an older message
+that matches the current goal; if it is unavailable or not ready, compaction uses the
+ordinary recency cutoff. Embedding is best-effort and asynchronous, so an unavailable or
+slow provider leaves the predictive path in charge rather than delaying a turn.
 A turn that could not be fully written says so rather than leaving a session that comes
 back short on resume. Closing a session waits for its in-flight turn to finish, so a
 shutdown or a closed terminal does not drop the messages the turn was still writing.

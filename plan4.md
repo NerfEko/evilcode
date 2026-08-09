@@ -800,7 +800,7 @@ Line numbers as-of §0.5. Trust the symbol.
       and new halves of the window; low similarity triggers. Falls back to J6.2 without an
       embedder; never blocks on one. §6.3. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/compaction.rs:550-601⟩
-- [ ] **J6.4** `internal/agent/compact.go:78` `Transcript` — a highly relevant old message is
+- [x] **J6.4** `internal/agent/compact.go:78` `Transcript` — a highly relevant old message is
       summarized away with its neighbours. Score the old portion against the recent turns and
       move the cutoff to before the earliest relevant message, keeping the range contiguous.
       §6.4. ⟨build⟩ ⟨jcode: crates/jcode-base/src/compaction.rs:603-675⟩

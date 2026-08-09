@@ -5551,3 +5551,30 @@ codex: initial review of `666dd5c` found five lifecycle/fallback issues; all
         The reviewer’s full-suite sandbox attempt was blocked by Unix-socket
         permission and read-only-home restrictions; the repository’s own serial
         full gates passed.
+
+## 2026-08-09 J6.4 — relevance-aware compaction cutoff
+
+`Compactor.Compact` now prepares a relevance lookup from the latest five
+non-empty messages, scores every non-empty message in the old prefix in batches
+of 32, and moves the cutoff before the earliest candidate at cosine similarity
+`>= 0.65`. The summarized range remains contiguous; a relevant tool result
+moves the boundary back to its assistant call. Relevance work is asynchronous
+and cached by transcript key, so a slow, failed, canceled, unavailable, or
+not-yet-ready embedder falls back immediately to the normal recency cutoff.
+
+parity: crates/jcode-base/src/compaction.rs:603-675 and
+        crates/jcode-compaction-core/src/lib.rs:402-430,
+        crates/jcode-config-types/src/lib.rs:375-397 — on par for the J6.4
+        contract (same five-message goal, 200/100 goal excerpts, 512-byte
+        candidates, `0.65` threshold, earliest-relevant contiguous cutoff, and
+        tool-boundary preservation; evilcode adds asynchronous bounded
+        preparation and safe recency fallback)
+verification: `go test ./internal/agent ./internal/tui -count=1`,
+        `go test -race ./internal/agent -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass.
+codex: corrected commit `33fd6bf` addressed the initial review’s prompt-snapshot,
+        capped-history, and ungated-background-scan findings. The final review
+        found no introduced correctness issues and its focused agent/TUI checks
+        passed; its full-suite sandbox attempt was blocked by Unix-socket
+        permission and read-only-home restrictions.
