@@ -12,9 +12,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
@@ -179,6 +181,15 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	// Overrides are looked up by the *resolved* model, not the flag: a session
 	// relying on default_model would otherwise silently get none of them.
 	overrides := cfg.ModelOverrides(modelName)
+	exposure := tools.NewExposure()
+	var lsps *lsp.Manager
+	if !opts.NoTools {
+		// Search can use the same lazy language-server manager as the interactive
+		// path, even though headless sessions do not expose the standalone lsp
+		// tool. A session that never greps still pays no indexing cost.
+		lsps = lsp.NewManager(pc.Root, cfg.LSP)
+		out.closers = append(out.closers, lsps.Close)
+	}
 
 	var ts tools.Set
 	if !opts.NoTools {
@@ -189,9 +200,17 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 			// model side of this; this is the same idea for tools).
 			ts = tools.Canned(canned)
 		} else {
+			execTools := tools.NewExec(cwd).
+				WithExposure(exposure).
+				WithScratchDir(filepath.Join(dataDir, "scratch")).
+				WithRiskPaths(config.ConfigDir(), dataDir)
+			if lsps != nil {
+				execTools.WithLSP(lsps)
+			}
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).Tools(),
-				tools.NewExec(cwd).Tools()...)
+				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
+				WithExposure(exposure).Tools(),
+				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 		}
 		// No `ask` tool: a headless session has nobody to ask, and a tool that
@@ -212,9 +231,14 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
+		Embedding: prov,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTail(dataDir, summary, tail)
+		},
+		OnCompaction: exposure.Reset,
 	}
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)
@@ -261,7 +285,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 	}
 	if bank != nil {
-		mem := memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
+		mem := memory.NewManagerWithModelAndScope(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding", pc.Root)
 		out.Memory = mem
 		if owned {
 			out.closers = append(out.closers, func() { bank.Close() })

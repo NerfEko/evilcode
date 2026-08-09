@@ -92,11 +92,11 @@ func runeToUTF16(line string, col int) (int, error) {
 
 // Definition resolves where a symbol is defined.
 func (c *Client) Definition(ctx context.Context, path string, line, char int) ([]Location, error) {
-	if err := c.Open(path); err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
+	if err := c.OpenContext(ctx, path); err != nil {
+		return nil, err
+	}
 
 	params, err := docPosition(path, line, char)
 	if err != nil {
@@ -111,11 +111,11 @@ func (c *Client) Definition(ctx context.Context, path string, line, char int) ([
 
 // References lists every use of a symbol.
 func (c *Client) References(ctx context.Context, path string, line, char int) ([]Location, error) {
-	if err := c.Open(path); err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
+	if err := c.OpenContext(ctx, path); err != nil {
+		return nil, err
+	}
 
 	params, err := docPosition(path, line, char)
 	if err != nil {
@@ -159,11 +159,11 @@ func decodeLocations(raw json.RawMessage) []Location {
 
 // Hover returns the server's description of a symbol.
 func (c *Client) Hover(ctx context.Context, path string, line, char int) (string, error) {
-	if err := c.Open(path); err != nil {
-		return "", err
-	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
+	if err := c.OpenContext(ctx, path); err != nil {
+		return "", err
+	}
 
 	params, err := docPosition(path, line, char)
 	if err != nil {
@@ -254,11 +254,11 @@ func (s Symbol) KindName() string {
 
 // Symbols returns a file's outline.
 func (c *Client) Symbols(ctx context.Context, path string) ([]Symbol, error) {
-	if err := c.Open(path); err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
+	if err := c.OpenContext(ctx, path); err != nil {
+		return nil, err
+	}
 
 	raw, err := c.call(ctx, "textDocument/documentSymbol", map[string]any{
 		"textDocument": map[string]any{"uri": URIFromPath(path)},
@@ -307,11 +307,11 @@ func (c *Client) Rename(ctx context.Context, path string, line, char int, newNam
 	if strings.TrimSpace(newName) == "" {
 		return nil, fmt.Errorf("rename needs a new name")
 	}
-	if err := c.Open(path); err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
+	if err := c.OpenContext(ctx, path); err != nil {
+		return nil, err
+	}
 
 	params, err := docPosition(path, line, char)
 	if err != nil {

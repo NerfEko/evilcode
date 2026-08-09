@@ -12,12 +12,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/core"
+	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
@@ -130,15 +132,31 @@ func Run(args []string) (int, error) {
 	// per-model settings at all, which is how anchor_edits appeared to be
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
+	exposure := tools.NewExposure()
+	var lsps *lsp.Manager
+	if !*noTools {
+		// Keep grep's symbol enrichment available to headless runs without
+		// starting a language server until a search actually needs it.
+		lsps = lsp.NewManager(pc.Root, cfg.LSP)
+		defer lsps.Close()
+	}
 
 	var ts tools.Set
 	if !*noTools {
 		if canned, ok := provider.DemoCannedTools(); ok {
 			ts = tools.Canned(canned)
 		} else {
+			execTools := tools.NewExec(cwd).
+				WithExposure(exposure).
+				WithScratchDir(filepath.Join(dataDir, "scratch")).
+				WithRiskPaths(config.ConfigDir(), dataDir)
+			if lsps != nil {
+				execTools.WithLSP(lsps)
+			}
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).Tools(),
-				tools.NewExec(cwd).Tools()...)
+				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
+				WithExposure(exposure).Tools(),
+				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 			if len(promptSkills) > 0 {
 				ts = append(ts, tools.NewSkillTool(skills))
@@ -166,9 +184,14 @@ func Run(args []string) (int, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
+		Embedding: prov,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTail(dataDir, summary, tail)
+		},
+		OnCompaction: exposure.Reset,
 	}
 	defer a.Close()
 
@@ -177,7 +200,7 @@ func Run(args []string) (int, error) {
 	// `evilcode run` would tax scripted use for nothing (plan.md §19).
 	if bank, err := memory.Open(dataDir); err == nil {
 		defer bank.Close()
-		mem := memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
+		mem := memory.NewManagerWithModelAndScope(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding", pc.Root)
 		if !*noTools {
 			ts = append(ts, tools.NewMemory(mem)...)
 			a.Tools = ts

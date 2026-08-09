@@ -9,7 +9,9 @@ package lsp
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -28,6 +30,8 @@ import (
 // like a hang.
 const RequestTimeout = 30 * time.Second
 
+const startupRetryCooldown = 30 * time.Second
+
 // InitTimeout is the longer bound on the handshake, which includes the server's
 // first index of the workspace.
 const InitTimeout = 90 * time.Second
@@ -45,6 +49,7 @@ type Client struct {
 	mu      sync.Mutex
 	nextID  int
 	pending map[int]chan json.RawMessage
+	writeMu sync.Mutex
 
 	// diagnostics accumulate from the server's unsolicited notifications, which
 	// is the only way they ever arrive: there is no "give me the diagnostics"
@@ -52,12 +57,110 @@ type Client struct {
 	diagMu sync.Mutex
 	diags  map[string][]Diagnostic
 
-	// opened tracks which files the server has been told about, so a second
-	// operation on one file does not re-send its contents.
-	opened map[string]bool
+	// opened tracks the version, digest, and end position the server last saw for each file.
+	// Tools can edit a file behind the server's back; comparing a digest on every
+	// Open lets the next operation send a full didChange instead of asking for
+	// symbols from stale text.
+	docOnce sync.Once
+	docLock chan struct{}
+	opened  map[string]openedDocument
+
+	// syncKind is the server's negotiated textDocumentSync change mode. When
+	// syncKnown is false the response omitted it, so full changes are the
+	// conservative fallback; a known zero means no changes, with syncOpenClose
+	// preserving the separate didOpen/didClose capability.
+	syncKind      int
+	syncKnown     bool
+	syncOptions   bool
+	syncOpenClose bool
 
 	closeOnce sync.Once
 	err       error
+}
+
+type openedDocument struct {
+	version int
+	digest  [sha256.Size]byte
+	end     Position
+}
+
+const incrementalDocumentSync = 2
+
+func documentSyncDetails(raw json.RawMessage) (kind int, known bool, openClose bool) {
+	var result struct {
+		Capabilities struct {
+			TextDocumentSync json.RawMessage `json:"textDocumentSync"`
+		} `json:"capabilities"`
+	}
+	if json.Unmarshal(raw, &result) != nil || len(result.Capabilities.TextDocumentSync) == 0 {
+		return 0, false, false
+	}
+	if json.Unmarshal(result.Capabilities.TextDocumentSync, &kind) == nil {
+		return kind, true, false
+	}
+	var details struct {
+		Change    *int `json:"change"`
+		OpenClose bool `json:"openClose"`
+	}
+	if json.Unmarshal(result.Capabilities.TextDocumentSync, &details) == nil {
+		if details.Change == nil {
+			return 0, true, details.OpenClose
+		}
+		return *details.Change, true, details.OpenClose
+	}
+	return 0, false, false
+}
+
+// documentSyncOptions reports whether the server used the structured
+// TextDocumentSyncOptions form. The legacy numeric form has no openClose
+// member; retain the historical didOpen behavior for it, while respecting an
+// explicit openClose:false in the structured form.
+func documentSyncOptions(raw json.RawMessage) bool {
+	var result struct {
+		Capabilities struct {
+			TextDocumentSync json.RawMessage `json:"textDocumentSync"`
+		} `json:"capabilities"`
+	}
+	if json.Unmarshal(raw, &result) != nil || len(result.Capabilities.TextDocumentSync) == 0 {
+		return false
+	}
+	var kind int
+	if json.Unmarshal(result.Capabilities.TextDocumentSync, &kind) == nil {
+		return false
+	}
+	var details map[string]json.RawMessage
+	return json.Unmarshal(result.Capabilities.TextDocumentSync, &details) == nil && details != nil
+}
+
+func documentSyncCapability(raw json.RawMessage) (kind int, known bool) {
+	kind, known, _ = documentSyncDetails(raw)
+	return kind, known
+}
+
+func documentSyncKind(raw json.RawMessage) int {
+	kind, _ := documentSyncCapability(raw)
+	return kind
+}
+
+func documentEnd(text string) Position {
+	lines := strings.Split(text, "\n")
+	last := lines[len(lines)-1]
+	characters := 0
+	for _, r := range last {
+		if r > 0xFFFF {
+			characters += 2
+		} else {
+			characters++
+		}
+	}
+	return Position{Line: len(lines) - 1, Character: characters}
+}
+
+func fullDocumentRange(end Position) Range {
+	return Range{
+		Start: Position{},
+		End:   end,
+	}
 }
 
 // Diagnostic is one problem the server reported.
@@ -190,7 +293,7 @@ func Start(ctx context.Context, name, root string, command []string) (*Client, e
 		cmd: cmd, in: in, out: bufio.NewReader(out), stop: cancel,
 		pending: map[int]chan json.RawMessage{},
 		diags:   map[string][]Diagnostic{},
-		opened:  map[string]bool{},
+		opened:  map[string]openedDocument{},
 	}
 	go c.readLoop()
 
@@ -225,9 +328,12 @@ func (c *Client) initialize(ctx context.Context) error {
 			},
 		},
 	}
-	if _, err := c.call(ctx, "initialize", params); err != nil {
+	result, err := c.call(ctx, "initialize", params)
+	if err != nil {
 		return err
 	}
+	c.syncKind, c.syncKnown, c.syncOpenClose = documentSyncDetails(result)
+	c.syncOptions = documentSyncOptions(result)
 	return c.notify("initialized", map[string]any{})
 }
 
@@ -341,18 +447,75 @@ func (c *Client) readMessage() ([]byte, error) {
 }
 
 func (c *Client) write(payload any) error {
+	return c.writeContext(context.Background(), payload)
+}
+
+// writeContext serializes protocol writes and gives callers with a bounded
+// request a way out if a server stops consuming stdin. Closing the pipe on a
+// timed-out write wakes the blocked writer and leaves this client unusable,
+// which is the only safe state after its protocol stream has been abandoned.
+func (c *Client) writeContext(ctx context.Context, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
+	done := make(chan error, 1)
+	go func() {
+		c.writeMu.Lock()
+		defer c.writeMu.Unlock()
+		// A caller can time out while waiting for an earlier protocol write to
+		// release the serializer. Do not let this queued payload leak onto the
+		// replacement stream after the caller has already abandoned it.
+		if err := ctx.Err(); err != nil {
+			done <- err
+			return
+		}
+		_, writeErr := fmt.Fprintf(c.in, "Content-Length: %d\r\n\r\n%s", len(body), body)
+		done <- writeErr
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			c.markUnusable(err)
+		}
+		return err
+	case <-ctx.Done():
+		err := ctx.Err()
+		c.markUnusable(err)
+		return err
+	}
+}
+
+// markUnusable records that the protocol stream can no longer be trusted and
+// closes its input. A timed-out write may have been only partly delivered; the
+// next request must start a fresh client rather than reuse a desynchronized
+// stream.
+func (c *Client) markUnusable(err error) {
+	if err == nil {
+		err = errors.New("lsp client protocol stream is unusable")
+	}
+	c.mu.Lock()
+	if c.err == nil {
+		c.err = err
+	}
+	c.mu.Unlock()
+	if c.in != nil {
+		_ = c.in.Close()
+	}
+}
+
+func (c *Client) unusable() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err = fmt.Fprintf(c.in, "Content-Length: %d\r\n\r\n%s", len(body), body)
-	return err
+	return c.err != nil
 }
 
 func (c *Client) notify(method string, params any) error {
 	return c.write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+}
+
+func (c *Client) notifyContext(ctx context.Context, method string, params any) error {
+	return c.writeContext(ctx, map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }
 
 func (c *Client) respondNull(id int) {
@@ -373,7 +536,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	c.pending[id] = ch
 	c.mu.Unlock()
 
-	if err := c.write(map[string]any{
+	if err := c.writeContext(ctx, map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": method, "params": params,
 	}); err != nil {
 		c.mu.Lock()
@@ -404,35 +567,166 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 
 // Open tells the server about a file, which every other operation needs first.
 func (c *Client) Open(path string) error {
+	return c.OpenContext(context.Background(), path)
+}
+
+// OpenContext is Open with a cancellation boundary around both the file
+// snapshot and the notification. Symbol enrichment uses this because a
+// language server is optional and must not turn grep into an unbounded wait.
+func (c *Client) OpenContext(ctx context.Context, path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	already := c.opened[abs]
-	c.mu.Unlock()
-	if already {
-		return nil
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	data, err := os.ReadFile(abs)
+	// Serialize document notifications. A channel gate, rather than a plain
+	// mutex, lets a bounded symbol request stop waiting behind a legacy caller
+	// whose file read or notification is stuck.
+	if err := c.lockDocuments(ctx); err != nil {
+		return err
+	}
+	defer c.unlockDocuments()
+	if c.opened == nil {
+		c.opened = make(map[string]openedDocument)
+	}
+	previous, already := c.opened[abs]
+	data, err := readFileContext(ctx, abs)
 	if err != nil {
 		return err
 	}
-	if err := c.notify("textDocument/didOpen", map[string]any{
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(data)
+	if already && previous.digest == digest {
+		return nil
+	}
+	if already {
+		// Diagnostics are published asynchronously and keyed only by URI. Once
+		// the file changed, an entry from the previous snapshot must not satisfy
+		// Diagnostics before the server has reported the new one.
+		c.diagMu.Lock()
+		delete(c.diags, abs)
+		c.diagMu.Unlock()
+	}
+	end := documentEnd(string(data))
+	if c.syncKnown && c.syncKind == 0 && !c.syncOpenClose {
+		// Explicit TextDocumentSyncKind.None: this server reads the workspace
+		// itself and does not want didOpen/didChange notifications.
+		version := previous.version
+		if version == 0 {
+			version = 1
+		}
+		c.opened[abs] = openedDocument{version: version, digest: digest, end: end}
+		return nil
+	}
+	if already && c.syncKnown && c.syncKind == 0 {
+		// Open/close-only servers still receive didOpen, but do not accept a
+		// change notification. Keep the local snapshot fresh for the next
+		// operation without inventing a didChange they did not negotiate.
+		version := previous.version
+		if version == 0 {
+			version = 1
+		}
+		c.opened[abs] = openedDocument{version: version, digest: digest, end: end}
+		return nil
+	}
+	if already && !c.syncKnown {
+		// A server that omitted textDocumentSync has not opted into change
+		// notifications. Keep the snapshot current for local bookkeeping, but do
+		// not send a didChange it may reject or ignore.
+		c.opened[abs] = openedDocument{version: previous.version, digest: digest, end: end}
+		return nil
+	}
+	if !already && c.syncOptions && !c.syncOpenClose {
+		// Structured capabilities explicitly disable open/close notifications.
+		// The first snapshot is still remembered so a later edit can be sent as
+		// didChange according to the negotiated change kind.
+		c.opened[abs] = openedDocument{version: 1, digest: digest, end: end}
+		return nil
+	}
+	version := 1
+	method := "textDocument/didOpen"
+	params := map[string]any{
 		"textDocument": map[string]any{
 			"uri":        URIFromPath(abs),
 			"languageId": LanguageID(abs),
-			"version":    1,
+			"version":    version,
 			"text":       string(data),
 		},
-	}); err != nil {
+	}
+	if already {
+		version = previous.version + 1
+		method = "textDocument/didChange"
+		params = map[string]any{
+			"textDocument": map[string]any{
+				"uri":     URIFromPath(abs),
+				"version": version,
+			},
+			"contentChanges": []map[string]any{{
+				"text": string(data),
+				// Incremental servers require a range. Replacing the complete
+				// previous document is still one bounded change and avoids a
+				// second parser or a diff implementation here.
+				"range": fullDocumentRange(previous.end),
+			}},
+		}
+		if c.syncKind != incrementalDocumentSync {
+			delete(params["contentChanges"].([]map[string]any)[0], "range")
+		}
+	}
+	if err := c.notifyContext(ctx, method, params); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	c.opened[abs] = true
-	c.mu.Unlock()
+	c.opened[abs] = openedDocument{version: version, digest: digest, end: end}
 	return nil
+}
+
+func (c *Client) lockDocuments(ctx context.Context) error {
+	c.docOnce.Do(func() {
+		c.docLock = make(chan struct{}, 1)
+		c.docLock <- struct{}{}
+	})
+	select {
+	case <-c.docLock:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) unlockDocuments() {
+	c.docLock <- struct{}{}
+}
+
+// readFileContext closes the file if its caller gives up while a filesystem
+// read is in flight. The result channel is buffered so the reader goroutine can
+// finish without leaking after cancellation.
+func readFileContext(ctx context.Context, path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, readErr := io.ReadAll(f)
+		_ = f.Close()
+		done <- result{data: data, err: readErr}
+	}()
+	select {
+	case result := <-done:
+		return result.data, result.err
+	case <-ctx.Done():
+		_ = f.Close()
+		return nil, ctx.Err()
+	}
 }
 
 // Forget drops a file's opened state, so the next operation re-sends it. A
@@ -443,9 +737,11 @@ func (c *Client) Forget(path string) {
 	if err != nil {
 		abs = path
 	}
-	c.mu.Lock()
+	if err := c.lockDocuments(context.Background()); err != nil {
+		return
+	}
 	delete(c.opened, abs)
-	c.mu.Unlock()
+	c.unlockDocuments()
 }
 
 // LanguageID guesses the protocol's language identifier from an extension.
@@ -543,6 +839,10 @@ type Manager struct {
 	mu      sync.Mutex
 	clients map[string]*Client
 	failed  map[string]error
+	// retryAfter holds a short cooldown for a startup that hit a caller's
+	// deadline. Grep deliberately gives indexing only a few seconds; retrying
+	// that same slow launch on every later search just repeats the delay.
+	retryAfter map[string]time.Time
 
 	// starting holds one channel per language being launched, closed when the
 	// attempt finishes. Concurrent callers wait on it rather than each starting
@@ -576,10 +876,11 @@ func NewManager(root string, configured map[string][]string) *Manager {
 		commands[lang] = cmd
 	}
 	return &Manager{
-		Root:     root,
-		Commands: commands,
-		clients:  map[string]*Client{},
-		failed:   map[string]error{},
+		Root:       root,
+		Commands:   commands,
+		clients:    map[string]*Client{},
+		failed:     map[string]error{},
+		retryAfter: map[string]time.Time{},
 	}
 }
 
@@ -592,15 +893,34 @@ func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 	for {
 		m.mu.Lock()
 		if c, ok := m.clients[lang]; ok {
+			if !c.unusable() {
+				m.mu.Unlock()
+				return c, nil
+			}
+			delete(m.clients, lang)
 			m.mu.Unlock()
-			return c, nil
+			// A timed-out write closes the stream but may leave the child process
+			// alive. Reap it before launching the replacement.
+			_ = c.Close()
+			continue
 		}
 		// A server that failed to start is not retried on every call: the usual
 		// reason is that it is not installed, and re-running LookPath per tool
-		// call only slows the failure down.
+		// call only slows the failure down. Deadline failures get a cooldown,
+		// rather than becoming permanent, because a later explicit LSP call may
+		// reasonably succeed after the server has finished indexing.
 		if err, ok := m.failed[lang]; ok {
-			m.mu.Unlock()
-			return nil, err
+			if until, retry := m.retryAfter[lang]; retry {
+				if time.Now().Before(until) {
+					m.mu.Unlock()
+					return nil, err
+				}
+				delete(m.retryAfter, lang)
+				delete(m.failed, lang)
+			} else {
+				m.mu.Unlock()
+				return nil, err
+			}
 		}
 		if wait, busy := m.starting[lang]; busy {
 			m.mu.Unlock()
@@ -642,7 +962,22 @@ func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 	delete(m.starting, lang)
 	closed := m.closed
 	if err != nil {
-		m.failed[lang] = err
+		// A caller may intentionally use a short context (grep does this so a
+		// slow index cannot hold the search hostage). Do not turn that transient
+		// cancellation into a permanent "server failed" state for the whole
+		// session; a later LSP operation with a larger budget should retry.
+		if m.failed == nil {
+			m.failed = map[string]error{}
+		}
+		if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
+			m.failed[lang] = err
+			if m.retryAfter == nil {
+				m.retryAfter = map[string]time.Time{}
+			}
+			m.retryAfter[lang] = time.Now().Add(startupRetryCooldown)
+		} else if ctx.Err() == nil {
+			m.failed[lang] = err
+		}
 	} else if closed {
 		// Close can race a slow startup. Do not publish a live process into a
 		// manager that has already dropped its client map.
@@ -652,6 +987,8 @@ func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 		return nil, fmt.Errorf("language-server manager is closed")
 	} else {
 		m.clients[lang] = c
+		delete(m.failed, lang)
+		delete(m.retryAfter, lang)
 	}
 	m.mu.Unlock()
 	close(launching)

@@ -360,7 +360,8 @@ func DeriveTitle(activeGroup, userIntention, firstTodo, firstPrompt string) stri
 // replayed session is visibly a summary rather than something the user typed.
 const CompactedPrefix = "[conversation compacted]\n\n"
 
-// Compact rewrites a session down to a single summary message.
+// Compact rewrites a session down to a summary message. It keeps the legacy
+// summary-only shape for callers that do not have a live tail to preserve.
 //
 // This exists because `Conversation.Compact` only ever changed memory: it
 // assigned the message slice directly, bypassing Append and the session sink,
@@ -371,6 +372,14 @@ const CompactedPrefix = "[conversation compacted]\n\n"
 // Same atomic shape as Rewind — backup, temp file, rename — so an interrupted
 // compaction leaves the previous log intact rather than a half-written one.
 func Compact(dataDir, name, summary string) ([]provider.Message, error) {
+	return CompactWithTail(dataDir, name, summary, nil)
+}
+
+// CompactWithTail rewrites a session to a summary followed by the exact recent
+// messages that compaction kept in memory. The tail is written after the
+// summary and before the compact marker, so resume reconstructs the same live
+// suffix instead of silently losing the task that was in progress.
+func CompactWithTail(dataDir, name, summary string, tail []provider.Message) ([]provider.Message, error) {
 	path, err := pathFor(dataDir, name)
 	if err != nil {
 		return nil, err
@@ -405,6 +414,26 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 	if data, err := json.Marshal(msg); err == nil {
 		write(Entry{TS: time.Now(), Type: TypeUser, Data: data})
 	}
+	for _, kept := range tail {
+		if kept.Role == provider.RoleSystem {
+			continue
+		}
+		// Use the normal message encoder so preserved vision turns keep the
+		// session's content-addressed blob format instead of expanding raw image
+		// bytes inline during compaction.
+		data, err := encodeMessage(path, kept)
+		if err != nil {
+			return nil, err
+		}
+		t := TypeUser
+		switch kept.Role {
+		case provider.RoleAssistant:
+			t = TypeAssistant
+		case provider.RoleTool:
+			t = TypeTool
+		}
+		write(Entry{TS: time.Now(), Type: t, Data: data})
+	}
 	if data, err := json.Marshal(Meta{Kind: MetaCompact}); err == nil {
 		write(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
 	}
@@ -420,5 +449,13 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 func (s *Store) Compact(dataDir, summary string) ([]provider.Message, error) {
 	return s.rewrite(func() ([]provider.Message, error) {
 		return Compact(dataDir, s.Name, summary)
+	})
+}
+
+// CompactWithTail rewrites the live session and preserves the recent messages
+// that remain verbatim after the summary.
+func (s *Store) CompactWithTail(dataDir, summary string, tail []provider.Message) ([]provider.Message, error) {
+	return s.rewrite(func() ([]provider.Message, error) {
+		return CompactWithTail(dataDir, s.Name, summary, tail)
 	})
 }

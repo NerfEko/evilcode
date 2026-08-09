@@ -67,10 +67,18 @@ other terminals show a captioned placeholder.
 
 Sessions are the source of truth: every message is written as it lands, `/compact` and
 `/rewind` rewrite the log atomically — a backup is written and synced before the
-primary is replaced, and the live session follows the rewrite — and a turn that could
-not be fully written says so rather than leaving a session that comes back short on
-resume. Closing a session waits for its in-flight turn to finish, so a shutdown or a
-closed terminal does not drop the messages the turn was still writing.
+primary is replaced, and the live session follows the rewrite. Compaction summarizes
+older turns but keeps the ten most recent turns verbatim, including complete tool-call
+pairs, so a task in progress survives both the live rewrite and resume. It also watches
+recent context growth and recent assistant-turn embeddings: a detected topic shift can
+compact at a natural boundary, while growth still projects ahead of the fixed 85% limit.
+A bounded background relevance pass can also move the cutoff back before an older message
+that matches the current goal; if it is unavailable or not ready, compaction uses the
+ordinary recency cutoff. Embedding is best-effort and asynchronous, so an unavailable or
+slow provider leaves the predictive path in charge rather than delaying a turn.
+A turn that could not be fully written says so rather than leaving a session that comes
+back short on resume. Closing a session waits for its in-flight turn to finish, so a
+shutdown or a closed terminal does not drop the messages the turn was still writing.
 
 ## Configuration
 
@@ -181,8 +189,11 @@ one you cannot correct.
 
 Ambient extraction mines facts every eight turns through the `smol` role, and a session
 summary is written on exit, which is what makes the session picker searchable by what a
-session was about rather than by its name. A dead embedder degrades recall to substring
-matching rather than switching it off.
+session was about rather than by its name. A dead embedder degrades recall to lexical
+BM25 matching rather than switching it off. Memories are project-scoped by the detected
+workspace root and recall also includes global memories; `/memory list project` and
+`/memory list global` can inspect either side of that view. The `remember` tool accepts
+`scope: "global"` for facts that should follow the user across repositories.
 
 ### Daemon and swarms
 
@@ -207,9 +218,25 @@ repository's pinned model or roles never leak into another session's.
 
 ### Tools
 
-`read`, `write`, `edit`, `glob`, `grep`, `bash`, `ask`, `todo`, git helpers, and MCP
+`read`, `write`, `edit`, `glob`, `grep`, `bash`, `bg`, `ask`, `todo`, git helpers, and MCP
 servers adapted into the same interface. Batches dispatch through a fixed worker pool
 with a cap on both concurrency and total size.
+
+`bash` adopts a command that exceeds its timeout into the background instead of
+starting it over. Use `bg status`, `bg output`/`tail`, `bg wait`, or `bg cancel`; long
+commands can also be started with `background: true`. Commands that need input accept
+`stdin`, and children receive a durable `TMPDIR`/`EVILCODE_SCRATCH_DIR` under the data
+directory. Long commands can report `EVILCODE_PROGRESS {json}` (the compatible
+`JCODE_PROGRESS` and `JCODE_CHECKPOINT` forms are accepted too); those control lines
+are parsed for the background widget and omitted from captured output.
+
+`grep` includes the enclosing function, method, or type beside every hit. It asks the
+configured language server for that structure and falls back to a small declaration scan
+when the repository has no server or the server is unavailable. Give it a file path without
+a pattern to get a numbered symbol outline instead of reading the whole file.
+The session remembers source ranges already shown by `read`, `grep`, or file/line
+diagnostics in `bash`, and later matching hits collapse to `shown above`; compaction
+clears that ledger for the fresh context.
 
 `edit` has a hash-anchored mode: `read` prints a short content hash beside each line,
 and an edit names the anchor instead of reproducing surrounding context. Stale anchors

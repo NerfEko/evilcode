@@ -50,6 +50,10 @@ type Message struct {
 	// written at safe point C (§6.3).
 	IsError bool `json:"is_error,omitempty"`
 
+	// Held marks a tool result stopped by a safety gate. It is persisted so a
+	// resumed or attached transcript keeps the warning distinct from failure.
+	Held bool `json:"held,omitempty"`
+
 	// Images are attachments for a vision model, as raw bytes.
 	//
 	// Raw rather than encoded, because the two wire formats disagree: Ollama

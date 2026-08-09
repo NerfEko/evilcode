@@ -22,8 +22,8 @@ func TestBashRowShowsCommandOnce(t *testing.T) {
 
 	m := &Model{renderer: NewRenderer(theme.Dracula(), 80)}
 	m.applyEvent(agent.Event{
-		Kind: agent.EventToolResult,
-		Call: &provider.ToolCall{Name: "bash", Args: args},
+		Kind:   agent.EventToolResult,
+		Call:   &provider.ToolCall{Name: "bash", Args: args},
 		Output: "rm: cannot remove 'build/': No such file or directory",
 		Intent: "exit 0 · 48 out",
 	})
@@ -61,6 +61,30 @@ func TestBashRowShowsCommandOnce(t *testing.T) {
 	}
 }
 
+func TestHeldBashRowIsWarningNotFailure(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{"cmd": "rm -rf ../outside"})
+	m := &Model{renderer: NewRenderer(theme.Dracula(), 100)}
+	m.applyEvent(agent.Event{
+		Kind:    agent.EventToolResult,
+		Call:    &provider.ToolCall{Name: "bash", Args: args},
+		Output:  "Command held for confirmation: target is outside the active workspace.",
+		Intent:  "held · justification required",
+		Held:    true,
+		ErrText: "command held by destructive-command gate",
+	})
+	if len(m.blocks) != 1 {
+		t.Fatalf("held result created an extra error block: %#v", m.blocks)
+	}
+	b := &m.blocks[0]
+	if !b.Held || b.Failed {
+		t.Fatalf("held block = %#v, want Held=true and Failed=false", b)
+	}
+	row := plain(strings.Join(m.renderer.Lines(b), " "))
+	if !strings.Contains(row, "!") || strings.Contains(row, "✗") {
+		t.Fatalf("held row did not render as a warning: %q", row)
+	}
+}
+
 // TestBashRowDuplicatedCommandIsTheBug is the fail side of the F2.1 pair: with
 // the old behavior — Intent set to the command itself — the dedupe guard in
 // applyEvent (`!strings.Contains(intent, target)`) cannot hold (a 48-char
@@ -81,8 +105,8 @@ func TestBashRowDuplicatedCommandIsTheBug(t *testing.T) {
 	m := &Model{renderer: NewRenderer(theme.Dracula(), 200)}
 	// Old behavior: intent was shortCmd(cmd) — the command truncated to 48.
 	m.applyEvent(agent.Event{
-		Kind: agent.EventToolResult,
-		Call: &provider.ToolCall{Name: "bash", Args: args},
+		Kind:   agent.EventToolResult,
+		Call:   &provider.ToolCall{Name: "bash", Args: args},
 		Output: "all gone now",
 		Intent: shortCmdForTest(cmd),
 	})

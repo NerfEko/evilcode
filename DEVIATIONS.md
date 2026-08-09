@@ -454,3 +454,39 @@ keeps pinning it.
 
 **Worth revisiting if**: favorites ever need ordering metadata (e.g. grouping),
 or a second writer appears and the two text-editors should be unified.
+
+## 2026-08-04 — J3.4 uses explicit stdin instead of prompt detection
+
+**Spec** (§3.4): inspect a blocked child process tree and surface an interactive
+prompt in the composer, then write the answer to the child's stdin.
+
+**Built instead**: `bash` accepts an explicit `stdin` string for foreground and
+background commands. Linux `wchan`/state is not a reliable enough signal to
+distinguish an interactive read from a CPU-bound process without occasionally
+prompting at the wrong time, so no heuristic was shipped. The tool description
+documents the parameter and regression coverage proves that supplied input
+reaches the child.
+
+**Worth revisiting**: add prompt detection only with a deterministic process
+probe and a composer-to-task input channel; do not infer it from elapsed time or
+an empty output buffer.
+
+## 2026-08-06 — J5.5 no bundled pure-Go local embedding runtime
+
+**Spec:** J5.4/J5.5 asks for a local embedding floor without cgo, with provider
+embeddings preferred when present. jcode's reference implementation loads and
+downloads `all-MiniLM-L6-v2` ONNX plus its tokenizer and runs a 384-dimensional,
+256-token model.
+
+**Built instead:** provider embeddings remain the preferred dense path. When a
+provider is unavailable or its embedding call fails, J5.2's BM25 retriever still
+ranks exact and lexical matches, and J5.1 keeps stale/missing vectors out of the
+active dense space. No local model/runtime is bundled.
+
+**Why it is OK:** the available pure-Go choices either wrap a native ONNX
+Runtime library or introduce a large, immature interpreter/model/tokenizer
+distribution surface for this small Go binary. Shipping a hash-based substitute
+would satisfy the type signature while failing the semantic behavior the task
+requires. Revisit if the project adopts a maintained pure-Go runtime and a
+versioned model distribution policy; until then BM25 is the honest availability
+floor rather than a misleading pseudo-embedding.

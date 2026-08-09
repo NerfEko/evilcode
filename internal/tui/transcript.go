@@ -48,20 +48,21 @@ type Block struct {
 	Decay int
 
 	// Tool row fields (plan.md §9.5).
-	ToolName         string
-	ToolTarget       string
-	ToolIntent       string
-	ToolPath         string
-	ToolCommand      string
-	ToolOutput       string
-	ToolTokens       int
+	ToolName    string
+	ToolTarget  string
+	ToolIntent  string
+	ToolPath    string
+	ToolCommand string
+	ToolOutput  string
+	ToolTokens  int
 	// Repairs names argument rewrites RunOne applied (alias, string→number).
 	// Shown dim in the tool row so a quietly rewritten argument is findable.
-	Repairs           []string
+	Repairs          []string
 	Added            int
 	Removed          int
 	HasDiff          bool
 	Failed           bool
+	Held             bool
 	ToolPathExists   bool
 	ToolPathMarkdown bool
 
@@ -119,19 +120,19 @@ func (b *Block) keep(c blockRender) {
 // unchanged strings compare without allocating; the old fmt.Sprintf key copied
 // every byte of a long reply on every repaint, even when the cache hit.
 type blockCacheKey struct {
-	kind, number, decay                                          int
-	toolTokens, added, removed                                   int
-	text, toolName, toolTarget, toolIntent                       string
-	toolPath, toolCommand, toolOutput                            string
-	diff                                                         string
-	repairs                                                      string
-	hasDiff, failed, collapsed, toolPathExists, toolPathMarkdown bool
-	graphics                                                     graphics.Protocol
-	imagesOn, centered, toolDetails                              bool
-	diffMode                                                     DiffMode
-	imagePath                                                    string
-	imageCols, imageRows, imageID                                int
-	imageBytes                                                   int
+	kind, number, decay                                                int
+	toolTokens, added, removed                                         int
+	text, toolName, toolTarget, toolIntent                             string
+	toolPath, toolCommand, toolOutput                                  string
+	diff                                                               string
+	repairs                                                            string
+	hasDiff, failed, held, collapsed, toolPathExists, toolPathMarkdown bool
+	graphics                                                           graphics.Protocol
+	imagesOn, centered, toolDetails                                    bool
+	diffMode                                                           DiffMode
+	imagePath                                                          string
+	imageCols, imageRows, imageID                                      int
+	imageBytes                                                         int
 }
 
 // Rows is a rendered transcript plus the provenance of every line. Owner[i] is
@@ -235,7 +236,7 @@ func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
 		toolIntent: b.ToolIntent, toolPath: b.ToolPath,
 		toolCommand: b.ToolCommand, toolOutput: b.ToolOutput, diff: b.Diff,
 		repairs: strings.Join(b.Repairs, ","),
-		hasDiff: b.HasDiff, failed: b.Failed, collapsed: b.Collapsed,
+		hasDiff: b.HasDiff, failed: b.Failed, held: b.Held, collapsed: b.Collapsed,
 		toolPathExists: b.ToolPathExists, toolPathMarkdown: b.ToolPathMarkdown,
 		graphics: r.Graphics, imagesOn: r.ImagesOn, centered: r.Centered,
 		toolDetails: r.ToolDetails, diffMode: r.DiffMode,
@@ -435,7 +436,9 @@ func (r *Renderer) renderCodeBlock(seg Segment) []string {
 //	✓ read src/main.go · load entry point · 1.2k tok (+8 -5)
 func (r *Renderer) renderTool(b *Block) []string {
 	icon, iconStyle := "✓", r.style(theme.RoleSuccess)
-	if b.Failed {
+	if b.Held {
+		icon, iconStyle = "!", r.style(theme.RoleWarning)
+	} else if b.Failed {
 		icon, iconStyle = "✗", rgbStyle(220, 100, 100)
 	}
 

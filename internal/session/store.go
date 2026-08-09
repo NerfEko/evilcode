@@ -4,10 +4,12 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -606,11 +608,124 @@ func Describe(dataDir, name string) (Info, error) {
 	return info, nil
 }
 
+const maxSessionJSONLine = 16 * 1024 * 1024
+
+var sessionRepairLog = log.New(os.Stderr, "", log.LstdFlags)
+
+// readSessionLine returns one complete JSONL line and whether it reached EOF.
+// ReadSlice lets us retain the exact byte count, which is needed when a
+// malformed final line has to be replaced rather than merely ignored.
+func readSessionLine(r *bufio.Reader) ([]byte, bool, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > maxSessionJSONLine {
+			return nil, false, fmt.Errorf("session JSONL line exceeds %d bytes", maxSessionJSONLine)
+		}
+		switch err {
+		case nil:
+			return line, false, nil
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) == 0 {
+				return nil, true, nil
+			}
+			return line, true, nil
+		default:
+			return nil, false, err
+		}
+	}
+}
+
+// salvageSessionEntries finds complete session envelopes inside a line that
+// could not be decoded as one envelope. A writer can die after writing a
+// prefix and a later append can put a complete envelope immediately after it;
+// scanning each object start preserves that later envelope and any consecutive
+// ones. The required top-level keys keep nested message objects from being
+// mistaken for session records.
+func salvageSessionEntries(line []byte) []Entry {
+	var out []Entry
+	for cursor := 0; cursor < len(line); {
+		rel := bytes.IndexByte(line[cursor:], '{')
+		if rel < 0 {
+			break
+		}
+		start := cursor + rel
+		dec := json.NewDecoder(bytes.NewReader(line[start:]))
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			cursor = start + 1
+			continue
+		}
+
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["ts"]; !ok {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["type"]; !ok {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["data"]; !ok {
+			cursor = start + 1
+			continue
+		}
+
+		var entry Entry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			cursor = start + 1
+			continue
+		}
+		out = append(out, entry)
+		consumed := int(dec.InputOffset())
+		if consumed <= 0 {
+			cursor = start + 1
+		} else {
+			cursor = start + consumed
+		}
+	}
+	return out
+}
+
+// repairSessionTail removes a malformed final line and writes any recovered
+// entries back as ordinary JSONL records. Keeping the salvaged entries on disk
+// matters because the next append must not erase the recovery on the next
+// restart.
+func repairSessionTail(f *os.File, start int64, entries []Entry) error {
+	if err := f.Truncate(start); err != nil {
+		return err
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		line = append(line, '\n')
+		if _, err := f.Write(line); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}
+
 // Read parses a session file into entries. A malformed final line (the
 // classic result of a hard kill) is tolerated and dropped, since the point of
-// resuming is to recover what survived; a malformed line anywhere earlier is
-// mid-log corruption, and returns an error naming its line number rather than
-// vanishing silently before the next write buries the evidence.
+// resuming is to recover what survived; if a torn prefix is glued to one or
+// more complete envelopes, those envelopes are salvaged and the repaired tail
+// is written back. A malformed line anywhere earlier is mid-log corruption,
+// and returns an error naming its line number when nothing recoverable is
+// present rather than vanishing silently before the next write buries the
+// evidence.
 func Read(path string) ([]Entry, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
@@ -619,15 +734,24 @@ func Read(path string) ([]Entry, error) {
 	defer f.Close()
 
 	var out []Entry
-	parse := func(lineNo int, raw string, final bool) error {
-		line := strings.TrimSpace(raw)
-		if line == "" {
+	parse := func(lineNo int, raw []byte, final bool, start int64) error {
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 {
 			return nil
 		}
 		var e Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			if final {
+		if err := json.Unmarshal(line, &e); err != nil {
+			salvaged := salvageSessionEntries(line)
+			if len(salvaged) > 0 {
+				out = append(out, salvaged...)
+				sessionRepairLog.Printf("session: salvaged %d entries from malformed line %d in %s", len(salvaged), lineNo, path)
+				if final {
+					return repairSessionTail(f, start, salvaged)
+				}
 				return nil
+			}
+			if final {
+				return repairSessionTail(f, start, nil)
 			}
 			return fmt.Errorf("%s:%d: malformed session record: %w", path, lineNo, err)
 		}
@@ -635,45 +759,34 @@ func Read(path string) ([]Entry, error) {
 		return nil
 	}
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	var havePending bool
-	var pendingLine string
+	r := bufio.NewReaderSize(f, 64*1024)
+	var pendingLine []byte
 	var pendingNo int
+	var pendingStart int64
+	var offset int64
 	lineNo := 0
-	for sc.Scan() {
-		lineNo++
-		if havePending {
-			if err := parse(pendingNo, pendingLine, false); err != nil {
-				return nil, err
-			}
-		}
-		pendingLine, pendingNo, havePending = sc.Text(), lineNo, true
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	if havePending {
-		var probe Entry
-		badFinal := json.Unmarshal([]byte(pendingLine), &probe) != nil
-		if err := parse(pendingNo, pendingLine, true); err != nil {
+	for {
+		raw, eof, err := readSessionLine(r)
+		if err != nil {
 			return nil, err
 		}
-		if badFinal {
-			end, err := f.Seek(0, io.SeekEnd)
-			if err != nil {
-				return nil, err
+		if raw != nil {
+			lineNo++
+			if pendingLine != nil {
+				if err := parse(pendingNo, pendingLine, false, pendingStart); err != nil {
+					return nil, err
+				}
 			}
-			cut := end - int64(len(pendingLine))
-			if cut < 0 {
-				return nil, fmt.Errorf("%s: malformed final session record has an invalid offset", path)
-			}
-			if err := f.Truncate(cut); err != nil {
-				return nil, err
-			}
-			if err := f.Sync(); err != nil {
-				return nil, err
-			}
+			pendingLine, pendingNo, pendingStart = raw, lineNo, offset
+			offset += int64(len(raw))
+		}
+		if eof {
+			break
+		}
+	}
+	if pendingLine != nil {
+		if err := parse(pendingNo, pendingLine, true, pendingStart); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil

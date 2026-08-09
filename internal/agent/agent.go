@@ -344,9 +344,19 @@ func (a *Agent) recall(ctx context.Context, userInput string) {
 // threshold would otherwise compact forever without ever sending a request,
 // which presents as a hang rather than as a loop.
 func (a *Agent) autoCompact(ctx context.Context) {
-	if !a.Compactor.ShouldCompact(a.ctxUsed(), a.NumCtx) {
+	if a.Compactor == nil {
 		return
 	}
+	if !a.Compactor.ShouldCompactForConversation(a.ctxUsed(), a.NumCtx, a.Conv) {
+		return
+	}
+	// Queue the exact snapshot that will be compacted, including the prompt
+	// that Run appended. Give an already-started lookup a small grace period;
+	// Compact itself still never waits on the provider and falls back to the
+	// ordinary recency boundary when this snapshot is unavailable.
+	msgs := a.Conv.Messages()
+	a.Compactor.PrepareRelevance(ctx, msgs)
+	a.Compactor.WaitForRelevance(ctx, msgs, CompactRelevanceWait)
 	if _, err := a.Compactor.Compact(ctx, a.Conv); err != nil {
 		a.Notice(LevelWarning, "Could not compact: %v", err)
 		return
@@ -472,6 +482,12 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 
 		a.Conv.Append(msg)
+		// A tool-call assistant message is an intermediate step, not the
+		// completed turn. Snapshot only the final assistant response so the
+		// semantic window describes what the user actually received.
+		if len(msg.ToolCalls) == 0 && a.Compactor != nil {
+			a.Compactor.RecordEmbeddingSnapshot(ctx, msg.Content)
+		}
 
 		if len(msg.ToolCalls) > 0 {
 			if err := a.runTools(ctx, msg.ToolCalls); err != nil {
@@ -503,6 +519,9 @@ func (a *Agent) loop(ctx context.Context) error {
 				if appended {
 					continue
 				}
+			}
+			if a.Compactor != nil {
+				a.Compactor.PrepareRelevanceIfNeeded(ctx, a.ctxUsed(), a.NumCtx, a.Conv)
 			}
 			a.endTurn(EndComplete)
 			return nil
@@ -765,6 +784,7 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
 		IsError:    err != nil,
+		Held:       res.Held,
 		Images:     res.Images,
 		Repairs:    res.Repairs,
 	})
@@ -785,6 +805,7 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 	e.Diff = res.Diff
 	e.DiffStat = res.DiffStat
 	e.Intent = res.Intent
+	e.Held = res.Held
 	e.Display = res.Display
 	e.Images = res.Images
 	e.NoWrite = res.NoWrite

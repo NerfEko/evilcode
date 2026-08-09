@@ -12,11 +12,31 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"evilcode/internal/tools/commandrisk"
 )
 
 // Exec holds the shell and search tools' shared state.
 type Exec struct {
 	Root string
+
+	// ConfigDir and DataDir let the command-risk gate recognize application
+	// state even when it lives outside the active workspace.
+	ConfigDir string
+	DataDir   string
+
+	// ScratchDir is exported to bash children as TMPDIR and
+	// EVILCODE_SCRATCH_DIR. Production wiring points it under the data dir;
+	// tests and embedders may leave it empty to inherit the environment.
+	ScratchDir string
+
+	// lspServer enriches grep hits with document symbols when a language
+	// server is configured for the hit's file. It is optional: the declaration
+	// scanner is deliberately the fallback for repositories without one.
+	lspServer LSPServer
+
+	// exposure is shared with the filesystem tools for one session.
+	exposure *Exposure
 
 	// Bg tracks detached commands.
 	Bg *Background
@@ -55,7 +75,55 @@ func NewExec(root string) *Exec {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root, Bg: &Background{}}
+	return &Exec{Root: root, Timeout: DefaultTimeout, cwd: root, Bg: &Background{}, exposure: NewExposure()}
+}
+
+// WithLSP lets grep ask the configured language server for enclosing symbols.
+// Starting a server remains lazy because a session that never searches should
+// not pay the indexing cost.
+func (e *Exec) WithLSP(server LSPServer) *Exec {
+	e.lspServer = server
+	return e
+}
+
+// WithExposure shares a session's shown-range ledger with filesystem tools.
+func (e *Exec) WithExposure(exposure *Exposure) *Exec {
+	e.exposure = exposure
+	return e
+}
+
+// WithScratchDir keeps large child-created temporary files off the machine's
+// RAM-backed /tmp when a session supplies a durable data directory.
+func (e *Exec) WithScratchDir(dir string) *Exec {
+	e.ScratchDir = dir
+	return e
+}
+
+// WithRiskPaths supplies the application state roots used by the destructive
+// command gate. Keeping these explicit makes tests and embedders deterministic
+// without making the classifier read the host filesystem.
+func (e *Exec) WithRiskPaths(configDir, dataDir string) *Exec {
+	e.ConfigDir = configDir
+	e.DataDir = dataDir
+	return e
+}
+
+func (e *Exec) commandEnv() []string {
+	env := os.Environ()
+	if e.ScratchDir == "" {
+		return env
+	}
+	if err := os.MkdirAll(e.ScratchDir, 0o700); err != nil {
+		return env
+	}
+	filtered := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "TMPDIR=") || strings.HasPrefix(entry, "EVILCODE_SCRATCH_DIR=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, "TMPDIR="+e.ScratchDir, "EVILCODE_SCRATCH_DIR="+e.ScratchDir)
 }
 
 // Cwd reports the working directory subsequent commands will run in.
@@ -67,109 +135,33 @@ func (e *Exec) Cwd() string {
 
 // Tools returns the shell and search tools.
 func (e *Exec) Tools() Set {
-	return Set{e.bashTool(), e.grepTool()}
+	return Set{e.bashTool(), e.grepTool(), e.bgTool()}
 }
 
 type bashArgs struct {
-	Cmd        string `json:"cmd"`
-	Timeout    int    `json:"timeout,omitempty"`
-	Background bool   `json:"background,omitempty"`
-}
-
-// BackgroundTask is a command still running after its tool call returned.
-type BackgroundTask struct {
-	ID      int
-	Label   string
-	Started time.Time
-
-	mu     sync.Mutex
-	done   bool
-	failed bool
-	output string
-}
-
-// Snapshot returns the task's current state.
-func (t *BackgroundTask) Snapshot() (done, failed bool, output string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.done, t.failed, t.output
-}
-
-// Background tracks detached commands.
-//
-// The registry lives here rather than in the UI because a background task
-// outlives the tool call that started it, and the agent loop must be able to
-// report completion whether or not anything is watching (plan.md §17).
-type Background struct {
-	mu    sync.Mutex
-	next  int
-	tasks []*BackgroundTask
-
-	// OnDone is called when a task finishes, so the UI can raise a notice.
-	OnDone func(*BackgroundTask)
-}
-
-// MaxCompletedBackgroundTasks bounds finished task metadata and captured
-// output retained for the widget. Running tasks are never evicted.
-const MaxCompletedBackgroundTasks = 8
-
-// Tasks returns the tracked tasks.
-func (b *Background) Tasks() []*BackgroundTask {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	completed := 0
-	kept := make([]*BackgroundTask, 0, len(b.tasks))
-	for i := len(b.tasks) - 1; i >= 0; i-- {
-		t := b.tasks[i]
-		done, _, _ := t.Snapshot()
-		if done {
-			completed++
-			if completed > MaxCompletedBackgroundTasks {
-				continue
-			}
-		}
-		kept = append(kept, t)
-	}
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
-	}
-	b.tasks = kept
-	return append([]*BackgroundTask(nil), kept...)
-}
-
-// add registers a task.
-func (b *Background) add(label string) *BackgroundTask {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.next++
-	t := &BackgroundTask{ID: b.next, Label: label, Started: time.Now()}
-	b.tasks = append(b.tasks, t)
-	return t
-}
-
-// finish records a task's result and notifies.
-func (b *Background) finish(t *BackgroundTask, output string, failed bool) {
-	t.mu.Lock()
-	t.done, t.failed, t.output = true, failed, output
-	t.mu.Unlock()
-
-	if b.OnDone != nil {
-		b.OnDone(t)
-	}
+	Cmd           string `json:"cmd"`
+	Timeout       int    `json:"timeout,omitempty"`
+	Background    bool   `json:"background,omitempty"`
+	Stdin         string `json:"stdin,omitempty"`
+	Justification string `json:"justification,omitempty"`
 }
 
 func (e *Exec) bashTool() Tool {
 	return Tool{
-		Name: "bash",
+		Name:     "bash",
+		Exposure: e.exposure,
 		Desc: "Run a shell command in the workspace. The working directory persists " +
-			"between calls, so cd carries over. Output is combined stdout and stderr.",
+			"between calls, so cd carries over. Output is combined stdout and stderr. " +
+			"Commands needing input can use stdin; child temporary files use the configured scratch directory.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "cmd":     {"type": "string",  "description": "Shell command to run"},
     "timeout": {"type": "integer", "description": "Timeout in seconds; defaults to 120"},
     "background": {"type": "boolean",
-                   "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."}
+                   "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."},
+    "stdin":    {"type": "string", "description": "Optional input written to the command's stdin"},
+    "justification": {"type": "string", "description": "Substantive reason for a command held by the destructive-command safety gate"}
   },
   "required": ["cmd"]
 }`),
@@ -182,8 +174,17 @@ func (e *Exec) bashTool() Tool {
 				return Result{}, fmt.Errorf("cmd is required")
 			}
 
+			workingDir := e.Cwd()
+			_, verdict := commandrisk.Evaluate(a.Cmd, commandrisk.ContextFromPaths(e.Root, workingDir, e.ConfigDir, e.DataDir), a.Justification)
+			switch verdict.Decision {
+			case commandrisk.DecisionReflect:
+				return Result{Output: verdict.Message, Intent: "held · justification required", Held: true}, fmt.Errorf("command held by destructive-command gate")
+			case commandrisk.DecisionRefuse:
+				return Result{Output: verdict.Message, Intent: "held · blocked", Held: true}, fmt.Errorf("command refused by destructive-command gate")
+			}
+
 			if a.Background {
-				return e.runBackground(a.Cmd), nil
+				return e.runBackground(a.Cmd, a.Stdin), nil
 			}
 
 			timeout := e.Timeout
@@ -195,6 +196,7 @@ func (e *Exec) bashTool() Tool {
 			// budget waiting for the shell to be free.
 			e.run.Lock()
 			defer e.run.Unlock()
+			workingDir = e.Cwd()
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -205,54 +207,86 @@ func (e *Exec) bashTool() Tool {
 			const marker = "__evilcode_cwd__"
 			script := a.Cmd + "\n__evilcode_status=$?\nprintf '\\n" + marker + "%s\\n' \"$PWD\"\nexit $__evilcode_status"
 
-			cmd := exec.CommandContext(ctx, "bash", "-c", script)
-			cmd.Dir = e.Cwd()
 			var buf ringWriter
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Dir = workingDir
+			cmd.Env = e.commandEnv()
+			if a.Stdin != "" {
+				cmd.Stdin = strings.NewReader(a.Stdin)
+			}
 			cmd.Stdout = &buf
 			cmd.Stderr = &buf
-			// Its own process group, so cancelling kills the descendants too.
-			// Killing the shell alone leaves a grandchild running in the
-			// workspace after the tool call has already returned a timeout.
 			setProcessGroup(cmd)
-			// Killing bash does not close the output pipes if a grandchild
-			// still holds them open, so Run would block past the timeout
-			// waiting on `sleep 10` rather than returning. WaitDelay forces
-			// the pipes shut shortly after cancellation.
 			cmd.WaitDelay = 2 * time.Second
-			runErr := runGroup(ctx, cmd)
+			if err := cmd.Start(); err != nil {
+				return Result{}, err
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
 
-			out := buf.String()
-			if idx := strings.LastIndex(out, marker); idx >= 0 {
-				newCwd := strings.TrimSpace(out[idx+len(marker):])
-				out = strings.TrimRight(out[:idx], "\n")
-				if newCwd != "" {
-					e.mu.Lock()
-					e.cwd = newCwd
-					e.mu.Unlock()
+			select {
+			case runErr := <-done:
+				return e.finishForeground(runErr, buf.String(), workingDir, marker)
+			case <-ctx.Done():
+				if ctx.Err() == context.DeadlineExceeded {
+					if e.Bg == nil {
+						e.Bg = &Background{}
+					}
+					background := e.Bg
+					task := background.add(shortCmd(a.Cmd))
+					background.attach(task, &buf, func() { killProcessGroup(cmd) })
+					go func() {
+						runErr := <-done
+						out := Truncate(e.cleanBashOutputIfCurrent(buf.String(), marker, workingDir))
+						background.finish(task, out, runErr != nil)
+					}()
+					return Result{
+						Output: fmt.Sprintf("command exceeded %s and is still running as background task %d; output is accumulating in that task — use bg status/output/wait, and do not re-run it", timeout, task.ID),
+						Intent: fmt.Sprintf("adopted as background task %d", task.ID),
+					}, nil
 				}
+				killProcessGroup(cmd)
+				runErr := <-done
+				result, _ := e.finishForeground(runErr, buf.String(), workingDir, marker)
+				return result, ctx.Err()
 			}
-
-			if ctx.Err() == context.DeadlineExceeded {
-				return Result{Output: out}, fmt.Errorf(
-					"command timed out after %s; if it is meant to run long, raise timeout", timeout)
-			}
-			if runErr != nil {
-				// A non-zero exit is information, not a harness failure: the
-				// model needs the output to act on it.
-				return Result{
-					Output: out,
-					Intent: bashIntent(exitStatus(runErr), out),
-				}, fmt.Errorf("exit status %s", exitStatus(runErr))
-			}
-			// The intent measures what the command actually produced, so it is
-			// taken before the empty-output placeholder stands in for nothing.
-			intent := bashIntent("0", out)
-			if strings.TrimSpace(out) == "" {
-				out = "(no output)"
-			}
-			return Result{Output: out, Intent: intent}, nil
 		},
 	}
+}
+
+func (e *Exec) cleanBashOutput(output, marker string) string {
+	return e.cleanBashOutputIfCurrent(output, marker, "")
+}
+
+func (e *Exec) cleanBashOutputIfCurrent(output, marker, expectedCwd string) string {
+	if idx := strings.LastIndex(output, marker); idx >= 0 {
+		newCwd := strings.TrimSpace(output[idx+len(marker):])
+		output = strings.TrimRight(output[:idx], "\n")
+		if newCwd != "" {
+			e.mu.Lock()
+			if expectedCwd == "" || e.cwd == expectedCwd {
+				e.cwd = newCwd
+			}
+			e.mu.Unlock()
+		}
+	}
+	return output
+}
+
+func (e *Exec) finishForeground(runErr error, output, workingDir, marker string) (Result, error) {
+	output = Truncate(cleanProgressOutput(e.cleanBashOutput(output, marker)))
+	if runErr != nil {
+		return Result{
+			Output: output,
+			Intent: bashIntent(exitStatus(runErr), output),
+			Shown:  RangesFromBash(output, workingDir),
+		}, fmt.Errorf("exit status %s", exitStatus(runErr))
+	}
+	intent := bashIntent("0", output)
+	if strings.TrimSpace(output) == "" {
+		output = "(no output)"
+	}
+	return Result{Output: output, Intent: intent, Shown: RangesFromBash(output, workingDir)}, nil
 }
 
 // runBackground starts a detached command and returns immediately.
@@ -260,28 +294,49 @@ func (e *Exec) bashTool() Tool {
 // It deliberately does not inherit the caller's context: the point is to
 // outlive the tool call. It gets a generous ceiling of its own instead, so a
 // runaway watcher still cannot run forever.
-func (e *Exec) runBackground(command string) Result {
-	task := e.Bg.add(shortCmd(command))
+func (e *Exec) runBackground(command, stdin string) Result {
+	if e.Bg == nil {
+		e.Bg = &Background{}
+	}
+	background := e.Bg
+	workingDir := e.Cwd()
+	task := background.add(shortCmd(command))
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), BackgroundTimeout)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "bash", "-c", command)
-		cmd.Dir = e.Cwd()
+		cmd := exec.Command("bash", "-c", command)
+		cmd.Dir = workingDir
+		cmd.Env = e.commandEnv()
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
 		var buf ringWriter
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
 		cmd.WaitDelay = 2 * time.Second
 		setProcessGroup(cmd)
-
-		err := runGroup(ctx, cmd)
-		e.Bg.finish(task, Truncate(buf.String()), err != nil)
+		if err := cmd.Start(); err != nil {
+			background.finish(task, err.Error(), true)
+			return
+		}
+		background.attach(task, &buf, func() { killProcessGroup(cmd) })
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			background.finish(task, Truncate(buf.String()), err != nil)
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+			err := <-done
+			background.finish(task, Truncate(buf.String()), err != nil)
+		}
 	}()
 
 	return Result{
 		Output: fmt.Sprintf("started in the background as task %d; "+
-			"its result will be reported when it finishes", task.ID),
+			"output is retained there — use bg status/output/wait to inspect it when it finishes", task.ID),
 		Intent: "bg: " + shortCmd(command),
 	}
 }
@@ -295,7 +350,11 @@ func (e *Exec) runBackground(command string) Result {
 type ringWriter struct {
 	mu       sync.Mutex
 	buf      []byte
+	start    int
+	size     int
 	overflow bool
+	lineBuf  []byte
+	progress Progress
 }
 
 // MaxOutputBytes bounds what one command may hold in memory. Well above
@@ -307,30 +366,153 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n := len(p)
-	if len(p) > MaxOutputBytes {
-		p = p[len(p)-MaxOutputBytes:]
-		w.buf = append(w.buf[:0], p...)
+	if n == 0 {
+		return 0, nil
+	}
+	if w.buf == nil {
+		w.buf = make([]byte, MaxOutputBytes)
+	}
+	if n >= MaxOutputBytes {
+		copy(w.buf, p[n-MaxOutputBytes:])
+		w.start = 0
+		w.size = MaxOutputBytes
 		w.overflow = true
+		w.observeProgressLocked(p)
 		return n, nil
 	}
-	if len(w.buf)+len(p) > MaxOutputBytes {
-		drop := len(w.buf) + len(p) - MaxOutputBytes
-		w.buf = append(w.buf[:0], w.buf[drop:]...)
+	if drop := w.size + n - MaxOutputBytes; drop > 0 {
+		w.start = (w.start + drop) % MaxOutputBytes
+		w.size -= drop
 		w.overflow = true
 	}
-	w.buf = append(w.buf, p...)
+	end := (w.start + w.size) % MaxOutputBytes
+	first := min(n, MaxOutputBytes-end)
+	copy(w.buf[end:end+first], p[:first])
+	copy(w.buf[:n-first], p[first:])
+	w.size += n
+	w.observeProgressLocked(p)
 	return n, nil
 }
 
-// String returns what was kept, marked if anything was dropped.
+const maxProgressLineBytes = 64 << 10
+
+func (w *ringWriter) observeProgressLocked(p []byte) {
+	for len(p) > 0 {
+		idx := bytes.IndexByte(p, '\n')
+		if idx < 0 {
+			w.appendProgressFragmentLocked(p)
+			return
+		}
+		w.appendProgressFragmentLocked(p[:idx])
+		w.recordProgressBytesLocked(w.lineBuf)
+		w.lineBuf = w.lineBuf[:0]
+		p = p[idx+1:]
+	}
+}
+
+func (w *ringWriter) appendProgressFragmentLocked(fragment []byte) {
+	if len(fragment) >= maxProgressLineBytes {
+		w.lineBuf = append(w.lineBuf[:0], fragment[len(fragment)-maxProgressLineBytes:]...)
+		return
+	}
+	if overflow := len(w.lineBuf) + len(fragment) - maxProgressLineBytes; overflow > 0 {
+		w.lineBuf = append(w.lineBuf[:0], w.lineBuf[overflow:]...)
+	}
+	w.lineBuf = append(w.lineBuf, fragment...)
+}
+
+func (w *ringWriter) recordProgressLineLocked(line string) {
+	if !looksLikeProgressLine(line) {
+		return
+	}
+	if progress, ok := parseProgressLine(line); ok {
+		w.progress = progress
+	}
+}
+
+func (w *ringWriter) recordProgressBytesLocked(line []byte) {
+	if !looksLikeProgressBytes(line) {
+		return
+	}
+	if progress, ok := parseProgressLine(string(line)); ok {
+		w.progress = progress
+	}
+}
+
+// Progress returns the latest marker observed, including markers that have
+// already scrolled out of the bounded live output tail.
+func (w *ringWriter) Progress() Progress {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	progress := w.progress
+	if len(w.lineBuf) > 0 {
+		if current := parseProgress(string(w.lineBuf)); current.Known {
+			progress = current
+		}
+	}
+	return progress
+}
+
+func (w *ringWriter) snapshotLocked() []byte {
+	if w.size == 0 {
+		return nil
+	}
+	out := make([]byte, w.size)
+	first := min(w.size, MaxOutputBytes-w.start)
+	copy(out, w.buf[w.start:w.start+first])
+	copy(out[first:], w.buf[:w.size-first])
+	return out
+}
+
+func (w *ringWriter) tailLocked(n int) []byte {
+	if n > w.size {
+		n = w.size
+	}
+	if n <= 0 {
+		return nil
+	}
+	start := (w.start + w.size - n) % MaxOutputBytes
+	out := make([]byte, n)
+	first := min(n, MaxOutputBytes-start)
+	copy(out, w.buf[start:start+first])
+	copy(out[first:], w.buf[:n-first])
+	return out
+}
+
+// String returns what was kept, marked if anything was dropped. Foreground
+// completion uses this full ring so the ordinary Result truncator can retain
+// both the head and tail of a command's output.
 func (w *ringWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	buf := w.snapshotLocked()
 	if !w.overflow {
-		return string(w.buf)
+		return string(buf)
 	}
 	return "[earlier output dropped: the command produced more than " +
-		humanBytes(MaxOutputBytes) + "]\n" + string(w.buf)
+		humanBytes(MaxOutputBytes) + "]\n" + string(buf)
+}
+
+// Tail returns a bounded live snapshot. Keeping the live snapshot at the tool
+// result limit is important: a fast writer can otherwise make every 200ms
+// progress refresh allocate a megabyte even though the model can only receive
+// 50 KiB.
+func (w *ringWriter) Tail() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.size <= MaxResultBytes && !w.overflow {
+		return string(w.snapshotLocked())
+	}
+	buf := w.tailLocked(MaxResultBytes)
+	tailStart := 0
+	for tailStart < len(buf) && !utf8Start(buf[tailStart]) {
+		tailStart++
+	}
+	prefix := "[output tail kept: the command produced more than " + humanBytes(MaxResultBytes) + "]\n"
+	if w.overflow {
+		prefix = "[earlier output dropped: the command produced more than " + humanBytes(MaxOutputBytes) + "]\n"
+	}
+	return prefix + string(buf[tailStart:])
 }
 
 // BackgroundTimeout is the ceiling on a detached command, so a runaway watcher
@@ -375,9 +557,11 @@ type grepArgs struct {
 
 func (e *Exec) grepTool() Tool {
 	return Tool{
-		Name: "grep",
+		Name:     "grep",
+		Exposure: e.exposure,
 		Desc: "Search file contents with a regular expression, via ripgrep. " +
-			"Returns matching lines with their file and line number.",
+			"Returns matching lines with their file, line number, and enclosing symbol. " +
+			"With a file path and no pattern, returns that file's symbol outline.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -387,15 +571,33 @@ func (e *Exec) grepTool() Tool {
     "context": {"type": "integer", "description": "Lines of context around each match"},
     "limit":   {"type": "integer", "description": "Maximum matching lines to return"}
   },
-  "required": ["pattern"]
+  "required": []
 }`),
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			var a grepArgs
 			if err := unmarshalArgs(raw, &a); err != nil {
 				return Result{}, err
 			}
+			target := e.Root
+			if a.Path != "" {
+				if !filepath.IsAbs(a.Path) {
+					target = filepath.Join(e.Root, a.Path)
+				} else {
+					target = a.Path
+				}
+			}
 			if a.Pattern == "" {
-				return Result{}, fmt.Errorf("pattern is required")
+				if a.Path == "" {
+					return Result{}, fmt.Errorf("pattern is required unless path names a file for outline mode")
+				}
+				info, err := os.Stat(target)
+				if err != nil {
+					return Result{}, err
+				}
+				if info.IsDir() {
+					return Result{}, fmt.Errorf("outline mode needs a file path; %s is a directory", a.Path)
+				}
+				return e.grepOutline(ctx, target, a.Path), nil
 			}
 			// Never reimplement ripgrep (plan.md §17).
 			if _, err := exec.LookPath("rg"); err != nil {
@@ -406,7 +608,10 @@ func (e *Exec) grepTool() Tool {
 			if limit <= 0 {
 				limit = 200
 			}
-			args := []string{"--line-number", "--with-filename", "--color=never", "--max-count=50"}
+			// --null separates the path from the line payload. Without it a
+			// directory named `part:123` is indistinguishable from rg's
+			// `path:line:text` output.
+			args := []string{"--null", "--line-number", "--with-filename", "--color=never", "--sort", "path", "--max-count=50"}
 			if a.Glob != "" {
 				args = append(args, "--glob", a.Glob)
 			}
@@ -415,14 +620,6 @@ func (e *Exec) grepTool() Tool {
 			}
 			args = append(args, "--regexp", a.Pattern)
 
-			target := e.Root
-			if a.Path != "" {
-				if !filepath.IsAbs(a.Path) {
-					target = filepath.Join(e.Root, a.Path)
-				} else {
-					target = a.Path
-				}
-			}
 			args = append(args, target)
 
 			ctx, cancel := context.WithTimeout(ctx, e.Timeout)
@@ -436,28 +633,128 @@ func (e *Exec) grepTool() Tool {
 			err := cmd.Run()
 
 			out := buf.String()
+			records := parseRGRecords(out)
 			// ripgrep exits 1 for "no matches", which is an answer, not a fault.
+			// An explicitly named binary file also exits 1 while emitting a
+			// useful `binary file matches` record, so only call it no-match when
+			// no record survived parsing.
 			var ee *exec.ExitError
-			if err != nil && errors.As(err, &ee) && ee.ExitCode() == 1 {
+			if err != nil && errors.As(err, &ee) && ee.ExitCode() == 1 && len(records) == 0 {
 				return Result{Output: "no matches for " + a.Pattern}, nil
 			}
-			if err != nil {
+			if err != nil && !(errors.As(err, &ee) && ee.ExitCode() == 1 && len(records) > 0) {
 				return Result{Output: out}, fmt.Errorf("ripgrep failed: %w", err)
 			}
 
-			lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 			note := ""
-			if len(lines) > limit {
-				note = fmt.Sprintf("\n[%d more matching lines; narrow the pattern]", len(lines)-limit)
-				lines = lines[:limit]
+			matchCount := 0
+			for _, record := range records {
+				if !record.Context {
+					matchCount++
+				}
 			}
-			// Paths come back absolute; relative reads better and costs fewer tokens.
-			for i, l := range lines {
-				lines[i] = strings.TrimPrefix(l, e.Root+string(filepath.Separator))
+			if matchCount > limit {
+				note = fmt.Sprintf("\n[%d more matching lines; narrow the pattern]", matchCount-limit)
+				kept := make([]grepRecord, 0, len(records))
+				pendingContext := make([]grepRecord, 0)
+				seen := 0
+				group := records[0].Group
+				retainedGroup := group
+				for _, record := range records {
+					if record.Group != group {
+						// Flush only the trailing context of the last retained
+						// group. Leading context in the next group belongs to a
+						// match that may be omitted by the limit.
+						if group == retainedGroup {
+							kept = append(kept, pendingContext...)
+						}
+						pendingContext = pendingContext[:0]
+						group = record.Group
+					}
+					if record.Context {
+						pendingContext = append(pendingContext, record)
+						continue
+					}
+					if seen >= limit {
+						// These lines trail the last retained match and are still
+						// part of its requested context. Drop only the omitted
+						// match itself and anything after it.
+						if group == retainedGroup {
+							kept = append(kept, pendingContext...)
+						}
+						break
+					}
+					kept = append(kept, pendingContext...)
+					pendingContext = pendingContext[:0]
+					seen++
+					retainedGroup = group
+					kept = append(kept, record)
+				}
+				records = kept
+			}
+			lines := make([]string, 0, len(records))
+			shown := make([]LineRange, 0, len(records))
+			symbols := make(map[string][]grepSymbol)
+			lspUnavailable := make(map[string]bool)
+			maxLines := make(map[string]int)
+			for _, record := range records {
+				if record.Binary {
+					continue
+				}
+				path := record.Path
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(e.Root, path)
+				}
+				if record.Line > maxLines[path] {
+					maxLines[path] = record.Line
+				}
+			}
+			for _, record := range records {
+				if record.Binary {
+					rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
+					if filepath.IsAbs(rel) {
+						rel = filepath.Clean(rel)
+					}
+					lines = append(lines, fmt.Sprintf("%s: %s", rel, record.Text))
+					continue
+				}
+				// Paths come back absolute; relative reads better and costs fewer
+				// tokens. Context records are enriched too, so --context remains
+				// useful without reverting to unstructured output.
+				rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
+				if filepath.IsAbs(rel) {
+					rel = filepath.Clean(rel)
+				}
+				path := record.Path
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(e.Root, path)
+				}
+				shown = append(shown, LineRange{Path: path, Start: record.Line, End: record.Line})
+				if e.exposure != nil && e.exposure.Contains(path, record.Line) {
+					rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
+					if filepath.IsAbs(rel) {
+						rel = filepath.Clean(rel)
+					}
+					lines = append(lines, fmt.Sprintf("%s:%d — shown above", rel, record.Line))
+					continue
+				}
+				if _, ok := symbols[path]; !ok {
+					symbols[path] = e.grepSymbols(ctx, path, lspUnavailable, maxLines[path])
+				}
+				symbol := enclosingGrepSymbol(symbols[path], record.Line)
+				label := "top level"
+				if symbol != "" {
+					label = symbol
+				}
+				if record.Context {
+					label = "context · " + label
+				}
+				lines = append(lines, fmt.Sprintf("%s:%d: [%s] %s", rel, record.Line, label, record.Text))
 			}
 			return Result{
 				Output: strings.Join(lines, "\n") + note,
-				Intent: fmt.Sprintf("%d matches for %s", len(lines), a.Pattern),
+				Intent: fmt.Sprintf("%d matches for %s", matchCount, a.Pattern),
+				Shown:  shown,
 			}, nil
 		},
 	}

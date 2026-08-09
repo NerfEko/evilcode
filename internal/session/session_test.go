@@ -836,6 +836,47 @@ func TestReadTakesTruncatedFinalLine(t *testing.T) {
 	}
 }
 
+func TestReadSalvagesEntriesGluedToTornTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"user","data":{"role":"user","content":"first"}}` + "\n" +
+		`{"ts":"2026-01-01T00:00:01Z","type":"assistant","data":{"role":"assistant","content":"torn` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"second"}}` +
+		`{"ts":"2026-01-01T00:00:03Z","type":"assistant","data":{"role":"assistant","content":"third"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("glued tail should be recoverable: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("recovered %d entries, want first plus two complete tail entries", len(entries))
+	}
+	if got := string(entries[1].Data); !strings.Contains(got, `"second"`) {
+		t.Errorf("first salvaged entry = %s, want second message", got)
+	}
+	if got := string(entries[2].Data); !strings.Contains(got, `"third"`) {
+		t.Errorf("second salvaged entry = %s, want third message", got)
+	}
+
+	// The repair is durable: a second replay must not need the torn prefix to
+	// rediscover the recovered entries.
+	repaired, err := Read(path)
+	if err != nil {
+		t.Fatalf("repaired session should replay cleanly: %v", err)
+	}
+	if len(repaired) != 3 {
+		t.Fatalf("repaired session has %d entries, want 3", len(repaired))
+	}
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(data), "torn") {
+		t.Errorf("repair retained torn bytes: %q", data)
+	}
+}
+
 func TestReadRemovesTruncatedTailBeforeTheNextAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(Dir(dir), "bat.jsonl")

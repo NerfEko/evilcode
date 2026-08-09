@@ -171,7 +171,7 @@ func runOnce(args []string) (string, error) {
 		fmt.Fprintln(os.Stderr, "evilcode: memory unavailable:", err)
 	} else {
 		defer bank.Close()
-		mem = memory.NewManager(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory)
+		mem = memory.NewManagerWithModelAndScope(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding", pc.Root)
 		a.Recall = func(ctx context.Context, in string) (string, any) {
 			tail, hits := mem.Recall(ctx, in)
 			return tail, hits
@@ -183,6 +183,7 @@ func runOnce(args []string) (string, error) {
 	memoryHook := agent.NewMemoryHook(mem)
 	defer memoryHook.Close()
 	a.Hooks = agent.Chain{memoryHook, poke}
+	exposure := tools.NewExposure()
 
 	// Compaction persists through the session store rather than only in memory:
 	// assigning the message slice was what made a compacted session come back
@@ -191,9 +192,14 @@ func runOnce(args []string) (string, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
+		Embedding: prov,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
+		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTail(dataDir, summary, tail)
+		},
+		OnCompaction: exposure.Reset,
 	}
 	a.Compactor = compactor
 
@@ -220,13 +226,17 @@ func runOnce(args []string) (string, error) {
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(modelName)
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-		WithConfine(cfg.Features.ConfineToWorkspace)
-	execTools := tools.NewExec(cwd)
+		WithConfine(cfg.Features.ConfineToWorkspace).WithExposure(exposure)
+	execTools := tools.NewExec(cwd).
+		WithExposure(exposure).
+		WithScratchDir(filepath.Join(dataDir, "scratch")).
+		WithRiskPaths(config.ConfigDir(), dataDir)
 
 	// Language servers start on first use, not here: gopls costs seconds and
 	// indexes the module, and a session that never asks should never pay.
 	lsps := lsp.NewManager(pc.Root, cfg.LSP)
 	defer lsps.Close()
+	execTools.WithLSP(lsps)
 
 	// The advisor is a second, cheap voice, so it goes through the smol role
 	// like every other ambient call (§16, §21).

@@ -45,3 +45,12 @@ func runGroup(ctx context.Context, cmd *exec.Cmd) error {
 	close(done)
 	return err
 }
+
+// killProcessGroup terminates a command and all descendants. It is separate
+// from runGroup so a timed-out foreground command can be adopted first and
+// canceled later by the background registry.
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}

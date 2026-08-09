@@ -681,71 +681,71 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J2 — Search that pays for itself
 
-- [ ] **J2.1** `internal/tools/exec.go:341` `Exec.grepTool` — hits carry no structure.
+- [x] **J2.1** `internal/tools/exec.go:341` `Exec.grepTool` — hits carry no structure.
       Attach the enclosing symbol per hit, via `internal/lsp` `documentSymbol` where a
       server is configured and a declaration-pattern scan otherwise. §2.1. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/agentgrep.rs:1-120 and its `outline` mode⟩
-- [ ] **J2.2** `internal/tools/exec.go:341` `Exec.grepTool` — no way to ask what is in a
+- [x] **J2.2** `internal/tools/exec.go:341` `Exec.grepTool` — no way to ask what is in a
       file short of reading it. `grep` with a path and no pattern returns the symbol
       outline. §2.2. ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/agentgrep.rs, `run_outline`⟩
-- [ ] **J2.3** `internal/tools/tools.go:26` `Result` — nothing tracks what the model has
+- [x] **J2.3** `internal/tools/tools.go:26` `Result` — nothing tracks what the model has
       already been shown, so `grep` after `read` repeats lines that are already in context.
       Record shown `file:line` ranges per session; collapse a hit inside one to a reference;
       reset at compaction. §2.3. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/agentgrep/context.rs:1-80⟩
-- [ ] Verify J2: grep a symbol that appears in six files and confirm the enclosing names are
+- [x] Verify J2: grep a symbol that appears in six files and confirm the enclosing names are
       right; outline a large file; read a file then grep inside it and confirm the second
       result collapses. Tag `jcode-2`.
 
 ## Phase J3 — `bash` that survives long work
 
-- [ ] **J3.1** `internal/tools/exec.go:140` `Exec.bashTool` — a command past its timeout is
+- [x] **J3.1** `internal/tools/exec.go:140` `Exec.bashTool` — a command past its timeout is
       killed and the work is lost. Adopt it into `Exec.Bg` instead; return the task id and
       where output is landing, and tell the model not to re-run it. §3.1. ⟨fix⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:885-925⟩
-- [ ] **J3.2** `internal/tools/exec.go:239` `Exec.runBackground` — background output is
+- [x] **J3.2** `internal/tools/exec.go:239` `Exec.runBackground` — background output is
       opaque until the task ends. Parse progress: explicit `EVILCODE_PROGRESS {json}` first,
       then `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, phase prefixes. Expose on
       `BackgroundTask`. §3.2. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:167-398⟩
-- [ ] **J3.3** `internal/tools/exec.go:69` `Exec.Tools` — the model cannot see its own
+- [x] **J3.3** `internal/tools/exec.go:69` `Exec.Tools` — the model cannot see its own
       background tasks. Add a `bg` tool: `list`, `status`, `output`, `tail`, `wait`,
       `cancel`. `wait` blocks to completion or a timeout — without it a model polls and
       each poll costs a turn. §3.3. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bg.rs:34-120,460-501⟩
-- [ ] **J3.4** `internal/tools/exec.go:140` `Exec.bashTool` — a command blocking on stdin
+- [x] **J3.4** `internal/tools/exec.go:140` `Exec.bashTool` — a command blocking on stdin
       hangs to the timeout with no output. Detect via the child process tree and prompt in
       the composer; write the answer to the child's stdin. Unreliable → fall back to a
       `stdin` parameter and log it. §3.4. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:799-860, and its `stdin_detect` module⟩
-- [ ] **J3.5** `internal/tools/exec.go:140` `Exec.bashTool` — children inherit `/tmp`, which
+- [x] **J3.5** `internal/tools/exec.go:140` `Exec.bashTool` — children inherit `/tmp`, which
       is RAM-backed here. Export `TMPDIR` and `EVILCODE_SCRATCH_DIR` under the data dir and
       say so in the description. §3.5. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash.rs:453-472,32⟩
-- [ ] Verify J3: run a command that exceeds its timeout and confirm it finishes in the
+- [x] Verify J3: run a command that exceeds its timeout and confirm it finishes in the
       background and the model is told; `bg wait` on it; run `sleep 1 && read x` and answer
       the prompt; check `$TMPDIR` inside a `bash` call. PNG of the background-task widget
       mid-progress. Tag `jcode-3`.
 
 ## Phase J4 — The destructive-command gate
 
-- [ ] **J4.1** `internal/tools/` — new package `commandrisk`: a tokenizer that finds verbs
+- [x] **J4.1** `internal/tools/` — new package `commandrisk`: a tokenizer that finds verbs
       and targets through pipes, `&&`, `;`, subshells and simple quoting, and **fails
       closed** — unparseable is high risk, never low. §4. ⟨build⟩
       ⟨jcode: crates/jcode-command-risk/src/tokenize.rs and tokenize_tests.rs⟩
-- [ ] **J4.2** `internal/tools/commandrisk` — blast-radius classification of targets: `/`,
+- [x] **J4.2** `internal/tools/commandrisk` — blast-radius classification of targets: `/`,
       `$HOME`, `~/.ssh`, config and data dirs, `.git`, device nodes, outside-workspace, and
       inside-workspace as distinct tiers. §4. ⟨build⟩
       ⟨jcode: crates/jcode-command-risk/src/paths.rs and paths_tests.rs⟩
-- [ ] **J4.3** `internal/tools/commandrisk` — the verdict: run / refuse / reflect. Reflect
+- [x] **J4.3** `internal/tools/commandrisk` — the verdict: run / refuse / reflect. Reflect
       returns a refusal naming the blast radius and requires a `justification`; an identical
       blind retry must not satisfy it. §4. ⟨build⟩
       ⟨jcode: crates/jcode-command-risk/src/gate.rs and gate_tests.rs⟩
-- [ ] **J4.4** `internal/tools/exec.go:140` `Exec.bashTool` — wire the gate ahead of
+- [x] **J4.4** `internal/tools/exec.go:140` `Exec.bashTool` — wire the gate ahead of
       execution and ahead of the background branch, add `justification` to the schema, and
       render a held command distinctly in the transcript. §4. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/bash_destructive_gate.rs (whole file — 84 lines)⟩
-- [ ] Verify J4: `rm -rf /` refused; `rm -rf $HOME/projects` held then allowed with a
+- [x] Verify J4: `rm -rf /` refused; `rm -rf $HOME/projects` held then allowed with a
       justification; `rm -rf ./build` runs untouched; `git clean -xfd` at a repo root
       classified; a hundred ordinary commands from `LOOPS.md` run with zero false
       positives — **that last one is the acceptance test**, a gate that fires on ordinary
@@ -753,52 +753,54 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J5 — Retrieval that ranks correctly
 
-- [ ] **J5.1** `internal/memory/store.go:293` `Store.Search` — vectors from different models
+- [x] **J5.1** `internal/memory/store.go:293` `Store.Search` — vectors from different models
       with equal dimension are compared and produce noise. Store the model id on `Record`;
       dense scoring considers only the active model; mismatched records stay reachable
       lexically; `/memory` reports how many are pending. §5.1. ⟨fix⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:830-897 — read the comment at :843⟩
-- [ ] **J5.2** `internal/memory/store.go:293,329` `Store.Search`, `substringHits` — lexical
+- [x] **J5.2** `internal/memory/store.go:293,329` `Store.Search`, `substringHits` — lexical
       matching runs only when the semantic path found nothing, so an exact term match is
       invisible whenever recall works. Run both always; fuse by reciprocal rank (`k=60`);
       apply kind weights after fusion. Replace `substringHits` with BM25. §5.2. ⟨port⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:668-728 (RRF), 1991-2055 (BM25)⟩
-- [ ] **J5.3** `internal/memory/pipeline.go:68,219` `RecallCount`, `Manager.Recall` — a fixed
+- [x] **J5.3** `internal/memory/pipeline.go:68,219` `RecallCount`, `Manager.Recall` — a fixed
       four injects the fourth memory whether or not it is any good. Cut at the first score
       drop wider than a quarter of the range from top to threshold; keep the count as a
       ceiling. §5.3. ⟨port⟩ ⟨jcode: crates/jcode-base/src/memory.rs:899-927⟩
-- [ ] **J5.4** ⟨prep⟩ — answer in `LOOPS.md` whether a local embedder can be had in pure Go
+- [x] **J5.4** ⟨prep⟩ — answer in `LOOPS.md` whether a local embedder can be had in pure Go
       without cgo, and at what model size and startup cost. No code. The answer decides
-      J5.5. ⟨jcode: crates/jcode-embedding/src/lib.rs:89-250 for what it costs them⟩
-- [ ] **J5.5** `internal/memory/pipeline.go:182` `Manager.embed` — recall dies with the
-      provider's embeddings route. Add the local embedder from J5.4 as the floor, provider
-      preferred when present. If J5.4 says no: `DEVIATIONS.md` and skip. §5.4. ⟨build⟩
+      J5.5. Prep complete; see `LOOPS.md` and `DEVIATIONS.md`.
+      ⟨jcode: crates/jcode-embedding/src/lib.rs:89-250 for what it costs them⟩
+- [x] **J5.5** `internal/memory/pipeline.go:182` `Manager.embed` — recall dies with the
+      provider's embeddings route. Provider embeddings remain preferred and BM25 is the
+      availability floor; the local runtime is skipped per J5.4 and `DEVIATIONS.md`.
+      §5.4. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/memory.rs:815-828⟩
-- [ ] **J5.6** `internal/memory/store.go:60` `Record` — one flat bank means a preference
+- [x] **J5.6** `internal/memory/store.go:60` `Record` — one flat bank means a preference
       stated in one repo surfaces in every unrelated one. Add scope (project keyed on
       workspace root, or global); recall searches project ∪ global; `/memory` filters.
       §5.5. ⟨build⟩ ⟨jcode: crates/jcode-base/src/memory.rs:734-791 (`MemoryScope`)⟩
-- [ ] Verify J5: two banks embedded by different models with equal dimension, confirm no
+- [x] Verify J5: two banks embedded by different models with equal dimension, confirm no
       cross-scoring; a memory matching by exact term but not semantically now recalls; a
       query with one strong and four weak hits injects one; a project memory does not leak
-      into another workspace. Tag `jcode-5`.
+      into another workspace. Tag `jcode-5`. Serial full test/build/vet gates are green.
 
 ## Phase J6 — Compaction that keeps the present
 
-- [ ] **J6.1** `internal/agent/compact.go:101` `Compactor.Compact` — the whole conversation
+- [x] **J6.1** `internal/agent/compact.go:101` `Compactor.Compact` — the whole conversation
       is replaced by a summary, so a compaction mid-task costs the task. Summarize the old
       portion, keep the recent N turns verbatim, never split a tool call from its result.
       §6.1. ⟨fix⟩ ⟨jcode: crates/jcode-base/src/compaction.rs:1143-1281⟩
-- [ ] **J6.2** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — firing at 85%
+- [x] **J6.2** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — firing at 85%
       means the turn that crosses 85% pays. Track per-turn deltas as an EWMA, project
       forward, compact on the projection. §6.2. ⟨port⟩
       ⟨jcode: crates/jcode-base/src/compaction.rs:514-548⟩
-- [ ] **J6.3** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — a topic change is
+- [x] **J6.3** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — a topic change is
       the free compaction point and nothing looks for it. Compare mean embeddings of the old
       and new halves of the window; low similarity triggers. Falls back to J6.2 without an
       embedder; never blocks on one. §6.3. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/compaction.rs:550-601⟩
-- [ ] **J6.4** `internal/agent/compact.go:78` `Transcript` — a highly relevant old message is
+- [x] **J6.4** `internal/agent/compact.go:78` `Transcript` — a highly relevant old message is
       summarized away with its neighbours. Score the old portion against the recent turns and
       move the cutoff to before the earliest relevant message, keeping the range contiguous.
       §6.4. ⟨build⟩ ⟨jcode: crates/jcode-base/src/compaction.rs:603-675⟩
@@ -809,7 +811,7 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J7 — Sessions that survive and can be found
 
-- [ ] **J7.1** `internal/session/store.go:379` `Read` — a torn append glued to the next one
+- [x] **J7.1** `internal/session/store.go:379` `Read` — a torn append glued to the next one
       drops both and every entry on that line. Scan a failed line for entry starts,
       stream-parse the complete entries out of it, log the salvage count. Same for
       `internal/memory/store.go:113` `Store.load`. §7.1. ⟨fix⟩

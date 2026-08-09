@@ -154,7 +154,9 @@ func NewLSP(m LSPServer) Tool {
 }
 
 func lspDiagnostics(ctx context.Context, c *lsp.Client, path string) (Result, error) {
-	if err := c.Open(path); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, lsp.RequestTimeout)
+	defer cancel()
+	if err := c.OpenContext(ctx, path); err != nil {
 		return Result{}, err
 	}
 	diags := c.Diagnostics(ctx, path)

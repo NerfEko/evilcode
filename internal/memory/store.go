@@ -10,9 +10,11 @@ package memory
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // Kind classifies a memory. The kinds are the plan's, and they exist to let
@@ -58,6 +61,19 @@ func (k Kind) Weight() float64 {
 	}
 }
 
+// Scope controls which workspace can see a memory. Global records are visible
+// everywhere; project records are keyed by the canonical workspace root.
+type Scope string
+
+const (
+	ScopeGlobal  Scope = "global"
+	ScopeProject Scope = "project"
+)
+
+func (s Scope) Valid() bool {
+	return s == ScopeGlobal || s == ScopeProject
+}
+
 // Record is one memory.
 type Record struct {
 	ID      int64     `json:"id"`
@@ -66,10 +82,22 @@ type Record struct {
 	Session string    `json:"session,omitempty"`
 	TS      time.Time `json:"ts"`
 
+	// Scope is global or project. Empty is treated as global for records written
+	// before J5.6 added scope metadata.
+	Scope Scope `json:"scope,omitempty"`
+	// ProjectRoot is set only for project-scoped records and is canonicalized at
+	// the write boundary so equivalent workspace paths share one bank view.
+	ProjectRoot string `json:"project_root,omitempty"`
+
 	// Vec is the embedding. It may be empty: embedding runs off the hot path
 	// and is allowed to fail, in which case the text is still stored and is
 	// still reachable by substring search.
 	Vec []float32 `json:"vec,omitempty"`
+
+	// EmbeddingModel identifies the vector space that produced Vec. Empty is
+	// retained for legacy records written before model tagging existed; callers
+	// with an active model deliberately exclude those vectors from dense scoring.
+	EmbeddingModel string `json:"embedding_model,omitempty"`
 
 	// Deleted tombstones a record. The file is append-only, so forgetting is
 	// appending a tombstone rather than rewriting history.
@@ -85,6 +113,14 @@ type Store struct {
 	nextID  int64
 	file    *os.File
 	w       *bufio.Writer
+}
+
+// AddOptions selects the vector space and visibility scope for a new record.
+// A non-empty ProjectRoot implies project scope unless ScopeGlobal is explicit.
+type AddOptions struct {
+	EmbeddingModel string
+	Scope          Scope
+	ProjectRoot    string
 }
 
 // FileName is the bank's file under the data directory.
@@ -114,11 +150,118 @@ func Open(dataDir string) (*Store, error) {
 	return s, nil
 }
 
+const maxMemoryJSONLine = 8 * 1024 * 1024
+
+var memoryRepairLog = log.New(os.Stderr, "", log.LstdFlags)
+
+// readMemoryLine returns one complete JSONL line and whether it reached EOF.
+// ReadSlice preserves the exact byte count needed to rewrite a repaired tail.
+func readMemoryLine(r *bufio.Reader) ([]byte, bool, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > maxMemoryJSONLine {
+			return nil, false, fmt.Errorf("memory JSONL line exceeds %d bytes", maxMemoryJSONLine)
+		}
+		switch err {
+		case nil:
+			return line, false, nil
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) == 0 {
+				return nil, true, nil
+			}
+			return line, true, nil
+		default:
+			return nil, false, err
+		}
+	}
+}
+
+// salvageMemoryRecords finds complete memory records inside a line that could
+// not be decoded as one record. The required top-level keys avoid promoting a
+// nested JSON object from a record into a new memory.
+func salvageMemoryRecords(line []byte) []Record {
+	var out []Record
+	for cursor := 0; cursor < len(line); {
+		rel := bytes.IndexByte(line[cursor:], '{')
+		if rel < 0 {
+			break
+		}
+		start := cursor + rel
+		dec := json.NewDecoder(bytes.NewReader(line[start:]))
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			cursor = start + 1
+			continue
+		}
+
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["id"]; !ok {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["text"]; !ok {
+			cursor = start + 1
+			continue
+		}
+		if _, ok := fields["kind"]; !ok {
+			cursor = start + 1
+			continue
+		}
+
+		var record Record
+		if err := json.Unmarshal(raw, &record); err != nil {
+			cursor = start + 1
+			continue
+		}
+		out = append(out, record)
+		consumed := int(dec.InputOffset())
+		if consumed <= 0 {
+			cursor = start + 1
+		} else {
+			cursor = start + consumed
+		}
+	}
+	return out
+}
+
+// repairMemoryTail removes a malformed final line and writes any recovered
+// records back in canonical JSONL form so a future append does not erase the
+// recovery.
+func repairMemoryTail(f *os.File, start int64, records []Record) error {
+	if err := f.Truncate(start); err != nil {
+		return err
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		line = append(line, '\n')
+		if _, err := f.Write(line); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}
+
 // load replays the file. A malformed final line is tolerated and dropped —
 // the classic shape of a crash mid-write, and losing the last memory to one
-// is survivable — but a malformed line anywhere earlier is corruption further
-// back in the log, and returns an error naming its line number rather than
-// vanishing silently before the next write buries the evidence.
+// is survivable — but a torn prefix glued to one or more complete records is
+// salvaged and the repaired tail is persisted. A malformed line anywhere
+// earlier is corruption further back in the log, and returns an error naming
+// its line number when nothing recoverable is present rather than vanishing
+// silently before the next write buries the evidence.
 func (s *Store) load(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
@@ -130,17 +273,7 @@ func (s *Store) load(path string) error {
 	defer f.Close()
 
 	byID := map[int64]int{}
-	apply := func(lineNo int, line []byte, final bool) error {
-		if len(line) == 0 {
-			return nil
-		}
-		var r Record
-		if json.Unmarshal(line, &r) != nil {
-			if final {
-				return nil
-			}
-			return fmt.Errorf("%s:%d: malformed memory record", path, lineNo)
-		}
+	applyRecord := func(r Record) {
 		if r.ID >= s.nextID {
 			s.nextID = r.ID + 1
 		}
@@ -148,54 +281,67 @@ func (s *Store) load(path string) error {
 		// a merge or a tombstone lands without rewriting the file.
 		if i, ok := byID[r.ID]; ok {
 			s.records[i] = r
-			return nil
+			return
 		}
 		byID[r.ID] = len(s.records)
 		s.records = append(s.records, r)
+	}
+
+	apply := func(lineNo int, raw []byte, final bool, start int64) error {
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 {
+			return nil
+		}
+		var r Record
+		if err := json.Unmarshal(line, &r); err != nil {
+			salvaged := salvageMemoryRecords(line)
+			if len(salvaged) > 0 {
+				for _, record := range salvaged {
+					applyRecord(record)
+				}
+				memoryRepairLog.Printf("memory: salvaged %d records from malformed line %d in %s", len(salvaged), lineNo, path)
+				if final {
+					return repairMemoryTail(f, start, salvaged)
+				}
+				return nil
+			}
+			if final {
+				return repairMemoryTail(f, start, nil)
+			}
+			return fmt.Errorf("%s:%d: malformed memory record", path, lineNo)
+		}
+		applyRecord(r)
 		return nil
 	}
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	var havePending bool
+	r := bufio.NewReaderSize(f, 64*1024)
 	var pendingLine []byte
 	var pendingNo int
+	var pendingStart int64
+	var offset int64
 	lineNo := 0
-	for sc.Scan() {
-		lineNo++
-		if havePending {
-			if err := apply(pendingNo, pendingLine, false); err != nil {
-				return err
-			}
-		}
-		pendingLine = append([]byte(nil), sc.Bytes()...)
-		pendingNo = lineNo
-		havePending = true
-	}
-	if err := sc.Err(); err != nil {
-		return err
-	}
-	if havePending {
-		var probe Record
-		badFinal := json.Unmarshal(pendingLine, &probe) != nil
-		if err := apply(pendingNo, pendingLine, true); err != nil {
+	for {
+		raw, eof, err := readMemoryLine(r)
+		if err != nil {
 			return err
 		}
-		if badFinal {
-			end, err := f.Seek(0, io.SeekEnd)
-			if err != nil {
-				return err
+		if raw != nil {
+			lineNo++
+			if pendingLine != nil {
+				if err := apply(pendingNo, pendingLine, false, pendingStart); err != nil {
+					return err
+				}
 			}
-			cut := end - int64(len(pendingLine))
-			if cut < 0 {
-				return fmt.Errorf("%s: malformed final memory record has an invalid offset", path)
-			}
-			if err := f.Truncate(cut); err != nil {
-				return err
-			}
-			if err := f.Sync(); err != nil {
-				return err
-			}
+			pendingLine, pendingNo, pendingStart = raw, lineNo, offset
+			offset += int64(len(raw))
+		}
+		if eof {
+			break
+		}
+	}
+	if pendingLine != nil {
+		if err := apply(pendingNo, pendingLine, true, pendingStart); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -236,11 +382,90 @@ func (s *Store) Close() error {
 // facts stay separate.
 const DedupeThreshold = 0.95
 
+// normalizeProjectRoot makes scope keys stable across relative and absolute
+// callers. A failed Abs still gets a cleaned path, so scope matching remains
+// deterministic even for a workspace that has just been removed.
+func normalizeProjectRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	root = filepath.Clean(root)
+	if abs, err := filepath.Abs(root); err == nil {
+		root = filepath.Clean(abs)
+	}
+	return root
+}
+
+func normalizeWriteScope(scope Scope, projectRoot string) (Scope, string, error) {
+	projectRoot = normalizeProjectRoot(projectRoot)
+	switch scope {
+	case "":
+		if projectRoot != "" {
+			return ScopeProject, projectRoot, nil
+		}
+		return ScopeGlobal, "", nil
+	case ScopeGlobal:
+		return ScopeGlobal, "", nil
+	case ScopeProject:
+		if projectRoot == "" {
+			return "", "", fmt.Errorf("project memory requires a workspace root")
+		}
+		return ScopeProject, projectRoot, nil
+	default:
+		return "", "", fmt.Errorf("unknown memory scope %q (want global or project)", scope)
+	}
+}
+
+func recordScope(r Record) Scope {
+	if r.Scope == ScopeProject && normalizeProjectRoot(r.ProjectRoot) != "" {
+		return ScopeProject
+	}
+	return ScopeGlobal
+}
+
+func sameScope(r Record, scope Scope, projectRoot string) bool {
+	if recordScope(r) != scope {
+		return false
+	}
+	if scope == ScopeProject {
+		return normalizeProjectRoot(r.ProjectRoot) == projectRoot
+	}
+	return true
+}
+
+// visibleInProject implements project ∪ global. An empty query root retains
+// the legacy unscoped Store API and returns every live record.
+func visibleInProject(r Record, projectRoot string) bool {
+	projectRoot = normalizeProjectRoot(projectRoot)
+	if projectRoot == "" {
+		return true
+	}
+	if recordScope(r) == ScopeGlobal {
+		return true
+	}
+	return normalizeProjectRoot(r.ProjectRoot) == projectRoot
+}
+
 // Add stores a memory, merging it into a near-duplicate if one exists.
 //
 // It returns the stored record and whether it merged. Merging keeps the newer
 // text, because a restated fact is usually a corrected one.
 func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts time.Time) (Record, bool, error) {
+	return s.AddWithOptions(text, kind, session, vec, AddOptions{}, ts)
+}
+
+// AddWithModel stores a global memory and records the embedding model that
+// produced its vector. Exact-text duplicates merge across model changes within
+// that scope, while cosine deduplication is limited to one model's vector space.
+func (s *Store) AddWithModel(text string, kind Kind, session string, vec []float32, model string, ts time.Time) (Record, bool, error) {
+	return s.AddWithOptions(text, kind, session, vec, AddOptions{EmbeddingModel: model}, ts)
+}
+
+// AddWithOptions stores a memory with model and scope metadata. Scope is part
+// of deduplication: a project preference must not merge into a global fact (or
+// into the same text from another workspace).
+func (s *Store) AddWithOptions(text string, kind Kind, session string, vec []float32, options AddOptions, ts time.Time) (Record, bool, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Record{}, false, fmt.Errorf("memory text is empty")
@@ -248,11 +473,15 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 	if !kind.Valid() {
 		return Record{}, false, fmt.Errorf("unknown memory kind %q (want fact, preference, project, or episode)", kind)
 	}
+	scope, projectRoot, err := normalizeWriteScope(options.Scope, options.ProjectRoot)
+	if err != nil {
+		return Record{}, false, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if i := s.findDuplicate(text, vec); i >= 0 {
+	if i := s.findDuplicate(text, vec, options.EmbeddingModel, scope, projectRoot); i >= 0 {
 		merged := s.records[i]
 		merged.Text = text
 		merged.Kind = kind
@@ -260,6 +489,7 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 		merged.TS = ts
 		if len(vec) > 0 {
 			merged.Vec = vec
+			merged.EmbeddingModel = options.EmbeddingModel
 		}
 		if err := s.append(merged); err != nil {
 			return Record{}, false, err
@@ -268,7 +498,17 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 		return merged, true, nil
 	}
 
-	r := Record{ID: s.nextID, Text: text, Kind: kind, Session: session, TS: ts, Vec: vec}
+	r := Record{
+		ID:             s.nextID,
+		Text:           text,
+		Kind:           kind,
+		Session:        session,
+		TS:             ts,
+		Scope:          scope,
+		ProjectRoot:    projectRoot,
+		Vec:            vec,
+		EmbeddingModel: options.EmbeddingModel,
+	}
 	if err := s.append(r); err != nil {
 		return Record{}, false, err
 	}
@@ -278,10 +518,13 @@ func (s *Store) Add(text string, kind Kind, session string, vec []float32, ts ti
 }
 
 // findDuplicate returns the index of a near-identical memory, or -1.
-func (s *Store) findDuplicate(text string, vec []float32) int {
+func (s *Store) findDuplicate(text string, vec []float32, model string, scope Scope, projectRoot string) int {
 	lower := strings.ToLower(text)
 	for i, r := range s.records {
 		if r.Deleted {
+			continue
+		}
+		if !sameScope(r, scope, projectRoot) {
 			continue
 		}
 		// Exact text is a duplicate whether or not either side embedded, which
@@ -289,7 +532,7 @@ func (s *Store) findDuplicate(text string, vec []float32) int {
 		if strings.EqualFold(r.Text, text) || strings.ToLower(r.Text) == lower {
 			return i
 		}
-		if len(vec) > 0 && len(r.Vec) == len(vec) && Cosine(r.Vec, vec) >= DedupeThreshold {
+		if len(vec) > 0 && len(r.Vec) == len(vec) && r.EmbeddingModel == model && Cosine(r.Vec, vec) >= DedupeThreshold {
 			return i
 		}
 	}
@@ -298,10 +541,17 @@ func (s *Store) findDuplicate(text string, vec []float32) int {
 
 // Forget tombstones a memory by ID.
 func (s *Store) Forget(id int64) (bool, error) {
+	return s.ForgetScoped(id, "")
+}
+
+// ForgetScoped tombstones a memory only when it belongs to the current
+// project/global view. IDs are global, but a hidden project's id should not be
+// writable through another workspace's `/memory forget` command.
+func (s *Store) ForgetScoped(id int64, projectRoot string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, r := range s.records {
-		if r.ID != id || r.Deleted {
+		if r.ID != id || r.Deleted || !visibleInProject(r, projectRoot) {
 			continue
 		}
 		r.Deleted = true
@@ -316,11 +566,37 @@ func (s *Store) Forget(id int64) (bool, error) {
 
 // All returns the live records, newest first.
 func (s *Store) All() []Record {
+	return s.AllScoped("")
+}
+
+// AllScoped returns live records visible to a project manager, newest first.
+// Global records and records keyed to projectRoot are included.
+func (s *Store) AllScoped(projectRoot string) []Record {
+	return s.AllByScope(projectRoot, "")
+}
+
+// AllByScope returns live records for one explicit scope. An empty scope is the
+// project ∪ global view; project scope requires a non-empty workspace root.
+func (s *Store) AllByScope(projectRoot string, scope Scope) []Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	projectRoot = normalizeProjectRoot(projectRoot)
 	out := make([]Record, 0, len(s.records))
 	for _, r := range s.records {
-		if !r.Deleted {
+		if r.Deleted {
+			continue
+		}
+		visible := false
+		switch scope {
+		case "":
+			visible = visibleInProject(r, projectRoot)
+		case ScopeGlobal:
+			visible = recordScope(r) == ScopeGlobal
+		case ScopeProject:
+			visible = projectRoot != "" && recordScope(r) == ScopeProject &&
+				normalizeProjectRoot(r.ProjectRoot) == projectRoot
+		}
+		if visible {
 			out = append(out, r)
 		}
 	}
@@ -330,11 +606,16 @@ func (s *Store) All() []Record {
 
 // Len is the number of live memories.
 func (s *Store) Len() int {
+	return s.LenScoped("")
+}
+
+// LenScoped counts live records visible to a project manager.
+func (s *Store) LenScoped(projectRoot string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, r := range s.records {
-		if !r.Deleted {
+		if !r.Deleted && visibleInProject(r, projectRoot) {
 			n++
 		}
 	}
@@ -344,50 +625,129 @@ func (s *Store) Len() int {
 // Hit is one search result.
 type Hit struct {
 	Record
-	Score float64
+	// Score is the final RRF score after kind weighting. Relevance is a
+	// human-scale signal from the dense/lexical retrievers used by the adaptive
+	// recall cutoff; it is not used to order the fused results.
+	Score     float64
+	Relevance float64
+}
+
+// SearchOptions qualifies dense scoring without changing the legacy Search
+// call shape used by tools and older embedders.
+type SearchOptions struct {
+	// EmbeddingModel limits cosine comparisons to vectors from this model. An
+	// empty value preserves the pre-J5 behavior for callers without model data.
+	EmbeddingModel string
+	// ProjectRoot selects the project ∪ global view. Empty preserves the legacy
+	// unscoped Store API and includes every live record.
+	ProjectRoot string
 }
 
 // RecallThreshold is the minimum score for passive recall. Below it a memory is
 // noise, and injecting noise into every turn is worse than injecting nothing.
 const RecallThreshold = 0.55
 
-// Search ranks memories against a query embedding, returning the top n above
-// the threshold.
-//
-// When the query has no embedding — the embedder was down, or the caller only
-// has text — it falls back to substring matching, so recall degrades to
-// something useful rather than to nothing.
-func (s *Store) Search(query string, vec []float32, n int, threshold float64) []Hit {
+// Search ranks memories with both dense cosine and lexical BM25 retrieval.
+// Their rank lists are fused with reciprocal rank fusion (RRF), so an exact
+// term match remains visible even when semantic retrieval also returned hits.
+// A query without an embedding simply contributes no dense rank list.
+func (s *Store) Search(query string, vec []float32, n int, threshold float64, options ...SearchOptions) []Hit {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var opts SearchOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 
-	var hits []Hit
-	if len(vec) > 0 {
-		for _, r := range s.records {
-			if r.Deleted || len(r.Vec) != len(vec) {
-				continue
-			}
-			score := Cosine(r.Vec, vec)
-			if score < threshold {
-				continue
-			}
-			hits = append(hits, Hit{Record: r, Score: score * r.Kind.Weight()})
+	records := make([]Record, 0, len(s.records))
+	for _, r := range s.records {
+		if !r.Deleted && visibleInProject(r, opts.ProjectRoot) {
+			records = append(records, r)
 		}
-	} else {
-		// Only the no-embedding case degrades to substring matching. A working
-		// embedder that found nothing above threshold means nothing is
-		// relevant — falling back here would silently override a correct
-		// "nothing relevant" with the far looser lexical fallback, recalling
-		// something on almost every message.
-		hits = s.substringHits(query)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	pool := len(records)
+	if n > 0 {
+		pool = n * 5
+		if pool < 50 {
+			pool = 50
+		}
+		if pool > len(records) {
+			pool = len(records)
+		}
+	}
+
+	dense := make([]rankedMemory, 0, len(records))
+	for i, r := range records {
+		if len(vec) == 0 || len(r.Vec) != len(vec) || (opts.EmbeddingModel != "" && r.EmbeddingModel != opts.EmbeddingModel) {
+			continue
+		}
+		score := Cosine(r.Vec, vec)
+		// Keep the existing threshold as a dense candidate floor. Lexical
+		// ranking is independent, so a low-cosine exact term still survives.
+		if score < threshold {
+			continue
+		}
+		dense = append(dense, rankedMemory{index: i, score: score})
+	}
+	sortRankedMemory(dense, records)
+	if len(dense) > pool {
+		dense = dense[:pool]
+	}
+
+	lexical := bm25Rank(records, query, pool)
+	const rrfK = 60.0
+	fused := make(map[int]float64, len(dense)+len(lexical))
+	denseScores := make(map[int]float64, len(dense))
+	lexicalScores := make(map[int]float64, len(lexical))
+	for rank, hit := range dense {
+		fused[hit.index] += 1 / (rrfK + float64(rank) + 1)
+		denseScores[hit.index] = hit.score
+	}
+	for rank, hit := range lexical {
+		fused[hit.index] += 1 / (rrfK + float64(rank) + 1)
+		lexicalScores[hit.index] = hit.score
+	}
+
+	hits := make([]Hit, 0, len(fused))
+	for index, fusedScore := range fused {
+		relevance := denseScores[index]
+		if lexicalScore := lexicalScores[index]; lexicalScore > 0 {
+			// BM25 is unbounded; compress it into a signal near the same
+			// 0..1 range as cosine while keeping lexical-only hits visible.
+			base := threshold
+			if base < 0 {
+				base = 0
+			}
+			if base > 1 {
+				base = 1
+			}
+			lexicalRelevance := base + (1-base)*(lexicalScore/(lexicalScore+1))
+			if lexicalRelevance > relevance {
+				relevance = lexicalRelevance
+			}
+		}
+		hits = append(hits, Hit{
+			Record:    records[index],
+			Score:     fusedScore * records[index].Kind.Weight(),
+			Relevance: relevance,
+		})
 	}
 
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].Score != hits[j].Score {
 			return hits[i].Score > hits[j].Score
 		}
-		// A tie goes to the more recent memory.
-		return hits[i].TS.After(hits[j].TS)
+		if hits[i].Relevance != hits[j].Relevance {
+			return hits[i].Relevance > hits[j].Relevance
+		}
+		if !hits[i].TS.Equal(hits[j].TS) {
+			return hits[i].TS.After(hits[j].TS)
+		}
+		return hits[i].ID < hits[j].ID
 	})
 	if n > 0 && len(hits) > n {
 		hits = hits[:n]
@@ -395,34 +755,110 @@ func (s *Store) Search(query string, vec []float32, n int, threshold float64) []
 	return hits
 }
 
-// substringHits is the no-embedding fallback. Scores sit just above the recall
-// threshold so a lexical hit is usable but never outranks a semantic one.
-func (s *Store) substringHits(query string) []Hit {
-	words := strings.Fields(strings.ToLower(query))
-	if len(words) == 0 {
+type rankedMemory struct {
+	index int
+	score float64
+}
+
+func sortRankedMemory(hits []rankedMemory, records []Record) {
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
+		}
+		if !records[hits[i].index].TS.Equal(records[hits[j].index].TS) {
+			return records[hits[i].index].TS.After(records[hits[j].index].TS)
+		}
+		return records[hits[i].index].ID < records[hits[j].index].ID
+	})
+}
+
+// bm25Rank returns lexical rank positions and raw BM25 scores. It is a small
+// one-pass scorer: the bank is intentionally a few thousand short records,
+// where rebuilding document frequencies per query is cheaper than maintaining
+// another persistent index.
+func bm25Rank(records []Record, query string, limit int) []rankedMemory {
+	queryTerms := uniqueTerms(query)
+	if len(queryTerms) == 0 || len(records) == 0 {
 		return nil
 	}
-	var hits []Hit
-	for _, r := range s.records {
-		if r.Deleted {
-			continue
-		}
-		text := strings.ToLower(r.Text)
-		matched := 0
-		for _, w := range words {
-			if len(w) > 2 && strings.Contains(text, w) {
-				matched++
+	docs := make([][]string, len(records))
+	lengthTotal := 0
+	df := make(map[string]float64)
+	for i, record := range records {
+		docs[i] = searchTerms(record.Text)
+		lengthTotal += len(docs[i])
+		seen := make(map[string]struct{}, len(docs[i]))
+		for _, term := range docs[i] {
+			if _, ok := seen[term]; ok {
+				continue
 			}
+			seen[term] = struct{}{}
+			df[term]++
 		}
-		if matched == 0 {
+	}
+	avgdl := float64(lengthTotal) / float64(len(records))
+	if avgdl == 0 {
+		return nil
+	}
+
+	const k1 = 1.2
+	const b = 0.75
+	scored := make([]rankedMemory, 0, len(records))
+	for i, doc := range docs {
+		if len(doc) == 0 {
 			continue
 		}
-		hits = append(hits, Hit{
-			Record: r,
-			Score:  RecallThreshold + 0.3*float64(matched)/float64(len(words)),
-		})
+		tf := make(map[string]float64, len(doc))
+		for _, term := range doc {
+			tf[term]++
+		}
+		dl := float64(len(doc))
+		score := 0.0
+		for _, term := range queryTerms {
+			frequency := tf[term]
+			if frequency == 0 {
+				continue
+			}
+			docFrequency := df[term]
+			idf := math.Log((float64(len(records))-docFrequency+0.5)/(docFrequency+0.5) + 1)
+			denom := frequency + k1*(1-b+b*dl/avgdl)
+			score += idf * frequency * (k1 + 1) / denom
+		}
+		if score > 0 {
+			scored = append(scored, rankedMemory{index: i, score: score})
+		}
 	}
-	return hits
+	sortRankedMemory(scored, records)
+	if limit > 0 && len(scored) > limit {
+		scored = scored[:limit]
+	}
+	return scored
+}
+
+func uniqueTerms(text string) []string {
+	seen := make(map[string]struct{})
+	var terms []string
+	for _, term := range searchTerms(text) {
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+func searchTerms(text string) []string {
+	text = strings.ToLower(text)
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Fields(b.String())
 }
 
 // Cosine is the cosine similarity of two equal-length vectors.

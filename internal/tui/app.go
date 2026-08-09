@@ -798,7 +798,8 @@ func (m *Model) applyEvent(e agent.Event) {
 			ToolTarget: toolTarget(e.Call.Args),
 			ToolPath:   toolPath(e.Call.Args),
 			ToolTokens: len(e.Output) / 4,
-			Failed:     e.IsError(),
+			Held:       e.Held,
+			Failed:     e.IsError() && !e.Held,
 			Diff:       e.Diff,
 			Repairs:    e.Repairs,
 		}
@@ -830,7 +831,7 @@ func (m *Model) applyEvent(e agent.Event) {
 			}
 		}
 		m.blocks = append(m.blocks, b)
-		if e.IsError() {
+		if e.IsError() && !e.Held {
 			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrText})
 		}
 		// A `read` on an image attaches the bytes for the model's vision path
@@ -1880,6 +1881,9 @@ func (m *Model) applyModel(sel ModelEntry) {
 			if p, err := pc.Build(); err == nil {
 				m.agent.Provider = p
 				m.header.Provider = sel.Provider
+				if m.compactor != nil {
+					m.compactor.SetEmbeddingProvider(p)
+				}
 			}
 		}
 	}
@@ -3639,7 +3643,7 @@ func (m *Model) activeWidgets() []Widget {
 		var tasks []BackgroundTask
 		for _, t := range m.bg.Tasks() {
 			done, failed, _ := t.Snapshot()
-			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed})
+			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed, Progress: t.Progress().String()})
 		}
 		add(m.renderer.BackgroundTasksWidget(tasks, int(time.Since(m.started)/SpinnerInterval)))
 	}

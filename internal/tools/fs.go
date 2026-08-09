@@ -60,6 +60,9 @@ type FS struct {
 	// the first.
 	pathMu sync.Mutex
 	paths  map[string]*sync.Mutex
+
+	// exposure is shared with the command/search tools for one session.
+	exposure *Exposure
 }
 
 // lockPath serializes changes to one file, returning the unlock.
@@ -97,7 +100,13 @@ func NewFS(root string) *FS {
 	if err == nil {
 		root = abs
 	}
-	return &FS{Root: root, MaxReadBytes: MaxResultBytes, anchors: newAnchorStore()}
+	return &FS{Root: root, MaxReadBytes: MaxResultBytes, anchors: newAnchorStore(), exposure: NewExposure()}
+}
+
+// WithExposure shares a session's shown-range ledger with other tools.
+func (f *FS) WithExposure(exposure *Exposure) *FS {
+	f.exposure = exposure
+	return f
 }
 
 // WithAnchors turns hash-anchored editing on.
@@ -275,7 +284,8 @@ type readArgs struct {
 
 func (f *FS) readTool() Tool {
 	return Tool{
-		Name: "read",
+		Name:     "read",
+		Exposure: f.exposure,
 		Desc: "Read a file from the workspace. Returns the contents with line numbers. " +
 			"Use offset and limit to page through a large file.",
 		Schema: json.RawMessage(`{
@@ -392,6 +402,7 @@ func (f *FS) readTool() Tool {
 			return Result{
 				Output: b.String(),
 				Intent: fmt.Sprintf("reading %s", f.rel(full)),
+				Shown:  []LineRange{{Path: full, Start: start + 1, End: end}},
 			}, nil
 		},
 	}
@@ -528,6 +539,7 @@ func (f *FS) readWindow(full string, info os.FileInfo, a readArgs, cap int) (Res
 	return Result{
 		Output: b.String(),
 		Intent: fmt.Sprintf("reading %s", f.rel(full)),
+		Shown:  []LineRange{{Path: full, Start: start + 1, End: start + len(lines)}},
 	}, nil
 }
 

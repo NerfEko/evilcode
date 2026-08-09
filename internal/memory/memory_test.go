@@ -96,6 +96,213 @@ func TestMismatchedDimensionsScoreZero(t *testing.T) {
 	}
 }
 
+func TestDenseSearchRequiresMatchingEmbeddingModel(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	s.AddWithModel("model a fact", KindFact, "sess", vec(1, 0), "model-a", now)
+	s.AddWithModel("model b fact", KindFact, "sess", vec(1, 0), "model-b", now.Add(time.Second))
+
+	hits := s.Search("", vec(1, 0), 4, 0.1, SearchOptions{EmbeddingModel: "model-a"})
+	if len(hits) != 1 || hits[0].EmbeddingModel != "model-a" {
+		t.Fatalf("model-a search = %#v, want only model-a vector", hits)
+	}
+	hits = s.Search("", vec(1, 0), 4, 0.1, SearchOptions{EmbeddingModel: "model-b"})
+	if len(hits) != 1 || hits[0].EmbeddingModel != "model-b" {
+		t.Fatalf("model-b search = %#v, want only model-b vector", hits)
+	}
+}
+
+func TestModelTaggedVectorsDoNotCrossDeduplicate(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	first, merged, err := s.AddWithModel("same direction from model a", KindFact, "sess", vec(1, 0), "model-a", now)
+	if err != nil || merged {
+		t.Fatalf("first add: merged=%v err=%v", merged, err)
+	}
+	second, merged, err := s.AddWithModel("same direction from model b", KindFact, "sess", vec(1, 0), "model-b", now.Add(time.Second))
+	if err != nil || merged {
+		t.Fatalf("cross-model add: merged=%v err=%v", merged, err)
+	}
+	if second.ID == first.ID || s.Len() != 2 {
+		t.Fatalf("cross-model vectors were deduplicated: first=%d second=%d len=%d", first.ID, second.ID, s.Len())
+	}
+}
+
+func TestPendingEmbeddingsCountsMissingAndStaleModels(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	s.AddWithModel("current", KindFact, "sess", vec(1, 0), "model-current", now)
+	s.AddWithModel("stale", KindFact, "sess", vec(0, 1), "model-old", now)
+	s.Add("missing", KindFact, "sess", nil, now)
+	m := NewManagerWithModel(s, nil, nil, "sess", true, "model-current")
+	if got := m.PendingEmbeddings(); got != 2 {
+		t.Fatalf("pending embeddings = %d, want stale + missing", got)
+	}
+}
+
+func TestSearchFusesLexicalAndDenseCandidates(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	s.AddWithModel("semantic guidance for release work", KindFact, "sess", vec(1, 0), "model-a", now)
+	s.AddWithModel("exact release token is required", KindProject, "sess", vec(0, 1), "model-a", now.Add(time.Second))
+
+	hits := s.Search("exact release token", vec(1, 0), 4, 0.5, SearchOptions{EmbeddingModel: "model-a"})
+	if len(hits) != 2 {
+		t.Fatalf("hybrid hits = %d, want dense + lexical candidates: %#v", len(hits), hits)
+	}
+	seen := map[string]bool{}
+	for _, hit := range hits {
+		seen[hit.Text] = true
+	}
+	if !seen["semantic guidance for release work"] || !seen["exact release token is required"] {
+		t.Fatalf("hybrid search dropped one retriever's candidate: %#v", hits)
+	}
+}
+
+func TestMismatchedModelRemainsLexicallyReachable(t *testing.T) {
+	s := openTemp(t)
+	s.AddWithModel("remember the forgejo deployment path", KindProject, "sess", vec(1, 0), "model-old", time.Now())
+
+	hits := s.Search("forgejo deployment", vec(1, 0), 4, 0.5, SearchOptions{EmbeddingModel: "model-new"})
+	if len(hits) != 1 || hits[0].EmbeddingModel != "model-old" {
+		t.Fatalf("mismatched model lexical search = %#v, want the old vector via BM25", hits)
+	}
+}
+
+func TestProjectScopeIncludesGlobalButNotOtherProject(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	rootA := filepath.Join(t.TempDir(), "repo-a")
+	rootB := filepath.Join(t.TempDir(), "repo-b")
+	if _, _, err := s.AddWithOptions("global release policy", KindFact, "s", nil,
+		AddOptions{Scope: ScopeGlobal}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddWithOptions("repo a release convention", KindProject, "s", nil,
+		AddOptions{Scope: ScopeProject, ProjectRoot: rootA}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddWithOptions("repo b release convention", KindProject, "s", nil,
+		AddOptions{Scope: ScopeProject, ProjectRoot: rootB}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManagerWithModelAndScope(s, nil, nil, "s", true, "", rootA)
+	hits := m.Search("release convention", nil, 10, 0.55)
+	if len(hits) != 2 {
+		t.Fatalf("project A recall = %#v, want project A + global", hits)
+	}
+	for _, hit := range hits {
+		if hit.Text == "repo b release convention" {
+			t.Fatalf("project B memory leaked into project A: %#v", hits)
+		}
+	}
+	if got := m.All(); len(got) != 2 {
+		t.Fatalf("project A list = %#v, want project A + global", got)
+	}
+	if got := m.List(ScopeGlobal); len(got) != 1 || got[0].Scope != ScopeGlobal {
+		t.Fatalf("global-only list = %#v, want one global record", got)
+	}
+	if got := m.List(ScopeProject); len(got) != 1 || got[0].ProjectRoot != normalizeProjectRoot(rootA) {
+		t.Fatalf("project-only list = %#v, want project A record", got)
+	}
+
+	mB := NewManagerWithModelAndScope(s, nil, nil, "s", true, "", rootB)
+	if got := mB.All(); len(got) != 2 {
+		t.Fatalf("project B list = %#v, want project B + global", got)
+	}
+}
+
+func TestRememberDefaultsToProjectAndCanWriteGlobal(t *testing.T) {
+	s := openTemp(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	m := NewManagerWithModelAndScope(s, nil, nil, "sess", true, "model", root)
+
+	project, _, err := m.Remember(context.Background(), "project convention", KindProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Scope != ScopeProject || project.ProjectRoot != normalizeProjectRoot(root) {
+		t.Fatalf("default remember = %#v, want project scope rooted at %q", project, root)
+	}
+	global, _, err := m.RememberWithScope(context.Background(), "global preference", KindPreference, ScopeGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Scope != ScopeGlobal || global.ProjectRoot != "" {
+		t.Fatalf("global remember = %#v, want global scope", global)
+	}
+	if got := len(m.All()); got != 2 {
+		t.Fatalf("manager view has %d records, want both scopes", got)
+	}
+}
+
+func TestScopedForgetCannotDeleteAnotherProject(t *testing.T) {
+	s := openTemp(t)
+	rootA := filepath.Join(t.TempDir(), "repo-a")
+	rootB := filepath.Join(t.TempDir(), "repo-b")
+	rec, _, err := s.AddWithOptions("repo b only", KindProject, "s", nil,
+		AddOptions{Scope: ScopeProject, ProjectRoot: rootB}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManagerWithModelAndScope(s, nil, nil, "s", true, "", rootA)
+	if found, err := m.Forget(rec.ID); err != nil || found {
+		t.Fatalf("hidden forget = found %v err %v, want no-op", found, err)
+	}
+	if got := s.Len(); got != 1 {
+		t.Fatalf("hidden forget changed bank length to %d", got)
+	}
+}
+
+func TestAdaptiveRecallCutoffDropsWeakTail(t *testing.T) {
+	hits := []Hit{
+		{Score: 0.9, Relevance: 0.92},
+		{Score: 0.8, Relevance: 0.61},
+		{Score: 0.7, Relevance: 0.60},
+		{Score: 0.6, Relevance: 0.59},
+	}
+	got := cutRecallTail(hits, RecallThreshold, RecallCount)
+	if len(got) != 1 {
+		t.Fatalf("adaptive cutoff kept %d hits, want only the strong prefix", len(got))
+	}
+}
+
+func TestAdaptiveRecallCutoffKeepsTightClusterUnderCap(t *testing.T) {
+	hits := []Hit{
+		{Score: 0.9, Relevance: 0.82},
+		{Score: 0.8, Relevance: 0.80},
+		{Score: 0.7, Relevance: 0.78},
+		{Score: 0.6, Relevance: 0.76},
+		{Score: 0.5, Relevance: 0.74},
+	}
+	got := cutRecallTail(hits, RecallThreshold, RecallCount)
+	if len(got) != RecallCount {
+		t.Fatalf("adaptive cutoff kept %d hits, want cap %d", len(got), RecallCount)
+	}
+}
+
+func TestRecallCutsWeakTailBeforeInjection(t *testing.T) {
+	s := openTemp(t)
+	now := time.Now()
+	model := "model-a"
+	for i, v := range [][]float32{
+		{1, 0, 0, 0, 0},
+		{0.6, 0.8, 0, 0, 0},
+		{0.59, 0, 0.807, 0, 0},
+		{0.58, 0, 0, 0.815, 0},
+		{0.57, 0, 0, 0, 0.822},
+	} {
+		s.AddWithModel(fmt.Sprintf("memory %d", i), KindFact, "sess", v, model, now.Add(time.Duration(i)*time.Second))
+	}
+	emb := &stubEmbedder{vecs: map[string][]float32{"what matters": vec(1, 0, 0, 0, 0)}}
+	m := NewManagerWithModel(s, emb, nil, "sess", true, model)
+	_, hits := m.Recall(context.Background(), "what matters")
+	if len(hits) != 1 {
+		t.Fatalf("recall injected %d candidates, want one strong memory: %#v", len(hits), hits)
+	}
+}
+
 func TestAddMergesNearDuplicates(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
@@ -240,6 +447,44 @@ func TestReloadSkipsCorruptLines(t *testing.T) {
 	defer again.Close()
 	if again.Len() != 1 {
 		t.Errorf("loaded %d memories, want the intact one", again.Len())
+	}
+}
+
+func TestReloadSalvagesRecordsGluedToTornTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `{"id":1,"text":"first","kind":"fact","ts":"2026-01-01T00:00:00Z"}` + "\n" +
+		`{"id":2,"text":"torn` +
+		`{"id":3,"text":"second","kind":"fact","ts":"2026-01-01T00:00:02Z"}` +
+		`{"id":4,"text":"third","kind":"preference","ts":"2026-01-01T00:00:03Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("glued memory tail should be recoverable: %v", err)
+	}
+	if s.Len() != 3 {
+		t.Fatalf("recovered %d memories, want first plus two complete tail records", s.Len())
+	}
+	s.Close()
+
+	// Open repairs the file before opening its append descriptor. Reloading
+	// again proves the recovered records were written back, not just held in
+	// memory for this process.
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatalf("repaired memory bank should reload cleanly: %v", err)
+	}
+	defer again.Close()
+	if again.Len() != 3 {
+		t.Fatalf("repaired memory bank has %d records, want 3", again.Len())
+	}
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(data), "torn") {
+		t.Errorf("repair retained torn bytes: %q", data)
 	}
 }
 

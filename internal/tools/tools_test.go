@@ -359,15 +359,18 @@ func TestBashTimeout(t *testing.T) {
 	e := NewExec(t.TempDir())
 	e.Timeout = 100 * time.Millisecond
 	start := time.Now()
-	_, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "sleep 10"})
-	if err == nil {
-		t.Fatal("want a timeout error")
+	res, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "sleep 10"})
+	if err != nil {
+		t.Fatalf("a timed-out command should be adopted: %v", err)
 	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("err = %q", err)
+	if !strings.Contains(res.Output, "background task 1") {
+		t.Fatalf("adoption output = %q", res.Output)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("took %s; the timeout did not fire", elapsed)
+		t.Errorf("took %s; the timeout did not hand off promptly", elapsed)
+	}
+	if err := e.Bg.Cancel(1); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -375,6 +378,81 @@ func TestBashEmptyCommandRefused(t *testing.T) {
 	e := NewExec(t.TempDir())
 	if _, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "   "}); err == nil {
 		t.Error("want an error for an empty command")
+	}
+}
+
+func TestBashDestructiveGateRefusesHoldsAndAllows(t *testing.T) {
+	root := t.TempDir()
+	e := NewExec(root)
+
+	res, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf /"})
+	if err == nil || !res.Held || !strings.Contains(res.Intent, "blocked") {
+		t.Fatalf("root deletion = result %#v, err %v; want held refusal", res, err)
+	}
+	if len(e.Bg.Tasks()) != 0 {
+		t.Fatal("a refused command must not create a background task")
+	}
+
+	res, err = run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf $HOME/projects"})
+	if err == nil || !res.Held || !strings.Contains(res.Intent, "justification") {
+		t.Fatalf("home project deletion = result %#v, err %v; want held reflection", res, err)
+	}
+
+	build := filepath.Join(root, "build")
+	if err := os.MkdirAll(build, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "artifact"), []byte("temporary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf ./build"}); err != nil {
+		t.Fatalf("workspace cleanup should run: %v", err)
+	}
+	if _, err := os.Stat(build); !os.IsNotExist(err) {
+		t.Fatalf("workspace cleanup left %s (stat err %v)", build, err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, ".evilcode-commandrisk-test")
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	target := filepath.Join(outside, "release-output")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "rm -rf " + target}); err == nil {
+		t.Fatal("outside cleanup without justification must be held")
+	}
+	if _, err := run(t, e.Tools(), "bash", map[string]any{
+		"cmd":           "rm -rf " + target,
+		"justification": "This is the requested bounded cleanup of temporary release output.",
+	}); err != nil {
+		t.Fatalf("substantially justified outside cleanup should run: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("justified cleanup left %s (stat err %v)", target, err)
+	}
+}
+
+func TestBashDestructiveGateRunsBeforeBackground(t *testing.T) {
+	e := NewExec(t.TempDir())
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, ".evilcode-commandrisk-background-test")
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+	res, err := run(t, e.Tools(), "bash", map[string]any{
+		"cmd":        "rm -rf " + outside,
+		"background": true,
+	})
+	if err == nil || !res.Held {
+		t.Fatalf("background outside deletion = result %#v, err %v; want held", res, err)
+	}
+	if tasks := e.Bg.Tasks(); len(tasks) != 0 {
+		t.Fatalf("held background command created tasks: %#v", tasks)
 	}
 }
 
@@ -404,6 +482,128 @@ func TestGrep(t *testing.T) {
 	}
 	if strings.Contains(res.Output, "b.txt") {
 		t.Errorf("output = %q, want the glob to exclude b.txt", res.Output)
+	}
+}
+
+func TestGrepCarriesEnclosingFallbackSymbol(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(path, []byte("package sample\n\ntype Widget struct{}\n\nfunc (w Widget) Render() {\n\tneedle()\n}\n\nfunc Other() {\n\tneedle()\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := NewExec(dir)
+	res, err := run(t, e.Tools(), "grep", map[string]any{"pattern": "needle"})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "[func Widget.Render]") {
+		t.Errorf("method hit lost its enclosing symbol: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "[func Other]") {
+		t.Errorf("function hit lost its enclosing symbol: %q", res.Output)
+	}
+}
+
+func TestGrepOutlineWithoutPattern(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(path, []byte("package sample\n\ntype Widget struct{}\n\nfunc (w Widget) Render() {}\n\nfunc Other() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{"path": filepath.Base(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "3: type Widget") ||
+		!strings.Contains(res.Output, "5: func Widget.Render") ||
+		!strings.Contains(res.Output, "7: func Other") {
+		t.Errorf("outline = %q", res.Output)
+	}
+}
+
+func TestGrepOutlineRequiresAFilePath(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{}); err == nil {
+		t.Fatal("grep without a pattern or path must fail")
+	}
+	if _, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{"path": "."}); err == nil {
+		t.Fatal("outline mode must reject a directory")
+	}
+}
+
+func TestGrepLimitKeepsTrailingContextForLastHit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.go")
+	if err := os.WriteFile(path, []byte("before\nneedle first\nafter first\nneedle second\nafter second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{
+		"pattern": "needle",
+		"path":    filepath.Base(path),
+		"context": 1,
+		"limit":   1,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "after first") {
+		t.Errorf("last retained match lost trailing context: %q", res.Output)
+	}
+	if strings.Contains(res.Output, "needle second") {
+		t.Errorf("omitted match was retained: %q", res.Output)
+	}
+}
+
+func TestGrepLimitDoesNotBorrowContextFromOmittedGroup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("before a\nneedle a\nafter a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("before b\nneedle b\nafter b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{
+		"pattern": "needle",
+		"context": 1,
+		"limit":   1,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "after a") || strings.Contains(res.Output, "before b") || strings.Contains(res.Output, "after b") {
+		t.Errorf("limit crossed a ripgrep context group: %q", res.Output)
+	}
+}
+
+func TestGrepPreservesExplicitBinaryMatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "foo:123:bar.bin")
+	if err := os.WriteFile(path, []byte{'n', 'e', 'e', 'd', 'l', 'e', 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, NewExec(dir).Tools(), "grep", map[string]any{
+		"pattern": "needle",
+		"path":    filepath.Base(path),
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not installed") {
+			t.Skip("ripgrep not installed")
+		}
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "foo:123:bar.bin: binary file matches") || strings.Contains(res.Output, dir) {
+		t.Errorf("binary match was dropped: %q", res.Output)
 	}
 }
 

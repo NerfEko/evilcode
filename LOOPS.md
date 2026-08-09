@@ -5235,3 +5235,396 @@ the throwaway HOME's `config.toml` contained exactly
 parity: n/a — the picker is evilcode's own TUI (§5.3); jcode has no equivalent
         interaction.
 codex:  n/a (advisory review not run for this user-reported fix).
+
+## 2026-08-04 J2 — structure, outlines, and exposure tracking
+
+J2.1 and J2.2 are complete. `grep` parses ripgrep's NUL-delimited records,
+preserves context and binary matches, annotates each hit with its enclosing LSP
+symbol (or the bounded declaration scanner), and accepts `path` without a
+pattern for a numbered outline. J2.3 adds a per-session `file:line` exposure
+ledger shared by `read`, `grep`, and file/line diagnostics in `bash`; repeated
+hits become `shown above` references, and every compactor resets the ledger after
+replacing the conversation.
+
+The final review pass also bounded legacy LSP document refreshes for diagnostics
+and rename, invalidated stale diagnostics after an on-disk change, and made the
+LSP manager evict a client whose protocol write timed out. New tests cover
+newline/colon paths, context-group limits, binary records, generic receivers,
+outline fallback, exposure collapse/reset, compactor callbacks, document-sync
+variants, and manager/client timeout races.
+
+Verification: `go build ./...`, `go vet ./...`, and `go test ./...` are green;
+J2-focused race tests and the tools race suite with the two long stress cases
+(`TestForegroundOutputIsBounded`, `TestWriteIsAtomicForAReader`) skipped are
+green. The unfiltered tools race suite reached the pre-existing process-group
+stress test and did not finish in 210s; its stack was blocked in `runGroup` while
+`TestForegroundOutputIsBounded` was still running.
+
+parity: crates/jcode-app-core/src/tool/agentgrep.rs:1-380 and
+        crates/jcode-app-core/src/tool/agentgrep_tests.rs:610-705 — on par
+        (jcode's outline and context ledger are present; evilcode adds LSP
+         enclosing symbols, binary/context-preserving ripgrep parsing, and a
+         compaction callback so exposure resets with the conversation epoch)
+codex:  the long `codex review --uncommitted` runner was interrupted without a
+        verdict after exhausting its test phase; the changed paths were manually
+        reviewed, and every finding from the earlier J2.1 pass was fixed with
+        focused regression tests. No finding was silently dismissed.
+
+## 2026-08-04 J3 — bash survives long work
+
+J3.1 adopts a foreground command when its deadline expires instead of killing
+it: the result names the background task and explicitly says not to re-run it.
+J3.2 adds bounded live output and progress parsing for explicit
+`EVILCODE_PROGRESS` JSON, percentages, fractions, `of` counters, decimal units,
+and build phase prefixes; the TUI background widget renders the latest progress.
+J3.3 exposes `bg` actions `list`, `status`, `output`, `tail`, `wait`, and `cancel`,
+including pending cancellation before the process has attached. J3.4 ships the
+safe explicit `stdin` fallback documented in `DEVIATIONS.md`; J3.5 wires a
+data-directory scratch path into every production `Exec` and exports both
+`TMPDIR` and `EVILCODE_SCRATCH_DIR`.
+
+Verification: `TestTimedOutForegroundIsAdopted`, `TestBashTimeout`,
+`TestATimeoutKillsTheWholeProcessGroup`, `TestBackgroundProgressParsing`,
+`TestBGToolWaitAndTail`, `TestBackgroundCancelBeforeProcessAttach`,
+`TestBashStdinAndScratchEnvironment`, `TestForegroundOutputIsBounded`, and
+`TestBackgroundOutputIsBounded`; `go build ./...`, `go vet ./...`, and
+`go test ./...` are green. `go test -race ./internal/tools -skip
+'TestForegroundOutputIsBounded|TestWriteIsAtomicForAReader'` and the focused
+TUI/agent/wiring/runcmd/tuicmd race pass are green. The full tools race run
+still reaches the pre-existing long process-group stress cases, so those two
+are documented skips. The real widget was rendered with determinate progress
+and visually inspected in `/tmp/evilcode-j3-widget2.png`.
+
+parity: crates/jcode-app-core/src/tool/bash.rs:167-398,885-925 and
+        crates/jcode-app-core/src/tool/bg.rs:34-120,460-501 — on par
+        (the required timeout adoption, output progress shapes, six bg controls,
+         wait timeout/tail behavior, scratch environment, and stdin fallback
+         are covered; jcode's durable output files, checkpoint wakeups, and
+         multi-task/watch actions are outside §3.1–§3.5; interactive prompt
+         detection is deliberately deferred in DEVIATIONS.md)
+codex:  `codex review --commit a836d68` reached its diff and test phases but
+        timed out without a verdict; its test phase failed only on the known
+        sandbox IPv6-listener restriction. A read-only `codex exec` review also
+        timed out before a final message. Manual second review found the live
+        ring snapshot could allocate repeatedly under race, fixed in d93d1eb
+        with a circular buffer and bounded live tails; no unresolved finding
+        was dismissed.
+
+## 2026-08-04 J2 follow-up — deterministic grep context groups
+
+The full J3 gate caught a low-frequency ripgrep traversal-order flake in
+`TestGrepLimitDoesNotBorrowContextFromOmittedGroup`: when `b.go` arrived first,
+the limit quite correctly retained that first group but the test expected the
+filesystem's usual `a.go` order. `grep` now passes `--sort path`, making the
+context-limit contract deterministic; the regression was run 100 times green.
+
+parity: crates/jcode-app-core/src/tool/agentgrep.rs:1-380 — on par
+        (the ordering is an evilcode/ripgrep integration detail; the retained
+         group still follows the same first-match limit and trailing-context
+         rule as the J2 comparison)
+codex:  no separate codex verdict; the one-line ordering fix in cb5955b was
+        manually reviewed and covered by the 100-run regression before the
+        final build/test gate.
+
+## 2026-08-04 J3 review follow-up — parity and bounded-state audit
+
+The post-tag review compared every J3 path with jcode's `bash.rs` and `bg.rs`,
+not just the happy-path tests. The audit fixed four edge cases: completed-task
+retention is now enforced through `Task`, `Wait`, `Cancel`, add, and finish
+paths (not only the widget list); progress is recorded independently of the
+50 KiB live-output tail, so an early marker remains visible after later output
+scrolls past it; `bg wait` refreshes output after a timeout; and adopted or
+explicit background commands snapshot their working directory without a late
+completion overwriting a newer foreground `cd`. Registry completion payloads
+are bounded as a final defense, control-marker lines are hidden from output,
+progress is clamped/validated, and the parser also accepts jcode's marker,
+checkpoint, and `Resolving` forms while retaining the J3 `EVILCODE_PROGRESS`
+contract.
+
+New regressions cover marker persistence beyond the live tail, marker hiding,
+checkpoint parsing, normalization, direct-access eviction, and the expanded
+phase/marker forms. The required stdin fallback remains explicit and is still
+documented in `DEVIATIONS.md`; prompt detection/composer input is not claimed.
+
+parity: crates/jcode-app-core/src/tool/bash.rs:167-398,799-860,885-925 and
+        crates/jcode-app-core/src/tool/bg.rs:34-120,460-501 — on par or better
+        for the J3.1–J3.5 contract (timeout adoption, bounded live output,
+        progress shapes, six controls, wait/tail/cancel behavior, stdin
+        fallback, and scratch isolation). Evilcode is stronger on per-command
+        in-memory bounds and latest-progress retention; jcode's durable output
+        files, reload survival, progress/checkpoint wakeups, multi-task waits,
+        and delivery/watch actions remain outside this phase. Interactive prompt
+        detection remains the explicit documented deviation.
+
+codex: no new codex verdict was available; the earlier runner timed out before
+        a final message. This audit was manual against the cited jcode source,
+        with focused regressions plus the full build/vet/test gates below.
+
+## 2026-08-06 J4 — destructive-command gate
+
+Done: `internal/tools/commandrisk` now tokenizes shell segments, quotes,
+redirects, pipes, subshells, wrappers, and command substitutions conservatively.
+Malformed or opaque syntax is confirmation-required. Lexical target expansion
+classifies catastrophic system/device/credential paths, repository metadata,
+application config/data, outside-workspace paths, workspace-root cleanup, and
+bounded workspace cleanup into safe/low/confirm/catastrophic tiers. The gate's
+allow/reflect/refuse verdict is deterministic: catastrophic targets cannot be
+overridden, and reflection requires a substantive justification rather than a
+blind retry.
+
+`Exec.bashTool` runs the gate before both foreground and background execution,
+adds the `justification` schema field, and returns held metadata. Held results
+are persisted through agent events and provider messages and render as a
+warning row in the TUI. The full production wiring supplies config/data roots.
+The bounded progress parser also avoids per-line allocations while streaming,
+preserving J3's output-memory ceiling.
+
+Verification: `go test -p 1 ./...`, `go build -p 1 ./...`, and
+`go vet -p 1 ./...` are green. Focused regressions cover root refusal,
+`$HOME/projects` reflection, justified outside cleanup, workspace cleanup,
+background pre-gating, `git clean -xfd`, 100 ordinary commands, malformed and
+nested shell syntax, and held-row rendering.
+
+parity: crates/jcode-command-risk/src/{tokenize,paths,gate}.rs and
+        crates/jcode-app-core/src/tool/bash_destructive_gate.rs — on par or
+        better for §4 (evilcode keeps the same deterministic three-way gate and
+        adds lexical workspace-root/.git/config-data coverage, nested wrapper
+        handling, persisted held rendering, and explicit fail-closed syntax;
+        it does not attempt to become a full shell parser)
+codex: no separate external codex verdict; manual comparison against the cited
+        jcode sources plus the serial build/vet/test gates found no unresolved
+        J4 finding.
+
+## 2026-08-06 J4 review follow-up — command-risk parity audit
+
+The post-tag review rechecked the entire J4 section against jcode's tokenizer,
+path classifier, gate, and bash integration rather than relying only on the
+initial happy-path tests. It found and fixed several real edge cases: plain
+`~` and `~/` expansion, the distinction between protected roots and ordinary
+configuration/data files, safe standard device redirects, glob and temporary
+path handling, repository metadata outside the workspace, malformed operator
+chains, `|&`, numeric wrapper operands, `busybox`/`toybox`, multi-action
+`find`, `eval` scripts, opaque shell substitutions, and recursive-only
+`chmod`/`chown` handling. Explanations now name expanded protected targets,
+and the parity corpus covers the tier boundaries and wrapper paths.
+
+Verification was run serially to avoid competing test processes:
+`go test -p 1 ./...`, `go build -p 1 ./...`, and `go vet -p 1 ./...` all pass;
+`git diff --check` is clean.
+
+parity: crates/jcode-command-risk/src/{tokenize,paths,risk,gate}.rs and
+        crates/jcode-app-core/src/tool/bash_destructive_gate.rs — on par or
+        better for §4 after the follow-up edge-case audit; evilcode retains
+        the same conservative tiers while covering more wrapper and transcript
+        integration cases. It remains lexical by design and is not a full shell
+        parser.
+codex: no separate external codex verdict; manual source comparison and the
+        serial full-repository test/build/vet gate found no unresolved J4 issue.
+
+## 2026-08-06 J5.4 — local embedding feasibility decision
+
+Prep complete before J5.5 implementation. jcode's local floor is a downloaded
+`all-MiniLM-L6-v2` ONNX model plus `tokenizer.json`: 384-dimensional vectors,
+256-token inputs, mean pooling, and normalization. Its implementation uses the
+`tract-onnx` runtime and downloads the model on first use; the model and
+tokenizer are therefore a substantial startup/download payload rather than a
+small built-in helper.
+
+The pure-Go options checked for this repository split into two groups. ONNX
+bindings that avoid cgo still require a native ONNX Runtime shared library;
+pure-Go ONNX/GGUF interpreters exist, but bringing one in would add a large
+runtime/model/tokenizer surface and a new model distribution/update policy to a
+small single-binary Go application. No option met the current no-native-runtime,
+small-dependency, and maintenance constraints well enough to ship as a reliable
+floor. An ad-hoc hash vector would be deterministic but would not provide the
+semantic behavior J5 is meant to recover.
+
+Decision: keep provider embeddings preferred when available, retain model-tagged
+dense vectors, and use BM25 as the dependable lexical floor when embedding is
+missing or fails. J5.5 is explicitly skipped for this reason; the deviation is
+recorded in `DEVIATIONS.md` before the J5.6 scope work starts.
+
+parity: crates/jcode-embedding/src/lib.rs:89-250 — on par (the same MiniLM
+        model shape, tokenizer, pooling, normalization, and first-use download
+        costs were evaluated; a bundled local runtime is deliberately not carried,
+        see DEVIATIONS)
+codex: no code was changed; the prep answer was manually checked against the
+        cited jcode implementation and the repository's provider/embedder APIs.
+
+## 2026-08-06 J5.1 — model-safe dense recall
+
+`Record` now persists the embedding model id. Dense scoring only compares the
+active model's vectors; equal-dimension vectors from another model remain in
+the BM25 path, and the memory status exposes the pending re-embedding count.
+Legacy untagged vectors retain the local-model compatibility default.
+
+parity: crates/jcode-base/src/memory.rs:830-897 — on par (active-model dense
+        eligibility, lexical reachability for mismatches, and pending status)
+codex: no separate external codex verdict; manual source comparison and the
+        serial focused/full test gates found no unresolved J5.1 issue.
+
+## 2026-08-06 J5.2 — hybrid lexical and dense retrieval
+
+Memory search now runs BM25 and dense retrieval together and fuses their ranks
+with reciprocal rank fusion (`k=60`). Kind weights are applied after fusion,
+so an exact lexical hit remains visible even when semantic recall also returns
+results. The old substring-only fallback is gone.
+
+parity: crates/jcode-base/src/memory.rs:668-728 and :1991-2055 — on par
+        (both retrievers always run, RRF ranking, BM25 token/DF scoring, and
+        post-fusion kind weighting)
+codex: no separate external codex verdict; manual source comparison and the
+        serial focused/full test gates found no unresolved J5.2 issue.
+
+## 2026-08-06 J5.3 — score-tail cutoff
+
+Recall now treats `RecallCount` as a ceiling. After ranking, it stops at the
+first score drop wider than a quarter of the top-to-threshold range, preserving
+one strong hit while retaining a genuinely close group of hits.
+
+parity: crates/jcode-base/src/memory.rs:899-927 — on par (range-based tail
+        cutoff with the configured result cap retained as a ceiling)
+codex: no separate external codex verdict; manual source comparison and the
+        serial focused/full test gates found no unresolved J5.3 issue.
+
+## 2026-08-06 J5.6 — project and global memory scope
+
+Memories now carry `global` or `project` scope. Project records are keyed by
+the normalized workspace root; a manager's normal view is project + global,
+while `/memory list project` and `/memory list global` inspect either side.
+`remember` defaults to the current project when a workspace is known and accepts
+`scope: "global"` for cross-repository facts. Forgetting is manager-scoped, so
+an id from another project cannot be tombstoned through the current TUI.
+Legacy records without scope metadata remain global, preserving old banks.
+
+parity: crates/jcode-base/src/memory.rs:734-791 — on par (project/global
+        storage semantics, project ∪ global recall, explicit list scopes, and
+        project isolation; evilcode retains one append-only bank and treats
+        legacy unscoped records as global)
+codex: no separate external verdict was available; the read-only review runner
+        was stopped after it exceeded twelve minutes without a final message.
+        Manual comparison against the cited jcode source plus the serial gates
+        found no unresolved J5.6 issue.
+
+## 2026-08-06 Verify J5 — retrieval acceptance gate
+
+The complete J5 path was checked serially: model-tag mismatch tests prove equal
+dimensions never cross-score; BM25 + dense fusion preserves exact lexical hits;
+adaptive cutoff drops weak tails; project A sees project A + global but not
+project B; explicit global/project listing and scoped forget are covered by
+regressions. `go test -p 1 ./... -count=1`, `go build -p 1 ./...`, and
+`go vet -p 1 ./...` all pass, and `git diff --check` is clean.
+
+parity: crates/jcode-base/src/memory.rs:668-728, 734-791, 830-927 — on par or
+        better for §5's shipped scope; the local embedder floor remains the
+        documented J5.4/J5.5 deviation.
+codex: no final external codex verdict; manual source comparison and the
+        serial full-repository gates found no unresolved J5 issue.
+
+## 2026-08-06 J6.1 — recent turns survive compaction
+
+`Compactor.Compact` now summarizes only the old prefix and keeps the ten most
+recent user turns verbatim. The cutoff is moved backward when necessary so an
+assistant tool call and every matching result remain together; malformed or
+unanswered calls in the kept suffix fail closed instead of reaching a strict
+provider. The kept tail is cloned before persistence, so later appends cannot
+mutate the in-memory replay.
+
+The TUI, headless, and daemon wiring uses the tail-aware persistence callback.
+Session rewrites retain metadata, message roles, and vision attachments through
+the normal content-addressed blob encoder, and resume reconstructs the summary
+plus preserved tail. Legacy summary-only `Persist`/`Compact` callers remain
+compatible. A source review found and fixed the attachment serialization edge
+case in `40f1a1d`.
+
+parity: crates/jcode-compaction-core/src/lib.rs:18-19,236-290 and
+        crates/jcode-base/src/compaction.rs:1085-1113 — on
+        par or better (same ten-item recent window and fail-closed tool boundary;
+        evilcode keeps complete user turns and persists typed messages plus image
+        blobs across resume)
+verification: `go test -p 1 ./internal/agent ./internal/session -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass, serially.
+codex: no final external verdict; the read-only review runner was stopped after
+        6m50s without a final message. Manual comparison against the cited jcode
+        source, the attachment regression, and the serial gates found no
+        unresolved J6.1 issue.
+
+## 2026-08-06 J6.2 — predictive compaction from context growth
+
+`Compactor.ShouldCompact` now records the context usage observed at each turn,
+smooths the positive per-turn deltas with an EWMA (`alpha = 0.3`), and projects
+fifteen turns ahead. Once the current context is above the proactive 40% floor,
+the projection triggers compaction before the fixed 85% boundary; the fixed
+boundary remains the fallback when the projection has insufficient samples.
+Changing context windows, shrinking context, and successful compaction reset the
+slope so stale provider or pre-compaction growth cannot trigger a false positive.
+The `/context` notice and README describe the predictive behavior.
+
+parity: crates/jcode-base/src/compaction.rs:456-548 and
+        crates/jcode-config-types/src/lib.rs:345-390 — on par (same EWMA growth
+        projection, lookahead default, and proactive floor; evilcode retains a
+        fixed-threshold fallback and resets state on provider/context changes)
+verification: `go test -p 1 ./internal/agent ./internal/tui -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass, serially.
+codex: no separate external verdict; manual comparison against the cited jcode
+        source and the serial focused/full gates found no unresolved J6.2 issue.
+
+## 2026-08-08 J6.3 — semantic topic-shift compaction
+
+`Compactor` now snapshots completed assistant turns asynchronously, caps each
+snapshot at 512 bytes, keeps a rolling ten-vector history, and compares the
+mean embeddings of its old and new halves. A cosine similarity below `0.45`
+triggers compaction once usage reaches the `0.40` proactive floor. Missing,
+slow, canceled, failed, dimension-changing, non-finite, or zero-norm embedding
+results fall back safely to J6.2 or produce no semantic decision. Provider/model
+switches and rewinds reset semantic history; detached requests cannot reintroduce
+discarded vectors; and predictive growth history is still sampled before a
+conversation has an old prefix that can be compacted.
+
+parity: crates/jcode-base/src/compaction.rs:441-601 and
+        crates/jcode-config-types/src/lib.rs:345-390 — on par for the J6.3
+        contract (same bounded snapshots, rolling window, four-vector
+        mean/cosine signal, `0.45` threshold, and `0.40` floor; evilcode adds
+        detached asynchronous provider calls and lifecycle resets so the
+        decision path never blocks). The parity source was read from the
+        v0.64.2 source archive because pinned commit `0b0ce09` was no longer
+        advertised.
+verification: `go test ./internal/agent ./internal/tui -run 'TestShouldCompact|TestCompactionEmbedding|TestResetSemantic|TestPickerSwitchRebindsCompactionEmbedder' -count=1`,
+        `go test -race ./internal/agent -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass.
+codex: initial review of `666dd5c` found five lifecycle/fallback issues; all
+        were fixed in `01a039d`. Review of that fix found one projection-history
+        issue, fixed in `128476a`; the final review found no further issues.
+        The reviewer’s full-suite sandbox attempt was blocked by Unix-socket
+        permission and read-only-home restrictions; the repository’s own serial
+        full gates passed.
+
+## 2026-08-09 J6.4 — relevance-aware compaction cutoff
+
+`Compactor.Compact` now prepares a relevance lookup from the latest five
+non-empty messages, scores every non-empty message in the old prefix in batches
+of 32, and moves the cutoff before the earliest candidate at cosine similarity
+`>= 0.65`. The summarized range remains contiguous; a relevant tool result
+moves the boundary back to its assistant call. Relevance work is asynchronous
+and cached by transcript key, so a slow, failed, canceled, unavailable, or
+not-yet-ready embedder falls back immediately to the normal recency cutoff.
+
+parity: crates/jcode-base/src/compaction.rs:603-675 and
+        crates/jcode-compaction-core/src/lib.rs:402-430,
+        crates/jcode-config-types/src/lib.rs:375-397 — on par for the J6.4
+        contract (same five-message goal, 200/100 goal excerpts, 512-byte
+        candidates, `0.65` threshold, earliest-relevant contiguous cutoff, and
+        tool-boundary preservation; evilcode adds asynchronous bounded
+        preparation and safe recency fallback)
+verification: `go test ./internal/agent ./internal/tui -count=1`,
+        `go test -race ./internal/agent -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass.
+codex: corrected commit `33fd6bf` addressed the initial review’s prompt-snapshot,
+        capped-history, and ungated-background-scan findings. The final review
+        found no introduced correctness issues and its focused agent/TUI checks
+        passed; its full-suite sandbox attempt was blocked by Unix-socket
+        permission and read-only-home restrictions.
