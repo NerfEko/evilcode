@@ -5520,3 +5520,34 @@ verification: `go test -p 1 ./internal/agent ./internal/tui -count=1`,
         `go vet -p 1 ./...`, and `git diff --check` all pass, serially.
 codex: no separate external verdict; manual comparison against the cited jcode
         source and the serial focused/full gates found no unresolved J6.2 issue.
+
+## 2026-08-08 J6.3 — semantic topic-shift compaction
+
+`Compactor` now snapshots completed assistant turns asynchronously, caps each
+snapshot at 512 bytes, keeps a rolling ten-vector history, and compares the
+mean embeddings of its old and new halves. A cosine similarity below `0.45`
+triggers compaction once usage reaches the `0.40` proactive floor. Missing,
+slow, canceled, failed, dimension-changing, non-finite, or zero-norm embedding
+results fall back safely to J6.2 or produce no semantic decision. Provider/model
+switches and rewinds reset semantic history; detached requests cannot reintroduce
+discarded vectors; and predictive growth history is still sampled before a
+conversation has an old prefix that can be compacted.
+
+parity: crates/jcode-base/src/compaction.rs:441-601 and
+        crates/jcode-config-types/src/lib.rs:345-390 — on par for the J6.3
+        contract (same bounded snapshots, rolling window, four-vector
+        mean/cosine signal, `0.45` threshold, and `0.40` floor; evilcode adds
+        detached asynchronous provider calls and lifecycle resets so the
+        decision path never blocks). The parity source was read from the
+        v0.64.2 source archive because pinned commit `0b0ce09` was no longer
+        advertised.
+verification: `go test ./internal/agent ./internal/tui -run 'TestShouldCompact|TestCompactionEmbedding|TestResetSemantic|TestPickerSwitchRebindsCompactionEmbedder' -count=1`,
+        `go test -race ./internal/agent -count=1`,
+        `go test -p 1 ./... -count=1`, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, and `git diff --check` all pass.
+codex: initial review of `666dd5c` found five lifecycle/fallback issues; all
+        were fixed in `01a039d`. Review of that fix found one projection-history
+        issue, fixed in `128476a`; the final review found no further issues.
+        The reviewer’s full-suite sandbox attempt was blocked by Unix-socket
+        permission and read-only-home restrictions; the repository’s own serial
+        full gates passed.
