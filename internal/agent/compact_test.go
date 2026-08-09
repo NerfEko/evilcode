@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -120,6 +121,7 @@ func TestCompactKeepsARelevantOlderMessage(t *testing.T) {
 		},
 		Embedding: keywordCompactionEmbedder{},
 	}
+	prepareAndWaitForRelevance(t, c, conv)
 	if _, err := c.Compact(context.Background(), conv); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +188,7 @@ func TestCompactKeepsARelevantToolPairTogether(t *testing.T) {
 		},
 		Embedding: keywordCompactionEmbedder{},
 	}
+	prepareAndWaitForRelevance(t, c, conv)
 	if _, err := c.Compact(context.Background(), conv); err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +228,120 @@ type failingCompactionEmbedder struct{}
 
 func (failingCompactionEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 	return nil, errors.New("embedding unavailable")
+}
+
+func prepareAndWaitForRelevance(t *testing.T, c *Compactor, conv *Conversation) {
+	t.Helper()
+	c.PrepareRelevance(context.Background(), conv.Messages())
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		ready, inFlight := c.relevanceReady, c.relevanceInFlight
+		c.mu.Unlock()
+		if ready {
+			return
+		}
+		if !inFlight {
+			t.Fatal("relevance lookup finished without a result")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for relevance lookup")
+}
+
+type recordingRelevanceEmbedder struct {
+	mu       sync.Mutex
+	maxBatch int
+}
+
+func (r *recordingRelevanceEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	r.mu.Lock()
+	r.maxBatch = max(r.maxBatch, len(texts))
+	r.mu.Unlock()
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		vectors[i] = []float32{0, 1}
+	}
+	return vectors, nil
+}
+
+func TestRelevanceEmbeddingBatchesAreBounded(t *testing.T) {
+	conv := NewConversation("sys")
+	for i := 0; i < RecentTurnsToKeep+300; i++ {
+		conv.Append(
+			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("setup %03d", i)},
+			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
+		)
+	}
+	embedder := &recordingRelevanceEmbedder{}
+	c := &Compactor{Summarize: summarizer("summary", nil), Embedding: embedder}
+	prepareAndWaitForRelevance(t, c, conv)
+	embedder.mu.Lock()
+	maxBatch := embedder.maxBatch
+	embedder.mu.Unlock()
+	if maxBatch > CompactRelevanceBatchSize {
+		t.Fatalf("relevance batch = %d, want <= %d", maxBatch, CompactRelevanceBatchSize)
+	}
+}
+
+type blockingRelevanceEmbedder struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+	once     sync.Once
+}
+
+func (b *blockingRelevanceEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	first := false
+	b.once.Do(func() {
+		first = true
+		close(b.started)
+	})
+	if first {
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	} else {
+		close(b.finished)
+	}
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		vectors[i] = []float32{0, 1}
+	}
+	return vectors, nil
+}
+
+func TestCompactDoesNotWaitForRelevanceEmbedding(t *testing.T) {
+	embedder := &blockingRelevanceEmbedder{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	c := &Compactor{Summarize: summarizer("summary", nil), Embedding: embedder}
+	conv := compactableConversation()
+	c.PrepareRelevance(context.Background(), conv.Messages())
+	select {
+	case <-embedder.started:
+	case <-time.After(time.Second):
+		t.Fatal("the asynchronous relevance lookup did not start")
+	}
+
+	started := time.Now()
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("compaction waited %s for optional relevance", elapsed)
+	}
+
+	close(embedder.release)
+	select {
+	case <-embedder.finished:
+	case <-time.After(time.Second):
+		t.Fatal("the relevance lookup did not finish after release")
+	}
 }
 
 func TestCompactCallsOnCompactionAfterReset(t *testing.T) {

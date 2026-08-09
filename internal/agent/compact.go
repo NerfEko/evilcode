@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"strings"
 	"sync"
@@ -88,6 +89,15 @@ const CompactRelevanceGoalMessages = 5
 // threshold. A message at or above this similarity is kept verbatim.
 const CompactRelevanceKeepThreshold = 0.65
 
+// CompactRelevanceCandidateLimit bounds one relevance pass. The oldest
+// candidates get priority because the earliest relevant message determines how
+// far the cutoff must move back; later turns remain covered by the normal tail.
+const CompactRelevanceCandidateLimit = 256
+
+// CompactRelevanceBatchSize keeps each provider request small even when a
+// session has reached the relevance candidate limit.
+const CompactRelevanceBatchSize = 32
+
 // MaxAutoCompactions bounds automatic compaction for a session.
 //
 // Invariant 6. Without it, a summary that is itself over the threshold compacts
@@ -154,6 +164,14 @@ type Compactor struct {
 	embeddingDim      int
 	embeddingInFlight bool
 	embeddingEpoch    uint64
+
+	// Relevance state is also protected by mu. Relevance is prepared in the
+	// background before compaction; Compact only consumes a ready result and
+	// otherwise falls back to the ordinary recency boundary.
+	relevanceInFlight bool
+	relevanceReady    bool
+	relevanceKey      uint64
+	relevanceEarliest int
 }
 
 // Count is how many times this session has been compacted.
@@ -250,72 +268,162 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 	return summary, nil
 }
 
-// relevanceCutoff keeps an old message that is still close to the current
-// goal. Embedding failure is deliberately a no-op: the ordinary recency
-// cutoff is safer than allowing an optional semantic service to prevent
-// compaction entirely.
+// PrepareRelevance starts a best-effort relevance lookup for a transcript. It
+// never waits for the provider. Callers that know a compaction may be needed
+// should call this after a turn so Compact can consume a ready result later.
+func (c *Compactor) PrepareRelevance(ctx context.Context, msgs []provider.Message) {
+	if c == nil {
+		return
+	}
+	standardCutoff := compactionCutoff(msgs, RecentTurnsToKeep)
+	if standardCutoff == 0 {
+		return
+	}
+	request, ok := buildRelevanceRequest(msgs, standardCutoff)
+	if !ok {
+		return
+	}
+	c.queueRelevance(ctx, request)
+}
+
+// relevanceCutoff consumes a ready relevance result. Embedding failure or a
+// lookup that is still in flight is deliberately a no-op: the ordinary recency
+// cutoff is safer than allowing an optional semantic service to delay or
+// prevent compaction.
 func (c *Compactor) relevanceCutoff(ctx context.Context, msgs []provider.Message, standardCutoff int) int {
 	if standardCutoff <= 0 || standardCutoff > len(msgs) {
 		return standardCutoff
 	}
-	goal := relevanceGoalText(msgs)
-	if goal == "" {
+	request, ok := buildRelevanceRequest(msgs, standardCutoff)
+	if !ok {
 		return standardCutoff
 	}
 
 	c.mu.Lock()
-	embedder := c.Embedding
-	epoch := c.embeddingEpoch
+	ready := c.relevanceReady && c.relevanceKey == request.key
+	earliest := c.relevanceEarliest
 	c.mu.Unlock()
-	if embedder == nil {
+	if !ready {
+		c.queueRelevance(ctx, request)
 		return standardCutoff
 	}
 
-	texts := []string{goal}
-	candidateIndexes := make([]int, 0, standardCutoff)
-	for i := 0; i < standardCutoff; i++ {
+	if earliest >= standardCutoff {
+		return standardCutoff
+	}
+	return relevanceAdjustedCutoff(msgs, standardCutoff, earliest)
+}
+
+type relevanceCandidate struct {
+	index int
+	role  provider.Role
+	text  string
+}
+
+type relevanceRequest struct {
+	key            uint64
+	goal           string
+	standardCutoff int
+	candidates     []relevanceCandidate
+}
+
+func buildRelevanceRequest(msgs []provider.Message, standardCutoff int) (relevanceRequest, bool) {
+	request := relevanceRequest{standardCutoff: standardCutoff}
+	request.goal = relevanceGoalText(msgs)
+	if request.goal == "" {
+		return relevanceRequest{}, false
+	}
+
+	for i := 0; i < standardCutoff && len(request.candidates) < CompactRelevanceCandidateLimit; i++ {
 		text := relevanceMessageText(msgs[i])
 		if text == "" {
 			continue
 		}
-		texts = append(texts, text)
-		candidateIndexes = append(candidateIndexes, i)
+		request.candidates = append(request.candidates, relevanceCandidate{
+			index: i,
+			role:  msgs[i].Role,
+			text:  text,
+		})
 	}
-	if len(candidateIndexes) == 0 {
-		return standardCutoff
+	if len(request.candidates) == 0 {
+		return relevanceRequest{}, false
 	}
 
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d\x00%s\x00", standardCutoff, request.goal)
+	for _, candidate := range request.candidates {
+		_, _ = fmt.Fprintf(h, "%d\x00%s\x00%s\x00", candidate.index, candidate.role, candidate.text)
+	}
+	request.key = h.Sum64()
+	return request, true
+}
+
+func (c *Compactor) queueRelevance(ctx context.Context, request relevanceRequest) {
+	if c == nil {
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	embedCtx, cancel := context.WithTimeout(ctx, CompactEmbeddingTimeout)
-	vectors, err := embedder.Embed(embedCtx, texts)
-	cancel()
-	if err != nil || len(vectors) < len(texts) {
-		return standardCutoff
-	}
+	ctx = context.WithoutCancel(ctx)
 
 	c.mu.Lock()
-	currentEpoch := c.embeddingEpoch
+	if c.Embedding == nil || c.relevanceInFlight ||
+		(c.relevanceReady && c.relevanceKey == request.key) {
+		c.mu.Unlock()
+		return
+	}
+	embedder := c.Embedding
+	epoch := c.embeddingEpoch
+	c.relevanceInFlight = true
 	c.mu.Unlock()
-	if currentEpoch != epoch {
-		return standardCutoff
-	}
 
-	goalVector := vectors[0]
-	earliest := standardCutoff
-	highRelevance := 0
-	for i, messageIndex := range candidateIndexes {
-		similarity, ok := cosineSimilarity32(goalVector, vectors[i+1])
-		if ok && similarity >= CompactRelevanceKeepThreshold {
-			highRelevance++
-			earliest = min(earliest, messageIndex)
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			c.relevanceInFlight = false
+			c.mu.Unlock()
+		}()
+
+		embedCtx, cancel := context.WithTimeout(ctx, CompactEmbeddingTimeout)
+		defer cancel()
+		goalVectors, err := embedder.Embed(embedCtx, []string{request.goal})
+		if err != nil || len(goalVectors) == 0 {
+			return
 		}
-	}
-	if highRelevance == 0 {
-		return standardCutoff
-	}
 
+		goalVector := goalVectors[0]
+		earliest := request.standardCutoff
+		for start := 0; start < len(request.candidates); start += CompactRelevanceBatchSize {
+			end := min(start+CompactRelevanceBatchSize, len(request.candidates))
+			texts := make([]string, end-start)
+			for i, candidate := range request.candidates[start:end] {
+				texts[i] = candidate.text
+			}
+			vectors, err := embedder.Embed(embedCtx, texts)
+			if err != nil || len(vectors) < len(texts) {
+				return
+			}
+			for i, candidate := range request.candidates[start:end] {
+				similarity, ok := cosineSimilarity32(goalVector, vectors[i])
+				if ok && similarity >= CompactRelevanceKeepThreshold {
+					earliest = min(earliest, candidate.index)
+				}
+			}
+		}
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.embeddingEpoch != epoch {
+			return
+		}
+		c.relevanceKey = request.key
+		c.relevanceEarliest = earliest
+		c.relevanceReady = true
+	}()
+}
+
+func relevanceAdjustedCutoff(msgs []provider.Message, standardCutoff, earliest int) int {
 	// The cutoff is moved before the earliest relevant message. Re-run the
 	// tool-boundary check because a relevant tool result must also retain its
 	// assistant call. If that would leave fewer than two real messages to
@@ -717,6 +825,9 @@ func (c *Compactor) resetEmbeddingHistoryLocked() {
 	c.embeddingHistory = nil
 	c.embeddingDim = 0
 	c.embeddingEpoch++
+	c.relevanceReady = false
+	c.relevanceKey = 0
+	c.relevanceEarliest = 0
 }
 
 func (c *Compactor) addEmbeddingSnapshotLocked(vector []float32) {

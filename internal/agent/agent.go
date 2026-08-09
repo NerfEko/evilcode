@@ -344,6 +344,13 @@ func (a *Agent) recall(ctx context.Context, userInput string) {
 // threshold would otherwise compact forever without ever sending a request,
 // which presents as a hang rather than as a loop.
 func (a *Agent) autoCompact(ctx context.Context) {
+	if a.Compactor == nil {
+		return
+	}
+	// Relevance is prepared ahead of the next compaction. The lookup is
+	// asynchronous; if it is not ready when compaction is needed, Compact uses
+	// the ordinary recency boundary immediately.
+	a.Compactor.PrepareRelevance(ctx, a.Conv.Messages())
 	if !a.Compactor.ShouldCompactForConversation(a.ctxUsed(), a.NumCtx, a.Conv) {
 		return
 	}
@@ -509,6 +516,9 @@ func (a *Agent) loop(ctx context.Context) error {
 				if appended {
 					continue
 				}
+			}
+			if a.Compactor != nil {
+				a.Compactor.PrepareRelevance(ctx, a.Conv.Messages())
 			}
 			a.endTurn(EndComplete)
 			return nil
