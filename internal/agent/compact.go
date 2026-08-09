@@ -536,10 +536,16 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 // summarize while keeping RecentTurnsToKeep turns; otherwise Compact would
 // fail and the same topic-shift signal would fire again on every turn.
 func (c *Compactor) ShouldCompactForConversation(used, window int, conv *Conversation) bool {
-	if c == nil || conv == nil || compactionCutoff(conv.Messages(), RecentTurnsToKeep) == 0 {
+	if c == nil || conv == nil {
 		return false
 	}
-	return c.ShouldCompact(used, window)
+	// Always sample the context first so an uncompactable early transcript does
+	// not erase the predictive history that J6.2 needs once a prefix exists.
+	shouldCompact := c.ShouldCompact(used, window)
+	if compactionCutoff(conv.Messages(), RecentTurnsToKeep) == 0 {
+		return false
+	}
+	return shouldCompact
 }
 
 // resetProjectionLocked clears the EWMA after a successful compaction. The

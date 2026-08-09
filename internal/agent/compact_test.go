@@ -270,6 +270,24 @@ func TestShouldCompactForConversationRequiresAnOlderPrefix(t *testing.T) {
 	}
 }
 
+func TestShouldCompactForConversationKeepsGrowthHistoryBeforePrefix(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	short := NewConversation("sys")
+	for i := 0; i < RecentTurnsToKeep; i++ {
+		short.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
+	}
+
+	if c.ShouldCompactForConversation(50, 100, short) {
+		t.Fatal("an uncompactable conversation should not compact")
+	}
+	if c.ShouldCompactForConversation(55, 100, short) {
+		t.Fatal("an uncompactable conversation should still suppress the action")
+	}
+	if !c.ShouldCompactForConversation(55, 100, compactableConversation()) {
+		t.Fatal("predictive history was lost before the conversation became compactable")
+	}
+}
+
 func TestShouldCompactUsesGrowthWhenTopicsStaySimilar(t *testing.T) {
 	c := &Compactor{Summarize: summarizer("s", nil)}
 	for range 4 {
