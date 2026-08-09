@@ -205,6 +205,16 @@ func salvageMemoryRecords(line []byte) []Record {
 			return Record{}, false
 		}
 		return record, true
+	}, func(candidate jsonl.Candidate) bool {
+		if candidate.Depth != 1 {
+			return true
+		}
+		switch candidate.KeyBefore() {
+		case "", "id", "text", "kind", "session", "ts", "scope", "project_root", "vec", "embedding_model", "deleted":
+			return true
+		default:
+			return false
+		}
 	})
 }
 

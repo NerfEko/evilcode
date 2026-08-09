@@ -673,6 +673,16 @@ func salvageSessionEntries(line []byte) []Entry {
 			return Entry{}, false
 		}
 		return entry, true
+	}, func(candidate jsonl.Candidate) bool {
+		if candidate.Depth != 1 {
+			return true
+		}
+		switch candidate.KeyBefore() {
+		case "", "ts", "type", "data":
+			return true
+		default:
+			return false
+		}
 	})
 }
 

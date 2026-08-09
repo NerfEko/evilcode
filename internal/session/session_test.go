@@ -877,6 +877,24 @@ func TestReadSalvagesEntriesGluedToTornTail(t *testing.T) {
 	}
 }
 
+func TestReadSalvagesEntryAfterTornOuterObject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:01Z","type":"assistant","data":` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"second"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("structural glued tail should be recoverable: %v", err)
+	}
+	if len(entries) != 1 || !strings.Contains(string(entries[0].Data), `"second"`) {
+		t.Fatalf("recovered entries = %#v, want the appended user envelope", entries)
+	}
+}
+
 func TestReadDoesNotSalvageNestedEnvelope(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bat.jsonl")
