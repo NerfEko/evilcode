@@ -1738,6 +1738,9 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 					if p, err := pc.Build(); err == nil {
 						m.agent.Provider = p
 						m.header.Provider = sel.Provider
+						if m.compactor != nil {
+							m.compactor.SetEmbeddingProvider(p)
+						}
 					}
 				}
 			}

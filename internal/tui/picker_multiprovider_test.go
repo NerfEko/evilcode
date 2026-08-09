@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/provider"
 )
 
 // fetchAllModels lists every configured provider's models so a DeepSeek
@@ -70,6 +73,42 @@ func TestProviderConfigLookup(t *testing.T) {
 	}
 	if pc := m.providerConfig("nope"); pc != nil {
 		t.Errorf("unknown provider returned non-nil: %+v", pc)
+	}
+}
+
+func TestPickerSwitchRebindsCompactionEmbedder(t *testing.T) {
+	a := agent.New("bat", provider.NewMock("start", "chat"), "mock-large", nil,
+		agent.NewConversation("system"))
+	t.Cleanup(a.Close)
+	c := &agent.Compactor{
+		Summarize: func(context.Context, string, string) (string, error) { return "s", nil },
+		Embedding: provider.NewMock("start", "embed"),
+	}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{1, 0})
+	}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{0, 1})
+	}
+
+	m := NewModel(a, HeaderState{SessionName: "bat", Model: "mock-large", Provider: "start"})
+	m.providers = []config.ProviderConfig{
+		{Name: "start", Kind: config.KindMock},
+		{Name: "next", Kind: config.KindMock},
+	}
+	m.WithCompactor(c)
+	m.pickerOpen = true
+	m.picker.Entries = []ModelEntry{
+		{Name: "mock-large", Provider: "start", Current: true},
+		{Name: "mock-large", Provider: "next"},
+	}
+	m.picker.Selected = 1
+
+	if _, _ = m.handlePickerKey("enter"); m.agent.Provider.Name() != "next" {
+		t.Fatalf("active provider = %q, want next", m.agent.Provider.Name())
+	}
+	if c.ShouldCompact(40, 100) {
+		t.Fatal("provider switch left vectors from the old embedding space active")
 	}
 }
 

@@ -195,6 +195,9 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 		m.notice = err.Error()
 		return m, nil
 	}
+	if m.compactor != nil {
+		m.compactor.ResetSemanticHistory()
+	}
 
 	// Collapse-and-report: the model is told what was pruned rather than
 	// silently losing it (plan.md §18).

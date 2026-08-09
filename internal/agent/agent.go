@@ -344,7 +344,7 @@ func (a *Agent) recall(ctx context.Context, userInput string) {
 // threshold would otherwise compact forever without ever sending a request,
 // which presents as a hang rather than as a loop.
 func (a *Agent) autoCompact(ctx context.Context) {
-	if !a.Compactor.ShouldCompact(a.ctxUsed(), a.NumCtx) {
+	if !a.Compactor.ShouldCompactForConversation(a.ctxUsed(), a.NumCtx, a.Conv) {
 		return
 	}
 	if _, err := a.Compactor.Compact(ctx, a.Conv); err != nil {

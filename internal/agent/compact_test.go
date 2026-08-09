@@ -246,6 +246,30 @@ func TestShouldCompactOnTopicShiftBeforeTheFixedThreshold(t *testing.T) {
 	}
 }
 
+func TestShouldCompactForConversationRequiresAnOlderPrefix(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{1, 0})
+	}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{0, 1})
+	}
+
+	short := NewConversation("sys")
+	for i := 0; i < 4; i++ {
+		short.Append(
+			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)},
+			provider.Message{Role: provider.RoleAssistant, Content: "answer"},
+		)
+	}
+	if c.ShouldCompactForConversation(40, 100, short) {
+		t.Fatal("a topic shift should not fire when there is no prefix to summarize")
+	}
+	if !c.ShouldCompactForConversation(40, 100, compactableConversation()) {
+		t.Fatal("a topic shift should fire once an older prefix can be compacted")
+	}
+}
+
 func TestShouldCompactUsesGrowthWhenTopicsStaySimilar(t *testing.T) {
 	c := &Compactor{Summarize: summarizer("s", nil)}
 	for range 4 {
@@ -296,10 +320,89 @@ func TestCompactionEmbeddingRequestDoesNotBlockShouldCompact(t *testing.T) {
 	}
 }
 
+func TestCompactionEmbeddingSurvivesTurnCancellation(t *testing.T) {
+	embedder := &cancellationAwareCompactionEmbedder{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+	c := &Compactor{Summarize: summarizer("s", nil), Embedding: embedder}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.RecordEmbeddingSnapshot(ctx, "a completed assistant turn")
+	select {
+	case <-embedder.started:
+	case <-time.After(time.Second):
+		t.Fatal("the asynchronous embedding request did not start")
+	}
+	cancel()
+	close(embedder.release)
+	select {
+	case <-embedder.finished:
+	case <-time.After(time.Second):
+		t.Fatal("the detached embedding request did not finish")
+	}
+	select {
+	case <-embedder.canceled:
+		t.Fatal("the turn cancellation canceled the detached embedding")
+	default:
+	}
+
+	c.mu.Lock()
+	history := len(c.embeddingHistory)
+	c.mu.Unlock()
+	if history != 1 {
+		t.Fatalf("embedding history length = %d, want 1", history)
+	}
+}
+
+func TestResetSemanticHistoryDiscardsOldTopics(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{1, 0})
+	}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{0, 1})
+	}
+	c.ResetSemanticHistory()
+	if c.ShouldCompact(40, 100) {
+		t.Fatal("reset semantic history left a stale topic shift")
+	}
+}
+
+func TestShouldCompactIgnoresZeroNormEmbeddings(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	for range 4 {
+		c.AddEmbeddingSnapshot([]float32{0, 0})
+	}
+	if c.ShouldCompact(40, 100) {
+		t.Fatal("zero-norm embeddings should fall back instead of signaling a topic shift")
+	}
+}
+
 type blockingCompactionEmbedder struct {
 	started  chan struct{}
 	release  chan struct{}
 	finished chan struct{}
+}
+
+type cancellationAwareCompactionEmbedder struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+	canceled chan struct{}
+}
+
+func (b *cancellationAwareCompactionEmbedder) Embed(ctx context.Context, _ []string) ([][]float32, error) {
+	close(b.started)
+	defer close(b.finished)
+	select {
+	case <-b.release:
+		return [][]float32{{1, 0}}, nil
+	case <-ctx.Done():
+		close(b.canceled)
+		return nil, ctx.Err()
+	}
 }
 
 func (b *blockingCompactionEmbedder) Embed(ctx context.Context, _ []string) ([][]float32, error) {

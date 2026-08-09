@@ -253,12 +253,37 @@ func (c *Compactor) AddEmbeddingSnapshot(vector []float32) {
 	c.addEmbeddingSnapshotLocked(vector)
 }
 
+// SetEmbeddingProvider switches the semantic backend and starts a fresh vector
+// epoch. A provider change can change the embedding space; a result already in
+// flight from the old provider is ignored when it returns.
+func (c *Compactor) SetEmbeddingProvider(embedder EmbeddingProvider) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.Embedding = embedder
+	c.resetEmbeddingHistoryLocked()
+	c.mu.Unlock()
+}
+
+// ResetSemanticHistory discards vectors for a conversation rewrite such as
+// /rewind. The epoch invalidates a detached provider result from the discarded
+// history as well as clearing the vectors already stored.
+func (c *Compactor) ResetSemanticHistory() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.resetEmbeddingHistoryLocked()
+	c.mu.Unlock()
+}
+
 // RecordEmbeddingSnapshot starts a best-effort semantic snapshot without
 // making the caller wait for the embedder. At most one request is in flight;
 // if it is still running, the next turn simply falls back to the predictive
 // J6.2 path until a vector is available.
 func (c *Compactor) RecordEmbeddingSnapshot(ctx context.Context, text string) {
-	if c == nil || c.Embedding == nil {
+	if c == nil {
 		return
 	}
 	text = strings.TrimSpace(text)
@@ -271,15 +296,19 @@ func (c *Compactor) RecordEmbeddingSnapshot(ctx context.Context, text string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A turn's context is normally canceled as soon as Agent.Run returns. The
+	// snapshot is a detached best-effort side call, so its own timeout governs
+	// cleanup instead of the turn's lifetime.
+	ctx = context.WithoutCancel(ctx)
 
 	c.mu.Lock()
-	if c.embeddingInFlight {
+	embedder := c.Embedding
+	if embedder == nil || c.embeddingInFlight {
 		c.mu.Unlock()
 		return
 	}
 	c.embeddingInFlight = true
 	epoch := c.embeddingEpoch
-	embedder := c.Embedding
 	c.mu.Unlock()
 
 	go func() {
@@ -502,6 +531,17 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 	return projected >= threshold
 }
 
+// ShouldCompactForConversation is the automatic-turn entry point. Semantic
+// compaction only makes sense when the conversation has an older prefix to
+// summarize while keeping RecentTurnsToKeep turns; otherwise Compact would
+// fail and the same topic-shift signal would fire again on every turn.
+func (c *Compactor) ShouldCompactForConversation(used, window int, conv *Conversation) bool {
+	if c == nil || conv == nil || compactionCutoff(conv.Messages(), RecentTurnsToKeep) == 0 {
+		return false
+	}
+	return c.ShouldCompact(used, window)
+}
+
 // resetProjectionLocked clears the EWMA after a successful compaction. The
 // caller must hold c.mu; the current context is a new coordinate system and
 // must not inherit the pre-compaction growth slope.
@@ -559,8 +599,8 @@ func (c *Compactor) topicShiftLocked(used, window int) bool {
 	half := len(c.embeddingHistory) / 2
 	oldMean := meanEmbedding(c.embeddingHistory[:half])
 	newMean := meanEmbedding(c.embeddingHistory[half:])
-	similarity := cosineSimilarity(oldMean, newMean)
-	return similarity < CompactTopicShiftThreshold
+	similarity, ok := cosineSimilarity(oldMean, newMean)
+	return ok && similarity < CompactTopicShiftThreshold
 }
 
 func meanEmbedding(vectors [][]float32) []float64 {
@@ -582,9 +622,9 @@ func meanEmbedding(vectors [][]float32) []float64 {
 	return mean
 }
 
-func cosineSimilarity(a, b []float64) float64 {
+func cosineSimilarity(a, b []float64) (float64, bool) {
 	if len(a) == 0 || len(a) != len(b) {
-		return 0
+		return 0, false
 	}
 	var dot, normA, normB float64
 	for i, value := range a {
@@ -593,7 +633,7 @@ func cosineSimilarity(a, b []float64) float64 {
 		normB += b[i] * b[i]
 	}
 	if normA == 0 || normB == 0 {
-		return 0
+		return 0, false
 	}
-	return dot / math.Sqrt(normA*normB)
+	return dot / math.Sqrt(normA*normB), true
 }
