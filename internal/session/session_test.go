@@ -877,6 +877,25 @@ func TestReadSalvagesEntriesGluedToTornTail(t *testing.T) {
 	}
 }
 
+func TestReadDoesNotSalvageNestedEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	// The outer record is torn after its data object. The nested object has the
+	// envelope-shaped keys, but it is payload and must not become a message.
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"assistant","data":{"role":"assistant","tool_calls":[{"id":"c1","name":"tool","args":{"ts":"2026-01-01T00:00:01Z","type":"user","data":{"role":"user","content":"ghost"}}}]}`
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("nested payload should be treated as a torn tail: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("recovered %d nested entries, want none", len(entries))
+	}
+}
+
 func TestReadRemovesTruncatedTailBeforeTheNextAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(Dir(dir), "bat.jsonl")

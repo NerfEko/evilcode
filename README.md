@@ -9,7 +9,8 @@
 A terminal coding agent. Agentic tool-calling loop, a TUI built on the Charm stack,
 and first-class support for Ollama Cloud alongside anything that speaks the OpenAI API.
 
-Single user, no telemetry, no account. Sessions are JSONL files on your own disk.
+Single user, no telemetry, no account. Sessions are JSONL files on your own disk; a
+torn append glued to a later record is salvaged and repaired before the next write.
 
 ![evilcode auditing a real codebase for panic-shaped bugs](demo/demo-search.gif)
 

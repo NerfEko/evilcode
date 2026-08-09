@@ -488,6 +488,26 @@ func TestReloadSalvagesRecordsGluedToTornTail(t *testing.T) {
 	}
 }
 
+func TestReloadDoesNotSalvageNestedRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	// The outer record is torn after an unrelated object. The nested object has
+	// the record-shaped keys, but it is payload and must not become a memory.
+	body := `{"id":1,"text":"torn","meta":{"id":2,"text":"ghost","kind":"fact"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("nested payload should be treated as a torn tail: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 0 {
+		t.Fatalf("recovered %d nested records, want none", s.Len())
+	}
+}
+
 func TestReloadRemovesMalformedTailBeforeTheNextAppend(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)

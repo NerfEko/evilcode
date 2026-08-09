@@ -5578,3 +5578,21 @@ codex: corrected commit `33fd6bf` addressed the initial review’s prompt-snapsh
         found no introduced correctness issues and its focused agent/TUI checks
         passed; its full-suite sandbox attempt was blocked by Unix-socket
         permission and read-only-home restrictions.
+
+## 2026-08-09 J7.1 — durable glued-tail salvage
+
+The session and memory JSONL stores now share one lexical salvage scanner. When a
+torn final append is glued to one or more complete records, the complete records
+are decoded, counted in the repair log, and rewritten as canonical JSONL so the
+next append cannot bury the recovery. Candidate shape checks keep nested message
+objects from becoming top-level session or memory records; a malformed line in
+the middle of either log still fails closed.
+
+parity: crates/jcode-base/src/session/persistence.rs:26-129 — on par (complete
+        entries after a torn prefix, consecutive-entry recovery, salvage logging,
+        and continued replay; evilcode also repairs the session and memory tail
+        immediately so the next append starts from clean JSONL)
+verification: `go test -p 1 ./internal/session ./internal/memory -run 'Test(ReadSalvages|ReloadSalvages|Test.*Nested|Test.*Malformed)' -count=1`,
+        `go test -p 1 ./internal/session ./internal/memory ./internal/tools`,
+        and `git diff --check` pass.
+codex: pending review of the committed diff.
