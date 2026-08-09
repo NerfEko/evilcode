@@ -231,6 +231,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
+		Embedding: prov,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},

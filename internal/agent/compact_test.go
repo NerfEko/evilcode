@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"evilcode/internal/provider"
@@ -228,6 +229,87 @@ func TestShouldCompactDropsStaleGrowthAfterContextShrinks(t *testing.T) {
 	}
 	if c.ShouldCompact(42, 100) {
 		t.Fatal("a fresh low context should not compact immediately")
+	}
+}
+
+func TestShouldCompactOnTopicShiftBeforeTheFixedThreshold(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{1, 0})
+	}
+	for range 2 {
+		c.AddEmbeddingSnapshot([]float32{0, 1})
+	}
+
+	if !c.ShouldCompact(40, 100) {
+		t.Fatal("a low-similarity topic shift should compact above the proactive floor")
+	}
+}
+
+func TestShouldCompactUsesGrowthWhenTopicsStaySimilar(t *testing.T) {
+	c := &Compactor{Summarize: summarizer("s", nil)}
+	for range 4 {
+		c.AddEmbeddingSnapshot([]float32{1, 0})
+	}
+
+	if c.ShouldCompact(50, 100) {
+		t.Fatal("similar topics should not trigger semantic compaction by themselves")
+	}
+	if c.ShouldCompact(52, 100) {
+		t.Fatal("the predictive fallback should still respect its growth evidence")
+	}
+	if !c.ShouldCompact(55, 100) {
+		t.Fatal("the predictive fallback did not trigger when its projection crossed the threshold")
+	}
+}
+
+func TestCompactionEmbeddingRequestDoesNotBlockShouldCompact(t *testing.T) {
+	embedder := &blockingCompactionEmbedder{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	c := &Compactor{
+		Summarize: summarizer("s", nil),
+		Embedding: embedder,
+	}
+	c.RecordEmbeddingSnapshot(context.Background(), "a completed assistant turn")
+	select {
+	case <-embedder.started:
+	case <-time.After(time.Second):
+		t.Fatal("the asynchronous embedding request did not start")
+	}
+
+	decision := make(chan bool, 1)
+	go func() { decision <- c.ShouldCompact(40, 100) }()
+	select {
+	case <-decision:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("ShouldCompact waited for a slow embedding provider")
+	}
+
+	close(embedder.release)
+	select {
+	case <-embedder.finished:
+	case <-time.After(time.Second):
+		t.Fatal("the embedding request did not finish after release")
+	}
+}
+
+type blockingCompactionEmbedder struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (b *blockingCompactionEmbedder) Embed(ctx context.Context, _ []string) ([][]float32, error) {
+	close(b.started)
+	defer close(b.finished)
+	select {
+	case <-b.release:
+		return [][]float32{{1, 0}}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

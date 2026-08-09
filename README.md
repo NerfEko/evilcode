@@ -70,7 +70,10 @@ Sessions are the source of truth: every message is written as it lands, `/compac
 primary is replaced, and the live session follows the rewrite. Compaction summarizes
 older turns but keeps the ten most recent turns verbatim, including complete tool-call
 pairs, so a task in progress survives both the live rewrite and resume. It also watches
-recent context growth and can compact on a projection before the fixed 85% boundary.
+recent context growth and recent assistant-turn embeddings: a detected topic shift can
+compact at a natural boundary, while growth still projects ahead of the fixed 85% limit.
+Embedding is best-effort and asynchronous, so an unavailable or slow provider leaves the
+predictive path in charge rather than delaying a turn.
 A turn that could not be fully written says so rather than leaving a session that comes
 back short on resume. Closing a session waits for its in-flight turn to finish, so a
 shutdown or a closed terminal does not drop the messages the turn was still writing.

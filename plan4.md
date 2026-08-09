@@ -795,7 +795,7 @@ Line numbers as-of §0.5. Trust the symbol.
       means the turn that crosses 85% pays. Track per-turn deltas as an EWMA, project
       forward, compact on the projection. §6.2. ⟨port⟩
       ⟨jcode: crates/jcode-base/src/compaction.rs:514-548⟩
-- [ ] **J6.3** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — a topic change is
+- [x] **J6.3** `internal/agent/compact.go:136` `Compactor.ShouldCompact` — a topic change is
       the free compaction point and nothing looks for it. Compare mean embeddings of the old
       and new halves of the window; low similarity triggers. Falls back to J6.2 without an
       embedder; never blocks on one. §6.3. ⟨build⟩

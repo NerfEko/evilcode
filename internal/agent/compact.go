@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
+	"time"
 
 	"evilcode/internal/provider"
 )
@@ -54,6 +56,30 @@ const CompactProjectionMinSamples = 2
 // proactive floor while the fixed threshold remains the safety fallback.
 const CompactProjectionFloor = 0.40
 
+// CompactEmbeddingMessageCap bounds the text sent to the embedding provider
+// for one completed assistant turn. The beginning of a turn carries its topic
+// cheaply; a pasted file should not become an embedding request the size of
+// the conversation it is helping compact.
+const CompactEmbeddingMessageCap = 512
+
+// CompactEmbeddingHistoryWindow is the rolling semantic window used to spot
+// a change from one topic to another.
+const CompactEmbeddingHistoryWindow = 10
+
+// CompactTopicShiftMinSnapshots is the minimum history needed to compare two
+// non-empty halves instead of treating one pair as a topic boundary.
+const CompactTopicShiftMinSnapshots = 4
+
+// CompactTopicShiftThreshold matches jcode's semantic compaction default:
+// below this cosine similarity, the older and newer halves represent different
+// topics closely enough that the old one is a free compaction point.
+const CompactTopicShiftThreshold = 0.45
+
+// CompactEmbeddingTimeout bounds a detached semantic snapshot. Embeddings are
+// an enhancement; a provider that is down or slow must not hold the turn loop
+// or leave a goroutine behind indefinitely.
+const CompactEmbeddingTimeout = 5 * time.Second
+
 // MaxAutoCompactions bounds automatic compaction for a session.
 //
 // Invariant 6. Without it, a summary that is itself over the threshold compacts
@@ -66,6 +92,13 @@ const MaxAutoCompactions = 3
 // agent` stays free of anything the TUI owns (invariant 1).
 type Summarizer func(ctx context.Context, system, user string) (string, error)
 
+// EmbeddingProvider is the small part of a model backend semantic compaction
+// needs. Keeping it separate from provider.Provider lets the compactor remain
+// useful with a test or local embedding service that does not implement chat.
+type EmbeddingProvider interface {
+	Embed(context.Context, []string) ([][]float32, error)
+}
+
 // Compactor collapses a conversation when it gets too long.
 //
 // It lives here rather than in the TUI because the TUI is not the only thing
@@ -74,6 +107,11 @@ type Summarizer func(ctx context.Context, system, user string) (string, error)
 type Compactor struct {
 	// Summarize produces the summary. Nil disables compaction entirely.
 	Summarize Summarizer
+
+	// Embedding supplies optional per-turn vectors for semantic topic-shift
+	// detection. RecordEmbeddingSnapshot invokes it in a bounded background
+	// call; ShouldCompact never calls the provider itself.
+	Embedding EmbeddingProvider
 
 	// Persist writes the compacted history to durable storage and returns what
 	// a resume would replay. Nil means memory-only, which is what the TUI used
@@ -101,6 +139,13 @@ type Compactor struct {
 	projectionLast    int
 	projectionSamples int
 	projectionEWMA    float64
+
+	// Semantic state is protected by mu. A dimension change means the provider
+	// changed vector spaces, so old and new vectors must never be compared.
+	embeddingHistory  [][]float32
+	embeddingDim      int
+	embeddingInFlight bool
+	embeddingEpoch    uint64
 }
 
 // Count is how many times this session has been compacted.
@@ -191,8 +236,76 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 	c.mu.Lock()
 	c.count++
 	c.resetProjectionLocked()
+	c.resetEmbeddingHistoryLocked()
 	c.mu.Unlock()
 	return summary, nil
+}
+
+// AddEmbeddingSnapshot records one already-computed assistant-turn embedding.
+// It is intentionally separate from RecordEmbeddingSnapshot so callers with a
+// local vector can update the semantic window without starting a provider call.
+func (c *Compactor) AddEmbeddingSnapshot(vector []float32) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addEmbeddingSnapshotLocked(vector)
+}
+
+// RecordEmbeddingSnapshot starts a best-effort semantic snapshot without
+// making the caller wait for the embedder. At most one request is in flight;
+// if it is still running, the next turn simply falls back to the predictive
+// J6.2 path until a vector is available.
+func (c *Compactor) RecordEmbeddingSnapshot(ctx context.Context, text string) {
+	if c == nil || c.Embedding == nil {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if len(text) > CompactEmbeddingMessageCap {
+		text = truncateAtRune(text, CompactEmbeddingMessageCap)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	c.mu.Lock()
+	if c.embeddingInFlight {
+		c.mu.Unlock()
+		return
+	}
+	c.embeddingInFlight = true
+	epoch := c.embeddingEpoch
+	embedder := c.Embedding
+	c.mu.Unlock()
+
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			c.embeddingInFlight = false
+			c.mu.Unlock()
+		}()
+
+		embedCtx, cancel := context.WithTimeout(ctx, CompactEmbeddingTimeout)
+		defer cancel()
+		vectors, err := embedder.Embed(embedCtx, []string{text})
+		if err != nil || len(vectors) == 0 {
+			return
+		}
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		// A successful compaction or context-window change starts a new
+		// semantic epoch. Do not let a late result from the old transcript
+		// become the first vector in the new one.
+		if c.embeddingEpoch != epoch {
+			return
+		}
+		c.addEmbeddingSnapshotLocked(vectors[0])
+	}()
 }
 
 // cloneMessages copies the slice and each variable-length field that a
@@ -339,7 +452,14 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 	// slope has no meaning in the new coordinate system, so start a fresh
 	// projection rather than carrying it across the boundary.
 	if c.projectionWindow != window {
+		previousWindow := c.projectionWindow
 		c.resetProjectionLocked()
+		// projectionWindow == 0 is also the initial state. Do not discard
+		// snapshots that arrived before the first usage observation; only a
+		// real window change invalidates the semantic vector space here.
+		if previousWindow != 0 {
+			c.resetEmbeddingHistoryLocked()
+		}
 		c.projectionWindow = window
 	}
 
@@ -367,6 +487,9 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 
 	current := float64(used)
 	threshold := CompactThreshold * float64(window)
+	if c.topicShiftLocked(used, window) {
+		return true
+	}
 	if current >= threshold {
 		return true
 	}
@@ -387,4 +510,90 @@ func (c *Compactor) resetProjectionLocked() {
 	c.projectionLast = 0
 	c.projectionSamples = 0
 	c.projectionEWMA = 0
+}
+
+// resetEmbeddingHistoryLocked starts a new semantic context. The epoch also
+// invalidates a detached provider result that was requested for the previous
+// context, so an old turn cannot trigger a false topic shift after compaction.
+// The caller must hold c.mu.
+func (c *Compactor) resetEmbeddingHistoryLocked() {
+	c.embeddingHistory = nil
+	c.embeddingDim = 0
+	c.embeddingEpoch++
+}
+
+func (c *Compactor) addEmbeddingSnapshotLocked(vector []float32) {
+	if len(vector) == 0 {
+		return
+	}
+	for _, value := range vector {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return
+		}
+	}
+	if c.embeddingDim != len(vector) {
+		c.embeddingHistory = nil
+		c.embeddingDim = len(vector)
+	}
+	copyOfVector := append([]float32(nil), vector...)
+	if len(c.embeddingHistory) >= CompactEmbeddingHistoryWindow {
+		copy(c.embeddingHistory, c.embeddingHistory[1:])
+		c.embeddingHistory = c.embeddingHistory[:CompactEmbeddingHistoryWindow-1]
+	}
+	c.embeddingHistory = append(c.embeddingHistory, copyOfVector)
+}
+
+// topicShiftLocked compares the mean vector of the old half of the semantic
+// window with the mean vector of its new half. It deliberately does not call
+// the embedding provider: missing vectors are the normal fallback to the
+// predictive J6.2 decision, and this method is on the pre-dispatch path.
+// The caller must hold c.mu.
+func (c *Compactor) topicShiftLocked(used, window int) bool {
+	if window <= 0 || float64(used)/float64(window) < CompactProjectionFloor {
+		return false
+	}
+	if len(c.embeddingHistory) < CompactTopicShiftMinSnapshots {
+		return false
+	}
+
+	half := len(c.embeddingHistory) / 2
+	oldMean := meanEmbedding(c.embeddingHistory[:half])
+	newMean := meanEmbedding(c.embeddingHistory[half:])
+	similarity := cosineSimilarity(oldMean, newMean)
+	return similarity < CompactTopicShiftThreshold
+}
+
+func meanEmbedding(vectors [][]float32) []float64 {
+	if len(vectors) == 0 || len(vectors[0]) == 0 {
+		return nil
+	}
+	mean := make([]float64, len(vectors[0]))
+	for _, vector := range vectors {
+		if len(vector) != len(mean) {
+			return nil
+		}
+		for i, value := range vector {
+			mean[i] += float64(value)
+		}
+	}
+	for i := range mean {
+		mean[i] /= float64(len(vectors))
+	}
+	return mean
+}
+
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i, value := range a {
+		dot += value * b[i]
+		normA += value * value
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / math.Sqrt(normA*normB)
 }

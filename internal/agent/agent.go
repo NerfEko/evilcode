@@ -472,6 +472,12 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 
 		a.Conv.Append(msg)
+		// A tool-call assistant message is an intermediate step, not the
+		// completed turn. Snapshot only the final assistant response so the
+		// semantic window describes what the user actually received.
+		if len(msg.ToolCalls) == 0 && a.Compactor != nil {
+			a.Compactor.RecordEmbeddingSnapshot(ctx, msg.Content)
+		}
 
 		if len(msg.ToolCalls) > 0 {
 			if err := a.runTools(ctx, msg.ToolCalls); err != nil {
