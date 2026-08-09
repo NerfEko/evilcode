@@ -347,13 +347,16 @@ func (a *Agent) autoCompact(ctx context.Context) {
 	if a.Compactor == nil {
 		return
 	}
-	// Relevance is prepared ahead of the next compaction. The lookup is
-	// asynchronous; if it is not ready when compaction is needed, Compact uses
-	// the ordinary recency boundary immediately.
-	a.Compactor.PrepareRelevance(ctx, a.Conv.Messages())
 	if !a.Compactor.ShouldCompactForConversation(a.ctxUsed(), a.NumCtx, a.Conv) {
 		return
 	}
+	// Queue the exact snapshot that will be compacted, including the prompt
+	// that Run appended. Give an already-started lookup a small grace period;
+	// Compact itself still never waits on the provider and falls back to the
+	// ordinary recency boundary when this snapshot is unavailable.
+	msgs := a.Conv.Messages()
+	a.Compactor.PrepareRelevance(ctx, msgs)
+	a.Compactor.WaitForRelevance(ctx, msgs, CompactRelevanceWait)
 	if _, err := a.Compactor.Compact(ctx, a.Conv); err != nil {
 		a.Notice(LevelWarning, "Could not compact: %v", err)
 		return
@@ -518,7 +521,7 @@ func (a *Agent) loop(ctx context.Context) error {
 				}
 			}
 			if a.Compactor != nil {
-				a.Compactor.PrepareRelevance(ctx, a.Conv.Messages())
+				a.Compactor.PrepareRelevanceIfNeeded(ctx, a.ctxUsed(), a.NumCtx, a.Conv)
 			}
 			a.endTurn(EndComplete)
 			return nil

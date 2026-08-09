@@ -284,11 +284,60 @@ func TestRelevanceEmbeddingBatchesAreBounded(t *testing.T) {
 	}
 }
 
+func TestCompactScoresCandidatesBeyondTheOldestBatchWindow(t *testing.T) {
+	conv := NewConversation("sys")
+	const relevantTurn = 150
+	for i := 0; i < RecentTurnsToKeep+170; i++ {
+		user := fmt.Sprintf("ordinary setup turn %03d", i)
+		if i == relevantTurn {
+			user = "critical OAuth migration requirement"
+		}
+		if i >= RecentTurnsToKeep+165 {
+			user = fmt.Sprintf("current OAuth migration work turn %03d", i)
+		}
+		conv.Append(
+			provider.Message{Role: provider.RoleUser, Content: user},
+			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
+		)
+	}
+
+	var summarized string
+	c := &Compactor{
+		Summarize: func(_ context.Context, _, user string) (string, error) {
+			summarized = user
+			return "summary", nil
+		},
+		Embedding: keywordCompactionEmbedder{},
+	}
+	prepareAndWaitForRelevance(t, c, conv)
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(summarized, "critical OAuth migration requirement") {
+		t.Fatal("a relevant message after the first 256 candidates was summarized away")
+	}
+}
+
+func TestPrepareRelevanceIfNeededSkipsLowContext(t *testing.T) {
+	conv := compactableConversation()
+	embedder := &recordingRelevanceEmbedder{}
+	c := &Compactor{Summarize: summarizer("summary", nil), Embedding: embedder}
+	c.PrepareRelevanceIfNeeded(context.Background(), 10, 100, conv)
+	time.Sleep(10 * time.Millisecond)
+	embedder.mu.Lock()
+	maxBatch := embedder.maxBatch
+	embedder.mu.Unlock()
+	if maxBatch != 0 {
+		t.Fatalf("low context launched relevance work with batch %d", maxBatch)
+	}
+}
+
 type blockingRelevanceEmbedder struct {
-	started  chan struct{}
-	release  chan struct{}
-	finished chan struct{}
-	once     sync.Once
+	started      chan struct{}
+	release      chan struct{}
+	finished     chan struct{}
+	once         sync.Once
+	finishedOnce sync.Once
 }
 
 func (b *blockingRelevanceEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -301,10 +350,11 @@ func (b *blockingRelevanceEmbedder) Embed(ctx context.Context, texts []string) (
 		select {
 		case <-b.release:
 		case <-ctx.Done():
+			b.finishedOnce.Do(func() { close(b.finished) })
 			return nil, ctx.Err()
 		}
 	} else {
-		close(b.finished)
+		b.finishedOnce.Do(func() { close(b.finished) })
 	}
 	vectors := make([][]float32, len(texts))
 	for i := range vectors {

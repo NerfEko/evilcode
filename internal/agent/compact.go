@@ -76,7 +76,7 @@ const CompactTopicShiftMinSnapshots = 4
 // topics closely enough that the old one is a free compaction point.
 const CompactTopicShiftThreshold = 0.45
 
-// CompactEmbeddingTimeout bounds a detached semantic snapshot. Embeddings are
+// CompactEmbeddingTimeout bounds a detached semantic request. Embeddings are
 // an enhancement; a provider that is down or slow must not hold the turn loop
 // or leave a goroutine behind indefinitely.
 const CompactEmbeddingTimeout = 5 * time.Second
@@ -89,14 +89,14 @@ const CompactRelevanceGoalMessages = 5
 // threshold. A message at or above this similarity is kept verbatim.
 const CompactRelevanceKeepThreshold = 0.65
 
-// CompactRelevanceCandidateLimit bounds one relevance pass. The oldest
-// candidates get priority because the earliest relevant message determines how
-// far the cutoff must move back; later turns remain covered by the normal tail.
-const CompactRelevanceCandidateLimit = 256
-
 // CompactRelevanceBatchSize keeps each provider request small even when a
-// session has reached the relevance candidate limit.
+// session has a long history.
 const CompactRelevanceBatchSize = 32
+
+// CompactRelevanceWait is the small grace period used by the automatic path to
+// consume a lookup that was already queued for the exact transcript snapshot.
+// Compact itself never waits; a slow provider still falls back to recency.
+const CompactRelevanceWait = 50 * time.Millisecond
 
 // MaxAutoCompactions bounds automatic compaction for a session.
 //
@@ -126,9 +126,9 @@ type Compactor struct {
 	// Summarize produces the summary. Nil disables compaction entirely.
 	Summarize Summarizer
 
-	// Embedding supplies optional per-turn vectors for semantic topic-shift
-	// detection. RecordEmbeddingSnapshot invokes it in a bounded background
-	// call; ShouldCompact never calls the provider itself.
+	// Embedding supplies optional per-turn vectors for semantic topic-shift and
+	// relevance detection. RecordEmbeddingSnapshot and PrepareRelevance invoke
+	// it in bounded background calls; ShouldCompact never calls the provider.
 	Embedding EmbeddingProvider
 
 	// Persist writes the compacted history to durable storage and returns what
@@ -168,10 +168,13 @@ type Compactor struct {
 	// Relevance state is also protected by mu. Relevance is prepared in the
 	// background before compaction; Compact only consumes a ready result and
 	// otherwise falls back to the ordinary recency boundary.
-	relevanceInFlight bool
-	relevanceReady    bool
-	relevanceKey      uint64
-	relevanceEarliest int
+	relevanceInFlight    bool
+	relevanceReady       bool
+	relevanceKey         uint64
+	relevanceInFlightKey uint64
+	relevanceEarliest    int
+	relevanceRun         uint64
+	relevanceCancel      context.CancelFunc
 }
 
 // Count is how many times this session has been compacted.
@@ -286,6 +289,64 @@ func (c *Compactor) PrepareRelevance(ctx context.Context, msgs []provider.Messag
 	c.queueRelevance(ctx, request)
 }
 
+// PrepareRelevanceIfNeeded starts relevance work only when the current
+// context, projection, or topic-shift state says compaction may be imminent.
+// It is the completed-turn prewarm hook; keeping the gate here prevents a
+// large history from launching a full scan after every successful turn.
+func (c *Compactor) PrepareRelevanceIfNeeded(
+	ctx context.Context, used, window int, conv *Conversation,
+) {
+	if c == nil || conv == nil {
+		return
+	}
+	msgs := conv.Messages()
+	if !c.relevanceMayBeNeeded(used, window, msgs) {
+		return
+	}
+	c.PrepareRelevance(ctx, msgs)
+}
+
+// WaitForRelevance gives a lookup already queued for this exact transcript a
+// short chance to finish. It never starts provider work and never waits for the
+// full embedding timeout; Compact itself remains non-blocking.
+func (c *Compactor) WaitForRelevance(
+	ctx context.Context, msgs []provider.Message, wait time.Duration,
+) bool {
+	if c == nil || wait <= 0 {
+		return false
+	}
+	request, ok := buildRelevanceRequest(msgs, compactionCutoff(msgs, RecentTurnsToKeep))
+	if !ok {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		c.mu.Lock()
+		ready := c.relevanceReady && c.relevanceKey == request.key
+		inFlight := c.relevanceInFlight && c.relevanceInFlightKey == request.key
+		c.mu.Unlock()
+		if ready {
+			return true
+		}
+		if !inFlight {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
 // relevanceCutoff consumes a ready relevance result. Embedding failure or a
 // lookup that is still in flight is deliberately a no-op: the ordinary recency
 // cutoff is safer than allowing an optional semantic service to delay or
@@ -334,7 +395,7 @@ func buildRelevanceRequest(msgs []provider.Message, standardCutoff int) (relevan
 		return relevanceRequest{}, false
 	}
 
-	for i := 0; i < standardCutoff && len(request.candidates) < CompactRelevanceCandidateLimit; i++ {
+	for i := 0; i < standardCutoff; i++ {
 		text := relevanceMessageText(msgs[i])
 		if text == "" {
 			continue
@@ -368,25 +429,41 @@ func (c *Compactor) queueRelevance(ctx context.Context, request relevanceRequest
 	ctx = context.WithoutCancel(ctx)
 
 	c.mu.Lock()
-	if c.Embedding == nil || c.relevanceInFlight ||
-		(c.relevanceReady && c.relevanceKey == request.key) {
+	if c.Embedding == nil || (c.relevanceReady && c.relevanceKey == request.key) {
 		c.mu.Unlock()
 		return
 	}
+	if c.relevanceInFlight && c.relevanceInFlightKey == request.key {
+		c.mu.Unlock()
+		return
+	}
+	if c.relevanceCancel != nil {
+		c.relevanceCancel()
+	}
 	embedder := c.Embedding
 	epoch := c.embeddingEpoch
+	baseCtx, cancel := context.WithCancel(ctx)
+	c.relevanceRun++
+	run := c.relevanceRun
 	c.relevanceInFlight = true
+	c.relevanceInFlightKey = request.key
+	c.relevanceCancel = cancel
 	c.mu.Unlock()
 
 	go func() {
+		defer cancel()
 		defer func() {
 			c.mu.Lock()
-			c.relevanceInFlight = false
+			if c.relevanceRun == run {
+				c.relevanceInFlight = false
+				c.relevanceInFlightKey = 0
+				c.relevanceCancel = nil
+			}
 			c.mu.Unlock()
 		}()
 
-		embedCtx, cancel := context.WithTimeout(ctx, CompactEmbeddingTimeout)
-		defer cancel()
+		embedCtx, timeoutCancel := context.WithTimeout(baseCtx, CompactEmbeddingTimeout)
+		defer timeoutCancel()
 		goalVectors, err := embedder.Embed(embedCtx, []string{request.goal})
 		if err != nil || len(goalVectors) == 0 {
 			return
@@ -414,13 +491,39 @@ func (c *Compactor) queueRelevance(ctx context.Context, request relevanceRequest
 
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.embeddingEpoch != epoch {
+		if c.embeddingEpoch != epoch || c.relevanceRun != run {
 			return
 		}
 		c.relevanceKey = request.key
 		c.relevanceEarliest = earliest
 		c.relevanceReady = true
 	}()
+}
+
+func (c *Compactor) relevanceMayBeNeeded(used, window int, msgs []provider.Message) bool {
+	if !c.Enabled() || used <= 0 || window <= 0 ||
+		compactionCutoff(msgs, RecentTurnsToKeep) == 0 {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Embedding == nil || c.count >= MaxAutoCompactions {
+		return false
+	}
+	if float64(used) >= CompactThreshold*float64(window) {
+		return true
+	}
+	if float64(used) < CompactProjectionFloor*float64(window) {
+		return false
+	}
+	if c.topicShiftLocked(used, window) {
+		return true
+	}
+	if c.projectionWindow != window || c.projectionSamples < CompactProjectionMinSamples {
+		return false
+	}
+	projected := float64(used) + c.projectionEWMA*CompactProjectionLookahead
+	return projected >= CompactThreshold*float64(window)
 }
 
 func relevanceAdjustedCutoff(msgs []provider.Message, standardCutoff, earliest int) int {
@@ -822,11 +925,18 @@ func (c *Compactor) resetProjectionLocked() {
 // context, so an old turn cannot trigger a false topic shift after compaction.
 // The caller must hold c.mu.
 func (c *Compactor) resetEmbeddingHistoryLocked() {
+	if c.relevanceCancel != nil {
+		c.relevanceCancel()
+	}
 	c.embeddingHistory = nil
 	c.embeddingDim = 0
 	c.embeddingEpoch++
 	c.relevanceReady = false
 	c.relevanceKey = 0
+	c.relevanceInFlight = false
+	c.relevanceInFlightKey = 0
+	c.relevanceRun++
+	c.relevanceCancel = nil
 	c.relevanceEarliest = 0
 }
 
