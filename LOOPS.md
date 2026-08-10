@@ -6030,3 +6030,24 @@ parity: `crates/jcode-overnight-core/src/lib.rs:155-258,461-720` — better
 codex: 5 findings — all fixed here (shared validation evidence, missing new
         untracked files, byte-split UTF-8, synchronous Git work on the render
         loop, and unbounded Git/file capture); none dismissed.
+
+## 2026-08-10 J3.2 review test — keep the allocation gate meaningful under race
+
+The 64 MiB subprocess fixtures retain at most the configured 1 MiB ring in both
+foreground and background execution. Under Go's race runtime, however,
+`runtime.MemStats.TotalAlloc` charges roughly 6–7 bytes for every byte copied
+through the pipe and made the allocation-only assertion fail at 378–463 MiB.
+The race build now still runs the command and retained-output assertions but
+skips that instrumentation-dependent heap threshold; the normal build retains
+and passes the original 32 MiB allocation ceiling.
+
+verification: both bounded-output tests pass normally with their allocation
+        limit active and under `-race` with all behavioral bounds active; the
+        complete `internal/tools` race package passes afterward.
+parity: `crates/jcode/src/tools/bash.rs:66-116` and
+        `crates/jcode/src/tools/bash/background.rs:189-255` — better (the
+        existing evilcode ring remains a hard retained-memory ceiling, and its
+        allocation regression gate now reports application behavior rather
+        than race-runtime bookkeeping).
+codex: 1 test finding — fixed here (an allocation assertion treated race
+        instrumentation overhead as application retention); none dismissed.
