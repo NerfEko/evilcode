@@ -28,10 +28,15 @@ const (
 	DefaultCodexBaseURL  = "https://chatgpt.com/backend-api/codex"
 	defaultCodexTokenURL = "https://auth.openai.com/oauth/token"
 	defaultCodexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	codexClientVersion   = "0.1.0"
-	codexAuthMaxBytes    = 1 << 20
-	codexStreamMaxBytes  = 8 << 20
-	codexRefreshWindow   = 5 * time.Minute
+	// The Codex catalog filters entries by the advertised client version. 0.1.0
+	// is an Evilcode build version, but it predates every current Codex model and
+	// makes the endpoint return an empty catalog with HTTP 200. Keep this at a
+	// recent compatible Codex protocol version rather than coupling discovery to
+	// Evilcode's own release stamp.
+	codexClientVersion  = "0.147.0"
+	codexAuthMaxBytes   = 1 << 20
+	codexStreamMaxBytes = 8 << 20
+	codexRefreshWindow  = 5 * time.Minute
 )
 
 var ErrCodexAuthNotFound = errors.New("codex: ChatGPT OAuth account not found")
@@ -910,6 +915,7 @@ type codexModel struct {
 	Slug            string          `json:"slug"`
 	ID              string          `json:"id"`
 	DisplayName     string          `json:"display_name"`
+	Visibility      string          `json:"visibility"`
 	ContextWindow   json.RawMessage `json:"context_window"`
 	InputModalities []string        `json:"input_modalities"`
 }
@@ -944,6 +950,13 @@ func (c *Codex) Models(ctx context.Context) ([]ModelInfo, error) {
 	}
 	models := make([]ModelInfo, 0, len(wrapped.Models))
 	for _, model := range wrapped.Models {
+		// The backend includes internal presets (for example the hidden
+		// auto-review and worker variants) in the same response. The official
+		// Codex picker only exposes visibility=list entries. Older responses did
+		// not carry visibility, so an omitted field remains compatible.
+		if model.Visibility != "" && !strings.EqualFold(model.Visibility, "list") {
+			continue
+		}
 		name := strings.TrimSpace(model.Slug)
 		if name == "" {
 			name = strings.TrimSpace(model.ID)

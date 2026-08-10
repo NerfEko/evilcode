@@ -236,7 +236,7 @@ func TestCodexModelsAndRefresh(t *testing.T) {
 				t.Errorf("client_version = %q", r.URL.Query().Get("client_version"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":[{"slug":"gpt-5.3-codex","context_window":131072,"input_modalities":["text","image"]},{"id":"fallback","context_window":null}]}`)
+			io.WriteString(w, `{"models":[{"slug":"gpt-5.3-codex","display_name":"GPT-5.3-Codex","visibility":"list","context_window":131072,"input_modalities":["text","image"]},{"slug":"internal-worker","visibility":"hide"},{"id":"fallback","context_window":null}]}`)
 		default:
 			http.NotFound(w, r)
 		}
