@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,5 +150,55 @@ func TestSessionSearchHonorsCancellation(t *testing.T) {
 	_, err := NewSessionSearch(dir, "current").Run(ctx, json.RawMessage(`{"query":"anchor"}`))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled search error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSessionSearchRetainsTailOfLargeSession(t *testing.T) {
+	dir := t.TempDir()
+	sessions := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	for i := 0; i < 6000; i++ {
+		term := "old filler"
+		if i == 5999 {
+			term = "recent tail marker"
+		}
+		fmt.Fprintf(&body, `{"ts":"2026-08-01T10:00:00Z","type":"message","data":{"role":"user","content":"%s %s"}}`+"\n", term, strings.Repeat("x", 180))
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "long.jsonl"), []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSessionSearch(dir, "current").Run(context.Background(), json.RawMessage(`{"query":"tail marker","role":"user"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, "long") {
+		t.Fatalf("search missed the retained tail of a large session: %q", result.Output)
+	}
+}
+
+func TestSessionSearchCentersExcerptForLongMessage(t *testing.T) {
+	dir := t.TempDir()
+	sessions := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Repeat("head ", 5000) + "needleunique " + strings.Repeat("tail ", 5000)
+	data, err := json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := fmt.Sprintf(`{"ts":"2026-08-01T10:00:00Z","type":"message","data":{"role":"user","content":%s}}`+"\n", data)
+	if err := os.WriteFile(filepath.Join(sessions, "wide.jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSessionSearch(dir, "current").Run(context.Background(), json.RawMessage(`{"query":"needleunique","role":"user"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, "needleunique") {
+		t.Fatalf("long-message excerpt omitted the matching text: %q", result.Output)
 	}
 }

@@ -25,10 +25,11 @@ type sessionSearchArgs struct {
 }
 
 type searchableMessage struct {
-	Role  string
-	Text  string
-	Terms map[string]struct{}
-	Time  time.Time
+	Role      string
+	Text      string
+	Terms     map[string]struct{}
+	Time      time.Time
+	Truncated bool
 }
 
 type indexedSession struct {
@@ -104,6 +105,10 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 		return nil, err
 	}
 	seen := make(map[string]bool, len(entries))
+	// Keep the files seen during this invocation separate from the bounded
+	// cross-invocation cache. Loading a later file may evict an earlier one, but
+	// that earlier file still belongs in this search's result set.
+	scanned := make(map[string]indexedSession, len(entries))
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -136,6 +141,7 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 			i.replace(path, cached)
 			i.reads++
 		}
+		scanned[path] = cached
 	}
 	for path := range i.files {
 		if !seen[path] {
@@ -145,7 +151,7 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 
 	queryText := strings.ToLower(strings.TrimSpace(query))
 	var hits []sessionSearchHit
-	for _, file := range i.files {
+	for path, file := range scanned {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -167,9 +173,18 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 			if strings.Contains(strings.ToLower(message.Text), queryText) {
 				score += 100
 			}
+			excerpt := searchExcerpt(message.Text, query)
+			if message.Truncated && !excerptContainsQuery(excerpt, query) {
+				if exact, exactDate, ok := searchOriginalExcerpt(ctx, path, query, role, wanted); ok {
+					excerpt = exact
+					if !exactDate.IsZero() {
+						date = exactDate
+					}
+				}
+			}
 			hits = append(hits, sessionSearchHit{
 				Name: file.name, Date: date, Role: message.Role,
-				Excerpt: searchExcerpt(message.Text, query), Score: score,
+				Excerpt: excerpt, Score: score,
 			})
 		}
 	}
@@ -236,6 +251,7 @@ func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, 
 	defer f.Close()
 
 	var out []searchableMessage
+	var indexedBytes int64
 	r := bufio.NewReaderSize(f, 64*1024)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -243,7 +259,7 @@ func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, 
 		}
 		line, readErr := r.ReadBytes('\n')
 		if len(line) > 0 {
-			out = appendSearchLine(out, bytesTrimSpace(line))
+			out = appendSearchLine(out, &indexedBytes, bytesTrimSpace(line))
 		}
 		if readErr == io.EOF {
 			break
@@ -271,36 +287,10 @@ func bytesTrimSpace(data []byte) []byte {
 	return data
 }
 
-func appendSearchLine(out []searchableMessage, line []byte) []searchableMessage {
-	if len(line) == 0 {
-		return out
-	}
-	if entry, ok := decodeSearchEntry(line); ok {
+func appendSearchLine(out []searchableMessage, indexedBytes *int64, line []byte) []searchableMessage {
+	for _, entry := range searchEntriesFromLine(line) {
 		if message, ok := searchableMessageFor(entry); ok {
-			return appendBoundedMessage(out, message)
-		}
-		return out
-	}
-
-	// A hard kill can leave a torn JSON object immediately before a later
-	// append. Use the same shared lexer as session.Read so search and resume see
-	// the same repaired records instead of silently disagreeing.
-	entries := jsonl.Salvage(line, []byte(`{"ts"`), func(raw []byte) (searchEntry, bool) {
-		return decodeSearchEntry(raw)
-	}, func(candidate jsonl.Candidate) bool {
-		if candidate.Depth != 1 {
-			return true
-		}
-		switch candidate.KeyBefore() {
-		case "", "ts", "type", "data":
-			return true
-		default:
-			return false
-		}
-	})
-	for _, entry := range entries {
-		if message, ok := searchableMessageFor(entry); ok {
-			out = appendBoundedMessage(out, message)
+			out = appendBoundedMessage(out, indexedBytes, message)
 		}
 	}
 	return out
@@ -315,8 +305,22 @@ func decodeSearchEntry(raw []byte) (searchEntry, bool) {
 }
 
 func searchableMessageFor(entry searchEntry) (searchableMessage, bool) {
-	if entry.Type == "meta" {
+	role, text, ok := searchableTextFor(entry)
+	if !ok {
 		return searchableMessage{}, false
+	}
+	return searchableMessage{
+		Role:      role,
+		Text:      boundedIndexedText(text),
+		Terms:     termsForTextLimited(text, maxIndexedTermsPerMsg),
+		Time:      entry.TS,
+		Truncated: len(text) > maxIndexedMessageBytes,
+	}, true
+}
+
+func searchableTextFor(entry searchEntry) (string, string, bool) {
+	if entry.Type == "meta" {
+		return "", "", false
 	}
 	var message struct {
 		Role      string `json:"role"`
@@ -329,10 +333,10 @@ func searchableMessageFor(entry searchEntry) (searchableMessage, bool) {
 		} `json:"tool_calls"`
 	}
 	if json.Unmarshal(entry.Data, &message) != nil {
-		return searchableMessage{}, false
+		return "", "", false
 	}
 	if message.Role != "user" && message.Role != "assistant" && message.Role != "tool" {
-		return searchableMessage{}, false
+		return "", "", false
 	}
 	text := strings.TrimSpace(message.Content)
 	if message.Reasoning != "" {
@@ -347,20 +351,21 @@ func searchableMessageFor(entry searchEntry) (searchableMessage, bool) {
 		text = strings.TrimSpace(strings.Join([]string{message.ToolName, text}, "\n"))
 	}
 	if text == "" {
-		return searchableMessage{}, false
+		return "", "", false
 	}
-	return searchableMessage{
-		Role:  message.Role,
-		Text:  boundedIndexedText(text),
-		Terms: termsForTextLimited(text, maxIndexedTermsPerMsg),
-		Time:  entry.TS,
-	}, true
+	return message.Role, text, true
 }
 
-func appendBoundedMessage(out []searchableMessage, message searchableMessage) []searchableMessage {
-	if indexedMessagesBytes(out)+indexedMessageBytes(message) > maxIndexedSessionBytes {
+func appendBoundedMessage(out []searchableMessage, indexedBytes *int64, message searchableMessage) []searchableMessage {
+	cost := indexedMessageBytes(message)
+	for len(out) > 0 && *indexedBytes+cost > maxIndexedSessionBytes {
+		*indexedBytes -= indexedMessageBytes(out[0])
+		out = out[1:]
+	}
+	if *indexedBytes+cost > maxIndexedSessionBytes {
 		return out
 	}
+	*indexedBytes += cost
 	return append(out, message)
 }
 
@@ -381,7 +386,12 @@ func indexedMessageBytes(message searchableMessage) int64 {
 }
 
 func indexedSessionBytes(file indexedSession) int64 {
-	return int64(len(file.name)+64) + indexedMessagesBytes(file.messages) + int64(len(file.terms))*16
+	total := int64(len(file.name) + 64)
+	total += indexedMessagesBytes(file.messages)
+	for term := range file.terms {
+		total += int64(len(term) + 16)
+	}
+	return total
 }
 
 func boundedIndexedText(text string) string {
@@ -392,6 +402,69 @@ func boundedIndexedText(text string) string {
 	start := keepUTF8Prefix(text, keep)
 	end := keepUTF8Suffix(text, keep)
 	return start + "\n…\n" + end
+}
+
+func excerptContainsQuery(excerpt, query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(excerpt), strings.ToLower(query))
+}
+
+// searchOriginalExcerpt rereads only a hit whose bounded cached text did not
+// contain the query. The index remains bounded, while the result still shows
+// the useful context from the original large message.
+func searchOriginalExcerpt(ctx context.Context, path, query, role string, wanted []string) (string, time.Time, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 64*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", time.Time{}, false
+		}
+		line, readErr := r.ReadBytes('\n')
+		if len(line) > 0 {
+			for _, entry := range searchEntriesFromLine(bytesTrimSpace(line)) {
+				messageRole, text, ok := searchableTextFor(entry)
+				if !ok || !roleMatches(messageRole, role) || !containsAll(termsForTextLimited(text, maxIndexedTermsPerMsg), wanted) {
+					continue
+				}
+				return searchExcerpt(text, query), entry.TS, true
+			}
+		}
+		if readErr == io.EOF {
+			return "", time.Time{}, false
+		}
+		if readErr != nil {
+			return "", time.Time{}, false
+		}
+	}
+}
+
+func searchEntriesFromLine(line []byte) []searchEntry {
+	if len(line) == 0 {
+		return nil
+	}
+	if entry, ok := decodeSearchEntry(line); ok {
+		return []searchEntry{entry}
+	}
+	return jsonl.Salvage(line, []byte(`{"ts"`), func(raw []byte) (searchEntry, bool) {
+		return decodeSearchEntry(raw)
+	}, func(candidate jsonl.Candidate) bool {
+		if candidate.Depth != 1 {
+			return true
+		}
+		switch candidate.KeyBefore() {
+		case "", "ts", "type", "data":
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 func keepUTF8Prefix(text string, maxBytes int) string {
@@ -419,18 +492,7 @@ func keepUTF8Suffix(text string, maxBytes int) string {
 func roleMatches(role, wanted string) bool { return wanted == "any" || role == wanted }
 
 func searchTerms(text string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, part := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-'
-	}) {
-		if len([]rune(part)) < 2 || seen[part] {
-			continue
-		}
-		seen[part] = true
-		out = append(out, part)
-	}
-	return out
+	return collectTerms(text, 4096)
 }
 
 func termsForText(text string) map[string]struct{} {
@@ -439,12 +501,54 @@ func termsForText(text string) map[string]struct{} {
 
 func termsForTextLimited(text string, max int) map[string]struct{} {
 	terms := make(map[string]struct{})
-	for _, term := range searchTerms(text) {
+	for _, term := range collectTerms(text, max) {
 		terms[term] = struct{}{}
-		if len(terms) >= max {
-			break
+	}
+	return terms
+}
+
+const maxIndexedTermBytes = 256
+
+func collectTerms(text string, max int) []string {
+	if max <= 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, min(max, 32))
+	terms := make([]string, 0, min(max, 32))
+	start := -1
+	add := func(end int) bool {
+		if start < 0 {
+			return true
+		}
+		raw := text[start:end]
+		start = -1
+		if len(raw) > maxIndexedTermBytes {
+			return true
+		}
+		term := strings.ToLower(raw)
+		if len([]rune(term)) < 2 {
+			return true
+		}
+		term = strings.Clone(term)
+		if _, ok := seen[term]; ok {
+			return true
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+		return len(terms) < max
+	}
+	for pos, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
+			if start < 0 {
+				start = pos
+			}
+			continue
+		}
+		if !add(pos) {
+			return terms
 		}
 	}
+	add(len(text))
 	return terms
 }
 
