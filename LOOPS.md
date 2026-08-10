@@ -5980,3 +5980,19 @@ parity: `crates/jcode-base/src/skill.rs:14-33,478-503` — better for shell
         one shell command instead of granting arbitrary chained shell syntax.
 codex: 1 critical finding — fixed here (a narrow skill policy could be escaped
         into unrestricted shell execution); none dismissed.
+
+## 2026-08-10 J9.3 review fix — keep fallback descriptions valid UTF-8
+
+The no-front-matter fallback cut description bytes at index 119. A multibyte
+character crossing that index produced invalid UTF-8 in the skill index and
+therefore in the system prompt. The fallback now backs up to a rune boundary
+before adding its ellipsis.
+
+reproduction: `TestSkillFallbackDescriptionDoesNotSplitUTF8` places `é` across
+        the old byte cutoff and now proves the indexed description is valid.
+verification: focused skill metadata tests pass; `git diff --check` passes.
+parity: `crates/jcode-base/src/skill.rs:505-523` — on par for Unicode-safe
+        metadata; evilcode's markdown fallback now preserves the same string
+        validity when front matter supplies no description.
+codex: 1 finding — fixed here (fallback skill metadata could corrupt prompt
+        UTF-8); none dismissed.

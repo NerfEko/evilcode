@@ -217,7 +217,7 @@ func firstDescription(body string) string {
 			continue
 		}
 		if len(t) > 120 {
-			t = t[:119] + "…"
+			t = t[:backToRuneBoundary(t, 119)] + "…"
 		}
 		return t
 	}

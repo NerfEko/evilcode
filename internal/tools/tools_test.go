@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func tempFS(t *testing.T, files map[string]string) *FS {
@@ -1250,6 +1251,14 @@ func TestSkillFrontMatterParsesFoldedLiteralAndAllowedTools(t *testing.T) {
 		if err := policy.Check(Call{Name: "bash", Args: json.RawMessage(fmt.Sprintf(`{"cmd":%q}`, command))}); err == nil {
 			t.Errorf("shell escape %q bypassed the browser skill policy", command)
 		}
+	}
+}
+
+func TestSkillFallbackDescriptionDoesNotSplitUTF8(t *testing.T) {
+	body := strings.Repeat("a", 118) + "é" + strings.Repeat("b", 20)
+	got := firstDescription(body)
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, "…") {
+		t.Fatalf("fallback description is not valid bounded UTF-8: %q", got)
 	}
 }
 
