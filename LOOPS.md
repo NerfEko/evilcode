@@ -5918,3 +5918,23 @@ parity: `crates/jcode-app-core/src/tool/session_search.rs:620-690` and
         while keeping fixed cache budgets.
 codex: 1 finding — fixed here (bounded cache eviction invalidated the claimed
         complete session-search coverage); none dismissed.
+
+## 2026-08-10 J6.1 review fix — retain tool actions in compaction input
+
+`Transcript` serialized only `Message.Content`. Assistant tool-call rows are
+normally content-empty, so the summarizer saw a result without the tool name or
+arguments that produced it. The compacted summary could consequently lose the
+actual action taken even though the live tail correctly kept call/result pairs
+together. Compaction input now describes tool calls, named results, and image
+attachments under the same 2000-byte per-message ceiling.
+
+reproduction: `TestTranscriptDescribesToolCallsAndResults` failed before the
+        fix because the `read` invocation and its arguments were absent; it
+        passes now.
+verification: the focused J6 acceptance corpus and its concurrency-sensitive
+        race cases pass; `git diff --check` passes.
+parity: `crates/jcode-compaction-core/src/lib.rs:138-198` — on par: both
+        compaction prompts retain tool names, arguments, bounded results, and
+        image placeholders rather than relying on ordinary message text alone.
+codex: 1 finding — fixed here (summaries lacked the action associated with
+        content-empty tool-call messages); none dismissed.
