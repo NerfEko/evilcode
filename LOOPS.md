@@ -5596,3 +5596,25 @@ verification: `go test -p 1 ./internal/session ./internal/memory -run 'Test(Read
         `go test -p 1 ./internal/session ./internal/memory ./internal/tools`,
         and `git diff --check` pass.
 codex: pending review of the committed diff.
+
+## 2026-08-09 J7.1 — salvage review closeout
+
+Review found and closed the cases hidden behind the simple torn-string fixture:
+structural tails glued after an already-open outer object, array elements and
+array-contained torn strings, rejected candidates preserving the enclosing
+lexer state, and mismatched closers resynchronizing without quadratic scans.
+The final scanner keeps the nested-payload guard while preserving consecutive
+top-level records and canonical tail repair for both stores.
+
+parity: `crates/jcode-base/src/session/persistence.rs:26-129` — on par for
+        torn-string and structural glued-tail recovery, consecutive entries,
+        repair logging, rewrite-before-append, and nested/array guards.
+verification: focused session/memory salvage tests, `go build -p 1 ./...`,
+        `go vet -p 1 ./...`, `go test -p 1 ./... -count=1`, and
+        `git diff --check` all pass locally.
+codex: reviews of `579fee2`, `1b1311a`, `bb57093`, `750dbf0`, and `6d1bf1d`
+        closed the structural, array-context, and bounded-recovery findings;
+        the final review found no introduced correctness issues. Its full-suite
+        sandbox run was blocked by Unix-socket/port permissions and a
+        read-only home directory, while the same gates pass in the local
+        workspace.
