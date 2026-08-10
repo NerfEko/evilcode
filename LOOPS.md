@@ -5875,3 +5875,22 @@ parity: `crates/jcode/src/tools/bash/command_risk.rs:191-394` — better: both
 codex: 1 finding — fixed here (brace expansion could downgrade protected
         targets from absolute denial to justification-confirmable); none
         dismissed.
+
+## 2026-08-10 J7.3 review fix — bound Codex identity discovery to its header
+
+Codex session discovery read every candidate transcript in full merely to
+decode the first `session_meta` line. A large history tree therefore caused
+avoidable disk reads and allocations before the user even selected a session.
+Discovery now opens each Codex/Claude JSONL and reads at most a 1 MiB header;
+OpenCode's single metadata JSON retains its whole-document parser.
+
+reproduction: `TestCodexIdentityReadsOnlyTheHeaderLine` failed before the fix
+        because identity lookup blocked after receiving a complete header from
+        a still-open FIFO; it now returns without waiting for transcript EOF.
+verification: the full session suite and focused import race tests pass;
+        `git diff --check` passes.
+parity: `crates/jcode/src/import.rs:488-526` — on par/better: both inspect only
+        Codex's first JSONL record, and evilcode additionally enforces a fixed
+        maximum header size.
+codex: 1 finding — fixed here (candidate discovery read and allocated every
+        Codex transcript in full); none dismissed.

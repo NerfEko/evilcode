@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -242,11 +243,11 @@ func resolveExternalPath(source ExternalSource, id string) (string, error) {
 }
 
 func externalFileID(source ExternalSource, path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
 	if source == SourceOpenCode {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
 		var value map[string]any
 		if err := json.Unmarshal(data, &value); err != nil {
 			return "", err
@@ -254,10 +255,20 @@ func externalFileID(source ExternalSource, path string) (string, error) {
 		id, _ := value["id"].(string)
 		return id, nil
 	}
-	line := data
-	if idx := strings.IndexByte(string(data), '\n'); idx >= 0 {
-		line = data[:idx]
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
 	}
+	defer file.Close()
+	const maxExternalHeaderBytes = 1 << 20
+	line, readErr := bufio.NewReader(io.LimitReader(file, maxExternalHeaderBytes+1)).ReadBytes('\n')
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return "", readErr
+	}
+	if len(line) > maxExternalHeaderBytes {
+		return "", fmt.Errorf("external session header exceeds %d bytes", maxExternalHeaderBytes)
+	}
+	line = []byte(strings.TrimSpace(string(line)))
 	var value map[string]any
 	if err := json.Unmarshal(line, &value); err != nil {
 		return "", err

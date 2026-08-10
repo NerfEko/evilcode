@@ -3,10 +3,59 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"evilcode/internal/provider"
 )
+
+func TestCodexIdentityReadsOnlyTheHeaderLine(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("FIFO reproduction requires Unix")
+	}
+	path := filepath.Join(t.TempDir(), "codex-header.fifo")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		_, _ = file.Write([]byte(`{"type":"session_meta","payload":{"id":"codex-stream"}}` + "\n"))
+		<-release
+		_ = file.Close()
+	}()
+
+	result := make(chan struct {
+		id  string
+		err error
+	}, 1)
+	go func() {
+		id, err := externalFileID(SourceCodex, path)
+		result <- struct {
+			id  string
+			err error
+		}{id: id, err: err}
+	}()
+	select {
+	case got := <-result:
+		close(release)
+		<-writerDone
+		if got.err != nil || got.id != "codex-stream" {
+			t.Fatalf("header identity = %q, %v", got.id, got.err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		<-writerDone
+		<-result
+		t.Fatal("identity lookup waited for the entire transcript after reading its header")
+	}
+}
 
 func TestImportClaudeCodeSessionAndResumeIt(t *testing.T) {
 	root := t.TempDir()
