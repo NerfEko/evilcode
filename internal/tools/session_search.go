@@ -30,6 +30,7 @@ type searchableMessage struct {
 	Terms     map[string]struct{}
 	Time      time.Time
 	Truncated bool
+	Ordinal   int
 }
 
 type indexedSession struct {
@@ -175,7 +176,7 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 			}
 			excerpt := searchExcerpt(message.Text, query)
 			if message.Truncated && !excerptContainsQuery(excerpt, query) {
-				if exact, exactDate, ok := searchOriginalExcerpt(ctx, path, query, role, wanted); ok {
+				if exact, exactDate, ok := searchOriginalExcerpt(ctx, path, query, role, wanted, message.Ordinal); ok {
 					excerpt = exact
 					if !exactDate.IsZero() {
 						date = exactDate
@@ -252,6 +253,7 @@ func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, 
 
 	var out []searchableMessage
 	var indexedBytes int64
+	var ordinal int
 	r := bufio.NewReaderSize(f, 64*1024)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -259,7 +261,7 @@ func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, 
 		}
 		line, readErr := r.ReadBytes('\n')
 		if len(line) > 0 {
-			out = appendSearchLine(out, &indexedBytes, bytesTrimSpace(line))
+			out = appendSearchLine(out, &indexedBytes, &ordinal, bytesTrimSpace(line))
 		}
 		if readErr == io.EOF {
 			break
@@ -287,9 +289,11 @@ func bytesTrimSpace(data []byte) []byte {
 	return data
 }
 
-func appendSearchLine(out []searchableMessage, indexedBytes *int64, line []byte) []searchableMessage {
+func appendSearchLine(out []searchableMessage, indexedBytes *int64, ordinal *int, line []byte) []searchableMessage {
 	for _, entry := range searchEntriesFromLine(line) {
 		if message, ok := searchableMessageFor(entry); ok {
+			message.Ordinal = *ordinal
+			*ordinal = *ordinal + 1
 			out = appendBoundedMessage(out, indexedBytes, message)
 		}
 	}
@@ -415,13 +419,14 @@ func excerptContainsQuery(excerpt, query string) bool {
 // searchOriginalExcerpt rereads only a hit whose bounded cached text did not
 // contain the query. The index remains bounded, while the result still shows
 // the useful context from the original large message.
-func searchOriginalExcerpt(ctx context.Context, path, query, role string, wanted []string) (string, time.Time, bool) {
+func searchOriginalExcerpt(ctx context.Context, path, query, role string, wanted []string, targetOrdinal int) (string, time.Time, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", time.Time{}, false
 	}
 	defer f.Close()
 	r := bufio.NewReaderSize(f, 64*1024)
+	var ordinal int
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", time.Time{}, false
@@ -430,7 +435,12 @@ func searchOriginalExcerpt(ctx context.Context, path, query, role string, wanted
 		if len(line) > 0 {
 			for _, entry := range searchEntriesFromLine(bytesTrimSpace(line)) {
 				messageRole, text, ok := searchableTextFor(entry)
-				if !ok || !roleMatches(messageRole, role) || !containsAll(termsForTextLimited(text, maxIndexedTermsPerMsg), wanted) {
+				if !ok {
+					continue
+				}
+				currentOrdinal := ordinal
+				ordinal++
+				if currentOrdinal != targetOrdinal || !roleMatches(messageRole, role) || !containsAll(termsForTextLimited(text, maxIndexedTermsPerMsg), wanted) {
 					continue
 				}
 				return searchExcerpt(text, query), entry.TS, true

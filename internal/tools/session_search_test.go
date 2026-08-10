@@ -202,3 +202,29 @@ func TestSessionSearchCentersExcerptForLongMessage(t *testing.T) {
 		t.Fatalf("long-message excerpt omitted the matching text: %q", result.Output)
 	}
 }
+
+func TestSessionSearchCentersEachMatchingLongMessage(t *testing.T) {
+	dir := t.TempDir()
+	sessions := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	makeContent := func(prefix string) string {
+		return strings.Repeat(prefix+" ", 5000) + "needleunique " + strings.Repeat("tail ", 5000)
+	}
+	first, _ := json.Marshal(makeContent("first"))
+	second, _ := json.Marshal(makeContent("second"))
+	body := fmt.Sprintf(
+		`{"ts":"2026-08-01T10:00:00Z","type":"message","data":{"role":"user","content":%s}}`+"\n"+`{"ts":"2026-08-02T10:00:00Z","type":"message","data":{"role":"user","content":%s}}`+"\n",
+		first, second)
+	if err := os.WriteFile(filepath.Join(sessions, "two-wide.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSessionSearch(dir, "current").Run(context.Background(), json.RawMessage(`{"query":"needleunique","role":"user","limit":10}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, "first") || !strings.Contains(result.Output, "second") {
+		t.Fatalf("matching long messages did not retain their own excerpts: %q", result.Output)
+	}
+}
