@@ -5938,3 +5938,24 @@ parity: `crates/jcode-compaction-core/src/lib.rs:138-198` — on par: both
         image placeholders rather than relying on ordinary message text alone.
 codex: 1 finding — fixed here (summaries lacked the action associated with
         content-empty tool-call messages); none dismissed.
+
+## 2026-08-10 J8.2 review fix — honor a writer's conflict-resolving reread
+
+Writer overlap was computed from every retained write, without comparing it to
+the current writer's last read. After an agent followed the notice's instruction
+and reread the file, its next edit was warned again about the same older peer
+write. The new write must still be delivered to the earlier writer, but the
+reciprocal warning now appears only when that peer wrote after the current
+session last saw the file.
+
+reproduction: `TestWriterRereadDoesNotResurfaceAnOlderPeerWrite` failed before
+        the fix with two conflicts after the reread; it now returns only the
+        notice owed to the earlier writer.
+verification: the complete daemon suite and focused conflict race tests pass;
+        `git diff --check` passes.
+parity: `crates/jcode-app-core/src/server.rs:2108-2163` and
+        `server/state.rs:79-104` — better for resolved-conflict suppression:
+        evilcode retains symmetric writer notices without contradicting its
+        explicit reread-to-resolve workflow.
+codex: 1 finding — fixed here (resolved historical writes resurfaced as fresh
+        conflicts); none dismissed.

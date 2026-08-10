@@ -72,6 +72,22 @@ func TestRegistryTellsBothWritersAboutAnOverlappingWrite(t *testing.T) {
 	}
 }
 
+func TestWriterRereadDoesNotResurfaceAnOlderPeerWrite(t *testing.T) {
+	current := time.Now()
+	r := NewRegistry()
+	r.now = func() time.Time { return current }
+	r.WriteWithDetails("bat", "auth.go", 1, "first change", "-old\n+bat")
+	current = current.Add(time.Second)
+	r.WriteWithDetails("crypt", "auth.go", 2, "second change", "-bat\n+crypt")
+	current = current.Add(time.Second)
+	r.Read("crypt", "auth.go", 3)
+	current = current.Add(time.Second)
+	got := r.WriteWithDetails("crypt", "auth.go", 4, "follow-up after reread", "-crypt\n+new")
+	if len(got) != 1 || got[0].Session != "bat" || got[0].Other != "crypt" {
+		t.Fatalf("post-reread conflicts = %+v; want only the earlier writer told about the new write", got)
+	}
+}
+
 func TestRegistryExpiresOldReadsAndTrimsWrites(t *testing.T) {
 	current := time.Now()
 	r := NewRegistry()

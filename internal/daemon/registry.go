@@ -316,6 +316,7 @@ func (r *Registry) WriteWithDetails(session, path string, turn int, intent, prev
 			priorWriters[access.Session] = access
 		}
 	}
+	currentRead, currentHasRead := r.reads[path][session]
 
 	r.writes = append(r.writes, Access{
 		Session: session, Path: path, Write: true, Turn: turn, At: now,
@@ -339,21 +340,24 @@ func (r *Registry) WriteWithDetails(session, path string, turn int, intent, prev
 		})
 	}
 	for _, previous := range priorWriters {
-		// Tell the earlier writer about the current writer, and the current
-		// writer about the earlier one. Both sides need the same fact in the
-		// terms of their own conversation.
-		out = append(out,
-			Conflict{
-				Session: previous.Session, Other: session, Path: r.display(path),
-				WriterConflict: true, OtherTurn: turn, Intent: intent, Preview: preview,
-				canonical: path,
-			},
-			Conflict{
+		// The earlier writer always needs to hear about this new write.
+		out = append(out, Conflict{
+			Session: previous.Session, Other: session, Path: r.display(path),
+			WriterConflict: true, OtherTurn: turn, Intent: intent, Preview: preview,
+			canonical: path,
+		})
+		// The current writer needs the reciprocal warning only when the peer's
+		// write happened after this session last saw the file. Re-reading is the
+		// explicit conflict resolution action; resurfacing an older peer write
+		// immediately afterward trains agents to ignore the warning.
+		if !currentHasRead || previous.At.After(currentRead.At) ||
+			(previous.At.Equal(currentRead.At) && previous.Turn > currentRead.Turn) {
+			out = append(out, Conflict{
 				Session: session, Other: previous.Session, Path: r.display(path),
 				WriterConflict: true, OtherTurn: previous.Turn,
 				Intent: previous.Intent, Preview: previous.Preview, canonical: path,
-			},
-		)
+			})
+		}
 	}
 	// Stable order so the same write always produces the same notices, which is
 	// what makes a golden of a conflict frame possible at all.
