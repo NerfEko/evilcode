@@ -226,7 +226,7 @@ func (e *Exec) bashTool() Tool {
 			}
 
 			if a.Background {
-				return e.runBackground(a.Cmd, a.Stdin), nil
+				return e.runBackground(a.Cmd, a.Stdin)
 			}
 
 			timeout := e.Timeout
@@ -336,13 +336,20 @@ func (e *Exec) finishForeground(runErr error, output, workingDir, marker string)
 // It deliberately does not inherit the caller's context: the point is to
 // outlive the tool call. It gets a generous ceiling of its own instead, so a
 // runaway watcher still cannot run forever.
-func (e *Exec) runBackground(command, stdin string) Result {
+func (e *Exec) runBackground(command, stdin string) (Result, error) {
 	if e.Bg == nil {
 		e.Bg = &Background{}
 	}
 	background := e.Bg
 	workingDir := e.Cwd()
-	task := background.add(shortCmd(command))
+	task, ok := background.tryAddExplicit(shortCmd(command))
+	if !ok {
+		return Result{
+			Output: fmt.Sprintf("background task limit reached (%d running); wait for or cancel an existing task before starting another", MaxRunningBackgroundTasks),
+			Intent: "background limit reached",
+			Held:   true,
+		}, fmt.Errorf("background task limit reached")
+	}
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), BackgroundTimeout)
@@ -380,7 +387,7 @@ func (e *Exec) runBackground(command, stdin string) Result {
 		Output: fmt.Sprintf("started in the background as task %d; "+
 			"output is retained there — use bg status/output/wait to inspect it when it finishes", task.ID),
 		Intent: "bg: " + shortCmd(command),
-	}
+	}, nil
 }
 
 // ringWriter keeps the last MaxOutputBytes of a command's output.

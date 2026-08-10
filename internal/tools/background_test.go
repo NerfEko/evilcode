@@ -170,6 +170,21 @@ func TestBackgroundPrunesFinishedTasksOnDirectAccess(t *testing.T) {
 	}
 }
 
+func TestExplicitBackgroundStartRefusesAnOverloadedRegistry(t *testing.T) {
+	e := NewExec(t.TempDir())
+	for range MaxRunningBackgroundTasks {
+		e.Bg.add("already running")
+	}
+	raw, _ := json.Marshal(map[string]any{"cmd": "true", "background": true})
+	outcome := e.Tools().RunOne(context.Background(), Call{Name: "bash", Args: raw})
+	if outcome.Err == nil || !strings.Contains(outcome.Result.Output, "limit") {
+		t.Fatalf("over-limit background start = %+v; want a clear refusal", outcome)
+	}
+	if got := len(e.Bg.Tasks()); got != MaxRunningBackgroundTasks {
+		t.Fatalf("over-limit start registered %d tasks, want %d", got, MaxRunningBackgroundTasks)
+	}
+}
+
 func TestBGToolWaitAndTail(t *testing.T) {
 	e := NewExec(t.TempDir())
 	raw, _ := json.Marshal(map[string]any{"cmd": "printf 'one\\ntwo\\nthree\\n'; sleep 0.5", "background": true})

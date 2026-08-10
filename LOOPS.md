@@ -5828,3 +5828,25 @@ parity: `crates/jcode/src/tools/grep.rs:268-462` and
         placing a fixed memory and wall-clock bound around enrichment.
 codex: 2 findings — fixed here (unbounded rg capture and serial per-file LSP
         latency); none dismissed.
+
+## 2026-08-10 J3.2 review fix — cap live detached processes
+
+Finished background history was bounded, but running tasks were not. Each
+explicit task can live for thirty minutes while retaining a process, a refresh
+goroutine, and up to 1 MiB of output, so repeated batched starts could build a
+large long-lived resource set. Explicit starts now stop at 16 live tasks with a
+recoverable held result. Foreground commands that time out are still adopted
+past that ceiling because the process already exists and must remain visible
+and cancellable.
+
+reproduction: `TestExplicitBackgroundStartRefusesAnOverloadedRegistry` failed
+        before the fix by registering task 17; it now proves the excess command
+        is not started or registered.
+verification: focused background/adoption tests and their race variants pass;
+        `git diff --check` passes.
+parity: `crates/jcode/src/tools/bash.rs:66-116` and
+        `crates/jcode/src/tools/bash/background.rs:189-255` — better for
+        adversarial/repeated starts: evilcode retains jcode-style adoption and
+        progress reporting while adding a fixed live-process resource ceiling.
+codex: 1 finding — fixed here (unbounded live detached-task accumulation);
+        none dismissed.

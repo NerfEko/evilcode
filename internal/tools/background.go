@@ -135,9 +135,16 @@ type Background struct {
 	OnDone func(*BackgroundTask)
 }
 
-// MaxCompletedBackgroundTasks bounds finished task metadata and captured
-// output retained for the widget. Running tasks are never evicted.
-const MaxCompletedBackgroundTasks = 8
+const (
+	// MaxCompletedBackgroundTasks bounds finished task metadata and captured
+	// output retained for the widget.
+	MaxCompletedBackgroundTasks = 8
+	// MaxRunningBackgroundTasks bounds explicitly detached work. Every live
+	// task owns a process, a refresh goroutine, and up to MaxOutputBytes of
+	// output for as long as BackgroundTimeout. Timed-out foreground commands
+	// are still adopted even at this ceiling because they are already running.
+	MaxRunningBackgroundTasks = 16
+)
 
 func (b *Background) pruneLocked() {
 	completed := 0
@@ -222,10 +229,34 @@ func (b *Background) add(label string) *BackgroundTask {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pruneLocked()
+	return b.addLocked(label)
+}
+
+func (b *Background) addLocked(label string) *BackgroundTask {
 	b.next++
 	t := &BackgroundTask{ID: b.next, Label: label, Started: time.Now(), doneCh: make(chan struct{})}
 	b.tasks = append(b.tasks, t)
 	return t
+}
+
+// tryAddExplicit refuses new detached work once the live-task resource budget
+// is full. It is intentionally separate from add: adopting a foreground
+// timeout must register the process so it remains observable and cancellable.
+func (b *Background) tryAddExplicit(label string) (*BackgroundTask, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pruneLocked()
+	running := 0
+	for _, task := range b.tasks {
+		done, _, _ := task.Snapshot()
+		if !done {
+			running++
+		}
+	}
+	if running >= MaxRunningBackgroundTasks {
+		return nil, false
+	}
+	return b.addLocked(label), true
 }
 
 func (b *Background) attach(t *BackgroundTask, writer *ringWriter, cancel func()) {
