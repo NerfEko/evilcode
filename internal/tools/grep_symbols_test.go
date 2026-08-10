@@ -2,12 +2,34 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"evilcode/internal/lsp"
 )
+
+type blockingLSPServer struct {
+	entered chan string
+	release chan struct{}
+}
+
+func (s *blockingLSPServer) For(ctx context.Context, path string) (*lsp.Client, error) {
+	select {
+	case s.entered <- path:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return nil, errors.New("test server unavailable")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 func TestParseRGRecordsKeepsMatchAndContextLinesDistinct(t *testing.T) {
 	records := parseRGRecords("dir/a-file.go:12:match\ndir/a-file.go-13-context\n--\n")
@@ -119,5 +141,62 @@ func TestScanGrepSymbolsStopsAtHighestHitLine(t *testing.T) {
 	symbols := scanGrepSymbols(context.Background(), path, 2)
 	if len(symbols) != 1 || symbols[0].Name != "First" {
 		t.Fatalf("bounded symbols = %#v, want only First", symbols)
+	}
+}
+
+func TestGrepResolvesDifferentLanguagesConcurrently(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("ripgrep is not installed")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.go"), []byte("package sample\nfunc GoNeedle() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sample.py"), []byte("def python_needle():\n    pass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := &blockingLSPServer{
+		entered: make(chan string, 2),
+		release: make(chan struct{}),
+	}
+	runner := NewExec(root).WithLSP(server)
+	runner.Timeout = 3 * time.Second
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.grepTool().Run(context.Background(), []byte(`{"pattern":"(?i)needle"}`))
+		done <- err
+	}()
+
+	select {
+	case <-server.entered:
+	case <-time.After(time.Second):
+		close(server.release)
+		t.Fatal("grep never requested symbols for the first file")
+	}
+	select {
+	case <-server.entered:
+		close(server.release)
+	case <-time.After(250 * time.Millisecond):
+		close(server.release)
+		t.Fatal("symbol resolution was serial across hit files")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("grep did not finish after the language server was released")
+	}
+}
+
+func TestBoundedCaptureRetainsOnlyConfiguredPrefix(t *testing.T) {
+	capture := newBoundedCapture(5)
+	if n, err := capture.Write([]byte("123456789")); err != nil || n != 9 {
+		t.Fatalf("Write = %d, %v; want 9, nil", n, err)
+	}
+	got, truncated := capture.snapshot()
+	if got != "12345" || !truncated {
+		t.Fatalf("snapshot = %q, %v; want bounded prefix and truncation", got, truncated)
 	}
 }

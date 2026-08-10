@@ -68,6 +68,48 @@ type Exec struct {
 // DefaultTimeout is the per-command wall clock budget.
 const DefaultTimeout = 2 * time.Minute
 
+// maxGrepCaptureBytes bounds ripgrep's combined stdout and stderr before the
+// structured result is parsed. --max-count is per file, not per invocation,
+// so a broad search over a large tree can otherwise grow a bytes.Buffer until
+// the process exhausts memory even though the tool will return only a small
+// number of matches.
+const maxGrepCaptureBytes = 2 << 20
+
+type boundedCapture struct {
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newBoundedCapture(limit int) *boundedCapture {
+	return &boundedCapture{limit: limit}
+}
+
+func (b *boundedCapture) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	original := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining < len(p) {
+		b.truncated = true
+		if remaining < 0 {
+			remaining = 0
+		}
+		p = p[:remaining]
+	}
+	_, _ = b.buf.Write(p)
+	// Report the full input as consumed so ripgrep can finish normally; only
+	// the in-memory diagnostic/result capture is intentionally bounded.
+	return original, nil
+}
+
+func (b *boundedCapture) snapshot() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String(), b.truncated
+}
+
 func NewExec(root string) *Exec {
 	if root == "" {
 		root, _ = os.Getwd()
@@ -627,12 +669,12 @@ func (e *Exec) grepTool() Tool {
 
 			cmd := exec.CommandContext(ctx, "rg", args...)
 			cmd.Dir = e.Root
-			var buf bytes.Buffer
-			cmd.Stdout = &buf
-			cmd.Stderr = &buf
+			capture := newBoundedCapture(maxGrepCaptureBytes)
+			cmd.Stdout = capture
+			cmd.Stderr = capture
 			err := cmd.Run()
 
-			out := buf.String()
+			out, captureTruncated := capture.snapshot()
 			records := parseRGRecords(out)
 			// ripgrep exits 1 for "no matches", which is an answer, not a fault.
 			// An explicitly named binary file also exits 1 while emitting a
@@ -647,6 +689,9 @@ func (e *Exec) grepTool() Tool {
 			}
 
 			note := ""
+			if captureTruncated {
+				note = fmt.Sprintf("\n[search output exceeded %s; narrow the path or pattern]", humanBytes(maxGrepCaptureBytes))
+			}
 			matchCount := 0
 			for _, record := range records {
 				if !record.Context {
@@ -654,7 +699,7 @@ func (e *Exec) grepTool() Tool {
 				}
 			}
 			if matchCount > limit {
-				note = fmt.Sprintf("\n[%d more matching lines; narrow the pattern]", matchCount-limit)
+				note += fmt.Sprintf("\n[%d more matching lines; narrow the pattern]", matchCount-limit)
 				kept := make([]grepRecord, 0, len(records))
 				pendingContext := make([]grepRecord, 0)
 				seen := 0
@@ -694,8 +739,6 @@ func (e *Exec) grepTool() Tool {
 			}
 			lines := make([]string, 0, len(records))
 			shown := make([]LineRange, 0, len(records))
-			symbols := make(map[string][]grepSymbol)
-			lspUnavailable := make(map[string]bool)
 			maxLines := make(map[string]int)
 			for _, record := range records {
 				if record.Binary {
@@ -709,6 +752,7 @@ func (e *Exec) grepTool() Tool {
 					maxLines[path] = record.Line
 				}
 			}
+			symbols := e.resolveGrepSymbols(ctx, maxLines)
 			for _, record := range records {
 				if record.Binary {
 					rel := strings.TrimPrefix(record.Path, e.Root+string(filepath.Separator))
@@ -737,9 +781,6 @@ func (e *Exec) grepTool() Tool {
 					}
 					lines = append(lines, fmt.Sprintf("%s:%d — shown above", rel, record.Line))
 					continue
-				}
-				if _, ok := symbols[path]; !ok {
-					symbols[path] = e.grepSymbols(ctx, path, lspUnavailable, maxLines[path])
 				}
 				symbol := enclosingGrepSymbol(symbols[path], record.Line)
 				label := "top level"

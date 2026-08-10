@@ -5805,3 +5805,26 @@ parity: `crates/jcode-app-core/src/tool/read.rs:173-221` — better (evilcode no
         input bound for a file that grows or streams after metadata inspection).
 codex: 1 finding — fixed here (the advertised read cap could be bypassed after
         `Stat`, causing unbounded allocation); none dismissed.
+
+## 2026-08-10 J2.1/J2.2 review fix — bound grep memory and symbol latency
+
+The plan4 audit found that ripgrep wrote its complete combined output into an
+unbounded `bytes.Buffer`. Its `--max-count=50` setting applies per file, so a
+broad repository search could allocate in proportion to the repository before
+the renderer applied the requested result limit. The capture is now capped at
+2 MiB and reports truncation. Enclosing-symbol lookups also run through eight
+bounded workers under one five-second phase budget instead of waiting up to
+five seconds serially for each hit file.
+
+reproduction: `TestGrepResolvesDifferentLanguagesConcurrently` failed before
+        the fix because the second file's LSP request could not begin until the
+        first completed; it passes now. `TestBoundedCaptureRetainsOnlyConfiguredPrefix`
+        locks the hard capture ceiling.
+verification: focused normal and race tests for grep capture/parsing/symbol
+        enrichment pass; `git diff --check` passes.
+parity: `crates/jcode/src/tools/grep.rs:268-462` and
+        `crates/jcode/src/tools/lsp_grep.rs:68-117` — better for broad-search
+        resource bounds: evilcode retains structured symbol labels while now
+        placing a fixed memory and wall-clock bound around enrichment.
+codex: 2 findings — fixed here (unbounded rg capture and serial per-file LSP
+        latency); none dismissed.
