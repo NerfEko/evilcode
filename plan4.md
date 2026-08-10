@@ -833,26 +833,26 @@ Line numbers as-of §0.5. Trust the symbol.
 
 ## Phase J8 — Notices worth reading
 
-- [ ] **J8.1** `internal/daemon/registry.go:42` `Conflict.Notice` — the notice says a file
+- [x] **J8.1** `internal/daemon/registry.go:42` `Conflict.Notice` — the notice says a file
       changed and nothing about what changed. Add an optional `intent` to `write` and `edit`;
       carry it and the first lines of the diff into the notice. §8.1. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/tool/edit.rs:10-11,118-137 (intent + preview),
       crates/jcode-app-core/src/server.rs:2044-2107 (the notice text)⟩
-- [ ] **J8.2** `internal/daemon/registry.go:138` `Registry.Write` — only readers are
+- [x] **J8.2** `internal/daemon/registry.go:138` `Registry.Write` — only readers are
       notified, so two agents that both wrote the same file are the one conflict nobody
       hears about. Notify both writers, in those terms. §8.2. ⟨fix⟩
       ⟨jcode: crates/jcode-app-core/src/server.rs:2108-2163, server/state.rs:79-104 —
       and note jcode does *only* this and never notifies readers; evilcode keeps both⟩
-- [ ] **J8.3** `internal/daemon/registry.go:78` `Registry` — `reads` and `writes` grow for
+- [x] **J8.3** `internal/daemon/registry.go:78` `Registry` — `reads` and `writes` grow for
       the process lifetime and a four-hour-old read still fires a notice. Expire accesses
       past a bound; trim the write log. §8.3. ⟨fix⟩
       ⟨jcode: crates/jcode-app-core/src/server.rs:1930-1939 (`TOUCH_EXPIRY`)⟩
-- [ ] **J8.4** `internal/daemon/spawn.go` — a worker that dies is silent forever and the
+- [x] **J8.4** `internal/daemon/spawn.go` — a worker that dies is silent forever and the
       spawner waits forever. Heartbeat; mark a silent worker stale in `peers`; tell the
       spawner once. §8.4. ⟨build⟩
       ⟨jcode: crates/jcode-app-core/src/server/swarm.rs:554-620
       (`refresh_swarm_task_staleness`)⟩
-- [ ] Verify J8: two attached sessions, one edits with an intent, confirm the other's notice
+- [x] Verify J8: two attached sessions, one edits with an intent, confirm the other's notice
       quotes it with diff lines; two sessions write the same file and both are told; a read
       from past the expiry produces no notice; kill a worker and watch `peers` mark it. PNG
       of the notice. Tag `jcode-8`.

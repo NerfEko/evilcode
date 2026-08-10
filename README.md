@@ -210,10 +210,14 @@ terminals can follow one conversation and a closed terminal loses nothing. Per-s
 ring buffers cover reconnects.
 
 Agents inside the daemon coordinate. A shared file registry tells an agent when another
-rewrote a file it had read, delivered between turns rather than mid-thought.
+rewrote a file it had read, delivered between turns rather than mid-thought. Notices name
+the writer's optional intent and the first lines of its diff; overlapping writers are told
+about each other, while old reads expire instead of firing days later.
 `send_message`, `broadcast` and `peers` route through the daemon. `spawn_worker` and
 `/summon` start headless workers whose results are validated against a JSON Schema the
-spawner supplies, so nobody has to parse prose.
+spawner supplies, so nobody has to parse prose. Worker heartbeats make a silent worker
+appear as `stale` in `peers`, and its spawner receives one warning instead of waiting
+forever for a result.
 
 The shared plan and todo list span the swarm: one store per namespace, held by
 reference, so every worker sees the same items rather than a private half that the

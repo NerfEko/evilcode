@@ -5665,3 +5665,73 @@ phrase search tests including an older session and oversized-message excerpts, a
 foreign-session import/resume tests. The serial repository gate passes: `go build -p 1
 ./...`, `go vet -p 1 ./...`, `go test -p 1 ./... -count=1`, and `git diff --check`.
 The phase is ready for the `jcode-7` tag and Forgejo push.
+
+## 2026-08-10 J8.1 — intent-bearing conflict notices
+
+`write` and `edit` accept an optional bounded `intent`. Successful file events carry that
+intent and a six-line/240-byte unified-diff preview into `Conflict.Notice`, so a reader is
+told what changed rather than only that a path moved. The existing swarm probe golden now
+shows the multiline notice in both attached panes.
+
+parity: `crates/jcode-app-core/src/tool/edit.rs:10-11,118-137` and
+        `crates/jcode-app-core/src/server.rs:2044-2107` — on par for optional intent,
+        bounded first-diff-line previews, and actionable peer notices; evilcode keeps its
+        existing safe-point delivery and reader-side notification semantics.
+verification: `go test ./internal/daemon ./internal/tools -count=1`, the targeted
+        `tui-swarm` probe, `go build -p 1 ./...`, `go vet -p 1 ./...`, and
+        `git diff --check` pass.
+codex: implementation and review are in `a928088`; no introduced correctness findings.
+
+## 2026-08-10 J8.2 — writers hear about overlapping writers
+
+The registry retains recent write metadata and emits paired writer conflicts when a second
+session writes the same canonical path. Each side receives the other writer's name, turn,
+intent, and diff preview; reader conflicts remain intact, and a prior writer is not also
+sent a duplicate reader warning.
+
+parity: `crates/jcode-app-core/src/server.rs:2108-2163` and
+        `crates/jcode-app-core/src/server/state.rs:79-104` — on par for both-writer
+        notices, with evilcode deliberately retaining its existing reader notices too.
+verification: registry and daemon event-path tests cover paired delivery, notice wording,
+        intent, and preview propagation; the normal full repository gate passes.
+codex: implementation and review are in `a928088`; no introduced correctness findings.
+
+## 2026-08-10 J8.3 — bounded registry history
+
+Reads, delivered keys, and writes now expire after 30 minutes, and the write log is capped
+at 1024 entries. Registry operations perform the cleanup, so an idle daemon needs no extra
+goroutine and an abandoned old read no longer fires a fresh conflict.
+
+parity: `crates/jcode-app-core/src/server.rs:1930-1939` (`TOUCH_EXPIRY`) — on par for
+        expiry of old file touches; evilcode additionally timestamps reads and bounds the
+        write log and delivery keys.
+verification: injected-clock tests prove an expired read is absent from `Files` and creates
+        no notice, while a burst leaves exactly the capped write log; normal full gates pass.
+codex: implementation and review are in `a928088`; no introduced correctness findings.
+
+## 2026-08-10 J8.4 — workers report silence
+
+Worker event activity is a heartbeat. A five-second daemon watchdog marks a live worker
+stale after two minutes without an event, renders `stale` in `peers`, and tells the recorded
+spawner once. A Run that fails before its turn-end reaches the pump also reports failure to
+the spawner and suppresses a contradictory late success. A later worker event clears stale.
+
+parity: `crates/jcode-app-core/src/server/swarm.rs:554-620`
+        (`refresh_swarm_task_staleness`) — on par for heartbeat-based stale state and
+        recovery; evilcode adds the one-shot spawner warning and the pre-TurnEnd failure
+        handoff needed by its in-process worker sessions.
+verification: daemon tests force the clock past the stale bound, assert the peer state and
+        exactly one spawner warning, then assert a heartbeat clears it; `go test -race
+        ./internal/daemon` passes. The tools race suite reaches its pre-existing 64 MB
+        output-bound tests but those allocate 358–465 MB under race instrumentation; the
+        normal full gate remains green.
+codex: implementation and review are in `a928088`; no introduced correctness findings.
+
+## 2026-08-10 Verify J8 — phase closeout
+
+The two-client swarm probe passes with the intent/diff notice and produced
+`probe/frames/j8-notice.png`. Registry unit tests cover reader notices, paired writer
+notices, canonical re-read clearing, expiry, and trimming; daemon tests cover safe-point
+delivery and stale worker recovery. `go build -p 1 ./...`, `go vet -p 1 ./...`,
+`go test -p 1 ./... -count=1`, the targeted probe, and `git diff --check` pass.
+The phase is ready for the `jcode-8` tag and Forgejo push.
