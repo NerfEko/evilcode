@@ -76,6 +76,7 @@ func Run(args []string) (int, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return ExitError, err
 	}
+	cfg.AddDiscoveredCodex()
 	// A resumed session remembers the model it left off with; use it unless an
 	// explicit -m overrides (§18). Headless resume matches the TUI here, so the
 	// same conversation picks up the same model either way.

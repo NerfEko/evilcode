@@ -442,10 +442,16 @@ func (m *Model) loginCommand(arg string) tea.Cmd {
 			m.notice = target + " login status unavailable"
 			return nil
 		}
+		cfg.AddDiscoveredCodex()
 		present := false
 		for _, p := range cfg.Providers {
 			if p.Name == target {
-				present = p.APIKeyValue() != ""
+				if p.Kind == config.KindCodex {
+					_, buildErr := p.Build()
+					present = buildErr == nil
+				} else {
+					present = p.APIKeyValue() != ""
+				}
 				break
 			}
 		}
@@ -480,8 +486,18 @@ func (m *Model) loginCommand(arg string) tea.Cmd {
 		m.notice = target + " login unavailable: " + err.Error()
 		return nil
 	}
-	if cfg.FindProvider(target) == nil {
+	cfg.AddDiscoveredCodex()
+	pc := cfg.FindProvider(target)
+	if pc == nil {
 		m.notice = "usage: /login [provider] or /login status [provider]\nunknown provider: " + target
+		return nil
+	}
+	if pc.Kind == config.KindCodex {
+		if _, buildErr := pc.Build(); buildErr == nil {
+			m.notice = "codex OAuth account detected; use `codex login` to change accounts"
+		} else {
+			m.notice = "codex OAuth account not found; run `codex login` first"
+		}
 		return nil
 	}
 	if m.processing {

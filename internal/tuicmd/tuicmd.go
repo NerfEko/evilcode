@@ -80,6 +80,10 @@ func runOnce(args []string) (string, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return "", err
 	}
+	// A logged-in Codex CLI account is an available provider, but it is not
+	// part of the offline defaults. Discover it before resolving the model so
+	// `@codex` and the model picker work without a separate ec login flow.
+	cfg.AddDiscoveredCodex()
 
 	// A resumed session remembers the model it left off with (§18). Use it
 	// unless an explicit -m overrides, so /resume lands on the same model the
@@ -362,14 +366,24 @@ func headerState(cfg *config.Config, sessionName, model, providerName, cwd strin
 		MCP:         mcpSummaries,
 	}
 	for _, p := range cfg.Providers {
+		ready := p.APIKeyValue() != "" || p.APIKeyEnv == ""
+		if p.Kind == config.KindCodex {
+			// Codex readiness comes from auth.json, not an API-key variable.
+			// Build performs only local discovery here; the network is deferred
+			// until a turn or the asynchronous model picker.
+			_, buildErr := p.Build()
+			ready = buildErr == nil
+		}
 		h.Providers = append(h.Providers, tui.ProviderStatus{
 			Name: p.Name,
 			// A provider with no key configured is reachable only if it needs
 			// none, which is how a local daemon shows as ready.
-			Ready: p.APIKeyValue() != "" || p.APIKeyEnv == "",
+			Ready: ready,
 		})
 		if p.Name == providerName {
-			if p.APIKeyValue() != "" {
+			if p.Kind == config.KindCodex {
+				h.AuthKind = "oauth"
+			} else if p.APIKeyValue() != "" {
 				h.AuthKind = "api-key"
 			} else {
 				h.AuthKind = "local"

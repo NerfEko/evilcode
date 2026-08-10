@@ -1918,6 +1918,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 		infos    []provider.ModelInfo
 		hasKey   bool
 		needsKey bool
+		kind     config.ProviderKind
 	}
 
 	results := make(chan result, len(provs))
@@ -1926,7 +1927,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 		go func() {
 			p, err := pc.Build()
 			if err != nil {
-				results <- result{name: pc.Name}
+				results <- result{name: pc.Name, kind: pc.Kind}
 				return
 			}
 			infos, err := p.Models(ctx)
@@ -1934,6 +1935,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 				name: pc.Name, infos: infos,
 				hasKey:   pc.APIKeyValue() != "",
 				needsKey: pc.APIKeyEnv != "",
+				kind:     pc.Kind,
 			}
 		}()
 	}
@@ -1942,7 +1944,9 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 	for range provs {
 		r := <-results
 		via := "local"
-		if r.needsKey {
+		if r.kind == config.KindCodex {
+			via = "oauth"
+		} else if r.needsKey {
 			if r.hasKey {
 				via = "api-key"
 			} else {

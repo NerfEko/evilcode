@@ -99,6 +99,19 @@ the config file, so a key entered with `/login` counts. With a key you get
 model is routed through the local daemon that proxies it. Setting `default_model`
 yourself always wins.
 
+If the Codex CLI is installed and you have run `codex login`, ec automatically discovers
+that ChatGPT OAuth account from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). Select a
+Codex model in `/model`, or choose one explicitly, for example:
+
+```sh
+ec -m gpt-5.3-codex@codex
+```
+
+The Codex access token is used in memory and refreshed through the same OAuth endpoint as
+the Codex CLI; rotated credentials are saved back to its auth file. ec never prints the
+token. `/login status codex` reports whether the account is available; use `codex login` to
+sign in or change accounts.
+
 `context_window` is likewise optional: the window and capabilities of every Ollama model,
 local or cloud, are read from the provider, so the meter and auto-compaction are right
 without a `[[model]]` block per model. Set one only to correct what the provider claims.
@@ -108,7 +121,7 @@ default_model = "glm-5.2:cloud@ollama-cloud"
 
 [[provider]]
 name = "ollama-cloud"
-kind = "ollama"                  # ollama | openai | deepseek | mock
+kind = "ollama"                  # ollama | openai | deepseek | codex | mock
 base_url = "https://ollama.com"
 api_key_env = "OLLAMA_API_KEY"
 

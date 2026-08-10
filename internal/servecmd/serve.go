@@ -27,6 +27,10 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Keep the daemon's shared config aware of a locally logged-in Codex
+	// account; individual sessions clone this config before applying repo
+	// overrides.
+	cfg.AddDiscoveredCodex()
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err

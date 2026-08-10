@@ -75,10 +75,11 @@ var Commands = []Command{
 	{Name: "context", Help: "Show context usage"},
 	{Name: "stats", Help: "Show current session statistics"},
 	{Name: "info", Help: "Show session info"},
-	{Name: "login", Help: "Set or inspect a provider API key",
+	{Name: "login", Help: "Set or inspect provider authentication",
 		Long: "/login                  open a provider selector, then enter a masked key\n" +
 			"/login [provider]       enter a masked API key for a provider (e.g. /login deepseek)\n" +
-			"/login status [provider] report whether a key is present without printing it."},
+			"/login status [provider] report whether a key/account is present without printing it.\n" +
+			"                         Codex OAuth is discovered from `codex login`; it does not accept an API key."},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
 	{Name: "theme", Help: "Switch, score, or generate a palette",

@@ -33,6 +33,7 @@ const (
 	KindOllama   ProviderKind = "ollama"
 	KindOpenAI   ProviderKind = "openai"
 	KindDeepSeek ProviderKind = "deepseek"
+	KindCodex    ProviderKind = "codex"
 	KindMock     ProviderKind = "mock"
 )
 
@@ -49,6 +50,11 @@ type ProviderConfig struct {
 	// APIKey is an escape hatch for keys that genuinely have nowhere else to
 	// live. APIKeyEnv is preferred.
 	APIKey string `toml:"api_key"`
+
+	// AuthFile optionally points at a Codex CLI auth.json. Empty means the
+	// standard CODEX_HOME/auth.json (or ~/.codex/auth.json) is discovered.
+	// It is ignored by providers that do not use Codex OAuth.
+	AuthFile string `toml:"auth_file"`
 }
 
 // ModelConfig is an optional `[[model]]` block carrying per-model overrides
@@ -294,6 +300,14 @@ func LoadFrom(path string) (*Config, error) {
 	}
 
 	applyEnv(cfg)
+	// Validate normally rejects a default model that names an unlisted provider.
+	// Codex is the one intentionally discoverable provider, so make its local
+	// auth entry visible before that check when the user selected @codex in the
+	// file or through EVILCODE_MODEL. Other paths still discover lazily when a
+	// model is explicitly resolved or the picker is opened.
+	if _, providerName := SplitModelRef(cfg.DefaultModel); providerName == "codex" {
+		cfg.AddDiscoveredCodex()
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -383,6 +397,7 @@ func providerSection(p ProviderConfig) string {
 	for _, kv := range [][2]string{
 		{"kind", string(p.Kind)},
 		{"base_url", p.BaseURL},
+		{"auth_file", p.AuthFile},
 		{"api_key_env", p.APIKeyEnv},
 		{"api_key", p.APIKey},
 	} {
@@ -513,8 +528,12 @@ func (c *Config) Validate() error {
 		seen[p.Name] = true
 		switch p.Kind {
 		case KindOllama, KindOpenAI, KindDeepSeek, KindMock:
+		case KindCodex:
+			if p.APIKey != "" || p.APIKeyEnv != "" {
+				return fmt.Errorf("config: codex provider %q uses Codex OAuth, not api_key/api_key_env", p.Name)
+			}
 		case "":
-			return fmt.Errorf("config: provider %q is missing its kind (ollama|openai|deepseek|mock)", p.Name)
+			return fmt.Errorf("config: provider %q is missing its kind (ollama|openai|deepseek|codex|mock)", p.Name)
 		default:
 			return fmt.Errorf("config: provider %q has unknown kind %q", p.Name, p.Kind)
 		}
@@ -628,6 +647,13 @@ func (c *Config) Resolve(ref string) (provider.Provider, string, error) {
 		pc = &c.Providers[0]
 	} else {
 		pc = c.findProvider(providerName)
+		// Codex is intentionally discovered lazily. Keeping it out of Default()
+		// preserves a deterministic, offline config while an installed Codex
+		// account remains selectable with `@codex` and in the picker.
+		if pc == nil && providerName == "codex" {
+			c.AddDiscoveredCodex()
+			pc = c.findProvider(providerName)
+		}
 	}
 	if pc == nil {
 		return nil, "", fmt.Errorf("config: unknown provider %q in model ref %q", providerName, ref)
@@ -651,11 +677,37 @@ func (p ProviderConfig) Build() (provider.Provider, error) {
 		// DeepSeek speaks the OpenAI-compatible chat completions API, so the
 		// OpenAI client serves it unchanged — only the base URL and key differ.
 		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()), nil
+	case KindCodex:
+		auth, err := provider.DiscoverCodexAuthAt(p.AuthFile)
+		if err != nil {
+			return nil, fmt.Errorf("config: codex provider %q: %w", p.Name, err)
+		}
+		return provider.NewCodex(p.Name, p.BaseURL, auth), nil
 	case KindMock:
 		return provider.NewMock(p.Name, ""), nil
 	default:
 		return nil, fmt.Errorf("config: provider %q has unknown kind %q", p.Name, p.Kind)
 	}
+}
+
+// AddDiscoveredCodex adds a ready-to-build Codex provider when the Codex CLI's
+// ChatGPT OAuth account is present. It is safe to call repeatedly and never
+// changes the default model or performs network I/O.
+func (c *Config) AddDiscoveredCodex() bool {
+	if c == nil || c.findProvider("codex") != nil {
+		return c != nil && c.findProvider("codex") != nil
+	}
+	auth, err := provider.DiscoverCodexAuth()
+	if err != nil {
+		return false
+	}
+	c.Providers = append(c.Providers, ProviderConfig{
+		Name:     "codex",
+		Kind:     KindCodex,
+		BaseURL:  provider.DefaultCodexBaseURL,
+		AuthFile: auth.AuthFile,
+	})
+	return true
 }
 
 // RoleChain returns the model references to try for a role, longest-lived

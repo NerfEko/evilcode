@@ -55,6 +55,10 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The attached session is served by the daemon, but the client still
+	// renders provider readiness. Keep a locally logged-in Codex account visible
+	// here as it is in the standalone TUI and headless paths.
+	cfg.AddDiscoveredCodex()
 
 	// A local agent with no provider: the TUI drives it exactly as it drives a
 	// real one, but Forward sends turns down the socket and the receive loop
@@ -214,9 +218,14 @@ func header(cfg *config.Config, snap *daemon.Snapshot, path string) tui.HeaderSt
 		ClientName: core.PickName(core.Creatures, core.SeedFrom(clientSeed()), nil),
 	}
 	for _, p := range cfg.Providers {
+		ready := p.APIKeyValue() != "" || p.APIKeyEnv == ""
+		if p.Kind == config.KindCodex {
+			_, buildErr := p.Build()
+			ready = buildErr == nil
+		}
 		h.Providers = append(h.Providers, tui.ProviderStatus{
 			Name:  p.Name,
-			Ready: p.APIKeyValue() != "" || p.APIKeyEnv == "",
+			Ready: ready,
 		})
 	}
 	return h

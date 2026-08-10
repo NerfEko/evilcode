@@ -138,6 +138,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.AddDiscoveredCodex()
 
 	prov, modelName, err := cfg.Resolve(modelRefForResume(dataDir, opts))
 	if err != nil {
