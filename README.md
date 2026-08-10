@@ -54,6 +54,7 @@ evilcode run "fix the parser" # headless, one shot
 evilcode serve                # daemon hosting sessions
 evilcode attach [session]     # attach a TUI to the daemon
 evilcode run --remote "..."   # submit into a running daemon
+evilcode resume --from claude <id-or-path> # import and continue a foreign session
 ```
 
 `evilcode run` writes the model's text to stdout and everything else to stderr, so it
@@ -80,6 +81,11 @@ slow provider leaves the predictive path in charge rather than delaying a turn.
 A turn that could not be fully written says so rather than leaving a session that comes
 back short on resume. Closing a session waits for its in-flight turn to finish, so a
 shutdown or a closed terminal does not drop the messages the turn was still writing.
+
+The `session_search` tool finds earlier native sessions by transcript phrase, with a
+role filter and dated excerpt. `evilcode resume --from claude|codex|opencode
+<id-or-path>` converts a foreign transcript into a native JSONL session and enters the
+ordinary resume path; repeated imports reuse the existing native continuation.
 
 ## Configuration
 

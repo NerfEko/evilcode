@@ -816,18 +816,18 @@ Line numbers as-of §0.5. Trust the symbol.
       stream-parse the complete entries out of it, log the salvage count. Same for
       `internal/memory/store.go:113` `Store.load`. §7.1. ⟨fix⟩
       ⟨jcode: crates/jcode-base/src/session/persistence.rs:26-129⟩
-- [ ] **J7.2** `internal/tools/` — no way to find a session by what was said in it. A
+- [x] **J7.2** `internal/tools/` — no way to find a session by what was said in it. A
       `session_search` tool over the session files with a role filter, returning name, date
       and excerpt; a per-file size+mtime+term-set index so unchanged files are not re-read.
       §7.2. ⟨build⟩ ⟨jcode: crates/jcode-app-core/src/tool/session_search.rs:125-300,
       session_search_index.rs:1-120⟩
-- [ ] **J7.3** `internal/session/` — sessions written by Claude Code, Codex and OpenCode sit
+- [x] **J7.3** `internal/session/` — sessions written by Claude Code, Codex and OpenCode sit
       on this disk and cannot be resumed. Convert their message shapes onto
       `provider.Message`, write a session, resume it. `evilcode resume --from claude <id>`.
       §7.3. **Cut this first if the phase runs long.** ⟨build⟩
       ⟨jcode: crates/jcode-base/src/import.rs:598-760 (claude), :1057-1120 (codex),
       :1187+ (pi)⟩
-- [ ] Verify J7: hand-corrupt a session with a glued line and confirm the tail survives;
+- [x] Verify J7: hand-corrupt a session with a glued line and confirm the tail survives;
       search for a phrase from a week-old session; import one Claude Code session and
       continue it. Tag `jcode-7`.
 

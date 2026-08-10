@@ -5618,3 +5618,50 @@ codex: reviews of `579fee2`, `1b1311a`, `bb57093`, `750dbf0`, and `6d1bf1d`
         sandbox run was blocked by Unix-socket/port permissions and a
         read-only home directory, while the same gates pass in the local
         workspace.
+
+## 2026-08-09 J7.2 — searchable session transcripts
+
+`session_search` now searches prior native JSONL sessions by phrase and role, returning
+the session name, date, role, and a bounded matching excerpt. The TUI resolves the
+current name at search time, while headless and daemon workers use their fixed session
+name; unchanged files are reused through a size+mtime index. The index has bounded
+message, term, file, and corpus retention, shared JSONL salvage behavior, cancellation
+checks, and an ordinal reread path so multiple oversized matches keep their own excerpts.
+
+parity: `crates/jcode-app-core/src/tool/session_search.rs:125-300`,
+        `session_search_index.rs:1-120` — on par for the scoped §7.2 role/name/date/
+        excerpt search and per-file size+mtime+term-set reuse; broader jcode filters and
+        provider-session metadata are outside this item.
+verification: focused search tests, `go test -race ./internal/session ./internal/resumecmd`,
+        `go build -p 1 ./...`, `go vet -p 1 ./...`, `go test -p 1 ./... -count=1`,
+        and `git diff --check` pass locally.
+codex: reviews of `d7f25f3`, `e7c7520`, `c325806`, and `7c389d4` found and closed
+        salvage, live-rename, tool-name, cache-bound, cancellation, eviction, tail-
+        retention, excerpt, tokenization, and same-session oversized-match issues;
+        the final review had no code-specific findings, with its full-suite attempt
+        limited by the sandbox's read-only home fixture.
+
+## 2026-08-09 J7.3 — external session import and resume
+
+`evilcode resume --from claude|codex|opencode <id-or-path>` now discovers known local
+transcript paths, normalizes Claude Code blocks (including tool calls/results), Codex
+response items, and OpenCode session/message/part storage into provider messages, and
+writes a durable native JSONL session before entering ordinary `-resume`. Imported names
+are deterministic by source identity; repeating an import reuses the existing native
+continuation rather than overwriting later evilcode turns. OpenCode project-nested session
+directories and direct transcript paths are supported.
+
+parity: `crates/jcode-base/src/import.rs:598-760`, `:1057-1120`, and `:1284-1409` —
+        on par for the three sources required by §7.3; evilcode keeps structured native
+        tool-call fields where the source provides them.
+verification: Claude import/resume, Claude tool-result, Codex response-item, OpenCode
+        part-storage, direct-path identity, repeat-import, and nested-layout tests pass;
+        the committed implementation review and race-enabled session tests pass.
+
+## 2026-08-09 Verify J7 — phase closeout
+
+The J7 acceptance path is covered by the durable glued-tail salvage tests, transcript
+phrase search tests including an older session and oversized-message excerpts, and
+foreign-session import/resume tests. The serial repository gate passes: `go build -p 1
+./...`, `go vet -p 1 ./...`, `go test -p 1 ./... -count=1`, and `git diff --check`.
+The phase is ready for the `jcode-7` tag and Forgejo push.
