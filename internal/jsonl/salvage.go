@@ -16,6 +16,7 @@ type Candidate struct {
 	Depth     int
 	InString  bool
 	Container byte
+	InArray   bool
 }
 
 // CandidateFilter is an optional caller-specific guard for ambiguous records.
@@ -52,8 +53,9 @@ func Salvage[T any](line, prefix []byte, decode func([]byte) (T, bool), filter C
 			Depth:     candidateState.depth,
 			InString:  candidateState.inString,
 			Container: candidateState.openContainer(),
+			InArray:   candidateState.hasContainer('['),
 		}
-		if ok && (candidate.Depth == 0 || candidate.InString ||
+		if ok && !candidate.InArray && (candidate.Depth == 0 || candidate.InString ||
 			(candidate.Depth == 1 && candidate.Container == '{')) &&
 			(filter == nil || filter(candidate)) {
 			if value, accepted := decode(raw); accepted {
@@ -65,9 +67,10 @@ func Salvage[T any](line, prefix []byte, decode func([]byte) (T, bool), filter C
 			}
 		}
 
-		// Consume the opening brace and keep walking. This matters when the
-		// first object is the torn prefix and a complete object starts later on
-		// the same physical line.
+		// Keep the lexical context accumulated before this candidate, then consume
+		// its opening brace and keep walking. Dropping candidateState here would
+		// forget an enclosing array or an open string before the next candidate.
+		state = candidateState
 		state.advance(line[start : start+1])
 		cursor = start + 1
 	}
@@ -167,6 +170,15 @@ func (l lexer) openContainer() byte {
 		return 0
 	}
 	return l.containers[len(l.containers)-1]
+}
+
+func (l lexer) hasContainer(want byte) bool {
+	for _, container := range l.containers {
+		if container == want {
+			return true
+		}
+	}
+	return false
 }
 
 // object returns the balanced object beginning at start. It intentionally

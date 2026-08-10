@@ -913,6 +913,24 @@ func TestReadDoesNotSalvageArrayElement(t *testing.T) {
 	}
 }
 
+func TestReadDoesNotSalvageTornStringInsideArray(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `[{"ts":"2026-01-01T00:00:01Z","type":"assistant","data":{"role":"assistant","content":"torn` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"ghost"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("array string tail should be tolerated: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("recovered %d entries from an array string, want none", len(entries))
+	}
+}
+
 func TestReadDoesNotSalvageNestedEnvelope(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bat.jsonl")

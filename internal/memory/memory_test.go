@@ -529,6 +529,25 @@ func TestReloadDoesNotSalvageArrayElement(t *testing.T) {
 	}
 }
 
+func TestReloadDoesNotSalvageTornStringInsideArray(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `[{"id":1,"text":"torn` +
+		`{"id":2,"text":"ghost","kind":"fact","ts":"2026-01-01T00:00:02Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("array string tail should be tolerated: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 0 {
+		t.Fatalf("recovered %d records from an array string, want none", s.Len())
+	}
+}
+
 func TestReloadDoesNotSalvageNestedRecord(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
