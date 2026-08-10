@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	htmlpkg "html"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/todo"
@@ -87,7 +92,11 @@ type GitDiffStat struct {
 	Error   string
 }
 
-const overnightReportOutputLimit = 900
+const (
+	overnightReportOutputLimit = 900
+	gitOutputLimit             = 2 << 20
+	reportFileScanLimit        = 16 << 20
+)
 
 func cloneGitSnapshot(in GitSnapshot) GitSnapshot {
 	in.Dirty = append([]string(nil), in.Dirty...)
@@ -145,6 +154,14 @@ func (o *Overnight) RecordTurn(at time.Time, spent int, after []todo.Item) {
 	}
 
 	changed := changedTodoIDs(before, after)
+	completedThisTurn := 0
+	for _, id := range changed {
+		old, hadOld := itemByID(before, id)
+		current, hasCurrent := itemByID(after, id)
+		if hasCurrent && current.Status == todo.StatusCompleted && (!hadOld || old.Status != todo.StatusCompleted) {
+			completedThisTurn++
+		}
+	}
 	changeLabels := make([]string, 0, len(changed))
 	for _, id := range changed {
 		label := changesByID[id]
@@ -167,7 +184,7 @@ func (o *Overnight) RecordTurn(at time.Time, spent int, after []todo.Item) {
 		} else if hadOld {
 			card.Content = old.Content
 		}
-		card.Validated, card.Validation = taskValidation(current, hasCurrent, o.CurrentTools)
+		card.Validated, card.Validation = taskValidation(current, hasCurrent, o.CurrentTools, completedThisTurn > 1)
 		o.Cards = append(o.Cards, card)
 	}
 
@@ -215,7 +232,7 @@ func itemByID(items []todo.Item, id string) (todo.Item, bool) {
 	return todo.Item{}, false
 }
 
-func taskValidation(item todo.Item, exists bool, checks []OvernightToolCheck) (bool, string) {
+func taskValidation(item todo.Item, exists bool, checks []OvernightToolCheck, requireAttribution bool) (bool, string) {
 	if !exists || item.Status != todo.StatusCompleted {
 		return false, "item was touched but is not completed"
 	}
@@ -227,6 +244,9 @@ func taskValidation(item todo.Item, exists bool, checks []OvernightToolCheck) (b
 	}
 	for _, check := range checks {
 		if check.Success && validationTool(check) {
+			if requireAttribution && !checkNamesTodo(check, item.ID) {
+				continue
+			}
 			label := check.Name
 			if check.Command != "" {
 				label += " " + check.Command
@@ -234,7 +254,26 @@ func taskValidation(item todo.Item, exists bool, checks []OvernightToolCheck) (b
 			return true, "verified by " + truncateReport(label, 220)
 		}
 	}
+	if requireAttribution {
+		return false, "multiple todos completed in one turn and no successful check named this todo"
+	}
 	return false, "no successful verification command was recorded"
+}
+
+func checkNamesTodo(check OvernightToolCheck, id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{check.Command, check.Intent, check.Output}, " "))
+	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-'
+	}) {
+		if field == id {
+			return true
+		}
+	}
+	return false
 }
 
 func validationTool(check OvernightToolCheck) bool {
@@ -272,6 +311,9 @@ func truncateReport(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
 	return value[:limit] + "…"
 }
 
@@ -301,18 +343,52 @@ func summarizeItems(items []todo.Item) string {
 }
 
 func runGit(root string, args ...string) (string, error) {
+	out, err := runGitRaw(root, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func runGitRaw(root string, args ...string) ([]byte, error) {
 	if strings.TrimSpace(root) == "" {
-		return "", fmt.Errorf("workspace directory is empty")
+		return nil, fmt.Errorf("workspace directory is empty")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
+	var output boundedGitOutput
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, truncateReport(string(out), 300))
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, truncateReport(output.String(), 300))
 	}
-	return strings.TrimSpace(string(out)), nil
+	if output.truncated {
+		return nil, fmt.Errorf("git %s: output exceeded %d bytes", strings.Join(args, " "), gitOutputLimit)
+	}
+	return output.Bytes(), nil
+}
+
+type boundedGitOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (b *boundedGitOutput) Write(p []byte) (int, error) {
+	written := len(p)
+	remaining := gitOutputLimit - b.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return written, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		b.truncated = true
+	}
+	_, _ = b.Buffer.Write(p)
+	return written, nil
 }
 
 func captureGit(root string) GitSnapshot {
@@ -321,31 +397,39 @@ func captureGit(root string) GitSnapshot {
 		snapshot.Error = "workspace directory is empty"
 		return snapshot
 	}
-	var issues []string
-	if branch, err := runGit(root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
-		snapshot.Branch = branch
-	} else if branch, fallbackErr := runGit(root, "rev-parse", "--abbrev-ref", "HEAD"); fallbackErr == nil {
-		snapshot.Branch = branch
-	} else {
-		issues = append(issues, "branch: "+fallbackErr.Error())
+	status, err := runGitRaw(root, "status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z")
+	if err != nil {
+		snapshot.Error = err.Error()
+		return snapshot
 	}
-	if head, err := runGit(root, "rev-parse", "HEAD"); err == nil {
-		snapshot.Head = head
-	} else {
-		issues = append(issues, "HEAD: "+err.Error())
-	}
-	if status, err := runGit(root, "status", "--porcelain=v1", "--untracked-files=all"); err == nil {
-		if status != "" {
-			snapshot.Dirty = strings.Split(status, "\n")
+	records := bytes.Split(status, []byte{0})
+	for i := 0; i < len(records); i++ {
+		record := records[i]
+		line := string(record)
+		switch {
+		case strings.HasPrefix(line, "# branch.oid "):
+			snapshot.Head = strings.TrimPrefix(line, "# branch.oid ")
+			if snapshot.Head == "(initial)" {
+				snapshot.Head = ""
+			}
+		case strings.HasPrefix(line, "# branch.head "):
+			snapshot.Branch = strings.TrimPrefix(line, "# branch.head ")
+		case strings.HasPrefix(line, "#") || line == "":
+		default:
+			// A porcelain-v2 rename record is followed by the original path as
+			// its own NUL-delimited field. Keep it with the change instead of
+			// misreporting the old name as a second dirty entry.
+			if strings.HasPrefix(line, "2 ") && i+1 < len(records) {
+				i++
+				line += "\tfrom " + string(records[i])
+			}
+			snapshot.Dirty = append(snapshot.Dirty, line)
 		}
-	} else {
-		issues = append(issues, "status: "+err.Error())
 	}
-	snapshot.Error = strings.Join(issues, "\n")
 	return snapshot
 }
 
-func captureGitDiffStat(root, startHead string) GitDiffStat {
+func captureGitDiffStat(root, startHead string, startDirty []string) GitDiffStat {
 	stat := GitDiffStat{}
 	args := []string{"diff", "--numstat"}
 	if startHead != "" {
@@ -381,7 +465,82 @@ func captureGitDiffStat(root, startHead string) GitDiffStat {
 	if stat.Summary == "" {
 		stat.Summary = "no tracked changes"
 	}
+	initialUntracked := make(map[string]bool)
+	for _, line := range startDirty {
+		if strings.HasPrefix(line, "?? ") || strings.HasPrefix(line, "? ") {
+			name := strings.TrimPrefix(strings.TrimPrefix(line, "?? "), "? ")
+			initialUntracked[name] = true
+		}
+	}
+	untracked, untrackedErr := runGitRaw(root, "ls-files", "--others", "--exclude-standard", "-z")
+	if untrackedErr != nil {
+		if stat.Error == "" {
+			stat.Error = untrackedErr.Error()
+		}
+		return stat
+	}
+	var addedFiles []string
+	for _, rawName := range bytes.Split(untracked, []byte{0}) {
+		name := string(rawName)
+		if name == "" || initialUntracked[name] {
+			continue
+		}
+		stat.Files++
+		if lines, binary, countErr := countReportFileLines(filepath.Join(root, name)); countErr == nil && !binary {
+			stat.Added += lines
+		}
+		addedFiles = append(addedFiles, name)
+	}
+	if len(addedFiles) > 0 {
+		sort.Strings(addedFiles)
+		stat.Summary += "\n\nNew untracked files:\n" + strings.Join(addedFiles, "\n")
+	}
 	return stat
+}
+
+func countReportFileLines(path string) (lines int, binary bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, true, nil
+	}
+	// An exact line count is cosmetic. Do not turn report generation into an
+	// unbounded read when a run creates a very large artifact or sparse file.
+	if info.Size() > reportFileScanLimit {
+		return 0, true, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, false, err
+	}
+	defer file.Close()
+	buffer := make([]byte, 32*1024)
+	sawData, lastNewline := false, false
+	for {
+		n, readErr := file.Read(buffer)
+		chunk := buffer[:n]
+		if len(chunk) > 0 {
+			sawData = true
+			if bytes.IndexByte(chunk, 0) >= 0 {
+				return 0, true, nil
+			}
+			lines += bytes.Count(chunk, []byte{'\n'})
+			lastNewline = chunk[len(chunk)-1] == '\n'
+		}
+		if readErr == nil {
+			continue
+		}
+		if !errors.Is(readErr, io.EOF) {
+			return 0, false, readErr
+		}
+		break
+	}
+	if sawData && !lastNewline {
+		lines++
+	}
+	return lines, false, nil
 }
 
 // WriteReport writes one complete report under the configured data directory
@@ -398,7 +557,7 @@ func (o *Overnight) WriteReport(dataDir, cwd string, finalTodos []todo.Item) (st
 	}
 	o.EndGit = captureGit(cwd)
 	o.FinalTodos = cloneTodoItems(finalTodos)
-	stat := captureGitDiffStat(cwd, o.Preflight.Git.Head)
+	stat := captureGitDiffStat(cwd, o.Preflight.Git.Head, o.Preflight.Git.Dirty)
 	started := o.Started
 	if started.IsZero() {
 		started = time.Now()
@@ -468,7 +627,7 @@ func (o *Overnight) renderHTML(path string, stat GitDiffStat) string {
 </div>
 <h2>Preflight</h2><dl><dt>Todo list</dt><dd>%s</dd><dt>Budget</dt><dd>%s tokens</dd><dt>Starting branch</dt><dd>%s</dd><dt>Starting HEAD</dt><dd><code>%s</code></dd></dl>
 <h3>Starting dirty files</h3>%s
-<h2>Git result</h2><dl><dt>Stopping branch</dt><dd>%s</dd><dt>Stopping HEAD</dt><dd><code>%s</code></dd><dt>Diffstat</dt><dd>%d files · +%d additions · -%d deletions</dd></dl>
+<h2>Git result</h2><dl><dt>Stopping branch</dt><dd>%s</dd><dt>Stopping HEAD</dt><dd><code>%s</code></dd><dt>Working tree vs starting HEAD</dt><dd>%d files · +%d additions · -%d deletions</dd></dl>
 <pre>%s</pre>%s
 <h2>Task cards</h2>%s
 <h2>Timeline</h2>%s
@@ -586,18 +745,48 @@ func renderTimeline(entries []OvernightTimelineEntry, escape func(string) string
 	return b.String()
 }
 
+type overnightReportCompletion struct {
+	run    Overnight
+	path   string
+	reason string
+	err    error
+	next   *overnightReportCompletion
+}
+
 func (m *Model) finishOvernight(reason string) {
 	m.overnight.Stop(reason)
 	items := []todo.Item(nil)
 	if m.todos != nil {
 		items = m.todos.Items()
 	}
-	path, err := m.overnight.WriteReport(m.dataDir, m.cwd, items)
-	message := fmt.Sprintf("⏳ Overnight stopped after %d turns: %s", m.overnight.Turns, reason)
-	if err != nil {
-		message += "; report unavailable: " + err.Error()
+	run := m.overnight
+	dataDir, cwd := m.dataDir, m.cwd
+	go func() {
+		path, err := run.WriteReport(dataDir, cwd, items)
+		done := &overnightReportCompletion{run: run, path: path, reason: reason, err: err}
+		for {
+			done.next = m.overnightReportDone.Load()
+			if m.overnightReportDone.CompareAndSwap(done.next, done) {
+				break
+			}
+		}
+	}()
+	message := fmt.Sprintf("⏳ Overnight stopped after %d turns: %s; writing report...", m.overnight.Turns, reason)
+	m.notice = message
+	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: message})
+	m.scroll.FollowBottom()
+}
+
+func (m *Model) applyOvernightReportCompletion(done *overnightReportCompletion) {
+	if done == nil || !m.overnight.Started.Equal(done.run.Started) || m.overnight.Active {
+		return
+	}
+	m.overnight = done.run
+	message := fmt.Sprintf("⏳ Overnight stopped after %d turns: %s", done.run.Turns, done.reason)
+	if done.err != nil {
+		message += "; report unavailable: " + done.err.Error()
 	} else {
-		message += "; report: " + path
+		message += "; report: " + done.path
 	}
 	m.notice = message
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: message})

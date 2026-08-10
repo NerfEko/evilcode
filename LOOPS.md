@@ -5996,3 +5996,37 @@ parity: `crates/jcode-base/src/skill.rs:505-523` — on par for Unicode-safe
         validity when front matter supplies no description.
 codex: 1 finding — fixed here (fallback skill metadata could corrupt prompt
         UTF-8); none dismissed.
+
+## 2026-08-10 J10 review fix — make overnight evidence accurate and bounded
+
+The plan4 audit found that one successful validation command was copied onto
+every todo completed in the same turn, so unrelated work could be reported as
+validated. Multi-item turns now require the successful check to name the todo
+it supports. Reports include files first created during the run, preserve exact
+NUL-delimited Git paths and valid UTF-8, and label the diff honestly relative to
+the starting HEAD. Pre-existing untracked files are excluded from that result.
+
+Git preflight and report generation previously ran synchronously on the TUI
+event loop, with three serial Git subprocesses at preflight and more at stop.
+Both paths are now asynchronous; preflight uses one porcelain-v2 call, report
+completions use a lock-free stack so overlapping completions cannot overwrite
+one another, Git output is capped at 2 MiB, and line scans for new artifacts are
+streamed with a 16 MiB per-file ceiling.
+
+reproduction: `TestOvernightDoesNotShareOneCheckAcrossMultipleCompletedTodos`
+        failed before the fix because one API test validated both API and UI
+        todos. The report fixture also failed to count a newly created file,
+        and `TestTruncateReportKeepsUTF8Valid` exposed a split multibyte rune.
+        The asynchronous preflight/report, exact pre-existing-untracked path,
+        bounded output, and large-artifact cases now have regression coverage.
+verification: the complete TUI suite and the focused J10 race corpus pass;
+        `git diff --check` passes.
+parity: `crates/jcode-overnight-core/src/lib.rs:155-258,461-720` — better
+        (both implementations retain preflight state, per-task evidence,
+        timeline, stop reason, and self-contained HTML; evilcode additionally
+        prevents cross-todo evidence attribution and bounds/defers repository
+        inspection so report generation cannot freeze the UI or grow with an
+        arbitrary subprocess/file output).
+codex: 5 findings — all fixed here (shared validation evidence, missing new
+        untracked files, byte-split UTF-8, synchronous Git work on the render
+        loop, and unbounded Git/file capture); none dismissed.

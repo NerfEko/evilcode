@@ -58,6 +58,12 @@ type Overnight struct {
 	StoppedAt    time.Time
 }
 
+type overnightPreflightResult struct {
+	started time.Time
+	git     GitSnapshot
+	items   []todo.Item
+}
+
 // Overnight caps. Deliberately modest — this is a personal tool on a personal
 // key, and the failure mode is a bill rather than an error.
 const (
@@ -234,6 +240,11 @@ verify it, leave it in progress and say what is missing.`
 func (m *Model) overnightCommand(arg string) tea.Cmd {
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "off", "stop":
+		if m.overnightPreflightPending {
+			m.overnightPreflightPending = false
+			m.notice = "⏳ Overnight start cancelled"
+			return nil
+		}
 		if !m.overnight.Active {
 			m.notice = m.overnight.Status()
 			return nil
@@ -241,6 +252,10 @@ func (m *Model) overnightCommand(arg string) tea.Cmd {
 		m.finishOvernight("you stopped it")
 		return nil
 	case "status":
+		if m.overnightPreflightPending {
+			m.notice = "⏳ Overnight is capturing its starting repository state"
+			return nil
+		}
 		m.notice = m.overnight.Status()
 		return nil
 	case "report":
@@ -256,10 +271,35 @@ func (m *Model) overnightCommand(arg string) tea.Cmd {
 		m.notice = "⏳ Finish the current turn first"
 		return nil
 	}
+	if m.overnight.Active {
+		m.notice = "⏳ Overnight is already active · /overnight status"
+		return nil
+	}
+	if m.overnightPreflightPending {
+		m.notice = "⏳ Overnight is already capturing its starting repository state"
+		return nil
+	}
 
 	now := time.Now()
 	items := m.todos.Items()
-	m.overnight.StartWithSnapshot(now, captureGit(m.cwd), items)
+	root := m.cwd
+	m.overnightPreflightPending = true
+	m.notice = "⏳ Capturing overnight preflight..."
+	return func() tea.Msg {
+		return overnightPreflightResult{started: now, git: captureGit(root), items: items}
+	}
+}
+
+func (m *Model) applyOvernightPreflight(result overnightPreflightResult) tea.Cmd {
+	if !m.overnightPreflightPending {
+		return nil
+	}
+	m.overnightPreflightPending = false
+	if m.processing || m.overnight.Active {
+		m.notice = "⏳ Overnight preflight finished, but another run is active"
+		return nil
+	}
+	m.overnight.StartWithSnapshot(result.started, result.git, result.items)
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: fmt.Sprintf(
 		"⏳ Overnight armed · at most %d turns, %s tokens, %d hours\n"+
 			"It stops on its own and says why. /overnight off to stop it now.",

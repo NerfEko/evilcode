@@ -353,7 +353,9 @@ type Model struct {
 	reloadTo string
 
 	// overnight is the supervised long-run loop (§5), inert unless armed.
-	overnight Overnight
+	overnight                 Overnight
+	overnightPreflightPending bool
+	overnightReportDone       atomic.Pointer[overnightReportCompletion]
 
 	// advisor is the §21 second opinion, and lsp the language-server manager.
 	// Both are nil when unconfigured, which every path has to survive.
@@ -585,6 +587,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyCompaction(msg)
 		return m, nil
 
+	case overnightPreflightResult:
+		return m, m.applyOvernightPreflight(msg)
+
 	case clipboardImage:
 		m.applyClipboardImage(msg)
 		return m, nil
@@ -631,6 +636,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.notice = "✓ background: " + done.Label
 			}
+		}
+		for done := m.overnightReportDone.Swap(nil); done != nil; done = done.next {
+			m.applyOvernightReportCompletion(done)
 		}
 		// A pending question is picked up here rather than pushed, so the tool
 		// goroutine never touches model state.
