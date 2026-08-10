@@ -104,18 +104,17 @@ type freeWidths struct {
 }
 
 func newFreeWidths(rows []string, total int) *freeWidths {
-	memo := make([]int32, len(rows))
-	for i := range memo {
-		memo[i] = -1
-	}
-	return &freeWidths{rows: rows, total: total, memo: memo}
+	// Zero is the unmeasured sentinel; store the real width plus one. This
+	// avoids an O(rows) fill loop on every frame for a transcript whose tail is
+	// the only part the dock usually probes.
+	return &freeWidths{rows: rows, total: total, memo: make([]int32, len(rows))}
 }
 
 func (f *freeWidths) at(row int) int {
-	if f.memo[row] < 0 {
-		f.memo[row] = int32(max(f.total-lipgloss.Width(strings.TrimRight(f.rows[row], " ")), 0))
+	if f.memo[row] == 0 {
+		f.memo[row] = int32(max(f.total-lipgloss.Width(strings.TrimRight(f.rows[row], " ")), 0)) + 1
 	}
-	return int(f.memo[row])
+	return int(f.memo[row] - 1)
 }
 
 // firstRows indexes each block to its first content row, -1 for blocks with no

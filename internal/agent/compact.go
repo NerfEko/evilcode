@@ -388,7 +388,10 @@ func (c *Compactor) WaitForRelevance(
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	ticker := time.NewTicker(time.Millisecond)
+	// The relevance worker only changes state when its request completes; a
+	// 1ms poll burns a core during every grace period. Ten milliseconds keeps
+	// the 50ms wait responsive without turning compaction into a busy loop.
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		c.mu.Lock()

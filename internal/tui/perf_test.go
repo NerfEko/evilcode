@@ -47,8 +47,9 @@ func BenchmarkViewScrolledUp(b *testing.B) {
 	}
 }
 
-// BenchmarkViewScrolling is the real scroll cost: Update invalidates the
-// transcript cache on every non-tick message, so a wheel event rebuilds.
+// BenchmarkViewScrolling measures an intentionally invalidated transcript
+// (resize/theme/content changes). Ordinary wheel events only move the window
+// and now retain the settled Rows cache.
 func BenchmarkViewScrolling(b *testing.B) {
 	m := perfModel(b, 400)
 	m.View()

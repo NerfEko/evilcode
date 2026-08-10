@@ -23,8 +23,14 @@ var highlightStyle = styles.Get("dracula")
 // the kind of cost that only shows up once a transcript is long, which is
 // exactly when it hurts (plan.md §9.2).
 var (
-	tokenMu    sync.Mutex
-	tokenCache = map[string][]token{}
+	tokenMu         sync.Mutex
+	tokenCache      = map[string][]token{}
+	tokenCacheBytes int
+)
+
+const (
+	maxTokenCacheEntries = 512
+	maxTokenCacheBytes   = 16 << 20
 )
 
 // token is one highlighted run.
@@ -47,15 +53,36 @@ func tokenize(lang, src string) [][]token {
 	} else {
 		flat = lexTokens(lang, src)
 		tokenMu.Lock()
-		// A bounded cache: a long session highlighting many blocks should not
-		// grow without limit.
-		if len(tokenCache) > 512 {
-			tokenCache = map[string][]token{}
+		entryBytes := len(key)
+		for _, t := range flat {
+			entryBytes += len(t.Text)
 		}
-		tokenCache[key] = flat
+		// A bounded cache: a long session highlighting many blocks should not
+		// grow without limit, and a handful of large generated files must not
+		// turn an entry-count limit into a multi-hundred-megabyte heap.
+		if entryBytes > maxTokenCacheBytes || len(tokenCache) >= maxTokenCacheEntries ||
+			tokenCacheBytes+entryBytes > maxTokenCacheBytes {
+			tokenCache = map[string][]token{}
+			tokenCacheBytes = 0
+		}
+		if entryBytes <= maxTokenCacheBytes {
+			tokenCache[key] = flat
+			tokenCacheBytes += entryBytes
+		}
 		tokenMu.Unlock()
 	}
 
+	return splitTokens(flat)
+}
+
+// tokenizeUncached is for an open code fence. Every streamed prefix is a new
+// source string, so caching those prefixes would evict useful finished-file
+// entries and retain a second copy of a growing answer.
+func tokenizeUncached(lang, src string) [][]token {
+	return splitTokens(lexTokens(lang, src))
+}
+
+func splitTokens(flat []token) [][]token {
 	// Split runs at newlines so callers can style per line.
 	lines := [][]token{{}}
 	for _, t := range flat {
@@ -127,8 +154,14 @@ func renderTokens(line []token, tint *color.RGBA) string {
 // re-styling text that had not changed. Colours come from the fixed chroma
 // style rather than the palette, so a cached line survives /theme.
 var (
-	lineMu    sync.Mutex
-	lineCache = map[string][]string{}
+	lineMu         sync.Mutex
+	lineCache      = map[string][]string{}
+	lineCacheBytes int
+)
+
+const (
+	maxLineCacheEntries = 64
+	maxLineCacheBytes   = 16 << 20
 )
 
 // HighlightLines returns syntax-highlighted lines for a code block. Callers
@@ -149,13 +182,33 @@ func HighlightLines(lang, src string) []string {
 	}
 
 	lineMu.Lock()
+	entryBytes := len(key)
+	for _, line := range out {
+		entryBytes += len(line)
+	}
 	// Bounded like tokenCache, but tighter: an entry here is a whole file's
 	// worth of styled text, not its tokens.
-	if len(lineCache) > 64 {
+	if entryBytes > maxLineCacheBytes || len(lineCache) >= maxLineCacheEntries ||
+		lineCacheBytes+entryBytes > maxLineCacheBytes {
 		lineCache = map[string][]string{}
+		lineCacheBytes = 0
 	}
-	lineCache[key] = out
+	if entryBytes <= maxLineCacheBytes {
+		lineCache[key] = out
+		lineCacheBytes += entryBytes
+	}
 	lineMu.Unlock()
+	return out
+}
+
+// HighlightLinesUncached styles a live code prefix without retaining that
+// prefix in the process-wide syntax caches.
+func HighlightLinesUncached(lang, src string) []string {
+	lines := tokenizeUncached(lang, src)
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, renderTokens(line, nil))
+	}
 	return out
 }
 
