@@ -1,8 +1,8 @@
 # planfiles.md — how to author a plan file
 
 A plan file is the working spec an agent builds from. It is checked off as it goes
-and pairs with three companion files. This describes the layout and the loop so a
-new plan file works the same way `plan.md` (features) and `plan2.md` (bug fixes) do.
+and pairs with three companion files. This preserves the layout and loop used by the
+completed feature and hardening plans, which remain available in Git history.
 
 ## The loop (confirmed at the top of every plan file)
 
@@ -11,7 +11,7 @@ one spine — **write → fix → checkbox in the plan file → commit → codex
 LOOPS.md + README.md → next problem** — and a fix plan wraps that spine in
 *reproduce* on the front and *fail-then-pass* on the back.
 
-**Build loop** (features from a known-good spec — `plan.md` §0.2):
+**Build loop** (features from a known-good spec):
 
 1. Pick the next unchecked `[ ]` task in the current phase.
 2. Implement. Reuse existing packages before writing new.
@@ -29,7 +29,7 @@ LOOPS.md + README.md → next problem** — and a fix plan wraps that spine in
 9. If a task is impossible as specced: do the closest working thing, log in
    `DEVIATIONS.md`, move on. Never stall.
 
-**Fix loop** (bugs from a report that is *not* known-good — `plan2.md` §0.2): the loop
+**Fix loop** (bugs from a report that is *not* known-good): the loop
 gains one step before the fix — **reproduce**. Write the smallest test that fails
 *because of this bug* and watch it fail; cite the failure in `LOOPS.md`. Three
 outcomes: it fails → you understand the bug, continue; it passes → the finding is
@@ -100,7 +100,7 @@ steps. **A fix without a fail-then-pass pair is not done.**
 
 | file | role |
 |---|---|
-| `plan.md` / `plan2.md` | the working spec; tasks checked off here |
+| `plan*.md` | the temporary working spec; remove it after completion once its durable evidence is in Git and `LOOPS.md` |
 | `LOOPS.md` | append-only flight recorder, one entry per task |
 | `README.md` | kept current on every behavior-changing commit |
 | `DEVIATIONS.md` | append-only spec-deviation log |

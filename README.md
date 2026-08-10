@@ -344,8 +344,9 @@ probe/               tmux driver, scenarios, goldens
 `internal/agent` does not import bubbletea, and a test enforces it. That separation is
 what lets the headless runner, the daemon and the probe rig share one implementation.
 
-`plan.md` holds the specification. `DEVIATIONS.md` records where the build differs from
-it and why. `LOOPS.md` is the build log.
+`DEVIATIONS.md` records where the completed build differs from its historical specs and
+why. `LOOPS.md` retains the implementation and review log; `planfiles.md` is the reusable
+guide for authoring future working plans.
 
 ## License
 
