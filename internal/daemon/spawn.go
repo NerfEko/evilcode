@@ -76,16 +76,17 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	}
 
 	sess := &Session{
-		Name:    store.Name,
-		Model:   built.Model,
-		Task:    task,
-		Worker:  true,
-		Started: time.Now(),
-		built:   built,
-		ring:    NewRing(),
-		srv:     s,
-		done:    make(chan struct{}),
-		subs:    map[chan ServerMsg]struct{}{},
+		Name:          store.Name,
+		Model:         built.Model,
+		Task:          task,
+		Worker:        true,
+		Started:       time.Now(),
+		built:         built,
+		ring:          NewRing(),
+		srv:           s,
+		done:          make(chan struct{}),
+		subs:          map[chan ServerMsg]struct{}{},
+		lastHeartbeat: time.Now(),
 	}
 
 	// A worker can message and spawn like any other session. Bounded, though:
@@ -134,6 +135,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		// spending tokens. Only a Run that failed outright — no turn end, so
 		// nothing else will ever finish it — is marked from here.
 		if err := sess.built.Agent.Run(ctx, WorkerPrompt(task, files, schema)); err != nil {
+			sess.notifyWorkerFailure(err)
 			sess.markFinished()
 		}
 	}()

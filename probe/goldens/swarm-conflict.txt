@@ -22,21 +22,21 @@
  Understood — I will re-read it before editing.
 
    ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
-   Re-read it before you edit it — what you have is stale.
+   Re-read it before you edit it — what you have is stale. Intent:
+   editing testdata/clamp.go.
+   Diff preview:
+   --- a/testdata/clamp.go
+   +++ b/testdata/clamp.go
+   @@ -8,7 +8,7 @@
+   // makes every scenario's edit fail with "old string not found",
+   and the
+   // goldens then bake in the failure — which is exactly what
+   happened once.
+   func clamp(offset, max
+   …
  💡 Ctrl+R searches your prompt history
  3>
    mock-large · 428/200k ctx · dracula
-
-
-
-
-
-
-
-
-
-
-
 
 --- pane 1 ---
  evilcode · v0.1.0
@@ -58,7 +58,18 @@
  Understood — I will re-read it before editing.
 
    ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
-   Re-read it before you edit it — what you have is stale.
+   Re-read it before you edit it — what you have is stale. Intent:
+   editing testdata/clamp.go.                ╭──────────────────────╮
+   Diff preview:                             │ Context 428/200k     │
+   --- a/testdata/clamp.go                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+   +++ b/testdata/clamp.go                   ╰──────────────────────╯
+   @@ -8,7 +8,7 @@
+   // makes every scenario's edit fail with "old string not found",
+   and the
+   // goldens then bake in the failure — which is exactly what
+   happened once.
+   func clamp(offset, max
+   …
  💡 Ctrl+R searches your prompt history
  3>
    mock-large · 428/200k ctx · dracula

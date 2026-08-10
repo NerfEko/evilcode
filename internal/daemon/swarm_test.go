@@ -59,6 +59,38 @@ func TestConflictNoticeReachesTheReadersConversation(t *testing.T) {
 	}
 }
 
+func TestWriterConflictReachesBothWriters(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+
+	first, _ := srv.Open("")
+	second, _ := srv.Open("")
+	firstEdit := toolResult("edit", "auth.go")
+	firstEdit.Intent = "tighten auth"
+	firstEdit.Diff = "--- a/auth.go\n+++ b/auth.go\n-old\n+first"
+	first.observe(firstEdit)
+	first.observe(agent.Event{Kind: agent.EventTurnEnd})
+
+	secondEdit := toolResult("edit", "auth.go")
+	secondEdit.Intent = "rename auth"
+	secondEdit.Diff = "--- a/auth.go\n+++ b/auth.go\n-first\n+second"
+	second.observe(secondEdit)
+	second.observe(agent.Event{Kind: agent.EventTurnEnd})
+	first.observe(agent.Event{Kind: agent.EventTurnEnd})
+
+	firstMsgs := first.built.Agent.DrainInterrupts(false)
+	secondMsgs := second.built.Agent.DrainInterrupts(false)
+	if len(firstMsgs) == 0 || len(secondMsgs) == 0 {
+		t.Fatalf("writer notices: first=%d second=%d, want both writers told", len(firstMsgs), len(secondMsgs))
+	}
+	if !strings.Contains(firstMsgs[0].Content, second.Name) || !strings.Contains(firstMsgs[0].Content, "rename auth") {
+		t.Errorf("first writer notice = %q", firstMsgs[0].Content)
+	}
+	if !strings.Contains(secondMsgs[0].Content, first.Name) || !strings.Contains(secondMsgs[0].Content, "tighten auth") {
+		t.Errorf("second writer notice = %q", secondMsgs[0].Content)
+	}
+}
+
 func TestAWriterIsNotToldAboutItsOwnEdit(t *testing.T) {
 	srv, _ := testServer(t)
 	defer srv.Close()
@@ -171,6 +203,63 @@ func TestSpawnedWorkerIsAPeerWithSwarmTools(t *testing.T) {
 	if _, ok := worker.built.Agent.Tools.Find("spawn_worker"); !ok {
 		t.Error("a worker cannot spawn")
 	}
+}
+
+func TestSilentWorkerIsMarkedStaleAndSpawnerToldOnce(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+
+	spawner, _ := srv.Open("")
+	name, err := srv.SpawnFor(spawner.Name, "watch the auth worker", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.Lock()
+	worker := srv.sessions[name]
+	srv.mu.Unlock()
+	waitFor(t, "the worker to finish its mock turn", worker.finished)
+	// Re-open the lifecycle marker so the test models a worker whose process is
+	// still registered but whose event stream has gone quiet.
+	worker.mu.Lock()
+	worker.closedDone = false
+	worker.done = make(chan struct{})
+	worker.lastHeartbeat = time.Now().Add(-WorkerStaleAfter - time.Second)
+	worker.stale = false
+	worker.staleNotified = false
+	worker.mu.Unlock()
+	spawner.built.Agent.DrainInterrupts(false) // discard the normal result
+
+	now := time.Now()
+	srv.refreshWorkerStaleness(now)
+	peers := srv.Peers(spawner.Name)
+	found := false
+	for _, peer := range peers {
+		if peer.Name == name {
+			found = peer.Stale
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("peers = %+v, want worker %q marked stale", peers, name)
+	}
+
+	msgs := spawner.built.Agent.DrainInterrupts(false)
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "stale") {
+		t.Fatalf("stale notices = %+v, want one notice to the spawner", msgs)
+	}
+	srv.refreshWorkerStaleness(now.Add(time.Minute))
+	if msgs := spawner.built.Agent.DrainInterrupts(false); len(msgs) != 0 {
+		t.Errorf("stale worker was reported more than once: %+v", msgs)
+	}
+
+	worker.heartbeat(time.Now())
+	for _, peer := range srv.Peers(spawner.Name) {
+		if peer.Name == name && peer.Stale {
+			t.Error("a worker heartbeat did not clear its stale peer state")
+		}
+	}
+	worker.markFinished()
 }
 
 func TestSpawnBreakerBoundsOneSessionsWorkers(t *testing.T) {

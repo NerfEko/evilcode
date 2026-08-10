@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Access is one agent touching one file.
@@ -17,6 +18,8 @@ type Access struct {
 	Write   bool
 	Turn    int
 	At      time.Time
+	Intent  string
+	Preview string
 }
 
 // Conflict is what one agent needs told about another's edit.
@@ -40,10 +43,21 @@ type Conflict struct {
 	// map. Set by Write; empty for hand-built conflicts (tests, compaction).
 	canonical string
 
-	// ReadTurn is the turn the notified agent read the file on, which is the
-	// detail that makes the notice actionable rather than alarming: it says how
-	// stale what they are working from actually is.
+	// ReadTurn is the turn the notified agent read the file on. It is used for
+	// reader conflicts; writer conflicts use OtherTurn instead.
 	ReadTurn int
+
+	// WriterConflict means both sides wrote the same file. In that case the
+	// notice speaks about overlapping writes rather than pretending the target
+	// was merely a reader.
+	WriterConflict bool
+	OtherTurn      int
+
+	// Intent and Preview describe the write the notified session needs to know
+	// about. They are deliberately bounded before they reach this struct: a
+	// conflict is useful only while it remains small.
+	Intent  string
+	Preview string
 }
 
 // Notice is the line delivered into the agent's conversation.
@@ -51,9 +65,72 @@ type Conflict struct {
 // It names the file, the writer, and when the reader last saw it, because an
 // agent told only "a file changed" will either ignore it or re-read everything.
 func (c Conflict) Notice() string {
-	return fmt.Sprintf("⚠ %s modified %s which you read at turn %d. "+
-		"Re-read it before you edit it — what you have is stale.",
-		c.Other, c.Path, c.ReadTurn)
+	var b strings.Builder
+	if c.WriterConflict {
+		fmt.Fprintf(&b, "⚠ %s also modified %s at turn %d. "+
+			"Your writes overlap; re-read it and coordinate before continuing.",
+			c.Other, c.Path, c.OtherTurn)
+	} else {
+		fmt.Fprintf(&b, "⚠ %s modified %s which you read at turn %d. "+
+			"Re-read it before you edit it — what you have is stale.",
+			c.Other, c.Path, c.ReadTurn)
+	}
+	if c.Intent != "" {
+		fmt.Fprintf(&b, " Intent: %s.", c.Intent)
+	}
+	if c.Preview != "" {
+		b.WriteString("\nDiff preview:\n")
+		b.WriteString(c.Preview)
+	}
+	return b.String()
+}
+
+// ConflictPreviewMaxLines and ConflictPreviewMaxBytes keep a file notice
+// actionable without turning it into a second tool result. The line limit
+// mirrors the compact preview used by the edit path in jcode.
+const (
+	ConflictPreviewMaxLines = 6
+	ConflictPreviewMaxBytes = 240
+)
+
+// DiffPreview returns the first useful lines of a unified diff. It is safe to
+// call on an already-previewed value, which lets tests and other event sources
+// use the same bound as the daemon's write path.
+func DiffPreview(diff string) string {
+	diff = strings.TrimSpace(diff)
+	if diff == "" {
+		return ""
+	}
+
+	lines := strings.Split(diff, "\n")
+	truncated := false
+	if len(lines) > ConflictPreviewMaxLines {
+		lines = lines[:ConflictPreviewMaxLines]
+		truncated = true
+	}
+	preview := strings.Join(lines, "\n")
+	if len(preview) > ConflictPreviewMaxBytes {
+		preview = truncateUTF8(preview, ConflictPreviewMaxBytes)
+		truncated = true
+	}
+	if truncated {
+		preview += "\n…"
+	}
+	return preview
+}
+
+func truncateUTF8(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // Root is the workspace paths are reported relative to. Notices name
@@ -89,8 +166,9 @@ func (r *Registry) display(path string) string {
 type Registry struct {
 	mu sync.Mutex
 
-	// reads maps path → session → the turn it was last read on.
-	reads map[string]map[string]int
+	// reads maps path → session → the last read turn and time. The time is
+	// what lets a daemon forget an abandoned session's old view.
+	reads map[string]map[string]readAccess
 
 	// writes is the log of writes, used to decide what each reader has missed.
 	writes []Access
@@ -101,14 +179,72 @@ type Registry struct {
 	// delivered records conflicts already handed to a session, so a reader that
 	// does not re-read is not told the same thing every turn. Without it the
 	// notice becomes noise and gets ignored, which is worse than silence.
-	delivered map[string]bool
+	delivered map[string]time.Time
+
+	// now is injectable for expiry tests. Production uses the wall clock.
+	now func() time.Time
 }
+
+type readAccess struct {
+	Turn int
+	At   time.Time
+}
+
+// RegistryTouchExpiry bounds how long an old read or write can create a
+// conflict. A daemon that lives for days should not retain the first turn's
+// entire file history in memory.
+const RegistryTouchExpiry = 30 * time.Minute
+
+// RegistryWriteLogLimit bounds the retained write log even when a caller has a
+// clock that does not advance (or when a burst arrives inside the expiry).
+const RegistryWriteLogLimit = 1024
 
 // NewRegistry builds an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		reads:     map[string]map[string]int{},
-		delivered: map[string]bool{},
+		reads:     map[string]map[string]readAccess{},
+		delivered: map[string]time.Time{},
+		now:       time.Now,
+	}
+}
+
+func (r *Registry) timeNow() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+// expireLocked removes abandoned reads, old writes, and their delivery keys.
+// Callers hold r.mu.
+func (r *Registry) expireLocked(now time.Time) {
+	cutoff := now.Add(-RegistryTouchExpiry)
+	for path, readers := range r.reads {
+		for session, access := range readers {
+			if access.At.IsZero() || access.At.Before(cutoff) {
+				delete(readers, session)
+			}
+		}
+		if len(readers) == 0 {
+			delete(r.reads, path)
+		}
+	}
+
+	kept := r.writes[:0]
+	for _, access := range r.writes {
+		if !access.At.IsZero() && !access.At.Before(cutoff) {
+			kept = append(kept, access)
+		}
+	}
+	r.writes = kept
+	if len(r.writes) > RegistryWriteLogLimit {
+		r.writes = r.writes[len(r.writes)-RegistryWriteLogLimit:]
+	}
+
+	for key, at := range r.delivered {
+		if at.Before(cutoff) {
+			delete(r.delivered, key)
+		}
 	}
 }
 
@@ -130,10 +266,12 @@ func (r *Registry) Read(session, path string, turn int) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.timeNow()
+	r.expireLocked(now)
 	if r.reads[path] == nil {
-		r.reads[path] = map[string]int{}
+		r.reads[path] = map[string]readAccess{}
 	}
-	r.reads[path][session] = turn
+	r.reads[path][session] = readAccess{Turn: turn, At: now}
 
 	// Re-reading clears the slate for that file: the agent now has current
 	// contents, so any conflict it was told about is resolved.
@@ -145,8 +283,15 @@ func (r *Registry) Read(session, path string, turn int) {
 }
 
 // Write records that a session wrote a file and returns the conflicts this
-// creates — one per other session that had read it.
+// creates. It is kept as the small API used by callers that have no event
+// metadata; daemon event handling uses WriteWithDetails below.
 func (r *Registry) Write(session, path string, turn int) []Conflict {
+	return r.WriteWithDetails(session, path, turn, "", "")
+}
+
+// WriteWithDetails records a write and carries its human intent and a bounded
+// diff preview into any conflict notices it creates.
+func (r *Registry) WriteWithDetails(session, path string, turn int, intent, preview string) []Conflict {
 	if session == "" || path == "" {
 		return nil
 	}
@@ -154,30 +299,79 @@ func (r *Registry) Write(session, path string, turn int) []Conflict {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.timeNow()
+	r.expireLocked(now)
+	intent = strings.TrimSpace(intent)
+	preview = DiffPreview(preview)
+
+	// Keep only the latest write by each other session for the writer-to-writer
+	// notice. A session that rewrites a file several times is still one peer to
+	// coordinate with, and repeating every intermediate diff is noise.
+	priorWriters := map[string]Access{}
+	for _, access := range r.writes {
+		if !access.Write || access.Path != path || access.Session == session {
+			continue
+		}
+		if previous, ok := priorWriters[access.Session]; !ok || previous.At.Before(access.At) {
+			priorWriters[access.Session] = access
+		}
+	}
+
 	r.writes = append(r.writes, Access{
-		Session: session, Path: path, Write: true, Turn: turn, At: time.Now(),
+		Session: session, Path: path, Write: true, Turn: turn, At: now,
+		Intent: intent, Preview: preview,
 	})
+	if len(r.writes) > RegistryWriteLogLimit {
+		r.writes = r.writes[len(r.writes)-RegistryWriteLogLimit:]
+	}
 
 	var out []Conflict
-	for reader, readTurn := range r.reads[path] {
+	for reader, read := range r.reads[path] {
 		// A session that writes what it read is not in conflict with itself.
-		if reader == session {
+		// When the reader is also a prior writer, the writer-specific notice is
+		// more accurate and avoids two warnings for one overlapping change.
+		if reader == session || priorWriters[reader].Session != "" {
 			continue
 		}
 		out = append(out, Conflict{
-			Session: reader, Other: session, Path: r.display(path), ReadTurn: readTurn,
-			canonical: path,
+			Session: reader, Other: session, Path: r.display(path), ReadTurn: read.Turn,
+			Intent: intent, Preview: preview, canonical: path,
 		})
+	}
+	for _, previous := range priorWriters {
+		// Tell the earlier writer about the current writer, and the current
+		// writer about the earlier one. Both sides need the same fact in the
+		// terms of their own conversation.
+		out = append(out,
+			Conflict{
+				Session: previous.Session, Other: session, Path: r.display(path),
+				WriterConflict: true, OtherTurn: turn, Intent: intent, Preview: preview,
+				canonical: path,
+			},
+			Conflict{
+				Session: session, Other: previous.Session, Path: r.display(path),
+				WriterConflict: true, OtherTurn: previous.Turn,
+				Intent: previous.Intent, Preview: previous.Preview, canonical: path,
+			},
+		)
 	}
 	// Stable order so the same write always produces the same notices, which is
 	// what makes a golden of a conflict frame possible at all.
-	sort.Slice(out, func(i, j int) bool { return out[i].Session < out[j].Session })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Session != out[j].Session {
+			return out[i].Session < out[j].Session
+		}
+		if out[i].Other != out[j].Other {
+			return out[i].Other < out[j].Other
+		}
+		return out[i].WriterConflict && !out[j].WriterConflict
+	})
 
 	// The writer now holds current contents, so its own read state is current.
 	if r.reads[path] == nil {
-		r.reads[path] = map[string]int{}
+		r.reads[path] = map[string]readAccess{}
 	}
-	r.reads[path][session] = turn
+	r.reads[path][session] = readAccess{Turn: turn, At: now}
 	return out
 }
 
@@ -188,6 +382,7 @@ func (r *Registry) Write(session, path string, turn int) []Conflict {
 func (r *Registry) Pending(session string, conflicts []Conflict) []Conflict {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.expireLocked(r.timeNow())
 
 	var out []Conflict
 	for _, c := range conflicts {
@@ -204,10 +399,10 @@ func (r *Registry) Pending(session string, conflicts []Conflict) []Conflict {
 			ident = c.Path
 		}
 		key := session + "\x00" + ident + "\x00" + c.Other
-		if r.delivered[key] {
+		if _, ok := r.delivered[key]; ok {
 			continue
 		}
-		r.delivered[key] = true
+		r.delivered[key] = r.timeNow()
 		out = append(out, c)
 	}
 	return out
@@ -218,6 +413,7 @@ func (r *Registry) Pending(session string, conflicts []Conflict) []Conflict {
 func (r *Registry) Files(session string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.expireLocked(r.timeNow())
 	var out []string
 	for path, readers := range r.reads {
 		if _, ok := readers[session]; ok {
@@ -260,9 +456,27 @@ func CompactNotice(conflicts []Conflict) string {
 	if len(paths) > show {
 		list += fmt.Sprintf(", and %d more", len(paths)-show)
 	}
-	return fmt.Sprintf("⚠ %s modified %d files you read (%s). "+
+	notice := fmt.Sprintf("⚠ %s modified %d files you read (%s). "+
 		"Re-read them before editing — what you have is stale.",
 		strings.Join(names, " and "), len(paths), list)
+	for _, c := range conflicts {
+		if c.Intent == "" && c.Preview == "" {
+			continue
+		}
+		detail := ""
+		if c.Intent != "" {
+			detail = "Intent: " + c.Intent
+		}
+		if c.Preview != "" {
+			preview := strings.ReplaceAll(strings.TrimSpace(c.Preview), "\n", " / ")
+			if detail != "" {
+				detail += "; "
+			}
+			detail += "diff: " + preview
+		}
+		return notice + " " + detail
+	}
+	return notice
 }
 
 // WritesFiles reports whether a tool changes what it names.

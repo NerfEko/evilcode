@@ -189,6 +189,7 @@ type SessionInfo struct {
 	Clients int       `json:"clients"`
 	Worker  bool      `json:"worker"`
 	Started time.Time `json:"started"`
+	Stale   bool      `json:"stale,omitempty"`
 
 	// Task is a spawned worker's assignment, so `list` explains why a session
 	// nobody started is running.

@@ -156,6 +156,29 @@ func TestWriteCreatesAndReportsDiff(t *testing.T) {
 	}
 }
 
+func TestWriteAndEditCarryOptionalIntent(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "old\n"})
+	write, err := run(t, f.Tools(), "write", map[string]any{
+		"path": "a.txt", "content": "new\n", "intent": "refresh the fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if write.Intent != "refresh the fixture" {
+		t.Errorf("write intent = %q", write.Intent)
+	}
+
+	edit, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "new", "new": "updated", "intent": "make the assertion clearer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edit.Intent != "make the assertion clearer" {
+		t.Errorf("edit intent = %q", edit.Intent)
+	}
+}
+
 func TestEditReplacesAndCounts(t *testing.T) {
 	f := tempFS(t, map[string]string{"a.go": "package main\n\nfunc main() {}\n"})
 	res, err := run(t, f.Tools(), "edit", map[string]any{

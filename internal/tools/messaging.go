@@ -15,8 +15,11 @@ type Peer struct {
 	Task    string
 	Worker  bool
 	Running bool
-	Files   []string
-	Since   time.Duration
+	// Stale means a worker remains registered but has not advanced its event
+	// heartbeat within the daemon's liveness window.
+	Stale bool
+	Files []string
+	Since time.Duration
 }
 
 // Messenger is what the messaging tools need from the daemon. Separate from
@@ -134,7 +137,9 @@ func peersTool(m Messenger) Tool {
 			var b strings.Builder
 			for _, p := range peers {
 				state := "idle"
-				if p.Running {
+				if p.Stale {
+					state = "stale"
+				} else if p.Running {
 					state = "working"
 				}
 				fmt.Fprintf(&b, "%s (%s)", p.Name, state)

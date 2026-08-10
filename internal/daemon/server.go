@@ -49,6 +49,10 @@ type Server struct {
 	listener net.Listener
 	closed   bool
 
+	workerWatchMu   sync.Mutex
+	workerWatchStop chan struct{}
+	workerWatchDone chan struct{}
+
 	// reserved holds names claimed by a session still being built, so a
 	// concurrent spawn does not settle on the same one.
 	reserved map[string]bool
@@ -124,6 +128,14 @@ type Session struct {
 	done       chan struct{}
 	closedDone bool
 
+	// lastHeartbeat advances when the worker's event stream advances. A worker
+	// whose provider or pump has gone silent is still present in sessions, but
+	// peers need to see that it is no longer trustworthy as a live worker.
+	lastHeartbeat   time.Time
+	stale           bool
+	staleNotified   bool
+	failureNotified bool
+
 	mu sync.Mutex
 
 	// pending holds conflicts waiting for this session's next safe point. It
@@ -165,6 +177,113 @@ func NewServer(cfg *config.Config, cwd, model string) *Server {
 		swarm:    newSwarmState(),
 		sessions: map[string]*Session{},
 	}
+}
+
+// WorkerHeartbeatInterval controls how often the daemon checks workers that
+// have stopped producing events. The check is cheap; the longer threshold
+// below is what prevents normal provider/tool gaps from looking like failure.
+const WorkerHeartbeatInterval = 5 * time.Second
+
+// WorkerStaleAfter is the silence window after which a live worker is shown as
+// stale to its peers and its spawner receives one warning.
+const WorkerStaleAfter = 2 * time.Minute
+
+func (s *Server) startWorkerWatchdog() {
+	s.workerWatchMu.Lock()
+	if s.workerWatchStop != nil {
+		s.workerWatchMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.workerWatchStop = stop
+	s.workerWatchDone = done
+	s.workerWatchMu.Unlock()
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(WorkerHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.refreshWorkerStaleness(time.Now())
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) stopWorkerWatchdog() {
+	s.workerWatchMu.Lock()
+	stop, done := s.workerWatchStop, s.workerWatchDone
+	s.workerWatchStop, s.workerWatchDone = nil, nil
+	s.workerWatchMu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+	<-done
+}
+
+// refreshWorkerStaleness is also kept as an explicit method so Verify J8 can
+// force the clock forward without waiting two minutes in a test.
+func (s *Server) refreshWorkerStaleness(now time.Time) {
+	s.mu.Lock()
+	workers := make([]*Session, 0)
+	for _, sess := range s.sessions {
+		if sess.Worker {
+			workers = append(workers, sess)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, worker := range workers {
+		worker.mu.Lock()
+		if worker.closedDone {
+			worker.stale = false
+			worker.staleNotified = false
+			worker.mu.Unlock()
+			continue
+		}
+
+		last := worker.lastHeartbeat
+		age := now.Sub(last)
+		stale := last.IsZero() || age >= WorkerStaleAfter
+		becameStale := stale && !worker.staleNotified
+		worker.stale = stale
+		if !stale {
+			worker.staleNotified = false
+		} else if becameStale {
+			worker.staleNotified = true
+		}
+		name, task := worker.Name, worker.Task
+		worker.mu.Unlock()
+
+		if becameStale {
+			s.notifyWorkerStale(name, task, age)
+		}
+	}
+}
+
+func (s *Server) notifyWorkerStale(worker, task string, age time.Duration) {
+	s.swarm.mu.Lock()
+	spawner := s.swarm.spawnedBy[worker]
+	s.swarm.mu.Unlock()
+	if spawner == "" {
+		return
+	}
+
+	ago := "an unknown interval"
+	if age >= 0 {
+		ago = age.Round(time.Second).String()
+	}
+	text := fmt.Sprintf("⚠ worker %s is stale: no heartbeat for %s; it remains in peers as stale", worker, ago)
+	if task != "" {
+		text += fmt.Sprintf(" while working on %q", task)
+	}
+	s.deliver(spawner, text+". Inspect or restart it if it is stuck.")
 }
 
 // Listen binds the socket.
@@ -221,6 +340,7 @@ func (s *Server) Listen() error {
 		return err
 	}
 	s.listener = ln
+	s.startWorkerWatchdog()
 	return nil
 }
 
@@ -273,6 +393,7 @@ func (s *Server) Close() {
 	}
 	s.sessions = map[string]*Session{}
 	s.mu.Unlock()
+	s.stopWorkerWatchdog()
 
 	if ln != nil {
 		ln.Close()
@@ -301,6 +422,7 @@ func (s *Server) Sessions() []SessionInfo {
 	for _, sess := range s.sessions {
 		sess.mu.Lock()
 		clients := len(sess.subs)
+		stale := sess.Worker && sess.stale && !sess.closedDone
 		sess.mu.Unlock()
 		out = append(out, SessionInfo{
 			Name:    sess.Name,
@@ -310,6 +432,7 @@ func (s *Server) Sessions() []SessionInfo {
 			Worker:  sess.Worker,
 			Task:    sess.Task,
 			Started: sess.Started,
+			Stale:   stale,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Started.Before(out[j].Started) })
@@ -446,6 +569,9 @@ func (sess *Session) pump() {
 // single-threaded is a field that stops being safe the first time something
 // else touches it.
 func (sess *Session) observe(e agent.Event) {
+	if sess.Worker {
+		sess.heartbeat(time.Now())
+	}
 	if sess.srv == nil || sess.srv.Files == nil {
 		return
 	}
@@ -468,7 +594,8 @@ func (sess *Session) observe(e agent.Event) {
 			// Queued on the *readers*, not on the writer. Keeping them here was
 			// the bug: the writer then filtered out every conflict as belonging
 			// to someone else and dropped it, so nobody was ever told.
-			sess.srv.queueConflicts(sess.srv.Files.Write(sess.Name, path, turn))
+			sess.srv.queueConflicts(sess.srv.Files.WriteWithDetails(
+				sess.Name, path, turn, e.Intent, DiffPreview(e.Diff)))
 			return
 		}
 		sess.srv.Files.Read(sess.Name, path, turn)
@@ -486,11 +613,51 @@ func (sess *Session) observe(e agent.Event) {
 			// had to block on it.
 			// A worker asked to retry its output is not finished: its next turn
 			// end is the one that reports.
-			if sess.srv.reportWorkerResult(sess) {
+			sess.mu.Lock()
+			failed := sess.failureNotified
+			sess.mu.Unlock()
+			if failed {
+				sess.markFinished()
+			} else if sess.srv.reportWorkerResult(sess) {
 				sess.markFinished()
 			}
 		}
 	}
+}
+
+// notifyWorkerFailure covers a Run that returns before its TurnEnd reaches the
+// daemon pump. Without this handoff a spawner waits for a result that can never
+// arrive; the one-shot flag also prevents the late TurnEnd from reporting a
+// second, contradictory result.
+func (sess *Session) notifyWorkerFailure(err error) {
+	if !sess.Worker || sess.srv == nil {
+		return
+	}
+	sess.mu.Lock()
+	if sess.closedDone || sess.failureNotified {
+		sess.mu.Unlock()
+		return
+	}
+	sess.failureNotified = true
+	sess.mu.Unlock()
+
+	sess.srv.swarm.mu.Lock()
+	spawner := sess.srv.swarm.spawnedBy[sess.Name]
+	sess.srv.swarm.mu.Unlock()
+	if spawner != "" {
+		sess.srv.deliver(spawner, fmt.Sprintf(
+			"⚠ worker %s stopped before reporting a result: %v", sess.Name, err))
+	}
+}
+
+func (sess *Session) heartbeat(now time.Time) {
+	sess.mu.Lock()
+	sess.lastHeartbeat = now
+	if sess.stale {
+		sess.stale = false
+		sess.staleNotified = false
+	}
+	sess.mu.Unlock()
 }
 
 // finished reports whether a worker has completed.
