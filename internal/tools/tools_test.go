@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1237,6 +1238,18 @@ func TestSkillFrontMatterParsesFoldedLiteralAndAllowedTools(t *testing.T) {
 	}
 	if err := policy.Check(Call{Name: "bash", Args: json.RawMessage(`{"cmd":"printf no"}`)}); err == nil {
 		t.Error("unrelated bash must be blocked by the browser skill policy")
+	}
+	for _, command := range []string{
+		"agent-browser open https://example.test; rm -rf ./build",
+		"agent-browser open https://example.test && printf escaped",
+		"agent-browser open $(printf https://example.test)",
+		"agent-browser open https://example.test > stolen.txt",
+		"agent-browser open https://example.test >> stolen.txt",
+		"agent-browser open https://example.test & printf escaped",
+	} {
+		if err := policy.Check(Call{Name: "bash", Args: json.RawMessage(fmt.Sprintf(`{"cmd":%q}`, command))}); err == nil {
+			t.Errorf("shell escape %q bypassed the browser skill policy", command)
+		}
 	}
 }
 

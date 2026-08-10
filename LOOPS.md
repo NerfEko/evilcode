@@ -5959,3 +5959,24 @@ parity: `crates/jcode-app-core/src/server.rs:2108-2163` and
         explicit reread-to-resolve workflow.
 codex: 1 finding — fixed here (resolved historical writes resurfaced as fresh
         conflicts); none dismissed.
+
+## 2026-08-10 J9.4 review fix — prevent shell chaining through allowed-tools
+
+`Bash(agent-browser:*)` used a raw string-prefix check. Any command beginning
+with that text was accepted, including `agent-browser ...; rm ...`, `&&`, a
+background chain, command substitution, and file redirection. The restriction
+now tokenizes both the declared prefix and requested command, requires exactly
+one simple segment with matching leading words, and rejects substitutions or
+all redirect targets. The shared tokenizer now distinguishes append redirects
+as redirects without treating them as destructive truncation.
+
+reproduction: the expanded allowed-tools corpus failed before the fix on six
+        shell escape forms, including `>` and `>>`; all are blocked now while
+        legitimate agent-browser commands remain allowed.
+verification: complete command-risk tests, focused skill/policy tests, and
+        policy race tests pass; `git diff --check` passes.
+parity: `crates/jcode-base/src/skill.rs:14-33,478-503` — better for shell
+        prefix rules: evilcode now enforces the declared executable prefix as
+        one shell command instead of granting arbitrary chained shell syntax.
+codex: 1 critical finding — fixed here (a narrow skill policy could be escaped
+        into unrestricted shell execution); none dismissed.

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"evilcode/internal/tools/commandrisk"
 )
 
 // Skill is one entry in the cheap, prompt-safe skill index. Path is the
@@ -761,10 +763,40 @@ func (p *ToolPolicy) Check(call Call) error {
 		if command == "" {
 			command = strings.TrimSpace(args.Command)
 		}
-		if command == rule.prefix || strings.HasPrefix(command, rule.prefix+" ") {
+		if bashCommandMatchesPrefix(command, rule.prefix) {
 			return nil
 		}
 	}
 	return fmt.Errorf("tool %q is not allowed by skill %q (allowed: %s)",
 		call.Name, p.skill, strings.Join(p.text, ", "))
+}
+
+// bashCommandMatchesPrefix accepts one simple shell command whose leading
+// words exactly match the allowed prefix. A raw string prefix check also grants
+// every shell program chained after `;`, `&&`, `&`, a redirect, or command
+// substitution, which turns a narrow Bash(agent-browser:*) declaration into
+// unrestricted shell access.
+func bashCommandMatchesPrefix(command, prefix string) bool {
+	commandSegments := commandrisk.SplitSegments(commandrisk.Tokenize(command))
+	prefixSegments := commandrisk.SplitSegments(commandrisk.Tokenize(prefix))
+	if len(commandSegments) != 1 || len(prefixSegments) != 1 {
+		return false
+	}
+	commandTokens, prefixTokens := commandSegments[0], prefixSegments[0]
+	if len(prefixTokens) == 0 || len(commandTokens) < len(prefixTokens) {
+		return false
+	}
+	for _, token := range commandTokens {
+		if token.Malformed || token.IsOperator || token.IsRedirectTarget ||
+			strings.Contains(token.Text, "$(") || strings.Contains(token.Text, "`") {
+			return false
+		}
+	}
+	for index, token := range prefixTokens {
+		if token.Malformed || token.IsOperator || token.IsRedirectTarget ||
+			commandTokens[index].Text != token.Text {
+			return false
+		}
+	}
+	return true
 }
