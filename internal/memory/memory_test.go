@@ -548,6 +548,26 @@ func TestReloadDoesNotSalvageTornStringInsideArray(t *testing.T) {
 	}
 }
 
+func TestReloadResynchronizesAfterMismatchedArrayCloser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `[{"id":1,"text":` +
+		`]` +
+		`{"id":2,"text":"second","kind":"fact","ts":"2026-01-01T00:00:02Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("mismatched array closer should permit resynchronization: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 1 || s.All()[0].Text != "second" {
+		t.Fatalf("recovered memories = %#v, want the post-array record", s.All())
+	}
+}
+
 func TestReloadDoesNotSalvageNestedRecord(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)

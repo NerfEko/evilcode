@@ -155,10 +155,19 @@ func (l *lexer) advance(data []byte) {
 			l.depth++
 			l.containers = append(l.containers, c)
 		case '}', ']':
-			if l.depth > 0 {
-				l.depth--
-				if n := len(l.containers); n > 0 {
-					l.containers = l.containers[:n-1]
+			want := byte('{')
+			if c == ']' {
+				want = '['
+			}
+			for i := len(l.containers) - 1; i >= 0; i-- {
+				if l.containers[i] == want {
+					// A mismatched closer is useful evidence that the damaged
+					// prefix's innermost container never closed. Drop it and
+					// any containers above the matching opener so later records
+					// can be considered against a resynchronized context.
+					l.containers = l.containers[:i]
+					l.depth = len(l.containers)
+					break
 				}
 			}
 		}
