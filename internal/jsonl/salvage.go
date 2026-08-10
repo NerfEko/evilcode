@@ -130,6 +130,7 @@ type lexer struct {
 	inString   bool
 	escaped    bool
 	containers []byte
+	openCounts [2]int
 }
 
 func (l *lexer) advance(data []byte) {
@@ -154,10 +155,14 @@ func (l *lexer) advance(data []byte) {
 		case '{', '[':
 			l.depth++
 			l.containers = append(l.containers, c)
+			l.openCounts[containerSlot(c)]++
 		case '}', ']':
 			want := byte('{')
 			if c == ']' {
 				want = '['
+			}
+			if l.openCounts[containerSlot(want)] == 0 {
+				continue
 			}
 			for i := len(l.containers) - 1; i >= 0; i-- {
 				if l.containers[i] == want {
@@ -165,6 +170,9 @@ func (l *lexer) advance(data []byte) {
 					// prefix's innermost container never closed. Drop it and
 					// any containers above the matching opener so later records
 					// can be considered against a resynchronized context.
+					for _, opener := range l.containers[i:] {
+						l.openCounts[containerSlot(opener)]--
+					}
 					l.containers = l.containers[:i]
 					l.depth = len(l.containers)
 					break
@@ -172,6 +180,13 @@ func (l *lexer) advance(data []byte) {
 			}
 		}
 	}
+}
+
+func containerSlot(c byte) int {
+	if c == '[' {
+		return 1
+	}
+	return 0
 }
 
 func (l lexer) openContainer() byte {
