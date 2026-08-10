@@ -343,6 +343,15 @@ func (s *Store) Reopen() error {
 	return s.reopenLocked()
 }
 
+// CurrentName returns the live basename of the store. A running TUI can rename
+// its session while resident tools are still using it, so readers must not
+// capture the exported field once and assume it never changes.
+func (s *Store) CurrentName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Name
+}
+
 // Rename moves this session's log and blobs to a new name and updates the live
 // store's identity in the same locked step, so the running session keeps
 // writing to the renamed file rather than to a path that no longer exists.

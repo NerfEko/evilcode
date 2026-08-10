@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +14,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"evilcode/internal/jsonl"
 )
 
 type sessionSearchArgs struct {
@@ -21,9 +25,10 @@ type sessionSearchArgs struct {
 }
 
 type searchableMessage struct {
-	Role string
-	Text string
-	Time time.Time
+	Role  string
+	Text  string
+	Terms map[string]struct{}
+	Time  time.Time
 }
 
 type indexedSession struct {
@@ -32,7 +37,19 @@ type indexedSession struct {
 	modified time.Time
 	terms    map[string]struct{}
 	messages []searchableMessage
+	bytes    int64
 }
+
+const (
+	// Search is a convenience index, not a second copy of the transcript. These
+	// bounds keep one unusually large tool result or a long-lived daemon's
+	// session corpus from turning a search into an unbounded memory allocation.
+	maxIndexedMessageBytes = 16 << 10
+	maxIndexedSessionBytes = 1 << 20
+	maxIndexedTermsPerMsg  = 4096
+	maxIndexedTermsPerFile = 65536
+	maxIndexedCorpusBytes  = 16 << 20
+)
 
 // sessionSearchIndex is deliberately private to the tool package. provider
 // owns the canned demo tool fixtures and importing session here would create a
@@ -41,6 +58,7 @@ type indexedSession struct {
 type sessionSearchIndex struct {
 	mu    sync.Mutex
 	files map[string]indexedSession
+	bytes int64
 	reads uint64
 }
 
@@ -54,7 +72,10 @@ func (i *sessionSearchIndex) stats() (int, uint64) {
 	return len(i.files), i.reads
 }
 
-func (i *sessionSearchIndex) search(dataDir, currentName, query, role string, limit int) ([]sessionSearchHit, error) {
+func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, query, role string, limit int) ([]sessionSearchHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	wanted := searchTerms(query)
 	if len(wanted) == 0 {
 		return nil, fmt.Errorf("query must contain at least one word")
@@ -84,6 +105,9 @@ func (i *sessionSearchIndex) search(dataDir, currentName, query, role string, li
 	}
 	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
@@ -95,9 +119,12 @@ func (i *sessionSearchIndex) search(dataDir, currentName, query, role string, li
 		seen[path] = true
 		cached, ok := i.files[path]
 		if !ok || cached.size != stat.Size() || !cached.modified.Equal(stat.ModTime()) {
-			messages, readErr := readSearchMessages(path)
+			messages, readErr := readSearchMessages(ctx, path)
 			if readErr != nil {
-				delete(i.files, path)
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				i.remove(path)
 				continue
 			}
 			cached = indexedSession{
@@ -105,24 +132,31 @@ func (i *sessionSearchIndex) search(dataDir, currentName, query, role string, li
 				modified: stat.ModTime(), messages: messages,
 				terms: termsForMessages(messages),
 			}
-			i.files[path] = cached
+			cached.bytes = indexedSessionBytes(cached)
+			i.replace(path, cached)
 			i.reads++
 		}
 	}
 	for path := range i.files {
 		if !seen[path] {
-			delete(i.files, path)
+			i.remove(path)
 		}
 	}
 
 	queryText := strings.ToLower(strings.TrimSpace(query))
 	var hits []sessionSearchHit
 	for _, file := range i.files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if file.name == currentName || !containsAll(file.terms, wanted) {
 			continue
 		}
 		for _, message := range file.messages {
-			if !roleMatches(message.Role, role) || !containsAll(termsForText(message.Text), wanted) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !roleMatches(message.Role, role) || !containsAll(message.Terms, wanted) {
 				continue
 			}
 			date := message.Time
@@ -154,60 +188,232 @@ func (i *sessionSearchIndex) search(dataDir, currentName, query, role string, li
 	return hits, nil
 }
 
+// replace keeps the cache bounded while retaining the file being searched.
+// Eviction is intentionally simple: the least recently modified cached file
+// leaves first. An evicted file is reread on a later search, which is the safe
+// trade for a read-only convenience index.
+func (i *sessionSearchIndex) replace(path string, next indexedSession) {
+	i.remove(path)
+	for len(i.files) > 0 && i.bytes+next.bytes > maxIndexedCorpusBytes {
+		var oldestPath string
+		var oldest time.Time
+		for candidatePath, candidate := range i.files {
+			if oldestPath == "" || candidate.modified.Before(oldest) {
+				oldestPath, oldest = candidatePath, candidate.modified
+			}
+		}
+		i.bytes -= i.files[oldestPath].bytes
+		delete(i.files, oldestPath)
+	}
+	i.files[path] = next
+	i.bytes += next.bytes
+}
+
+func (i *sessionSearchIndex) remove(path string) {
+	if old, ok := i.files[path]; ok {
+		i.bytes -= old.bytes
+		delete(i.files, path)
+	}
+}
+
 type sessionSearchHit struct {
 	Name, Role, Excerpt string
 	Date                time.Time
 	Score               int
 }
 
-func readSearchMessages(path string) ([]searchableMessage, error) {
-	data, err := os.ReadFile(path)
+type searchEntry struct {
+	TS   time.Time       `json:"ts"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+
 	var out []searchableMessage
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	r := bufio.NewReaderSize(f, 64*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		var entry struct {
-			TS   time.Time       `json:"ts"`
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"`
+		line, readErr := r.ReadBytes('\n')
+		if len(line) > 0 {
+			out = appendSearchLine(out, bytesTrimSpace(line))
 		}
-		if json.Unmarshal([]byte(line), &entry) != nil || entry.Type == "meta" {
-			continue
+		if readErr == io.EOF {
+			break
 		}
-		var message struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
-			Reasoning string `json:"reasoning"`
-			ToolName  string `json:"tool_name"`
-			ToolCalls []struct {
-				Name string          `json:"name"`
-				Args json.RawMessage `json:"args"`
-			} `json:"tool_calls"`
+		if readErr != nil {
+			return nil, readErr
 		}
-		if json.Unmarshal(entry.Data, &message) != nil {
-			continue
-		}
-		text := strings.TrimSpace(message.Content)
-		if message.Reasoning != "" {
-			text = strings.TrimSpace(strings.Join([]string{text, message.Reasoning}, "\n"))
-		}
-		for _, call := range message.ToolCalls {
-			text = strings.TrimSpace(strings.Join([]string{text, call.Name, string(call.Args)}, "\n"))
-		}
-		if text == "" && message.ToolName != "" {
-			text = message.ToolName
-		}
-		if text == "" {
-			continue
-		}
-		out = append(out, searchableMessage{Role: message.Role, Text: text, Time: entry.TS})
 	}
 	return out, nil
+}
+
+// bytesTrimSpace is kept local so the scanner can pass byte slices directly
+// to json.Unmarshal without converting each line to a second string.
+func bytesTrimSpace(data []byte) []byte {
+	for len(data) > 0 && (data[0] == ' ' || data[0] == '\t' || data[0] == '\r' || data[0] == '\n') {
+		data = data[1:]
+	}
+	for len(data) > 0 {
+		last := data[len(data)-1]
+		if last != ' ' && last != '\t' && last != '\r' && last != '\n' {
+			break
+		}
+		data = data[:len(data)-1]
+	}
+	return data
+}
+
+func appendSearchLine(out []searchableMessage, line []byte) []searchableMessage {
+	if len(line) == 0 {
+		return out
+	}
+	if entry, ok := decodeSearchEntry(line); ok {
+		if message, ok := searchableMessageFor(entry); ok {
+			return appendBoundedMessage(out, message)
+		}
+		return out
+	}
+
+	// A hard kill can leave a torn JSON object immediately before a later
+	// append. Use the same shared lexer as session.Read so search and resume see
+	// the same repaired records instead of silently disagreeing.
+	entries := jsonl.Salvage(line, []byte(`{"ts"`), func(raw []byte) (searchEntry, bool) {
+		return decodeSearchEntry(raw)
+	}, func(candidate jsonl.Candidate) bool {
+		if candidate.Depth != 1 {
+			return true
+		}
+		switch candidate.KeyBefore() {
+		case "", "ts", "type", "data":
+			return true
+		default:
+			return false
+		}
+	})
+	for _, entry := range entries {
+		if message, ok := searchableMessageFor(entry); ok {
+			out = appendBoundedMessage(out, message)
+		}
+	}
+	return out
+}
+
+func decodeSearchEntry(raw []byte) (searchEntry, bool) {
+	var entry searchEntry
+	if json.Unmarshal(raw, &entry) != nil || entry.Type == "" || len(entry.Data) == 0 {
+		return searchEntry{}, false
+	}
+	return entry, true
+}
+
+func searchableMessageFor(entry searchEntry) (searchableMessage, bool) {
+	if entry.Type == "meta" {
+		return searchableMessage{}, false
+	}
+	var message struct {
+		Role      string `json:"role"`
+		Content   string `json:"content"`
+		Reasoning string `json:"reasoning"`
+		ToolName  string `json:"tool_name"`
+		ToolCalls []struct {
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
+		} `json:"tool_calls"`
+	}
+	if json.Unmarshal(entry.Data, &message) != nil {
+		return searchableMessage{}, false
+	}
+	if message.Role != "user" && message.Role != "assistant" && message.Role != "tool" {
+		return searchableMessage{}, false
+	}
+	text := strings.TrimSpace(message.Content)
+	if message.Reasoning != "" {
+		text = strings.TrimSpace(strings.Join([]string{text, message.Reasoning}, "\n"))
+	}
+	for _, call := range message.ToolCalls {
+		text = strings.TrimSpace(strings.Join([]string{text, call.Name, string(call.Args)}, "\n"))
+	}
+	if message.ToolName != "" {
+		// Tool results commonly contain output as well as their name. Keep both;
+		// role=tool searches should find `grep` even when its output is non-empty.
+		text = strings.TrimSpace(strings.Join([]string{message.ToolName, text}, "\n"))
+	}
+	if text == "" {
+		return searchableMessage{}, false
+	}
+	return searchableMessage{
+		Role:  message.Role,
+		Text:  boundedIndexedText(text),
+		Terms: termsForTextLimited(text, maxIndexedTermsPerMsg),
+		Time:  entry.TS,
+	}, true
+}
+
+func appendBoundedMessage(out []searchableMessage, message searchableMessage) []searchableMessage {
+	if indexedMessagesBytes(out)+indexedMessageBytes(message) > maxIndexedSessionBytes {
+		return out
+	}
+	return append(out, message)
+}
+
+func indexedMessagesBytes(messages []searchableMessage) int64 {
+	var total int64
+	for _, message := range messages {
+		total += indexedMessageBytes(message)
+	}
+	return total
+}
+
+func indexedMessageBytes(message searchableMessage) int64 {
+	var total int64 = int64(len(message.Role) + len(message.Text) + 64)
+	for term := range message.Terms {
+		total += int64(len(term) + 16)
+	}
+	return total
+}
+
+func indexedSessionBytes(file indexedSession) int64 {
+	return int64(len(file.name)+64) + indexedMessagesBytes(file.messages) + int64(len(file.terms))*16
+}
+
+func boundedIndexedText(text string) string {
+	if len(text) <= maxIndexedMessageBytes {
+		return text
+	}
+	keep := (maxIndexedMessageBytes - len("\n…\n")) / 2
+	start := keepUTF8Prefix(text, keep)
+	end := keepUTF8Suffix(text, keep)
+	return start + "\n…\n" + end
+}
+
+func keepUTF8Prefix(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
+		return text
+	}
+	end := maxBytes
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end]
+}
+
+func keepUTF8Suffix(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
+		return text
+	}
+	start := len(text) - maxBytes
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
 }
 
 func roleMatches(role, wanted string) bool { return wanted == "any" || role == wanted }
@@ -228,9 +434,16 @@ func searchTerms(text string) []string {
 }
 
 func termsForText(text string) map[string]struct{} {
+	return termsForTextLimited(text, maxIndexedTermsPerMsg)
+}
+
+func termsForTextLimited(text string, max int) map[string]struct{} {
 	terms := make(map[string]struct{})
 	for _, term := range searchTerms(text) {
 		terms[term] = struct{}{}
+		if len(terms) >= max {
+			break
+		}
 	}
 	return terms
 }
@@ -238,8 +451,11 @@ func termsForText(text string) map[string]struct{} {
 func termsForMessages(messages []searchableMessage) map[string]struct{} {
 	terms := make(map[string]struct{})
 	for _, message := range messages {
-		for term := range termsForText(message.Text) {
+		for term := range message.Terms {
 			terms[term] = struct{}{}
+			if len(terms) >= maxIndexedTermsPerFile {
+				return terms
+			}
 		}
 	}
 	return terms
@@ -291,6 +507,17 @@ func searchExcerpt(text, query string) string {
 // the tool instance so a long-lived TUI, headless run, or daemon worker reuses
 // unchanged files without sharing mutable session state across agents.
 func NewSessionSearch(dataDir, currentName string) Tool {
+	return newSessionSearch(dataDir, func() string { return currentName })
+}
+
+// NewSessionSearchWithCurrentName is the live-name variant used by the TUI.
+// Renaming a running session changes the store's basename while this tool is
+// still resident, so exclusion must be resolved at search time.
+func NewSessionSearchWithCurrentName(dataDir string, currentName func() string) Tool {
+	return newSessionSearch(dataDir, currentName)
+}
+
+func newSessionSearch(dataDir string, currentName func() string) Tool {
 	index := newSessionSearchIndex()
 	return Tool{
 		Name: "session_search",
@@ -305,7 +532,6 @@ func NewSessionSearch(dataDir, currentName string) Tool {
   "required": ["query"]
 }`),
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
-			_ = ctx
 			var args sessionSearchArgs
 			if err := unmarshalArgs(raw, &args); err != nil {
 				return Result{}, err
@@ -324,7 +550,14 @@ func NewSessionSearch(dataDir, currentName string) Tool {
 			if role == "" {
 				role = "any"
 			}
-			hits, err := index.search(dataDir, currentName, args.Query, role, args.Limit)
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+			name := ""
+			if currentName != nil {
+				name = currentName()
+			}
+			hits, err := index.search(ctx, dataDir, name, args.Query, role, args.Limit)
 			if err != nil {
 				return Result{}, err
 			}
