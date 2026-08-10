@@ -5788,3 +5788,20 @@ tests prove mid-session refresh, and semantic retrieval is opt-in. `go build -p 
 `git diff --check` pass. The full race package retains the known 64 MB output-bound
 allocation failures under race instrumentation; normal gates are green. Ready for
 `jcode-9` tagging and Forgejo push.
+
+## 2026-08-10 J1.2 review fix — enforce the read ceiling at the descriptor
+
+The plan4 audit reproduced a TOCTOU gap in `read`: `Stat().Size()` selected the
+small-file path, but the following `io.ReadAll` was unbounded. A FIFO reports a
+size of zero, and a regular file can grow or be replaced between those calls,
+so `MaxReadBytes` was not an actual memory ceiling. The read now uses a
+`limit+1` descriptor read and refuses a stream that crosses the cap.
+
+reproduction: `TestReadCapsAStreamWhoseStatSizeIsZero` failed before the fix
+        because a 4 KiB FIFO was accepted under a 1 KiB limit; it passes now.
+verification: focused J1 read/paging tests pass.
+parity: `crates/jcode-app-core/src/tool/read.rs:173-221` — better (evilcode now
+        enforces both jcode's result/line bounds and a race-safe descriptor-level
+        input bound for a file that grows or streams after metadata inspection).
+codex: 1 finding — fixed here (the advertised read cap could be bypassed after
+        `Stat`, causing unbounded allocation); none dismissed.

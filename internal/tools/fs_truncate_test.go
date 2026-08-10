@@ -3,7 +3,9 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"unicode/utf8"
 )
@@ -196,5 +198,41 @@ func TestPagedReadStillRefusesBinaryWithOneNUL(t *testing.T) {
 		"path": "data.bin", "offset": 1, "limit": 1,
 	}); err == nil {
 		t.Fatal("paged read accepted a binary line containing one NUL")
+	}
+}
+
+// J1 review: Stat is only a hint. A FIFO reports size zero, and a regular file
+// can grow or be replaced after Stat but before ReadAll. The read operation
+// itself must enforce MaxReadBytes or the advertised ceiling is still bypassed.
+func TestReadCapsAStreamWhoseStatSizeIsZero(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes use different filesystem semantics on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "growing.txt")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err == nil {
+			_, err = f.Write([]byte(strings.Repeat("x", 4096)))
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		writeDone <- err
+	}()
+
+	f := NewFS(dir)
+	f.MaxReadBytes = 1024
+	_, err := run(t, f.Tools(), "read", map[string]any{"path": "growing.txt"})
+	if writeErr := <-writeDone; writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "single-read limit") {
+		t.Fatalf("read error = %v; want an enforced single-read limit", err)
 	}
 }

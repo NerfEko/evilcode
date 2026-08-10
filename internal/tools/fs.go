@@ -346,9 +346,18 @@ func (f *FS) readTool() Tool {
 				return f.readWindow(full, info, a, cap)
 			}
 
-			data, err := f.readConfined(full)
+			// Stat is only an early routing hint. Enforce the ceiling again on the
+			// descriptor itself: a regular file can grow or be replaced between
+			// Stat and open, and special files such as FIFOs report size zero while
+			// still producing an unbounded stream.
+			data, exceeded, err := f.readConfinedLimit(full, cap)
 			if err != nil {
 				return Result{}, err
+			}
+			if exceeded {
+				return Result{}, fmt.Errorf(
+					"%s changed or streamed past the %s single-read limit; read a regular file in pieces with offset and limit, or grep it for what you need",
+					a.Path, humanBytes(int64(cap)))
 			}
 			if isBinary(data) {
 				return Result{}, fmt.Errorf(
@@ -660,6 +669,22 @@ func (f *FS) readConfined(full string) ([]byte, error) {
 	}
 	defer file.Close()
 	return io.ReadAll(file)
+}
+
+// readConfinedLimit reads at most limit+1 bytes through the same confined
+// descriptor as readConfined. The extra byte distinguishes an exact-limit file
+// from a stream that crossed the ceiling without trusting a racy Stat result.
+func (f *FS) readConfinedLimit(full string, limit int) ([]byte, bool, error) {
+	file, err := f.openConfined(full)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, len(data) > limit, nil
 }
 
 // writeAtomic replaces a file's contents in one visible step.
