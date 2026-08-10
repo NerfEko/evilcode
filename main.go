@@ -11,6 +11,7 @@ import (
 	"evilcode/internal/attachcmd"
 	"evilcode/internal/completions"
 	"evilcode/internal/probecmd"
+	"evilcode/internal/resumecmd"
 	"evilcode/internal/runcmd"
 	"evilcode/internal/servecmd"
 	"evilcode/internal/tuicmd"
@@ -25,6 +26,7 @@ subcommands:
   run        headless one-shot: evilcode run "prompt"
   serve      background daemon hosting sessions
   attach     attach a TUI to a running daemon session
+  resume     import and resume a Claude, Codex, or OpenCode session
   update     fetch, test, and atomically install the newest build
   completions print a shell completion script: bash | zsh | fish
   probe      self-test rig; see 'evilcode probe -h'
@@ -56,6 +58,8 @@ func run(args []string) error {
 		}
 		os.Exit(code)
 		return nil
+	case "resume":
+		return resumecmd.Run(args)
 	case "tui":
 		return tuicmd.Run(args)
 	case "serve":
