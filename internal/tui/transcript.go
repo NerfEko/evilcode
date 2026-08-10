@@ -138,7 +138,8 @@ func (b *Block) keep(c blockRender) {
 // unchanged strings compare without allocating; the old fmt.Sprintf key copied
 // every byte of a long reply on every repaint, even when the cache hit.
 type blockCacheKey struct {
-	kind, number, decay                                                int
+	kind, number                                                       int
+	promptColor                                                        color.RGBA
 	toolTokens, added, removed                                         int
 	text, toolName, toolTarget, toolIntent                             string
 	toolPath, toolCommand, toolOutput                                  string
@@ -161,6 +162,10 @@ type blockCacheKey struct {
 type Rows struct {
 	Lines []string
 	Owner []int
+	// First maps each block to its first rendered row, or -1 when the block
+	// emitted no rows. It is assembled with Owner so dock/prompt navigation do
+	// not rescan every transcript row on each frame.
+	First []int32
 }
 
 // Renderer turns blocks into styled lines.
@@ -238,13 +243,17 @@ func (r *Renderer) Lines(b *Block) []string {
 		layout.text = ""
 		now := time.Now()
 		if b.streamCache.valid && b.streamCache.width == r.Width &&
-			b.streamCacheLayout == layout && now.Sub(b.streamCacheAt) < StreamingRenderInterval {
+			b.streamCacheLayout == layout &&
+			(b.streamCache.key.text == key.text || now.Sub(b.streamCacheAt) < StreamingRenderInterval) {
 			return b.streamCache.lines
 		}
 		lines := r.render(b)
 		b.streamCache = blockRender{valid: true, width: r.Width, key: key, lines: lines}
 		b.streamCacheLayout = layout
-		b.streamCacheAt = now
+		// Start the throttle window after the expensive work. Starting it before
+		// rendering meant a slow markdown/code frame could consume its own entire
+		// cache lifetime, then immediately render the same unchanged tail again.
+		b.streamCacheAt = time.Now()
 		return lines
 	}
 	if !b.Streaming {
@@ -267,8 +276,12 @@ func (r *Renderer) Lines(b *Block) []string {
 const StreamingRenderInterval = SpinnerInterval
 
 func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
+	promptColor := color.RGBA{}
+	if b.Kind == BlockUser {
+		promptColor = theme.Rainbow(b.Decay)
+	}
 	return blockCacheKey{
-		kind: int(b.Kind), number: b.Number, decay: b.Decay,
+		kind: int(b.Kind), number: b.Number, promptColor: promptColor,
 		toolTokens: b.ToolTokens, added: b.Added, removed: b.Removed,
 		text: b.Text, toolName: b.ToolName, toolTarget: b.ToolTarget,
 		toolIntent: b.ToolIntent, toolPath: b.ToolPath,

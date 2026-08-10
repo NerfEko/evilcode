@@ -791,6 +791,10 @@ func (m *Model) applyOvernightReportCompletion(done *overnightReportCompletion) 
 	m.notice = message
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: message})
 	m.scroll.FollowBottom()
+	// Completions are consumed by tickMsg, whose ordinary job is animation and
+	// deliberately keeps the settled transcript cache. This completion is the
+	// exception: it appends durable history and must invalidate that cache here.
+	m.invalidateTranscriptCache()
 }
 
 func (m *Model) showOvernightReport() {

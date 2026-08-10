@@ -100,22 +100,26 @@ func FreeWidth(rows []string, totalWidth int) []int {
 type freeWidths struct {
 	rows  []string
 	total int
-	memo  []int32
+	// Only the visible residents and at most two tail viewports are measured.
+	// A transcript-sized slice here still allocated in proportion to the whole
+	// session on every frame, even after width measurement became lazy.
+	memo map[int]int
 }
 
 func newFreeWidths(rows []string, total int) *freeWidths {
-	// Zero is the unmeasured sentinel; store the real width plus one. This
-	// avoids an O(rows) fill loop on every frame for a transcript whose tail is
-	// the only part the dock usually probes.
-	return &freeWidths{rows: rows, total: total, memo: make([]int32, len(rows))}
+	return &freeWidths{rows: rows, total: total, memo: make(map[int]int)}
 }
 
 func (f *freeWidths) at(row int) int {
-	if f.memo[row] == 0 {
-		f.memo[row] = int32(max(f.total-lipgloss.Width(strings.TrimRight(f.rows[row], " ")), 0)) + 1
+	if width, ok := f.memo[row]; ok {
+		return width
 	}
-	return int(f.memo[row] - 1)
+	width := max(f.total-lipgloss.Width(strings.TrimRight(f.rows[row], " ")), 0)
+	f.memo[row] = width
+	return width
 }
+
+func (f *freeWidths) len() int { return len(f.rows) }
 
 // firstRows indexes each block to its first content row, -1 for blocks with no
 // rows. Built once per Layout: resolving every resident by rescanning owner is
@@ -178,7 +182,7 @@ func (d *Dock) ResidentKinds() []WidgetKind {
 // rows at the end.
 func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 	content []string, owner []int, kindOf func(int) BlockKind,
-	streamingBlock, totalWidth, scrollTop, viewH int) []Placement {
+	streamingBlock, totalWidth, scrollTop, viewH int, firstIndex ...[]int32) []Placement {
 	if totalWidth <= WidgetMinWidth+WidgetGap {
 		return nil
 	}
@@ -227,8 +231,17 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 		}, true
 	}
 
-	first := firstRows(owner)
-	placements := make([]Placement, 0, len(d.residents)+1)
+	var first []int32
+	if len(firstIndex) > 0 && firstIndex[0] != nil {
+		first = firstIndex[0]
+	} else {
+		first = firstRows(owner)
+	}
+	// Only a handful of widgets can fit in one viewport. Reserving capacity for
+	// every historical resident made this allocation grow for the entire
+	// session even though almost all residents are offscreen.
+	placementCap := min(len(d.residents)+1, max(viewH/WidgetMinHeight+2, 1))
+	placements := make([]Placement, 0, placementCap)
 	for i := 0; i < len(d.residents); {
 		resident := d.residents[i]
 		row, ok := resident.contentRow(first)
@@ -240,8 +253,11 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 			continue
 		}
 		w, ok := render[resident.Kind]
-		if ok && fits(free, row, w.Height(), w.Width()) {
-			if p, visible := place(w, i, row); visible {
+		if ok {
+			// Resolve visibility before measuring ANSI widths. Old residents remain
+			// anchored so they reappear when the reader scrolls back, but offscreen
+			// history must not cost width scans on every live frame.
+			if p, visible := place(w, i, row); visible && fits(free, row, w.Height(), w.Width()) {
 				placements = append(placements, p)
 			}
 		}
@@ -276,7 +292,7 @@ func (d *Dock) Layout(render map[WidgetKind]Widget, candidates []Widget,
 }
 
 func fits(free *freeWidths, row, height, width int) bool {
-	if row < 0 || row+height > len(free.memo) {
+	if row < 0 || row+height > free.len() {
 		return false
 	}
 	for i := row; i < row+height; i++ {
@@ -294,7 +310,7 @@ func findSlot(free *freeWidths, dockable func(row, height int) bool,
 	usable := func(row int) bool {
 		return (extra == nil || extra(row)) && dockable(row, 1) && fits(free, row, 1, width)
 	}
-	for end := len(free.memo); end > low; end-- {
+	for end := free.len(); end > low; end-- {
 		if !usable(end - 1) {
 			continue
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -84,6 +85,86 @@ func TestComposerEditsKeepSettledTranscriptCache(t *testing.T) {
 	m.update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
 	if !m.transcriptCacheValid {
 		t.Fatal("typing invalidated the settled transcript cache")
+	}
+}
+
+func TestIgnoredMouseMotionKeepsSettledTranscriptCache(t *testing.T) {
+	m := perfModelForLagTest(t, 120)
+	m.View()
+	if !m.transcriptCacheValid {
+		t.Fatal("setup did not populate transcript cache")
+	}
+	m.update(tea.MouseMotionMsg(tea.Mouse{X: 10, Y: 10}))
+	if !m.transcriptCacheValid {
+		t.Fatal("ignored mouse motion invalidated the settled transcript cache")
+	}
+}
+
+func TestPrintableBindingInvalidatesSettledTranscriptCache(t *testing.T) {
+	m := perfModelForLagTest(t, 20)
+	km, problems := NewKeymap(map[string]string{
+		string(ActionTodoCard): "x",
+	})
+	if len(problems) != 0 {
+		t.Fatalf("keymap problems: %v", problems)
+	}
+	m.keymap = km
+	m.View()
+	if !m.transcriptCacheValid {
+		t.Fatal("setup did not populate transcript cache")
+	}
+	m.update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	if m.transcriptCacheValid {
+		t.Fatal("printable action retained a transcript cache built before the action")
+	}
+	if !m.showTodoCard {
+		t.Fatal("printable binding did not run its action")
+	}
+}
+
+func TestUnchangedStreamingTailKeepsPaintCachePastThrottleWindow(t *testing.T) {
+	r := NewRenderer(theme.Dracula(), 80)
+	b := Block{Kind: BlockAssistant, Text: "unchanged", Streaming: true}
+	first := r.Lines(&b)
+	b.streamCacheAt = time.Now().Add(-2 * StreamingRenderInterval)
+	second := r.Lines(&b)
+	if &first[0] != &second[0] {
+		t.Fatal("unchanged live tail was rendered again after its throttle window")
+	}
+}
+
+func TestOvernightCompletionInvalidatesSettledTranscriptCache(t *testing.T) {
+	m := perfModelForLagTest(t, 20)
+	m.View()
+	if !m.transcriptCacheValid {
+		t.Fatal("setup did not populate transcript cache")
+	}
+	started := time.Now()
+	m.overnight.Started = started
+	m.applyOvernightReportCompletion(&overnightReportCompletion{
+		run: Overnight{Started: started, Turns: 2}, reason: "done", path: "report.md",
+	})
+	if m.transcriptCacheValid {
+		t.Fatal("tick-delivered history retained the pre-completion transcript cache")
+	}
+}
+
+func TestOldPromptCachesSurviveInvisibleDecaySteps(t *testing.T) {
+	m := NewModel(nil, HeaderState{})
+	for i := 0; i < 40; i++ {
+		m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: fmt.Sprintf("prompt %d", i)})
+	}
+	m.renumberPrompts()
+	first := m.renderer.Lines(&m.blocks[0])
+	oldColor := theme.Rainbow(m.blocks[0].Decay)
+	m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: "new"})
+	m.renumberPrompts()
+	if theme.Rainbow(m.blocks[0].Decay) != oldColor {
+		t.Fatal("test prompt was not old enough for a visually identical decay step")
+	}
+	second := m.renderer.Lines(&m.blocks[0])
+	if &first[0] != &second[0] {
+		t.Fatal("visually unchanged old prompt was rendered again")
 	}
 }
 

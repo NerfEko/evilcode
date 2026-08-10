@@ -692,7 +692,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// character typed is exactly the long-session input lag users feel. Keep the
 	// shared invalidation for messages that can change transcript/layout state;
 	// event and command paths remain conservative.
-	if transcriptInvalidatedBy(msg) {
+	if m.transcriptInvalidatedBy(msg) {
 		m.invalidateTranscriptCache()
 	}
 	switch msg := msg.(type) {
@@ -824,19 +824,33 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func transcriptInvalidatedBy(msg tea.Msg) bool {
+func (m *Model) transcriptInvalidatedBy(msg tea.Msg) bool {
 	switch msg := msg.(type) {
-	case tickMsg, tea.MouseWheelMsg, tea.PasteMsg:
+	case tickMsg, tea.MouseWheelMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg,
+		tea.KeyReleaseMsg, tea.PasteMsg:
 		return false
+	case tea.MouseClickMsg:
+		// Only left-click has a handler; other buttons are intentionally ignored.
+		return msg.Mouse().Button == tea.MouseLeft
 	case tea.KeyPressMsg:
-		return !composerOnlyKey(msg)
+		return !m.composerOnlyKey(msg)
 	default:
 		return true
 	}
 }
 
-func composerOnlyKey(msg tea.KeyPressMsg) bool {
+func (m *Model) composerOnlyKey(msg tea.KeyPressMsg) bool {
 	key := msg.Key()
+	// Bindings are resolved before ordinary input. A user may deliberately bind
+	// a printable key (for example "x") to a layout action, so Text alone is not
+	// proof that this message only edits the composer. Treat every configured
+	// action conservatively; actions that alter wrapping or inline cards must
+	// never leave a settled transcript cache behind.
+	if m.keymap != nil {
+		if _, ok := m.keymap.Lookup(key.String()); ok {
+			return false
+		}
+	}
 	if key.Text != "" {
 		return true
 	}
@@ -1739,15 +1753,21 @@ func (m *Model) retrievePending() (bool, tea.Model, tea.Cmd) {
 // Prev/Next Prompt landed on the wrong line.
 func (m *Model) userPromptRows() []int {
 	tr := m.transcriptLines()
-	var rows []int
-	seen := make(map[int]bool)
-	for i, owner := range tr.Owner {
-		if owner < 0 || seen[owner] {
-			continue
+	rows := make([]int, 0, m.promptCount)
+	if len(tr.First) == len(m.blocks) {
+		for i := range m.blocks {
+			if m.blocks[i].Kind == BlockUser && tr.First[i] >= 0 {
+				rows = append(rows, int(tr.First[i]))
+			}
 		}
-		seen[owner] = true
-		if m.blocks[owner].Kind == BlockUser {
-			rows = append(rows, i)
+		return rows
+	}
+	// Defensive fallback for callers that construct Rows without provenance.
+	seen := make(map[int]bool)
+	for row, owner := range tr.Owner {
+		if owner >= 0 && !seen[owner] && m.blocks[owner].Kind == BlockUser {
+			seen[owner] = true
+			rows = append(rows, row)
 		}
 	}
 	return rows
@@ -2750,8 +2770,15 @@ func (m *Model) renumberPrompts() {
 	seen := 0
 	for i := len(m.blocks) - 1; i >= 0; i-- {
 		if m.blocks[i].Kind == BlockUser {
+			oldDecay := m.blocks[i].Decay
 			m.blocks[i].Decay = seen
-			m.blocks[i].dropCache()
+			// The exponential ramp rounds to the same gray for old prompts. Keep
+			// those render caches once moving one step older no longer changes a
+			// visible color; otherwise every submit re-rendered the entire prompt
+			// history and input latency grew with session age.
+			if theme.Rainbow(oldDecay) != theme.Rainbow(seen) {
+				m.blocks[i].dropCache()
+			}
 			seen++
 		}
 	}
@@ -2830,6 +2857,10 @@ func (m *Model) transcriptLines() Rows {
 	}
 	var out []string
 	var owner []int
+	first := make([]int32, len(m.blocks))
+	for i := range first {
+		first[i] = -1
+	}
 	addChrome := func(lines []string) {
 		out = append(out, lines...)
 		for range lines {
@@ -2837,6 +2868,9 @@ func (m *Model) transcriptLines() Rows {
 		}
 	}
 	addOwned := func(idx int, lines []string) {
+		if len(lines) > 0 && first[idx] < 0 {
+			first[idx] = int32(len(out))
+		}
 		out = append(out, lines...)
 		for range lines {
 			owner = append(owner, idx)
@@ -2878,7 +2912,7 @@ func (m *Model) transcriptLines() Rows {
 	if len(out) != len(owner) {
 		panic(fmt.Sprintf("transcriptLines: len(Lines)=%d != len(Owner)=%d", len(out), len(owner)))
 	}
-	rows := Rows{Lines: out, Owner: owner}
+	rows := Rows{Lines: out, Owner: owner, First: first}
 	if cacheable && (!m.transcriptCacheValid || m.transcriptCacheWidth == m.renderer.Width) {
 		m.transcriptCache = rows
 		m.transcriptCacheWidth = m.renderer.Width
@@ -2990,18 +3024,8 @@ func (m *Model) transcriptHeightOnly() int {
 }
 
 func (m *Model) hasStreamingBlock() bool {
-	if (m.streamingIdx >= 0 && m.streamingIdx < len(m.blocks) && m.blocks[m.streamingIdx].Streaming) ||
-		(m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) && m.blocks[m.reasoningIdx].Streaming) {
-		return true
-	}
-	// Tests/replay callers may construct a streaming block directly without
-	// setting the live indices; retain the defensive scan for that path.
-	for i := range m.blocks {
-		if m.blocks[i].Streaming {
-			return true
-		}
-	}
-	return false
+	return (m.streamingIdx >= 0 && m.streamingIdx < len(m.blocks) && m.blocks[m.streamingIdx].Streaming) ||
+		(m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) && m.blocks[m.reasoningIdx].Streaming)
 }
 
 // imageGraphics returns protocol sequences for image blocks that are visible
@@ -3305,7 +3329,7 @@ func (m *Model) View() tea.View {
 	// inset are painted into these rows. Docking last meant measuring rows that
 	// were already full width and concluding there was nowhere to go, which is
 	// why the boxes vanished (plan.md §8.3).
-	rows = m.dockWidgets(rows, content, res.Transcript, start, owner)
+	rows = m.dockWidgets(rows, content, res.Transcript, start, owner, tr.First)
 
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
@@ -3843,7 +3867,9 @@ func (m *Model) cacheProviderActive() bool {
 //
 // Widgets are suppressed entirely while the welcome art is showing: an empty
 // screen decorated with status boxes is busier than the thing it decorates.
-func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop int, owner []int) []string {
+func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop int, owner []int,
+	firstIndex ...[]int32,
+) []string {
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
 		m.placements = nil
 		return rows
@@ -3888,15 +3914,16 @@ func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop in
 	// The streaming tail is the live block whose rows are still changing — the
 	// boundary of the settled region (§2.3). At most one block is Streaming at a
 	// time (the newest), and -1 means the turn is finished.
-	streamingBlock := -1
-	for i := range blocks {
-		if blocks[i].Streaming {
-			streamingBlock = i
-		}
+	streamingBlock := m.streamingIdx
+	if streamingBlock < 0 || streamingBlock >= len(blocks) || !blocks[streamingBlock].Streaming {
+		streamingBlock = m.reasoningIdx
+	}
+	if streamingBlock < 0 || streamingBlock >= len(blocks) || !blocks[streamingBlock].Streaming {
+		streamingBlock = -1
 	}
 
 	placements := m.dock.Layout(render, candidates, content, owner, kindOf,
-		streamingBlock, usable, scrollTop, transcriptRows)
+		streamingBlock, usable, scrollTop, transcriptRows, firstIndex...)
 
 	m.swarmDocked = false
 	for _, p := range placements {

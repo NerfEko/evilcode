@@ -23,7 +23,7 @@ func perfModel(b *testing.B, turns int) *Model {
 }
 
 func BenchmarkView(b *testing.B) {
-	for _, turns := range []int{10, 100, 400} {
+	for _, turns := range []int{10, 100, 400, 1600} {
 		b.Run(fmt.Sprintf("turns=%d", turns), func(b *testing.B) {
 			m := perfModel(b, turns)
 			m.View()
@@ -63,8 +63,14 @@ func BenchmarkViewScrolling(b *testing.B) {
 
 func BenchmarkViewStreaming(b *testing.B) {
 	m := perfModel(b, 400)
+	// Let scrollbar hysteresis reach its steady wrap width before the live tail
+	// starts. Otherwise the first measured frame benchmarks re-rendering every
+	// settled block at a new width, not ordinary streaming.
+	m.View()
+	m.View()
 	m.blocks = append(m.blocks, Block{Kind: BlockAssistant, Streaming: true,
 		Text: strings.Repeat("streaming words ", 30)})
+	m.streamingIdx = len(m.blocks) - 1
 	m.View()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
