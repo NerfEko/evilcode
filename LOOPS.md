@@ -6079,3 +6079,13 @@ parity: all task-specific jcode ranges named in PART II were re-read at pinned
 codex: 17 audit findings — 16 product defects fixed, 1 race-test accounting
         defect fixed; historical batching, missing verdicts, and the premature
         J6 tag recorded as non-code provenance failures rather than dismissed.
+
+## 2026-08-10 canonical branch closeout — retire plan-phase tags
+
+By explicit user direction, canonical `origin/main` replaced the plan-phase
+tags as the repository authority. The audited branch was pushed from `9cce0ac`
+through `004a510` while all eleven `jcode-*` tags (`jcode-1` through
+`jcode-10`, including `jcode-6.2`) were deleted from the Forgejo remote in the
+same atomic push. Their local copies were then deleted. The premature J6 tag
+was retired, not moved or rewritten; its historical provenance finding remains
+recorded above.

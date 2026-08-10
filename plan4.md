@@ -993,8 +993,10 @@ Empty at authoring. Two sources feed it, neither ever deleted:
 The behavioral checkboxes were re-read against this document's complete opening, the
 pinned jcode source, the implementation, and the acceptance tests. The checked behaviors
 are now on par or better after the review-fix commits recorded in `LOOPS.md`. `Verify J6`
-deliberately remains unchecked: the published `jcode-6` tag resolves to `676734e`, after
-J6.1 but before the J6.2–J6.4 implementation commits. The tag was not silently moved.
+deliberately remains unchecked: the former `jcode-6` tag resolved to `676734e`, after J6.1
+but before the J6.2–J6.4 implementation commits. It was never moved; all `jcode-*` tags were
+later retired locally and from the canonical repository by explicit user direction once
+the audited `main` branch became the sole release authority.
 
 The repository does **not** satisfy this plan's process definition of done. The original
 history batches J2.1/J2.2 in `9b13754`, J3.1–J3.5 in `a836d68`, J4.1–J4.4 in `53d6f87`,
