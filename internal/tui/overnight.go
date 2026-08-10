@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"evilcode/internal/todo"
 )
 
 // Overnight is the supervised long-run loop of plan.md §5: keep working the
@@ -37,6 +39,23 @@ type Overnight struct {
 	// Stopped records why the run ended, which is the whole output of the
 	// feature: waking up to a stopped loop and not knowing why is useless.
 	Stopped string
+
+	// Preflight is the immutable starting point for the report. Keeping the
+	// caps beside the captured state makes a report explain the run it actually
+	// describes, even if the defaults change later.
+	Preflight OvernightPreflight
+
+	// BeforeTodos is advanced after every recorded turn. It is deliberately
+	// separate from Preflight.Todos so each card can show the immediately
+	// previous state, not just the state at launch.
+	BeforeTodos  []todo.Item
+	FinalTodos   []todo.Item
+	EndGit       GitSnapshot
+	Timeline     []OvernightTimelineEntry
+	Cards        []OvernightTaskCard
+	CurrentTools []OvernightToolCheck
+	ReportPath   string
+	StoppedAt    time.Time
 }
 
 // Overnight caps. Deliberately modest — this is a personal tool on a personal
@@ -54,12 +73,54 @@ const (
 
 // Start arms the loop.
 func (o *Overnight) Start(now time.Time) {
-	*o = Overnight{
-		Active:   true,
+	o.StartWithPreflight(OvernightPreflight{
+		Started:  now,
 		MaxTurns: OvernightMaxTurns,
 		Budget:   OvernightBudget,
 		Deadline: now.Add(OvernightHours * time.Hour),
+	})
+}
+
+// StartWithSnapshot arms the loop and captures the state that existed before
+// the first unattended turn. Start remains intentionally small for callers
+// that only need the breaker in isolation; the TUI uses this richer entry
+// point so a stopped run can account for its work.
+func (o *Overnight) StartWithSnapshot(now time.Time, git GitSnapshot, items []todo.Item) {
+	o.StartWithPreflight(OvernightPreflight{
 		Started:  now,
+		MaxTurns: OvernightMaxTurns,
+		Budget:   OvernightBudget,
+		Deadline: now.Add(OvernightHours * time.Hour),
+		Git:      cloneGitSnapshot(git),
+		Todos:    cloneTodoItems(items),
+	})
+}
+
+// StartWithPreflight arms the loop with an already collected preflight. It is
+// useful to tests and keeps the report's input explicit.
+func (o *Overnight) StartWithPreflight(preflight OvernightPreflight) {
+	if preflight.Started.IsZero() {
+		preflight.Started = time.Now()
+	}
+	if preflight.MaxTurns == 0 {
+		preflight.MaxTurns = OvernightMaxTurns
+	}
+	if preflight.Budget == 0 {
+		preflight.Budget = OvernightBudget
+	}
+	if preflight.Deadline.IsZero() {
+		preflight.Deadline = preflight.Started.Add(OvernightHours * time.Hour)
+	}
+	preflight.Git = cloneGitSnapshot(preflight.Git)
+	preflight.Todos = cloneTodoItems(preflight.Todos)
+	*o = Overnight{
+		Active:      true,
+		MaxTurns:    preflight.MaxTurns,
+		Budget:      preflight.Budget,
+		Deadline:    preflight.Deadline,
+		Started:     preflight.Started,
+		Preflight:   preflight,
+		BeforeTodos: cloneTodoItems(preflight.Todos),
 	}
 }
 
@@ -67,6 +128,19 @@ func (o *Overnight) Start(now time.Time) {
 func (o *Overnight) Stop(reason string) {
 	o.Active = false
 	o.Stopped = reason
+	if o.StoppedAt.IsZero() {
+		o.StoppedAt = time.Now()
+	}
+}
+
+// BeginTurn clears evidence from the previous unattended turn.
+func (o *Overnight) BeginTurn() {
+	o.CurrentTools = nil
+}
+
+// AddToolCheck records one tool result for the turn currently being assessed.
+func (o *Overnight) AddToolCheck(check OvernightToolCheck) {
+	o.CurrentTools = append(o.CurrentTools, check)
 }
 
 // ShouldContinue reports whether another turn is allowed, and why not if it is
@@ -160,11 +234,17 @@ verify it, leave it in progress and say what is missing.`
 func (m *Model) overnightCommand(arg string) tea.Cmd {
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "off", "stop":
-		m.overnight.Stop("you stopped it")
-		m.notice = "⏳ Overnight OFF"
+		if !m.overnight.Active {
+			m.notice = m.overnight.Status()
+			return nil
+		}
+		m.finishOvernight("you stopped it")
 		return nil
 	case "status":
 		m.notice = m.overnight.Status()
+		return nil
+	case "report":
+		m.showOvernightReport()
 		return nil
 	}
 
@@ -177,7 +257,9 @@ func (m *Model) overnightCommand(arg string) tea.Cmd {
 		return nil
 	}
 
-	m.overnight.Start(time.Now())
+	now := time.Now()
+	items := m.todos.Items()
+	m.overnight.StartWithSnapshot(now, captureGit(m.cwd), items)
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: fmt.Sprintf(
 		"⏳ Overnight armed · at most %d turns, %s tokens, %d hours\n"+
 			"It stops on its own and says why. /overnight off to stop it now.",
@@ -194,6 +276,11 @@ func (m *Model) stepOvernight(spent int) {
 	if !m.overnight.Active {
 		return
 	}
+	items := []todo.Item(nil)
+	if m.todos != nil {
+		items = m.todos.Items()
+	}
+	m.overnight.RecordTurn(time.Now(), spent, items)
 	state := ""
 	if m.todos != nil {
 		state = m.todos.Summary()
@@ -204,7 +291,5 @@ func (m *Model) stepOvernight(spent int) {
 		return
 	}
 
-	m.blocks = append(m.blocks, Block{Kind: BlockNotice,
-		Text: fmt.Sprintf("⏳ Overnight stopped after %d turns: %s", m.overnight.Turns, why)})
-	m.scroll.FollowBottom()
+	m.finishOvernight(why)
 }

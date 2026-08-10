@@ -49,6 +49,7 @@ var Commands = []Command{
 		Long: "  /overnight        arm it\n" +
 			"  /overnight off    stop now\n" +
 			"  /overnight status where it is\n" +
+			"  /overnight report show the latest self-contained HTML report\n" +
 			"It stops on turns, tokens, time, or a list that stopped moving — and says which."},
 	{Name: "advisor", Help: "Second-opinion model on/off/status"},
 	{Name: "lsp", Help: "Language server status"},

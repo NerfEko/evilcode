@@ -698,6 +698,9 @@ func (m *Model) applyEvent(e agent.Event) {
 	switch e.Kind {
 	case agent.EventTurnStart:
 		m.processing = true
+		if m.overnight.Active {
+			m.overnight.BeginTurn()
+		}
 		m.turnAt = time.Now()
 		m.status = StatusState{Phase: PhaseSending, Animate: !Deterministic()}
 		m.genMS, m.estimatedOut, m.streamChars = 0, 0, 0
@@ -757,6 +760,9 @@ func (m *Model) applyEvent(e agent.Event) {
 
 	case agent.EventToolResult:
 		m.status.Phase = PhaseStreaming
+		if m.overnight.Active {
+			m.overnight.AddToolCheck(overnightToolCheck(e))
+		}
 		b := Block{
 			Kind:       BlockTool,
 			ToolName:   e.Call.Name,

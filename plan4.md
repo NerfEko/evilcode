@@ -911,23 +911,26 @@ its input.
 
 ## Phase J10 — Overnight that reports
 
-- [ ] **J10.1** `internal/tui/overnight.go:56` `Overnight.Start` — nothing records the
+- [x] **J10.1** `internal/tui/overnight.go:56` `Overnight.Start` — nothing records the
       starting state, so the run cannot say what it changed. Snapshot git (branch, HEAD,
       dirty files), the todo list, and the budget. §10.1. ⟨build⟩
       ⟨jcode: crates/jcode-overnight-core/src/lib.rs:155-202 (`GitSnapshot`,
       `OvernightPreflight`)⟩
-- [ ] **J10.2** `internal/tui/overnight.go:193` `Model.stepOvernight` — a todo marked done
+- [x] **J10.2** `internal/tui/overnight.go:193` `Model.stepOvernight` — a todo marked done
       overnight carries no evidence. Record before / after / what was run to check it per
       touched todo; report a done-with-no-validation todo as unvalidated. The `todo` tool's
       gates already hold most of this. §10.2. ⟨build⟩
       ⟨jcode: crates/jcode-overnight-core/src/lib.rs:176-258 (`OvernightTaskCard*`)⟩
-- [ ] **J10.3** `internal/tui/overnight.go:67` `Overnight.Stop` — the only record is eight
+- [x] **J10.3** `internal/tui/overnight.go:67` `Overnight.Stop` — the only record is eight
       hours of transcript. Write one self-contained HTML file to the data dir and name its
       path: what ran, J10.2's cards, timeline, tokens, git diffstat, which limit stopped it.
       §10.3. ⟨build⟩ ⟨jcode: crates/jcode-overnight-core/src/lib.rs:461-720
       (`render_task_cards_html`, `build_review_html`, `render_timeline_html`)⟩
-- [ ] Verify J10: a short overnight against a three-item todo list; open the HTML; confirm
-      the stop reason, the diffstat and one unvalidated todo all appear. Tag `jcode-10`.
+- [x] **J10.4** `/overnight report` — expose the persisted latest report path after a
+      stop or reload, alongside the stop notice that names the newly written file.
+- [x] Verify J10: a short three-item run against a real temporary Git repository; read the
+      generated self-contained HTML and confirm the stop reason, diffstat, validation
+      evidence, and exactly one unvalidated todo. Tag `jcode-10`.
 
 ---
 
