@@ -144,6 +144,104 @@ func hasGlob(path string) bool {
 	return strings.ContainsAny(path, "*?[")
 }
 
+const maxBraceTargets = 64
+
+func braceExpansionStart(value string) int {
+	for offset := 0; offset < len(value); {
+		index := strings.IndexByte(value[offset:], '{')
+		if index < 0 {
+			return -1
+		}
+		index += offset
+		if index == 0 || value[index-1] != '$' {
+			return index
+		}
+		offset = index + 1
+	}
+	return -1
+}
+
+func hasBraceExpansionSyntax(value string) bool {
+	// Remove the one parameter-expansion form that expandTarget understands;
+	// its braces are not shell brace expansion. Opaque ${...} forms remain and
+	// are conservatively handled as unresolved syntax.
+	value = envPattern.ReplaceAllString(value, "")
+	return strings.ContainsAny(value, "{}")
+}
+
+// expandBraceTargets resolves comma-style shell brace expansion without
+// touching the filesystem. A bounded expansion lets the classifier see that
+// /{tmp,etc} includes /etc instead of treating the literal brace text as one
+// merely external path. Sequence forms and malformed/explosive expansions are
+// deliberately unresolved so the gate fails closed.
+func expandBraceTargets(raw string) ([]string, bool) {
+	var expand func(string) ([]string, bool)
+	expand = func(value string) ([]string, bool) {
+		start := braceExpansionStart(value)
+		if start < 0 {
+			if hasBraceExpansionSyntax(value) {
+				return nil, false
+			}
+			return []string{value}, true
+		}
+		depth := 0
+		end := -1
+		for i := start; i < len(value); i++ {
+			switch value[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = i
+					i = len(value)
+				}
+				if depth < 0 {
+					return nil, false
+				}
+			}
+		}
+		if end < 0 {
+			return nil, false
+		}
+
+		body := value[start+1 : end]
+		var alternatives []string
+		partStart, nested := 0, 0
+		for i := 0; i <= len(body); i++ {
+			if i == len(body) || body[i] == ',' && nested == 0 {
+				alternatives = append(alternatives, body[partStart:i])
+				partStart = i + 1
+				continue
+			}
+			switch body[i] {
+			case '{':
+				nested++
+			case '}':
+				nested--
+				if nested < 0 {
+					return nil, false
+				}
+			}
+		}
+		if nested != 0 || len(alternatives) < 2 {
+			return nil, false
+		}
+
+		prefix, suffix := value[:start], value[end+1:]
+		var out []string
+		for _, alternative := range alternatives {
+			expanded, ok := expand(prefix + alternative + suffix)
+			if !ok || len(out)+len(expanded) > maxBraceTargets {
+				return nil, false
+			}
+			out = append(out, expanded...)
+		}
+		return out, true
+	}
+	return expand(raw)
+}
+
 func globPrefix(path string) string {
 	if idx := strings.IndexAny(path, "*?["); idx >= 0 {
 		prefix := path[:idx]
@@ -270,6 +368,20 @@ func classifyTarget(raw string, recursive bool, ctx Context) Finding {
 	ctx = ctx.normalized()
 	if raw == "" || raw == "-" {
 		return Finding{}
+	}
+	if hasBraceExpansionSyntax(raw) {
+		targets, ok := expandBraceTargets(raw)
+		if !ok {
+			return Finding{Level: Confirm, Reason: "target contains an unresolved shell brace expansion", Target: raw}
+		}
+		var strongest Finding
+		for _, target := range targets {
+			finding := classifyTarget(target, recursive, ctx)
+			if finding.Level > strongest.Level || strongest.Reason == "" {
+				strongest = finding
+			}
+		}
+		return strongest
 	}
 	target, unresolved := expandTarget(raw, ctx)
 	if unresolved {

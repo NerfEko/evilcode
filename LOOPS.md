@@ -5850,3 +5850,28 @@ parity: `crates/jcode/src/tools/bash.rs:66-116` and
         progress reporting while adding a fixed live-process resource ceiling.
 codex: 1 finding — fixed here (unbounded live detached-task accumulation);
         none dismissed.
+
+## 2026-08-10 J4.1 review fix — classify shell brace-expanded targets
+
+The lexical gate treated `/\{etc,var\}` as one nonexistent external path and
+therefore allowed a substantive justification to unlock it. Bash expands that
+token into `/etc` and `/var` before `rm` runs, both absolute-deny targets. The
+classifier now expands comma-style braces to at most 64 lexical targets,
+classifies every result, and takes the strongest verdict. Sequence, malformed,
+or explosive brace forms fail closed at confirmation. `${HOME}` continues
+through the existing parameter-expansion path rather than being mistaken for
+brace expansion.
+
+reproduction: three protected brace cases failed before the fix at `confirm`,
+        and a large sequence incorrectly ran at `low`; the expanded corpus now
+        returns `catastrophic`/`confirm` while workspace-local alternatives
+        remain `low`.
+verification: the complete command-risk suite, its race run, and bash gate
+        integration tests pass; `git diff --check` passes.
+parity: `crates/jcode/src/tools/bash/command_risk.rs:191-394` — better: both
+        implementations fail closed on opaque targets, while evilcode now also
+        recognizes deterministic brace alternatives before granting a
+        justification override.
+codex: 1 finding — fixed here (brace expansion could downgrade protected
+        targets from absolute denial to justification-confirmable); none
+        dismissed.
