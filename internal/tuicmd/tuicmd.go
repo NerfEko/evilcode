@@ -279,6 +279,7 @@ func runOnce(args []string) (string, error) {
 	} else {
 		ts = append(fsTools.Tools(), execTools.Tools()...)
 		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+		ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
 	}
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))

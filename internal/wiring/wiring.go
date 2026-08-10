@@ -212,6 +212,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 				WithExposure(exposure).Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+			ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
 		}
 		// No `ask` tool: a headless session has nobody to ask, and a tool that
 		// is present and always fails is worse than one that is absent.

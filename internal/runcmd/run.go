@@ -158,6 +158,7 @@ func Run(args []string) (int, error) {
 				WithExposure(exposure).Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+			ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
 			if len(promptSkills) > 0 {
 				ts = append(ts, tools.NewSkillTool(skills))
 			}
