@@ -988,6 +988,26 @@ Empty at authoring. Two sources feed it, neither ever deleted:
 
 ---
 
+## 2026-08-10 independent audit status
+
+The behavioral checkboxes were re-read against this document's complete opening, the
+pinned jcode source, the implementation, and the acceptance tests. The checked behaviors
+are now on par or better after the review-fix commits recorded in `LOOPS.md`. `Verify J6`
+deliberately remains unchecked: the published `jcode-6` tag resolves to `676734e`, after
+J6.1 but before the J6.2–J6.4 implementation commits. The tag was not silently moved.
+
+The repository does **not** satisfy this plan's process definition of done. The original
+history batches J2.1/J2.2 in `9b13754`, J3.1–J3.5 in `a836d68`, J4.1–J4.4 in `53d6f87`,
+J8.1–J8.4 in `a928088`, J9.1–J9.6 in `fffe3be`, and J10.1–J10.4 in `9cce0ac`. That violates
+§0.1 and §0.2's one-task-per-commit rule and cannot be repaired without rewriting published
+history. Mandatory independent codex verdicts are also absent or explicitly unfinished for
+parts of J2, J3, J4, J5, J6.1/J6.2, J7.3, J8, J9, and the original J10 commit. The present
+audit supplied a fresh line-by-line review and regression fixes, but it does not fabricate
+the missing historical evidence. Thus checked boxes describe current behavior; they must
+not be read as proof that the historical process gate was followed.
+
+---
+
 # Definition of done
 
 Every task `[x]`, every phase tagged, `go build ./... && go vet ./... && go test ./...`

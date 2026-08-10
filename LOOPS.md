@@ -6051,3 +6051,31 @@ parity: `crates/jcode/src/tools/bash.rs:66-116` and
         than race-runtime bookkeeping).
 codex: 1 test finding — fixed here (an allocation assertion treated race
         instrumentation overhead as application retention); none dismissed.
+
+## 2026-08-10 plan4 independent audit — behavioral parity and process provenance
+
+The entire plan, including PART 0 and its definition of done, was read before
+the audit. Every task implementation and acceptance path was then compared to
+the pinned jcode commit. Sixteen product defects and one race-test accounting
+defect were fixed in named follow-up commits. Full build, vet, normal tests,
+full race tests, and `git diff --check` pass at audit closeout.
+
+Behavioral result: all checked task behaviors are now on par or better. Verify
+J6 correctly remains unchecked because published tag `jcode-6` resolves to
+`676734e` and excludes J6.2–J6.4. Tags 1–5 and 7–10 resolve to commits in the
+current ancestry. No published tag or existing commit was rewritten.
+
+Process result: the plan is not historically complete under §0.1/§0.2. Task
+batches are `9b13754` (J2.1/J2.2), `a836d68` (all J3), `53d6f87` (all J4),
+`a928088` (all J8), `fffe3be` (all J9), and `9cce0ac` (all J10). Mandatory
+external codex verdicts are absent, unfinished, or recorded as manual/n/a for
+parts of J2, J3, J4, J5, J6.1/J6.2, J7.3, J8, J9, and the original J10 work.
+Those provenance defects cannot be made true retroactively without rewriting
+published history, so they are recorded rather than concealed.
+
+parity: all task-specific jcode ranges named in PART II were re-read at pinned
+        commit `0b0ce0976`; the detailed verdicts and repaired dropped cases are
+        in the preceding review-fix entries.
+codex: 17 audit findings — 16 product defects fixed, 1 race-test accounting
+        defect fixed; historical batching, missing verdicts, and the premature
+        J6 tag recorded as non-code provenance failures rather than dismissed.
