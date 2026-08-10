@@ -159,7 +159,7 @@ func Run(args []string) (int, error) {
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 			ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
-			if len(promptSkills) > 0 {
+			if skills != nil {
 				ts = append(ts, tools.NewSkillTool(skills))
 			}
 		}
@@ -172,6 +172,7 @@ func Run(args []string) (int, error) {
 	conv.Persist(func(m provider.Message) error { return store.WriteMessage(m) })
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
+	skills.SetOnLoad(a.SetToolPolicy)
 	// An explicit [[model]] context_window wins; otherwise the provider is
 	// asked, so a discovered window drives the meter and compaction instead
 	// of the hardcoded guess behind them.
@@ -209,6 +210,23 @@ func Run(args []string) (int, error) {
 		a.Recall = func(ctx context.Context, in string) (string, any) {
 			tail, hits := mem.Recall(ctx, in)
 			return tail, hits
+		}
+	}
+	if cfg.Features.SkillRetrieval {
+		memoryRecall := a.Recall
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			var tail string
+			var display any
+			if memoryRecall != nil {
+				tail, display = memoryRecall(ctx, in)
+			}
+			if skillTail := skills.Relevant(ctx, in, prov); skillTail != "" {
+				if tail != "" {
+					tail += "\n\n"
+				}
+				tail += skillTail
+			}
+			return tail, display
 		}
 	}
 

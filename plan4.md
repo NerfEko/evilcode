@@ -864,7 +864,7 @@ and evilcode loads zero of them. Do not start J9.4 until `/skills` lists all 17 
 descriptions — the later tasks are refinements of a feature that currently does not reach
 its input.
 
-- [ ] **J9.1** `internal/tools/skill.go:34` `SkillDirs` — the search path is
+- [x] **J9.1** `internal/tools/skill.go:34` `SkillDirs` — the search path is
       `.evilcode/skills` and `<configDir>/skills` only, so `~/.agents/skills` (17 skills on
       this machine) and `~/.claude/skills` are invisible. Search, nearest first:
       `<repo>/.evilcode/skills`, `<repo>/.agents/skills`, `<configDir>/skills`,
@@ -874,34 +874,34 @@ its input.
       `load_project_overlay`, `merge_overlay`)⟩
       — evilcode already does exactly this for `AGENTS.md`/`CLAUDE.md` in
       `internal/agent/context.go`; match that shape.
-- [ ] **J9.2** `internal/tools/skill.go:50` `LoadSkills` — indexes top-level `*.md`, so
+- [x] **J9.2** `internal/tools/skill.go:50` `LoadSkills` — indexes top-level `*.md`, so
       every `<name>/SKILL.md` is skipped; all 17 skills on this machine are that layout, and
       eight ship sibling directories they reference. Load `<name>/SKILL.md` named for its
       directory, expose the directory path in the `skill` tool result, keep the flat
       `<name>.md` form working (`.evilcode/skills/selfdev.md` must not break). §9.2.
       ⟨fix⟩ ⟨jcode: crates/jcode-base/src/skill.rs:416-476⟩
-- [ ] **J9.3** `internal/tools/skill.go:83` `skillSummary` — finds the description by
+- [x] **J9.3** `internal/tools/skill.go:83` `skillSummary` — finds the description by
       `CutPrefix(line, "description:")`, which returns `>` for a YAML folded block and drops
       every continuation line. `~/.agents/skills/agent-architect/SKILL.md` is exactly this
       and yields an empty index entry. Parse the front-matter block as YAML; handle inline,
       `>` folded and `|` literal. §9.3. ⟨fix⟩
       ⟨jcode: crates/jcode-base/src/skill.rs:505-523 (`parse_frontmatter`, via serde_yaml)⟩
-- [ ] **J9.4** `internal/tools/skill.go:178` `NewSkillTool` — a skill cannot narrow what the
+- [x] **J9.4** `internal/tools/skill.go:178` `NewSkillTool` — a skill cannot narrow what the
       model may do, and `~/.agents/skills/agent-browser/SKILL.md` already declares
       `allowed-tools` that evilcode ignores. Restrict the tool set for turns after load.
       §9.4. ⟨build⟩ ⟨jcode: crates/jcode-base/src/skill.rs:14-33,478-503⟩
-- [ ] **J9.5** `internal/tools/skill.go:114` `SkillSet.Index` — the whole index sits in the
+- [x] **J9.5** `internal/tools/skill.go:114` `SkillSet.Index` — the whole index sits in the
       prompt; J9.1 takes it from 2 entries to 19 and it stops being free somewhere past 30.
       Embed skills alongside memories (needs J5); a strong match injects the summary.
       Config-gated, **off by default**, prompt-cache trade written into `DEVIATIONS.md`.
       §9.5. ⟨build⟩ ⟨jcode: crates/jcode-base/src/memory.rs:777-806
       (`synthetic_skill_entries`), crates/jcode-memory-types/src/lib.rs:779-820
       (`skill_retrieval_bonus`)⟩
-- [ ] **J9.6** `internal/tools/skill.go:50` `LoadSkills` — authoring a skill needs a
+- [x] **J9.6** `internal/tools/skill.go:50` `LoadSkills` — authoring a skill needs a
       restart, which is what makes skills annoying to write. `/skills reload`, and re-read a
       body whose mtime moved. §9.6. ⟨build⟩
       ⟨jcode: crates/jcode-base/src/skill.rs:547-580⟩
-- [ ] Verify J9: `/skills` lists all 17 from `~/.agents/skills` plus the 2 in
+- [x] Verify J9: `/skills` lists all 17 from `~/.agents/skills` plus the 2 in
       `.evilcode/skills`, each with a real one-line description and its source directory;
       `agent-architect` specifically shows its folded description, not `>`; load
       `niri-screenshot` and confirm the body and its directory arrive; a repo skill shadows

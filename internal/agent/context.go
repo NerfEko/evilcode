@@ -157,6 +157,15 @@ func (c *Conversation) SystemPrompt() string {
 	return c.system
 }
 
+// SetSystemPrompt refreshes dynamic prompt metadata without rewriting the
+// append-only conversation. Skill reload uses this to publish a new index while
+// preserving every user, assistant, and tool message already in the session.
+func (c *Conversation) SetSystemPrompt(system string) {
+	c.mu.Lock()
+	c.system = system
+	c.mu.Unlock()
+}
+
 // identity is the base system prompt. It is deliberately short: the budget is
 // well under ~1200 tokens (plan.md §15), because every token here is paid on
 // every request for the life of the session.

@@ -116,6 +116,10 @@ type Features struct {
 	AutoPoke bool `toml:"auto_poke"`
 	Memory   bool `toml:"memory"`
 	Advisor  bool `toml:"advisor"`
+	// SkillRetrieval embeds skill summaries alongside memory recall and adds a
+	// strong match to the next turn. It is off by default because the extra
+	// per-turn embedding call trades prompt-cache stability for discovery.
+	SkillRetrieval bool `toml:"skill_retrieval"`
 
 	// ConfineToWorkspace restricts the file tools to the directory evilcode was
 	// launched in. Off by default: this is a single-user tool on the user's own
@@ -204,7 +208,7 @@ func Default() *Config {
 		// Memory is off by default for now: it fires embedding side-calls and
 		// injects recall into every turn, which users should opt into rather than
 		// discover after the fact. `memory = true` in the config turns it on.
-		Features: Features{AutoPoke: true, Memory: false},
+		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false},
 	}
 	c.DefaultModel = c.preferredDefaultModel()
 	return c

@@ -89,6 +89,11 @@ type Agent struct {
 	mu         sync.Mutex
 	interrupts []Interrupt
 	running    bool
+	// toolPolicy is installed by the skill tool after a skill declares
+	// allowed-tools. It is read once per tool round, so a skill loaded in one
+	// round governs the turns that follow it rather than racing the current
+	// batch.
+	toolPolicy *tools.ToolPolicy
 
 	// Compactor collapses the conversation when it approaches the window. Nil
 	// disables it, which is what a session with no summariser gets.
@@ -242,6 +247,21 @@ func (a *Agent) PendingInterrupts() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.interrupts)
+}
+
+// SetToolPolicy installs the restriction declared by a loaded skill. A nil
+// policy restores the ordinary session tool set when a skill has no
+// allowed-tools declaration.
+func (a *Agent) SetToolPolicy(policy *tools.ToolPolicy) {
+	a.mu.Lock()
+	a.toolPolicy = policy
+	a.mu.Unlock()
+}
+
+func (a *Agent) currentToolPolicy() *tools.ToolPolicy {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.toolPolicy
 }
 
 // DrainInterrupts removes and returns queued interrupts, grouped by source and
@@ -723,7 +743,7 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
 		return nil
 	}
 
-	outcomes := a.Tools.RunBatch(ctx, batch)
+	outcomes := a.Tools.RunBatchWithPolicy(ctx, batch, a.currentToolPolicy())
 
 	// Answer every call even when the round was cancelled. Returning early left
 	// the assistant's tool_calls unanswered in the conversation and in the

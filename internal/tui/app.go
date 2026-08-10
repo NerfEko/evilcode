@@ -258,6 +258,11 @@ type Model struct {
 	// is off.
 	memory *memory.Manager
 
+	// skills is the live index behind the prompt and /skills. skillContext lets
+	// a reload rebuild the system prompt without losing project instructions.
+	skills       *tools.SkillSet
+	skillContext agent.ProjectContext
+
 	// graphics is the image protocol this terminal speaks, and imagesOn is the
 	// Alt+Shift+I toggle. pendingImages holds escape sequences to emit after
 	// the next frame — they carry no printable cells, so they must not be part
@@ -485,6 +490,13 @@ func (m *Model) WithTodos(store *todo.Store, poke *agent.PokeHook) *Model {
 // widget, and semantic search in the session picker.
 func (m *Model) WithMemory(mem *memory.Manager) *Model {
 	m.memory = mem
+	return m
+}
+
+// WithSkills attaches the live skill index. Bodies remain in tools; the TUI
+// only owns listing, reload feedback, and the refreshed prompt metadata.
+func (m *Model) WithSkills(skills *tools.SkillSet, pc agent.ProjectContext) *Model {
+	m.skills, m.skillContext = skills, pc
 	return m
 }
 
@@ -2059,6 +2071,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "memory":
 		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
+
+	case "skills":
+		return m, m.skillsCommand(strings.TrimSpace(m.commandArg))
 
 	case "selfdev":
 		return m, m.selfdevCommand()

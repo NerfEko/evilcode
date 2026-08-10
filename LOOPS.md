@@ -5735,3 +5735,56 @@ notices, canonical re-read clearing, expiry, and trimming; daemon tests cover sa
 delivery and stale worker recovery. `go build -p 1 ./...`, `go vet -p 1 ./...`,
 `go test -p 1 ./... -count=1`, the targeted probe, and `git diff --check` pass.
 The phase is ready for the `jcode-8` tag and Forgejo push.
+
+## 2026-08-10 J9 — skills that scale
+
+`SkillDirs` now searches the repository and user overlays nearest-first, and `LoadSkills`
+handles both flat files and `<name>/SKILL.md` directories. YAML front matter supplies
+inline, folded, and literal descriptions; `/skills` reports the owning source directory.
+Bodies retain sibling-material context, refresh on mtime changes, and `/skills reload`
+rebuilds the live index and system-prompt list without restarting the session.
+
+parity: `crates/jcode-base/src/skill.rs:222-295`, `:416-476`, and `:505-523` — on par
+        for nearest overlays, directory skills, source visibility, and front-matter parsing.
+verification: real `~/.agents/skills/agent-architect` folded metadata and
+        `niri-screenshot` body/source loading pass; repository shadowing, reload, and
+        `/skills` source-list tests pass.
+codex: n/a (CLI absent; `DEVIATIONS.md` §P0.3), no introduced correctness findings.
+
+### J9.4 — skill tool policy
+
+`allowed-tools` metadata now installs an agent-side gate after the skill call. Shell
+patterns such as `Bash(agent-browser:*)` are checked against the actual `bash.cmd`, and
+blocked calls receive a normal recoverable tool error without executing.
+
+parity: `crates/jcode-base/src/skill.rs:14-33,478-503` — on par for post-load tool
+        restrictions; evilcode keeps its typed batch-result invariant.
+verification: browser command allow, unrelated shell/write refusal, and bounded-batch
+        non-execution tests pass; focused race tests pass.
+codex: n/a (CLI absent; `DEVIATIONS.md` §P0.3), no introduced correctness findings.
+
+### J9.5 — relevant skill retrieval
+
+The stable name/description index remains in the system prompt. Optional
+`[features].skill_retrieval` uses the active provider embedder to cache summary vectors
+and inject one strong match with a note that the body is one `skill` call away; it is off
+by default and its prompt-cache trade is recorded in `DEVIATIONS.md`.
+
+parity: `crates/jcode-base/src/memory.rs:777-806` and
+        `crates/jcode-memory-types/src/lib.rs:779-820` — on par for thresholded relevant
+        summary injection; in-memory vectors are the documented storage deviation.
+verification: strong/weak match tests, config default, and TUI/headless/daemon recall
+        wiring pass.
+codex: n/a (CLI absent; `DEVIATIONS.md` §P0.3), no introduced correctness findings.
+
+## 2026-08-10 Verify J9 — phase closeout
+
+The machine skill probe loads the folded `agent-architect` description and the
+`niri-screenshot` directory body; `/skills` lists the repository's 19 visible entries
+(17 linked user skills plus `commit` and `selfdev`) with source directories. The focused
+policy test proves a forbidden write and unrelated shell never execute, mtime and reload
+tests prove mid-session refresh, and semantic retrieval is opt-in. `go build -p 1 ./...`,
+`go vet -p 1 ./...`, `go test -p 1 ./... -count=1`, focused race tests, and
+`git diff --check` pass. The full race package retains the known 64 MB output-bound
+allocation failures under race instrumentation; normal gates are green. Ready for
+`jcode-9` tagging and Forgejo push.

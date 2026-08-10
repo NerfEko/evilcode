@@ -65,6 +65,9 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if !cfg.Features.AutoPoke {
 		t.Error("auto_poke defaults to true and was not set in the file")
 	}
+	if cfg.Features.SkillRetrieval {
+		t.Error("skill_retrieval defaults to false and was not set in the file")
+	}
 	if cfg.Display.Theme != "catppuccin-frappe" {
 		t.Errorf("theme = %q, want the default", cfg.Display.Theme)
 	}
@@ -81,6 +84,7 @@ default_model = "m@ollama-local"
 keybinding_hints = false
 [features]
 auto_poke = false
+skill_retrieval = true
 `)
 	cfg, err := LoadFrom(path)
 	if err != nil {
@@ -91,6 +95,9 @@ auto_poke = false
 	}
 	if cfg.Features.AutoPoke {
 		t.Error("an explicit false must win over the default true")
+	}
+	if !cfg.Features.SkillRetrieval {
+		t.Error("an explicit skill_retrieval true must be honored")
 	}
 }
 

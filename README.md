@@ -131,6 +131,7 @@ centered = false
 auto_poke = true
 memory = true
 advisor = false
+skill_retrieval = false          # embed skill summaries and surface strong matches
 confine_to_workspace = false     # restrict file tools to the launch directory
 max_steps = 0                    # tool rounds per turn; 0 is unlimited
 
@@ -140,6 +141,12 @@ go = ["gopls"]
 
 Declaring any `[[provider]]` replaces the built-in set entirely, so a provider can be
 removed. Everything else merges over the defaults.
+
+Skills are discovered from the repository overlay, the config directory, and the
+user skill libraries (`~/.agents/skills` and `~/.claude/skills`). `/skills` lists their
+source directories; `/skills reload` refreshes the index and changed bodies. Set
+`skill_retrieval = true` only when the extra embedding call is worth surfacing a
+relevant skill automatically.
 
 A repository can pin its own `default_model` and `[roles]` in `.evilcode.toml` at its
 root. Provider credentials are deliberately not overridable that way: checking out a

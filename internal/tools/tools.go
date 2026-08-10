@@ -206,6 +206,31 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 	return out
 }
 
+// RunBatchWithPolicy answers calls rejected by an active skill without
+// executing them, then runs the remaining calls through the normal bounded
+// worker pool. Keeping the refused calls in the result slice preserves the
+// provider's one-result-per-tool-call transcript invariant.
+func (s Set) RunBatchWithPolicy(ctx context.Context, calls []Call, policy *ToolPolicy) []Outcome {
+	if policy == nil {
+		return s.RunBatch(ctx, calls)
+	}
+	out := make([]Outcome, len(calls))
+	var allowed []Call
+	var indexes []int
+	for i, call := range calls {
+		if err := policy.Check(call); err != nil {
+			out[i] = Outcome{Call: call, Err: err}
+			continue
+		}
+		allowed = append(allowed, call)
+		indexes = append(indexes, i)
+	}
+	for j, outcome := range s.RunBatch(ctx, allowed) {
+		out[indexes[j]] = outcome
+	}
+	return out
+}
+
 // RunOne executes a single call, converting a panic into an error rather than
 // taking the process down: a bad tool argument must not kill a live session.
 func (s Set) RunOne(ctx context.Context, call Call) (outcome Outcome) {

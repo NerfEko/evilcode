@@ -145,6 +145,11 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 
 	out := &Session{Config: cfg, Model: modelName}
+	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
+	var promptSkills []agent.Skill
+	for _, skill := range skills.Index() {
+		promptSkills = append(promptSkills, agent.Skill{Name: skill.Name, Desc: skill.Desc, Path: skill.Path})
+	}
 
 	var store *session.Store
 	var prior []provider.Message
@@ -172,7 +177,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		return nil, err
 	}
 
-	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, nil, ""))
+	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
 	conv.Append(prior...)
 	// Registered *after* the replay: a resumed session appends what it just
 	// read, and persisting that would double the file on every resume.
@@ -216,9 +221,11 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 		// No `ask` tool: a headless session has nobody to ask, and a tool that
 		// is present and always fails is worse than one that is absent.
+		ts = append(ts, tools.NewSkillTool(skills))
 	}
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
+	skills.SetOnLoad(a.SetToolPolicy)
 	// An explicit [[model]] context_window wins; otherwise the provider is
 	// asked, so a discovered window drives the meter and compaction instead
 	// of the hardcoded guess behind them.
@@ -302,6 +309,23 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 			hook := agent.NewMemoryHook(mem)
 			a.Hooks = hook
 			out.closers = append(out.closers, hook.Close)
+		}
+	}
+	if cfg.Features.SkillRetrieval {
+		memoryRecall := a.Recall
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			var tail string
+			var display any
+			if memoryRecall != nil {
+				tail, display = memoryRecall(ctx, in)
+			}
+			if skillTail := skills.Relevant(ctx, in, prov); skillTail != "" {
+				if tail != "" {
+					tail += "\n\n"
+				}
+				tail += skillTail
+			}
+			return tail, display
 		}
 	}
 	return out, nil

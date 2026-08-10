@@ -161,6 +161,7 @@ func runOnce(args []string) (string, error) {
 	}
 
 	a := agent.New(store.Name, prov, modelName, nil, conv)
+	skills.SetOnLoad(a.SetToolPolicy)
 	poke := agent.NewPokeHook(todos, cfg.Features.AutoPoke)
 
 	// A memory bank that fails to open is a missing feature, not a failed
@@ -175,6 +176,23 @@ func runOnce(args []string) (string, error) {
 		a.Recall = func(ctx context.Context, in string) (string, any) {
 			tail, hits := mem.Recall(ctx, in)
 			return tail, hits
+		}
+	}
+	if cfg.Features.SkillRetrieval {
+		memoryRecall := a.Recall
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			var tail string
+			var display any
+			if memoryRecall != nil {
+				tail, display = memoryRecall(ctx, in)
+			}
+			if skillTail := skills.Relevant(ctx, in, prov); skillTail != "" {
+				if tail != "" {
+					tail += "\n\n"
+				}
+				tail += skillTail
+			}
+			return tail, display
 		}
 	}
 
@@ -253,6 +271,7 @@ func runOnce(args []string) (string, error) {
 
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
 		skills.Names(), mcpStatus)).
+		WithSkills(skills, pc).
 		WithTodos(todos, poke).
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
@@ -283,7 +302,7 @@ func runOnce(args []string) (string, error) {
 	}
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))
-	if len(promptSkills) > 0 {
+	if skills != nil {
 		ts = append(ts, tools.NewSkillTool(skills))
 	}
 	if mem != nil {
