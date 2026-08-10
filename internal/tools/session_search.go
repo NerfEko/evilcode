@@ -30,7 +30,11 @@ type searchableMessage struct {
 	Terms     map[string]struct{}
 	Time      time.Time
 	Truncated bool
-	Ordinal   int
+	// TermsComplete is false when a single message exceeded the bounded term
+	// dictionary. The file then uses a streaming fallback for queries absent
+	// from the cache instead of claiming complete search coverage.
+	TermsComplete bool
+	Ordinal       int
 }
 
 type indexedSession struct {
@@ -40,6 +44,7 @@ type indexedSession struct {
 	terms    map[string]struct{}
 	messages []searchableMessage
 	bytes    int64
+	complete bool
 }
 
 const (
@@ -125,7 +130,7 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 		seen[path] = true
 		cached, ok := i.files[path]
 		if !ok || cached.size != stat.Size() || !cached.modified.Equal(stat.ModTime()) {
-			messages, readErr := readSearchMessages(ctx, path)
+			messages, complete, readErr := readSearchMessages(ctx, path)
 			if readErr != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
@@ -133,10 +138,11 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 				i.remove(path)
 				continue
 			}
+			fileTerms := termsForMessages(messages)
 			cached = indexedSession{
 				name: strings.TrimSuffix(entry.Name(), ".jsonl"), size: stat.Size(),
 				modified: stat.ModTime(), messages: messages,
-				terms: termsForMessages(messages),
+				terms: fileTerms, complete: complete && len(fileTerms) < maxIndexedTermsPerFile,
 			}
 			cached.bytes = indexedSessionBytes(cached)
 			i.replace(path, cached)
@@ -156,7 +162,21 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if file.name == currentName || !containsAll(file.terms, wanted) {
+		if file.name == currentName {
+			continue
+		}
+		if !file.complete {
+			original, scanErr := searchOriginalHits(ctx, path, file.name, file.modified, query, role, wanted, limit)
+			if scanErr != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				continue
+			}
+			hits = append(hits, original...)
+			continue
+		}
+		if !containsAll(file.terms, wanted) {
 			continue
 		}
 		for _, message := range file.messages {
@@ -189,15 +209,7 @@ func (i *sessionSearchIndex) search(ctx context.Context, dataDir, currentName, q
 			})
 		}
 	}
-	sort.SliceStable(hits, func(a, b int) bool {
-		if hits[a].Score != hits[b].Score {
-			return hits[a].Score > hits[b].Score
-		}
-		if !hits[a].Date.Equal(hits[b].Date) {
-			return hits[a].Date.After(hits[b].Date)
-		}
-		return hits[a].Name < hits[b].Name
-	})
+	sort.SliceStable(hits, func(a, b int) bool { return searchHitLess(hits[a], hits[b]) })
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
@@ -238,16 +250,26 @@ type sessionSearchHit struct {
 	Score               int
 }
 
+func searchHitLess(a, b sessionSearchHit) bool {
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	if !a.Date.Equal(b.Date) {
+		return a.Date.After(b.Date)
+	}
+	return a.Name < b.Name
+}
+
 type searchEntry struct {
 	TS   time.Time       `json:"ts"`
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
 }
 
-func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, error) {
+func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer f.Close()
 
@@ -257,7 +279,7 @@ func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, 
 	r := bufio.NewReaderSize(f, 64*1024)
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		line, readErr := r.ReadBytes('\n')
 		if len(line) > 0 {
@@ -267,10 +289,14 @@ func readSearchMessages(ctx context.Context, path string) ([]searchableMessage, 
 			break
 		}
 		if readErr != nil {
-			return nil, readErr
+			return nil, false, readErr
 		}
 	}
-	return out, nil
+	complete := len(out) == ordinal
+	for _, message := range out {
+		complete = complete && message.TermsComplete
+	}
+	return out, complete, nil
 }
 
 // bytesTrimSpace is kept local so the scanner can pass byte slices directly
@@ -313,12 +339,14 @@ func searchableMessageFor(entry searchEntry) (searchableMessage, bool) {
 	if !ok {
 		return searchableMessage{}, false
 	}
+	terms, termsComplete := termsForTextLimitedComplete(text, maxIndexedTermsPerMsg)
 	return searchableMessage{
-		Role:      role,
-		Text:      boundedIndexedText(text),
-		Terms:     termsForTextLimited(text, maxIndexedTermsPerMsg),
-		Time:      entry.TS,
-		Truncated: len(text) > maxIndexedMessageBytes,
+		Role:          role,
+		Text:          boundedIndexedText(text),
+		Terms:         terms,
+		Time:          entry.TS,
+		Truncated:     len(text) > maxIndexedMessageBytes,
+		TermsComplete: termsComplete,
 	}, true
 }
 
@@ -440,7 +468,7 @@ func searchOriginalExcerpt(ctx context.Context, path, query, role string, wanted
 				}
 				currentOrdinal := ordinal
 				ordinal++
-				if currentOrdinal != targetOrdinal || !roleMatches(messageRole, role) || !containsAll(termsForTextLimited(text, maxIndexedTermsPerMsg), wanted) {
+				if currentOrdinal != targetOrdinal || !roleMatches(messageRole, role) || !containsWantedTerms(text, wanted) {
 					continue
 				}
 				return searchExcerpt(text, query), entry.TS, true
@@ -453,6 +481,64 @@ func searchOriginalExcerpt(ctx context.Context, path, query, role string, wanted
 			return "", time.Time{}, false
 		}
 	}
+}
+
+// searchOriginalHits is the bounded-cache escape hatch. It runs only when the
+// index had to evict messages or truncate a term dictionary, and retains at
+// most limit strong/recent hits while streaming the original transcript.
+func searchOriginalHits(ctx context.Context, path, name string, modified time.Time, query, role string, wanted []string, limit int) ([]sessionSearchHit, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if limit < 1 {
+		limit = 1
+	}
+	queryText := strings.ToLower(strings.TrimSpace(query))
+	hits := make([]sessionSearchHit, 0, limit)
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			for _, entry := range searchEntriesFromLine(bytesTrimSpace(line)) {
+				messageRole, text, ok := searchableTextFor(entry)
+				if !ok || !roleMatches(messageRole, role) || !containsWantedTerms(text, wanted) {
+					continue
+				}
+				date := entry.TS
+				if date.IsZero() {
+					date = modified
+				}
+				score := len(wanted)
+				if strings.Contains(strings.ToLower(text), queryText) {
+					score += 100
+				}
+				hits = append(hits, sessionSearchHit{
+					Name: name, Date: date, Role: messageRole,
+					Excerpt: searchExcerpt(text, query), Score: score,
+				})
+				if len(hits) >= limit*2 {
+					sort.SliceStable(hits, func(a, b int) bool { return searchHitLess(hits[a], hits[b]) })
+					hits = hits[:limit]
+				}
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	sort.SliceStable(hits, func(a, b int) bool { return searchHitLess(hits[a], hits[b]) })
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits, nil
 }
 
 func searchEntriesFromLine(line []byte) []searchEntry {
@@ -510,11 +596,19 @@ func termsForText(text string) map[string]struct{} {
 }
 
 func termsForTextLimited(text string, max int) map[string]struct{} {
+	terms, _ := termsForTextLimitedComplete(text, max)
+	return terms
+}
+
+func termsForTextLimitedComplete(text string, max int) (map[string]struct{}, bool) {
 	terms := make(map[string]struct{})
 	for _, term := range collectTerms(text, max) {
 		terms[term] = struct{}{}
 	}
-	return terms
+	// Exactly hitting the ceiling is conservatively treated as incomplete. It
+	// may be a false alarm for a message with exactly max distinct terms, but a
+	// streaming fallback is preferable to silently missing a later term.
+	return terms, len(terms) < max
 }
 
 const maxIndexedTermBytes = 256
@@ -582,6 +676,57 @@ func containsAll(available map[string]struct{}, wanted []string) bool {
 		}
 	}
 	return true
+}
+
+// containsWantedTerms scans only for the bounded query vocabulary instead of
+// building a dictionary for every distinct word in a large original message.
+func containsWantedTerms(text string, wanted []string) bool {
+	if len(wanted) == 0 {
+		return true
+	}
+	var foundMask uint64
+	var found []bool
+	if len(wanted) > 64 {
+		found = make([]bool, len(wanted))
+	}
+	foundCount := 0
+	start := -1
+	check := func(end int) bool {
+		if start < 0 {
+			return false
+		}
+		raw := text[start:end]
+		start = -1
+		if len(raw) > maxIndexedTermBytes {
+			return false
+		}
+		for index, term := range wanted {
+			alreadyFound := index < 64 && foundMask&(uint64(1)<<index) != 0 || index >= 64 && found[index]
+			if alreadyFound || !strings.EqualFold(raw, term) {
+				continue
+			}
+			if index < 64 {
+				foundMask |= uint64(1) << index
+			} else {
+				found[index] = true
+			}
+			foundCount++
+			break
+		}
+		return foundCount == len(wanted)
+	}
+	for position, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
+			if start < 0 {
+				start = position
+			}
+			continue
+		}
+		if check(position) {
+			return true
+		}
+	}
+	return check(len(text))
 }
 
 func searchExcerpt(text, query string) string {

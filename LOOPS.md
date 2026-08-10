@@ -5889,8 +5889,32 @@ reproduction: `TestCodexIdentityReadsOnlyTheHeaderLine` failed before the fix
         a still-open FIFO; it now returns without waiting for transcript EOF.
 verification: the full session suite and focused import race tests pass;
         `git diff --check` passes.
-parity: `crates/jcode/src/import.rs:488-526` — on par/better: both inspect only
+parity: `crates/jcode-base/src/import.rs:1057-1120` — on par/better: both inspect only
         Codex's first JSONL record, and evilcode additionally enforces a fixed
         maximum header size.
 codex: 1 finding — fixed here (candidate discovery read and allocated every
         Codex transcript in full); none dismissed.
+
+## 2026-08-10 J7.2 review fix — preserve search coverage beyond cache bounds
+
+The 1 MiB per-session cache evicted oldest messages, then built the file-level
+term set only from the retained tail. Queries unique to an early message were
+therefore rejected before any transcript fallback. A single message with more
+than 4096 distinct terms had the same false-negative path. The index now marks
+either kind of coverage loss and streams that original file on demand, keeping
+only the requested number of strongest/recent hits. The normal unchanged-file
+cache remains bounded and reusable.
+
+reproduction: `TestSessionSearchFallsBackToEarlyMessagesEvictedFromBoundedIndex`
+        failed before the fix with no matches after 6000 messages displaced the
+        first one. A second regression covers query terms beyond the per-message
+        dictionary ceiling; both pass now.
+verification: all session-search tests and focused race cases pass;
+        `git diff --check` passes.
+parity: `crates/jcode-app-core/src/tool/session_search.rs:620-690` and
+        `session_search_index.rs:1-120` — on par: jcode marks an overflowed
+        index entry as an unconditional candidate and re-verifies real file
+        contents; evilcode now preserves the same no-false-negative invariant
+        while keeping fixed cache budgets.
+codex: 1 finding — fixed here (bounded cache eviction invalidated the claimed
+        complete session-search coverage); none dismissed.

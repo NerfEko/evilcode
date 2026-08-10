@@ -179,6 +179,49 @@ func TestSessionSearchRetainsTailOfLargeSession(t *testing.T) {
 	}
 }
 
+func TestSessionSearchFallsBackToEarlyMessagesEvictedFromBoundedIndex(t *testing.T) {
+	dir := t.TempDir()
+	sessions := filepath.Join(dir, "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	for i := 0; i < 6000; i++ {
+		term := "ordinary filler"
+		if i == 0 {
+			term = "early coverage marker"
+		}
+		fmt.Fprintf(&body, `{"ts":"2026-08-01T10:00:00Z","type":"message","data":{"role":"user","content":"%s %s"}}`+"\n", term, strings.Repeat("x", 180))
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "long-early.jsonl"), []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewSessionSearch(dir, "current").Run(context.Background(), json.RawMessage(`{"query":"early coverage marker","role":"user"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, "long-early [") {
+		t.Fatalf("search missed an early message evicted by the bounded index: %q", result.Output)
+	}
+}
+
+func TestSessionSearchFallsBackPastPerMessageTermCeiling(t *testing.T) {
+	dir := t.TempDir()
+	var content strings.Builder
+	for i := 0; i < maxIndexedTermsPerMsg+20; i++ {
+		fmt.Fprintf(&content, "term%d ", i)
+	}
+	content.WriteString("late vocabulary marker")
+	writeSearchSession(t, dir, "wide-vocabulary", content.String())
+	result, err := NewSessionSearch(dir, "current").Run(context.Background(), json.RawMessage(`{"query":"late vocabulary marker","role":"user"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, "wide-vocabulary [") {
+		t.Fatalf("search missed terms beyond the per-message dictionary ceiling: %q", result.Output)
+	}
+}
+
 func TestSessionSearchCentersExcerptForLongMessage(t *testing.T) {
 	dir := t.TempDir()
 	sessions := filepath.Join(dir, "sessions")
