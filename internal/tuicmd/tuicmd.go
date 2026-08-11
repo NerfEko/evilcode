@@ -80,6 +80,10 @@ func runOnce(args []string) (string, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return "", err
 	}
+	// A logged-in Codex CLI account is an available provider, but it is not
+	// part of the offline defaults. Discover it before resolving the model so
+	// `@codex` and the model picker work without a separate ec login flow.
+	cfg.AddDiscoveredCodex()
 
 	// A resumed session remembers the model it left off with (§18). Use it
 	// unless an explicit -m overrides, so /resume lands on the same model the
@@ -161,6 +165,7 @@ func runOnce(args []string) (string, error) {
 	}
 
 	a := agent.New(store.Name, prov, modelName, nil, conv)
+	skills.SetOnLoad(a.SetToolPolicy)
 	poke := agent.NewPokeHook(todos, cfg.Features.AutoPoke)
 
 	// A memory bank that fails to open is a missing feature, not a failed
@@ -175,6 +180,23 @@ func runOnce(args []string) (string, error) {
 		a.Recall = func(ctx context.Context, in string) (string, any) {
 			tail, hits := mem.Recall(ctx, in)
 			return tail, hits
+		}
+	}
+	if cfg.Features.SkillRetrieval {
+		memoryRecall := a.Recall
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			var tail string
+			var display any
+			if memoryRecall != nil {
+				tail, display = memoryRecall(ctx, in)
+			}
+			if skillTail := skills.Relevant(ctx, in, prov); skillTail != "" {
+				if tail != "" {
+					tail += "\n\n"
+				}
+				tail += skillTail
+			}
+			return tail, display
 		}
 	}
 
@@ -253,6 +275,7 @@ func runOnce(args []string) (string, error) {
 
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
 		skills.Names(), mcpStatus)).
+		WithSkills(skills, pc).
 		WithTodos(todos, poke).
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).
@@ -280,10 +303,11 @@ func runOnce(args []string) (string, error) {
 	} else {
 		ts = append(fsTools.Tools(), execTools.Tools()...)
 		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
+		ts = append(ts, tools.NewSessionSearchWithCurrentName(dataDir, store.CurrentName))
 	}
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))
-	if len(promptSkills) > 0 {
+	if skills != nil {
 		ts = append(ts, tools.NewSkillTool(skills))
 	}
 	if mem != nil {
@@ -343,14 +367,24 @@ func headerState(cfg *config.Config, sessionName, model, providerName, cwd strin
 		MCP:         mcpSummaries,
 	}
 	for _, p := range cfg.Providers {
+		ready := p.APIKeyValue() != "" || p.APIKeyEnv == ""
+		if p.Kind == config.KindCodex {
+			// Codex readiness comes from auth.json, not an API-key variable.
+			// Build performs only local discovery here; the network is deferred
+			// until a turn or the asynchronous model picker.
+			_, buildErr := p.Build()
+			ready = buildErr == nil
+		}
 		h.Providers = append(h.Providers, tui.ProviderStatus{
 			Name: p.Name,
 			// A provider with no key configured is reachable only if it needs
 			// none, which is how a local daemon shows as ready.
-			Ready: p.APIKeyValue() != "" || p.APIKeyEnv == "",
+			Ready: ready,
 		})
 		if p.Name == providerName {
-			if p.APIKeyValue() != "" {
+			if p.Kind == config.KindCodex {
+				h.AuthKind = "oauth"
+			} else if p.APIKeyValue() != "" {
 				h.AuthKind = "api-key"
 			} else {
 				h.AuthKind = "local"

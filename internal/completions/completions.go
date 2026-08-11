@@ -98,6 +98,7 @@ func modelRefs() []string {
 	if err != nil {
 		return nil
 	}
+	cfg.AddDiscoveredCodex()
 	var out []string
 	if cfg.DefaultModel != "" {
 		out = append(out, cfg.DefaultModel)

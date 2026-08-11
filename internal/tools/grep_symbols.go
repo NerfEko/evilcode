@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -245,14 +246,95 @@ func (s grepSymbol) label() string {
 }
 
 // grepSymbols prefers the language server, but a failed or unavailable server
-// must never turn a cheap search into a failed search. A short per-file budget
-// keeps a server that is indexing from holding up every hit in the result.
-func (e *Exec) grepSymbols(ctx context.Context, path string, unavailable map[string]bool, maxLine int) []grepSymbol {
-	if e.lspServer != nil && !unavailable[lsp.LanguageID(path)] {
-		lspCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+// must never turn a cheap search into a failed search. The caller supplies a
+// short shared phase budget so an indexing server cannot hold up every hit.
+type grepLSPAvailability struct {
+	mu          sync.Mutex
+	unavailable map[string]bool
+}
+
+func newGrepLSPAvailability() *grepLSPAvailability {
+	return &grepLSPAvailability{unavailable: make(map[string]bool)}
+}
+
+func (a *grepLSPAvailability) isUnavailable(language string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.unavailable[language]
+}
+
+func (a *grepLSPAvailability) markUnavailable(language string) {
+	a.mu.Lock()
+	a.unavailable[language] = true
+	a.mu.Unlock()
+}
+
+const (
+	grepSymbolWorkers = 8
+	grepSymbolBudget  = 5 * time.Second
+)
+
+// resolveGrepSymbols enriches distinct hit files concurrently under one short
+// phase budget. Serial per-file LSP timeouts made a broad grep pause for five
+// seconds per language/file before rendering any textual matches.
+func (e *Exec) resolveGrepSymbols(ctx context.Context, maxLines map[string]int) map[string][]grepSymbol {
+	resolved := make(map[string][]grepSymbol, len(maxLines))
+	if len(maxLines) == 0 {
+		return resolved
+	}
+	paths := make([]string, 0, len(maxLines))
+	for path := range maxLines {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	phaseCtx, cancel := context.WithTimeout(ctx, grepSymbolBudget)
+	defer cancel()
+	availability := newGrepLSPAvailability()
+	values := make([][]grepSymbol, len(paths))
+	jobs := make(chan int)
+	workers := grepSymbolWorkers
+	if workers > len(paths) {
+		workers = len(paths)
+	}
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				path := paths[index]
+				values[index] = e.grepSymbols(phaseCtx, path, availability, maxLines[path])
+			}
+		}()
+	}
+	for index := range paths {
+		select {
+		case jobs <- index:
+		case <-phaseCtx.Done():
+			close(jobs)
+			wg.Wait()
+			for i, path := range paths {
+				resolved[path] = values[i]
+			}
+			return resolved
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	for index, path := range paths {
+		resolved[path] = values[index]
+	}
+	return resolved
+}
+
+func (e *Exec) grepSymbols(ctx context.Context, path string, availability *grepLSPAvailability, maxLine int) []grepSymbol {
+	language := lsp.LanguageID(path)
+	if e.lspServer != nil && !availability.isUnavailable(language) {
+		lspCtx, cancel := context.WithTimeout(ctx, grepSymbolBudget)
 		client, err := e.lspServer.For(lspCtx, path)
 		if err != nil || client == nil {
-			unavailable[lsp.LanguageID(path)] = true
+			availability.markUnavailable(language)
 		} else {
 			if symbols, err := client.Symbols(lspCtx, path); err == nil {
 				out := flattenGrepSymbols(symbols)
@@ -261,7 +343,7 @@ func (e *Exec) grepSymbols(ctx context.Context, path string, unavailable map[str
 					return out
 				}
 			} else {
-				unavailable[lsp.LanguageID(path)] = true
+				availability.markUnavailable(language)
 			}
 		}
 		cancel()

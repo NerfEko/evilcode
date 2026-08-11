@@ -71,6 +71,18 @@ func TestTurnEndReportsTheTurnsTokens(t *testing.T) {
 	}
 }
 
+func TestOvernightPreflightRunsOutsideTheUpdateLoop(t *testing.T) {
+	m := newTestModel(t).WithTodos(workingList(t), nil)
+	cmd := m.overnightCommand("")
+	if cmd == nil || !m.overnightPreflightPending || m.overnight.Active {
+		t.Fatalf("preflight state = cmd:%v pending:%v active:%v; want deferred git capture", cmd != nil, m.overnightPreflightPending, m.overnight.Active)
+	}
+	msg := cmd()
+	if _, ok := msg.(overnightPreflightResult); !ok {
+		t.Fatalf("preflight command returned %T", msg)
+	}
+}
+
 // workingList is a todo store with unfinished work in it, which is what keeps
 // the overnight loop from halting for reasons the test is not about.
 func workingList(t *testing.T) *todo.Store {

@@ -763,3 +763,17 @@ func TestTranscriptSkipsSystemAndCapsAMessage(t *testing.T) {
 		t.Errorf("transcript is %d bytes; one pasted file should not crowd out the rest", len(got))
 	}
 }
+
+func TestTranscriptDescribesToolCallsAndResults(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read", Args: []byte(`{"path":"plan4.md"}`)}}},
+		{Role: provider.RoleTool, ToolCallID: "call-1", ToolName: "read", Content: "the complete plan"},
+	}
+	got := Transcript(msgs)
+	if !strings.Contains(got, `[Tool: read - {"path":"plan4.md"}]`) {
+		t.Fatalf("tool invocation was absent from compaction transcript: %q", got)
+	}
+	if !strings.Contains(got, "[Result: read] the complete plan") {
+		t.Fatalf("tool result identity was absent from compaction transcript: %q", got)
+	}
+}

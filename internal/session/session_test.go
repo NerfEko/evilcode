@@ -877,6 +877,98 @@ func TestReadSalvagesEntriesGluedToTornTail(t *testing.T) {
 	}
 }
 
+func TestReadSalvagesEntryAfterTornOuterObject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `{"ts":"2026-01-01T00:00:01Z","type":"assistant","data":` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"second"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("structural glued tail should be recoverable: %v", err)
+	}
+	if len(entries) != 1 || !strings.Contains(string(entries[0].Data), `"second"`) {
+		t.Fatalf("recovered entries = %#v, want the appended user envelope", entries)
+	}
+}
+
+func TestReadDoesNotSalvageArrayElement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `[` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"array"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("malformed array tail should be tolerated: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("recovered %d array elements, want none", len(entries))
+	}
+}
+
+func TestReadDoesNotSalvageTornStringInsideArray(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `[{"ts":"2026-01-01T00:00:01Z","type":"assistant","data":{"role":"assistant","content":"torn` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"ghost"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("array string tail should be tolerated: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("recovered %d entries from an array string, want none", len(entries))
+	}
+}
+
+func TestReadResynchronizesAfterMismatchedArrayCloser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	body := `[{"ts":"2026-01-01T00:00:01Z","type":"assistant","data":{"role":"assistant","content":` +
+		`]` +
+		`{"ts":"2026-01-01T00:00:02Z","type":"user","data":{"role":"user","content":"second"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("mismatched array closer should permit resynchronization: %v", err)
+	}
+	if len(entries) != 1 || !strings.Contains(string(entries[0].Data), `"second"`) {
+		t.Fatalf("recovered entries = %#v, want the post-array user envelope", entries)
+	}
+}
+
+func TestReadDoesNotSalvageNestedEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bat.jsonl")
+	// The outer record is torn after its data object. The nested object has the
+	// envelope-shaped keys, but it is payload and must not become a message.
+	body := `{"ts":"2026-01-01T00:00:00Z","type":"assistant","data":{"role":"assistant","tool_calls":[{"id":"c1","name":"tool","args":{"ts":"2026-01-01T00:00:01Z","type":"user","data":{"role":"user","content":"ghost"}}}]}`
+	if err := os.WriteFile(path, []byte(body), FilePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatalf("nested payload should be treated as a torn tail: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("recovered %d nested entries, want none", len(entries))
+	}
+}
+
 func TestReadRemovesTruncatedTailBeforeTheNextAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(Dir(dir), "bat.jsonl")

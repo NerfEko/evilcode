@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -92,6 +93,14 @@ type Block struct {
 	// the real render and vice versa, so every frame rendered the whole
 	// transcript twice — the scroll and streaming lag.
 	cache [2]blockRender
+
+	// streamCache is a short-lived paint cache for the live tail. A provider can
+	// emit faster than a terminal can repaint; returning the last live frame for
+	// one spinner interval bounds markdown/highlight work without dropping any
+	// text from Block.Text. It is only used while Streaming is true.
+	streamCache       blockRender
+	streamCacheLayout blockCacheKey
+	streamCacheAt     time.Time
 }
 
 type blockRender struct {
@@ -101,7 +110,16 @@ type blockRender struct {
 	lines []string
 }
 
-func (b *Block) dropCache() { b.cache = [2]blockRender{} }
+func (b *Block) dropCache() {
+	b.cache = [2]blockRender{}
+	b.dropStreamingCache()
+}
+
+func (b *Block) dropStreamingCache() {
+	b.streamCache = blockRender{}
+	b.streamCacheLayout = blockCacheKey{}
+	b.streamCacheAt = time.Time{}
+}
 
 // keep stores a render, preferring the slot already holding that width so the
 // two widths in play settle into one slot each.
@@ -120,7 +138,8 @@ func (b *Block) keep(c blockRender) {
 // unchanged strings compare without allocating; the old fmt.Sprintf key copied
 // every byte of a long reply on every repaint, even when the cache hit.
 type blockCacheKey struct {
-	kind, number, decay                                                int
+	kind, number                                                       int
+	promptColor                                                        color.RGBA
 	toolTokens, added, removed                                         int
 	text, toolName, toolTarget, toolIntent                             string
 	toolPath, toolCommand, toolOutput                                  string
@@ -143,6 +162,10 @@ type blockCacheKey struct {
 type Rows struct {
 	Lines []string
 	Owner []int
+	// First maps each block to its first rendered row, or -1 when the block
+	// emitted no rows. It is assembled with Owner so dock/prompt navigation do
+	// not rescan every transcript row on each frame.
+	First []int32
 }
 
 // Renderer turns blocks into styled lines.
@@ -211,9 +234,28 @@ func rgbStyle(r, g, b uint8) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(r, g, b))))
 }
 
-// Lines renders a block, using its cache when the width has not changed.
+// Lines renders a block, using its settled cache when the width has not
+// changed and a short-lived paint cache for a live streaming tail.
 func (r *Renderer) Lines(b *Block) []string {
 	key := b.cacheContentKey(r)
+	if b.Streaming {
+		layout := key
+		layout.text = ""
+		now := time.Now()
+		if b.streamCache.valid && b.streamCache.width == r.Width &&
+			b.streamCacheLayout == layout &&
+			(b.streamCache.key.text == key.text || now.Sub(b.streamCacheAt) < StreamingRenderInterval) {
+			return b.streamCache.lines
+		}
+		lines := r.render(b)
+		b.streamCache = blockRender{valid: true, width: r.Width, key: key, lines: lines}
+		b.streamCacheLayout = layout
+		// Start the throttle window after the expensive work. Starting it before
+		// rendering meant a slow markdown/code frame could consume its own entire
+		// cache lifetime, then immediately render the same unchanged tail again.
+		b.streamCacheAt = time.Now()
+		return lines
+	}
 	if !b.Streaming {
 		for _, c := range b.cache {
 			if c.valid && c.width == r.Width && c.key == key {
@@ -228,9 +270,18 @@ func (r *Renderer) Lines(b *Block) []string {
 	return lines
 }
 
+// StreamingRenderInterval caps expensive markdown/syntax work for a live
+// response. It matches the visible spinner cadence, so text remains responsive
+// while an unusually chatty provider cannot monopolize the event loop.
+const StreamingRenderInterval = SpinnerInterval
+
 func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
+	promptColor := color.RGBA{}
+	if b.Kind == BlockUser {
+		promptColor = theme.Rainbow(b.Decay)
+	}
 	return blockCacheKey{
-		kind: int(b.Kind), number: b.Number, decay: b.Decay,
+		kind: int(b.Kind), number: b.Number, promptColor: promptColor,
 		toolTokens: b.ToolTokens, added: b.Added, removed: b.Removed,
 		text: b.Text, toolName: b.ToolName, toolTarget: b.ToolTarget,
 		toolIntent: b.ToolIntent, toolPath: b.ToolPath,
@@ -414,7 +465,13 @@ func (r *Renderer) renderCodeBlock(seg Segment) []string {
 	for len(body) > 0 && strings.TrimSpace(body[len(body)-1]) == "" {
 		body = body[:len(body)-1]
 	}
-	highlighted := HighlightLines(seg.Lang, strings.Join(body, "\n"))
+	joined := strings.Join(body, "\n")
+	var highlighted []string
+	if seg.Open {
+		highlighted = HighlightLinesUncached(seg.Lang, joined)
+	} else {
+		highlighted = HighlightLines(seg.Lang, joined)
+	}
 	for i := range body {
 		text := body[i]
 		if i < len(highlighted) {

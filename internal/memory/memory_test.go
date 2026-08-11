@@ -488,6 +488,106 @@ func TestReloadSalvagesRecordsGluedToTornTail(t *testing.T) {
 	}
 }
 
+func TestReloadSalvagesRecordAfterTornOuterObject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `{"id":1,"text":` +
+		`{"id":2,"text":"second","kind":"fact","ts":"2026-01-01T00:00:02Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("structural glued memory tail should be recoverable: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 1 {
+		t.Fatalf("recovered %d memories, want the appended record", s.Len())
+	}
+	if got := s.All()[0].Text; got != "second" {
+		t.Fatalf("recovered memory text = %q, want second", got)
+	}
+}
+
+func TestReloadDoesNotSalvageArrayElement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `[` +
+		`{"id":2,"text":"array","kind":"fact","ts":"2026-01-01T00:00:02Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("malformed array tail should be tolerated: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 0 {
+		t.Fatalf("recovered %d array elements, want none", s.Len())
+	}
+}
+
+func TestReloadDoesNotSalvageTornStringInsideArray(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `[{"id":1,"text":"torn` +
+		`{"id":2,"text":"ghost","kind":"fact","ts":"2026-01-01T00:00:02Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("array string tail should be tolerated: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 0 {
+		t.Fatalf("recovered %d records from an array string, want none", s.Len())
+	}
+}
+
+func TestReloadResynchronizesAfterMismatchedArrayCloser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	body := `[{"id":1,"text":` +
+		`]` +
+		`{"id":2,"text":"second","kind":"fact","ts":"2026-01-01T00:00:02Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("mismatched array closer should permit resynchronization: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 1 || s.All()[0].Text != "second" {
+		t.Fatalf("recovered memories = %#v, want the post-array record", s.All())
+	}
+}
+
+func TestReloadDoesNotSalvageNestedRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	// The outer record is torn after an unrelated object. The nested object has
+	// the record-shaped keys, but it is payload and must not become a memory.
+	body := `{"id":1,"text":"torn","meta":{"id":2,"text":"ghost","kind":"fact"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("nested payload should be treated as a torn tail: %v", err)
+	}
+	defer s.Close()
+	if s.Len() != 0 {
+		t.Fatalf("recovered %d nested records, want none", s.Len())
+	}
+}
+
 func TestReloadRemovesMalformedTailBeforeTheNextAppend(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)

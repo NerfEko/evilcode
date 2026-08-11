@@ -8,6 +8,7 @@ import "strings"
 type Token struct {
 	Text                       string
 	ReceivesPipe               bool
+	IsRedirectTarget           bool
 	IsTruncatingRedirectTarget bool
 	IsOperator                 bool
 	Malformed                  bool
@@ -23,6 +24,7 @@ func Tokenize(command string) []Token {
 	var escaped bool
 	var malformed bool
 	redirectTarget := false
+	anyRedirectTarget := false
 	substitutionDepth := 0
 	groupDepth := 0
 
@@ -32,14 +34,25 @@ func Tokenize(command string) []Token {
 		}
 		tokens = append(tokens, Token{
 			Text:                       word.String(),
+			IsRedirectTarget:           anyRedirectTarget,
 			IsTruncatingRedirectTarget: redirectTarget,
 			Malformed:                  malformed,
 		})
 		word.Reset()
 		redirectTarget = false
+		anyRedirectTarget = false
+	}
+	missingRedirect := func() {
+		if !anyRedirectTarget {
+			return
+		}
+		tokens = append(tokens, Token{Text: "<missing redirect target>", IsOperator: true, Malformed: true})
+		redirectTarget = false
+		anyRedirectTarget = false
 	}
 	operator := func(text string) {
 		flush()
+		missingRedirect()
 		tokens = append(tokens, Token{Text: text, IsOperator: true})
 	}
 
@@ -156,14 +169,22 @@ func Tokenize(command string) []Token {
 			operator(")")
 		case '>':
 			flush()
+			missingRedirect()
+			anyRedirectTarget = true
 			if i+1 < len(command) && command[i+1] == '>' {
 				i++ // append-only redirect; it cannot truncate an existing file
+				redirectTarget = false
+			} else if i+1 < len(command) && command[i+1] == '&' {
+				// File-descriptor duplication (`>&2`, `2>&1`) is a redirect for
+				// policy purposes but does not truncate a filesystem target.
+				i++
 				redirectTarget = false
 			} else {
 				redirectTarget = true
 			}
 		case '<':
 			flush()
+			missingRedirect()
 			// Here-doc/process-substitution syntax is intentionally opaque.
 			malformed = true
 		default:
@@ -175,9 +196,7 @@ func Tokenize(command string) []Token {
 		malformed = true
 	}
 	flush()
-	if redirectTarget {
-		tokens = append(tokens, Token{Text: "<missing redirect target>", IsOperator: true, Malformed: true})
-	}
+	missingRedirect()
 	if validateOperators(tokens) {
 		malformed = true
 	}

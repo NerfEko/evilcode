@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"evilcode/internal/core"
+	"evilcode/internal/jsonl"
 	"evilcode/internal/provider"
 )
 
@@ -47,6 +48,8 @@ type Meta struct {
 	Name      string `json:"name,omitempty"`
 	Note      string `json:"note,omitempty"`
 	Cwd       string `json:"cwd,omitempty"`
+	Source    string `json:"source,omitempty"`
+	SourceID  string `json:"source_id,omitempty"`
 	TokensIn  int    `json:"tokens_in,omitempty"`
 	TokensOut int    `json:"tokens_out,omitempty"`
 }
@@ -63,6 +66,7 @@ const (
 	MetaCompact    = "compact"
 	MetaSaved      = "saved"
 	MetaUnsaved    = "unsaved"
+	MetaImport     = "import"
 )
 
 // Store appends session entries to a JSONL file.
@@ -339,6 +343,15 @@ func (s *Store) Reopen() error {
 	return s.reopenLocked()
 }
 
+// CurrentName returns the live basename of the store. A running TUI can rename
+// its session while resident tools are still using it, so readers must not
+// capture the exported field once and assume it never changes.
+func (s *Store) CurrentName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Name
+}
+
 // Rename moves this session's log and blobs to a new name and updates the live
 // store's identity in the same locked step, so the running session keeps
 // writing to the renamed file rather than to a path that no longer exists.
@@ -602,6 +615,10 @@ func Describe(dataDir, name string) (Info, error) {
 				// Last-write-wins: a session switched models mid-run, and a resume
 				// wants the one it ended on, not the first one it started with.
 				info.Model = m.Model
+			case MetaImport:
+				if m.Cwd != "" {
+					info.Cwd = m.Cwd
+				}
 			}
 		}
 	}
@@ -646,52 +663,36 @@ func readSessionLine(r *bufio.Reader) ([]byte, bool, error) {
 // ones. The required top-level keys keep nested message objects from being
 // mistaken for session records.
 func salvageSessionEntries(line []byte) []Entry {
-	var out []Entry
-	for cursor := 0; cursor < len(line); {
-		rel := bytes.IndexByte(line[cursor:], '{')
-		if rel < 0 {
-			break
-		}
-		start := cursor + rel
-		dec := json.NewDecoder(bytes.NewReader(line[start:]))
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			cursor = start + 1
-			continue
-		}
-
+	return jsonl.Salvage(line, []byte(`{"ts"`), func(raw []byte) (Entry, bool) {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil {
-			cursor = start + 1
-			continue
+			return Entry{}, false
 		}
 		if _, ok := fields["ts"]; !ok {
-			cursor = start + 1
-			continue
+			return Entry{}, false
 		}
 		if _, ok := fields["type"]; !ok {
-			cursor = start + 1
-			continue
+			return Entry{}, false
 		}
 		if _, ok := fields["data"]; !ok {
-			cursor = start + 1
-			continue
+			return Entry{}, false
 		}
-
 		var entry Entry
 		if err := json.Unmarshal(raw, &entry); err != nil {
-			cursor = start + 1
-			continue
+			return Entry{}, false
 		}
-		out = append(out, entry)
-		consumed := int(dec.InputOffset())
-		if consumed <= 0 {
-			cursor = start + 1
-		} else {
-			cursor = start + consumed
+		return entry, true
+	}, func(candidate jsonl.Candidate) bool {
+		if candidate.Depth != 1 {
+			return true
 		}
-	}
-	return out
+		switch candidate.KeyBefore() {
+		case "", "ts", "type", "data":
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // repairSessionTail removes a malformed final line and writes any recovered

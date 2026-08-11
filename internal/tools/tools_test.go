@@ -3,12 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func tempFS(t *testing.T, files map[string]string) *FS {
@@ -153,6 +155,29 @@ func TestWriteCreatesAndReportsDiff(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "created") {
 		t.Errorf("output = %q, want it to say created", res.Output)
+	}
+}
+
+func TestWriteAndEditCarryOptionalIntent(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "old\n"})
+	write, err := run(t, f.Tools(), "write", map[string]any{
+		"path": "a.txt", "content": "new\n", "intent": "refresh the fixture",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if write.Intent != "refresh the fixture" {
+		t.Errorf("write intent = %q", write.Intent)
+	}
+
+	edit, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt", "old": "new", "new": "updated", "intent": "make the assertion clearer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edit.Intent != "make the assertion clearer" {
+		t.Errorf("edit intent = %q", edit.Intent)
 	}
 }
 
@@ -1126,6 +1151,200 @@ func TestMissingSkillDirIsFine(t *testing.T) {
 	if len(set.Index()) != 0 {
 		t.Errorf("skills = %+v", set.Index())
 	}
+}
+
+func TestSkillDirsUseNearestFirstHomeOverlays(t *testing.T) {
+	repo, cfg, home := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	dirs := SkillDirs(repo, cfg)
+	want := []string{
+		filepath.Join(repo, ".evilcode", "skills"),
+		filepath.Join(repo, ".agents", "skills"),
+		filepath.Join(cfg, "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+	}
+	if strings.Join(dirs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("skill dirs = %v, want %v", dirs, want)
+	}
+}
+
+func TestDirectorySkillLoadsBodyAndSourceDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "niri-screenshot")
+	if err := os.MkdirAll(filepath.Join(dir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(
+		"---\ndescription: Capture a window\n---\n\nUse the sibling references.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set := LoadSkills([]string{root})
+	index := set.Index()
+	if len(index) != 1 || index[0].Name != "niri-screenshot" {
+		t.Fatalf("index = %+v", index)
+	}
+	if index[0].Path != dir {
+		t.Errorf("source = %q, want %q", index[0].Path, dir)
+	}
+	res, err := run(t, Set{NewSkillTool(set)}, "skill", map[string]any{"name": "niri-screenshot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "Skill directory: "+dir) ||
+		!strings.Contains(res.Output, "Use the sibling references.") {
+		t.Errorf("skill result = %q", res.Output)
+	}
+}
+
+func TestSkillFrontMatterParsesFoldedLiteralAndAllowedTools(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "folded.md"), []byte(
+		"---\ndescription: >\n  First line\n  second line\nallowed-tools: Bash(agent-browser:*), Bash(npx agent-browser:*)\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "literal.md"), []byte(
+		"---\ndescription: |\n  first line\n  second line\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set := LoadSkills([]string{dir})
+	var folded, literal Skill
+	for _, skill := range set.Index() {
+		switch skill.Name {
+		case "folded":
+			folded = skill
+		case "literal":
+			literal = skill
+		}
+	}
+	if folded.Desc != "First line second line" {
+		t.Errorf("folded description = %q", folded.Desc)
+	}
+	if literal.Desc != "first line\nsecond line" {
+		t.Errorf("literal description = %q", literal.Desc)
+	}
+	policy := (*ToolPolicy)(nil)
+	set.SetOnLoad(func(got *ToolPolicy) { policy = got })
+	if _, err := run(t, Set{NewSkillTool(set)}, "skill", map[string]any{"name": "folded"}); err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil {
+		t.Fatal("allowed-tools did not install a policy")
+	}
+	if err := policy.Check(Call{Name: "bash", Args: json.RawMessage(`{"cmd":"agent-browser open https://example.test"}`)}); err != nil {
+		t.Errorf("allowed agent-browser command blocked: %v", err)
+	}
+	if err := policy.Check(Call{Name: "write", Args: json.RawMessage(`{"path":"x","content":"no"}`)}); err == nil {
+		t.Error("write must be blocked by the browser skill policy")
+	}
+	if err := policy.Check(Call{Name: "bash", Args: json.RawMessage(`{"cmd":"printf no"}`)}); err == nil {
+		t.Error("unrelated bash must be blocked by the browser skill policy")
+	}
+	for _, command := range []string{
+		"agent-browser open https://example.test; rm -rf ./build",
+		"agent-browser open https://example.test && printf escaped",
+		"agent-browser open $(printf https://example.test)",
+		"agent-browser open https://example.test > stolen.txt",
+		"agent-browser open https://example.test >> stolen.txt",
+		"agent-browser open https://example.test & printf escaped",
+	} {
+		if err := policy.Check(Call{Name: "bash", Args: json.RawMessage(fmt.Sprintf(`{"cmd":%q}`, command))}); err == nil {
+			t.Errorf("shell escape %q bypassed the browser skill policy", command)
+		}
+	}
+}
+
+func TestSkillFallbackDescriptionDoesNotSplitUTF8(t *testing.T) {
+	body := strings.Repeat("a", 118) + "é" + strings.Repeat("b", 20)
+	got := firstDescription(body)
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, "…") {
+		t.Fatalf("fallback description is not valid bounded UTF-8: %q", got)
+	}
+}
+
+func TestSkillBodyReloadsWhenMtimeChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edit.md")
+	if err := os.WriteFile(path, []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set := LoadSkills([]string{dir})
+	first, err := set.Body("edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	forced := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, forced, forced); err != nil {
+		t.Fatal(err)
+	}
+	second, err := set.Body("edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first, "first") || !strings.Contains(second, "second") {
+		t.Errorf("body cache did not refresh: first=%q second=%q", first, second)
+	}
+}
+
+func TestSkillRetrievalInjectsOnlyStrongMatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "browser.md"), []byte(
+		"---\ndescription: automate browser navigation\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set := LoadSkills([]string{dir})
+	emb := &skillTestEmbedder{vectors: map[string][]float32{
+		"automate browser navigation": {1, 0},
+		"browser automation please":   {1, 0},
+	}}
+	if got := set.Relevant(context.Background(), "browser automation please", emb); !strings.Contains(got, "browser") || !strings.Contains(got, "one `skill` tool call away") {
+		t.Fatalf("relevant skill = %q", got)
+	}
+	if got := set.Relevant(context.Background(), "unrelated", &skillTestEmbedder{vectors: map[string][]float32{
+		"automate browser navigation": {1, 0},
+		"unrelated":                   {0, 1},
+	}}); got != "" {
+		t.Fatalf("weak skill match = %q", got)
+	}
+}
+
+func TestRunBatchWithPolicyDoesNotExecuteBlockedCalls(t *testing.T) {
+	var writes atomic.Int32
+	set := Set{
+		{Name: "write", Run: func(context.Context, json.RawMessage) (Result, error) {
+			writes.Add(1)
+			return Result{Output: "wrote"}, nil
+		}},
+		{Name: "read", Run: func(context.Context, json.RawMessage) (Result, error) {
+			return Result{Output: "read"}, nil
+		}},
+	}
+	policy := NewToolPolicy("review", []string{"Read"})
+	outcomes := set.RunBatchWithPolicy(context.Background(), []Call{
+		{Name: "write", Args: json.RawMessage(`{"path":"x"}`)},
+		{Name: "read", Args: json.RawMessage(`{"path":"x"}`)},
+	}, policy)
+	if writes.Load() != 0 {
+		t.Fatal("the policy-blocked write executed")
+	}
+	if outcomes[0].Err == nil || outcomes[1].Err != nil {
+		t.Fatalf("policy outcomes = %+v", outcomes)
+	}
+}
+
+type skillTestEmbedder struct {
+	vectors map[string][]float32
+}
+
+func (e *skillTestEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		out[i] = e.vectors[text]
+	}
+	return out, nil
 }
 
 func TestAnchorRejectsLineTextWithAUsefulError(t *testing.T) {

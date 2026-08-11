@@ -49,6 +49,7 @@ var Commands = []Command{
 		Long: "  /overnight        arm it\n" +
 			"  /overnight off    stop now\n" +
 			"  /overnight status where it is\n" +
+			"  /overnight report show the latest self-contained HTML report\n" +
 			"It stops on turns, tokens, time, or a list that stopped moving — and says which."},
 	{Name: "advisor", Help: "Second-opinion model on/off/status"},
 	{Name: "lsp", Help: "Language server status"},
@@ -64,6 +65,9 @@ var Commands = []Command{
 			"  /memory on|off   stop or resume recalling and remembering\n" +
 			"  /memory list [project|global]  show the selected memory view\n" +
 			"  /memory forget <id>  drop one"},
+	{Name: "skills", Help: "List or reload skills",
+		Long: "  /skills         list names, descriptions, and source directories\n" +
+			"  /skills reload  reread skill indexes and changed bodies"},
 
 	{Name: "clear", Help: "Clear the transcript"},
 	{Name: "cls", Help: "Clear the transcript", Hidden: true},
@@ -71,10 +75,11 @@ var Commands = []Command{
 	{Name: "context", Help: "Show context usage"},
 	{Name: "stats", Help: "Show current session statistics"},
 	{Name: "info", Help: "Show session info"},
-	{Name: "login", Help: "Set or inspect a provider API key",
+	{Name: "login", Help: "Set or inspect provider authentication",
 		Long: "/login                  open a provider selector, then enter a masked key\n" +
 			"/login [provider]       enter a masked API key for a provider (e.g. /login deepseek)\n" +
-			"/login status [provider] report whether a key is present without printing it."},
+			"/login status [provider] report whether a key/account is present without printing it.\n" +
+			"                         Codex OAuth is discovered from `codex login`; it does not accept an API key."},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
 	{Name: "theme", Help: "Switch, score, or generate a palette",
@@ -171,7 +176,7 @@ type HelpSection struct {
 var HelpSections = []HelpSection{
 	{"Getting around", []string{"help", "keys", "context", "stats", "info", "version"}},
 	{"Models", []string{"model", "models"}},
-	{"Working", []string{"plan", "review", "bugfix", "describe", "todos", "poke", "memory"}},
+	{"Working", []string{"plan", "review", "bugfix", "describe", "todos", "poke", "memory", "skills"}},
 	{"Swarm", []string{"summon", "agents"}},
 	{"Analysis", []string{"lsp", "advisor", "productivity", "overnight"}},
 	{"Self-development", []string{"selfdev", "rebuild", "reload"}},

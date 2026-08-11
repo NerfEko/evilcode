@@ -9,7 +9,8 @@
 A terminal coding agent. Agentic tool-calling loop, a TUI built on the Charm stack,
 and first-class support for Ollama Cloud alongside anything that speaks the OpenAI API.
 
-Single user, no telemetry, no account. Sessions are JSONL files on your own disk.
+Single user, no telemetry, no account. Sessions are JSONL files on your own disk; a
+torn append glued to a later record is salvaged and repaired before the next write.
 
 ![evilcode auditing a real codebase for panic-shaped bugs](demo/demo-search.gif)
 
@@ -53,6 +54,7 @@ evilcode run "fix the parser" # headless, one shot
 evilcode serve                # daemon hosting sessions
 evilcode attach [session]     # attach a TUI to the daemon
 evilcode run --remote "..."   # submit into a running daemon
+evilcode resume --from claude <id-or-path> # import and continue a foreign session
 ```
 
 `evilcode run` writes the model's text to stdout and everything else to stderr, so it
@@ -80,6 +82,11 @@ A turn that could not be fully written says so rather than leaving a session tha
 back short on resume. Closing a session waits for its in-flight turn to finish, so a
 shutdown or a closed terminal does not drop the messages the turn was still writing.
 
+The `session_search` tool finds earlier native sessions by transcript phrase, with a
+role filter and dated excerpt. `evilcode resume --from claude|codex|opencode
+<id-or-path>` converts a foreign transcript into a native JSONL session and enters the
+ordinary resume path; repeated imports reuse the existing native continuation.
+
 ## Configuration
 
 `~/.config/evilcode/config.toml`, or wherever `$EVILCODE_CONFIG` points. Every key has
@@ -92,6 +99,19 @@ the config file, so a key entered with `/login` counts. With a key you get
 model is routed through the local daemon that proxies it. Setting `default_model`
 yourself always wins.
 
+If the Codex CLI is installed and you have run `codex login`, ec automatically discovers
+that ChatGPT OAuth account from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). Select a
+Codex model in `/model`, or choose one explicitly, for example:
+
+```sh
+ec -m gpt-5.3-codex@codex
+```
+
+The Codex access token is used in memory and refreshed through the same OAuth endpoint as
+the Codex CLI; rotated credentials are saved back to its auth file. ec never prints the
+token. `/login status codex` reports whether the account is available; use `codex login` to
+sign in or change accounts.
+
 `context_window` is likewise optional: the window and capabilities of every Ollama model,
 local or cloud, are read from the provider, so the meter and auto-compaction are right
 without a `[[model]]` block per model. Set one only to correct what the provider claims.
@@ -101,7 +121,7 @@ default_model = "glm-5.2:cloud@ollama-cloud"
 
 [[provider]]
 name = "ollama-cloud"
-kind = "ollama"                  # ollama | openai | deepseek | mock
+kind = "ollama"                  # ollama | openai | deepseek | codex | mock
 base_url = "https://ollama.com"
 api_key_env = "OLLAMA_API_KEY"
 
@@ -124,6 +144,7 @@ centered = false
 auto_poke = true
 memory = true
 advisor = false
+skill_retrieval = false          # embed skill summaries and surface strong matches
 confine_to_workspace = false     # restrict file tools to the launch directory
 max_steps = 0                    # tool rounds per turn; 0 is unlimited
 
@@ -133,6 +154,12 @@ go = ["gopls"]
 
 Declaring any `[[provider]]` replaces the built-in set entirely, so a provider can be
 removed. Everything else merges over the defaults.
+
+Skills are discovered from the repository overlay, the config directory, and the
+user skill libraries (`~/.agents/skills` and `~/.claude/skills`). `/skills` lists their
+source directories; `/skills reload` refreshes the index and changed bodies. Set
+`skill_retrieval = true` only when the extra embedding call is worth surfacing a
+relevant skill automatically.
 
 A repository can pin its own `default_model` and `[roles]` in `.evilcode.toml` at its
 root. Provider credentials are deliberately not overridable that way: checking out a
@@ -203,10 +230,14 @@ terminals can follow one conversation and a closed terminal loses nothing. Per-s
 ring buffers cover reconnects.
 
 Agents inside the daemon coordinate. A shared file registry tells an agent when another
-rewrote a file it had read, delivered between turns rather than mid-thought.
+rewrote a file it had read, delivered between turns rather than mid-thought. Notices name
+the writer's optional intent and the first lines of its diff; overlapping writers are told
+about each other, while old reads expire instead of firing days later.
 `send_message`, `broadcast` and `peers` route through the daemon. `spawn_worker` and
 `/summon` start headless workers whose results are validated against a JSON Schema the
-spawner supplies, so nobody has to parse prose.
+spawner supplies, so nobody has to parse prose. Worker heartbeats make a silent worker
+appear as `stale` in `peers`, and its spawner receives one warning instead of waiting
+forever for a result.
 
 The shared plan and todo list span the swarm: one store per namespace, held by
 reference, so every worker sees the same items rather than a private half that the
@@ -326,8 +357,9 @@ probe/               tmux driver, scenarios, goldens
 `internal/agent` does not import bubbletea, and a test enforces it. That separation is
 what lets the headless runner, the daemon and the probe rig share one implementation.
 
-`plan.md` holds the specification. `DEVIATIONS.md` records where the build differs from
-it and why. `LOOPS.md` is the build log.
+`DEVIATIONS.md` records where the completed build differs from its historical specs and
+why. `LOOPS.md` retains the implementation and review log; `planfiles.md` is the reusable
+guide for authoring future working plans.
 
 ## License
 

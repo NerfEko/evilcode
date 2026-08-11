@@ -346,9 +346,18 @@ func (f *FS) readTool() Tool {
 				return f.readWindow(full, info, a, cap)
 			}
 
-			data, err := f.readConfined(full)
+			// Stat is only an early routing hint. Enforce the ceiling again on the
+			// descriptor itself: a regular file can grow or be replaced between
+			// Stat and open, and special files such as FIFOs report size zero while
+			// still producing an unbounded stream.
+			data, exceeded, err := f.readConfinedLimit(full, cap)
 			if err != nil {
 				return Result{}, err
+			}
+			if exceeded {
+				return Result{}, fmt.Errorf(
+					"%s changed or streamed past the %s single-read limit; read a regular file in pieces with offset and limit, or grep it for what you need",
+					a.Path, humanBytes(int64(cap)))
 			}
 			if isBinary(data) {
 				return Result{}, fmt.Errorf(
@@ -662,6 +671,22 @@ func (f *FS) readConfined(full string) ([]byte, error) {
 	return io.ReadAll(file)
 }
 
+// readConfinedLimit reads at most limit+1 bytes through the same confined
+// descriptor as readConfined. The extra byte distinguishes an exact-limit file
+// from a stream that crossed the ceiling without trusting a racy Stat result.
+func (f *FS) readConfinedLimit(full string, limit int) ([]byte, bool, error) {
+	file, err := f.openConfined(full)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, len(data) > limit, nil
+}
+
 // writeAtomic replaces a file's contents in one visible step.
 //
 // `os.WriteFile` truncates the destination and then writes into it, so for the
@@ -724,18 +749,31 @@ func writeAtomic(path string, data []byte) error {
 type writeArgs struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Intent  string `json:"intent,omitempty"`
+}
+
+// fileIntent lets a model explain why a write is happening. The fallback keeps
+// the existing useful row when no explanation was supplied, while the bound
+// prevents an optional field from becoming a large status message.
+func fileIntent(provided, fallback string) string {
+	if intent := strings.TrimSpace(provided); intent != "" {
+		return truncate(intent, 120)
+	}
+	return fallback
 }
 
 func (f *FS) writeTool() Tool {
 	return Tool{
 		Name: "write",
 		Desc: "Write a file, creating it or replacing its entire contents. " +
-			"To change part of an existing file, prefer edit.",
+			"To change part of an existing file, prefer edit. Optionally provide " +
+			"intent, a short reason other agents can see if their copy conflicts.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "path":    {"type": "string", "description": "File path, relative to the workspace root"},
-    "content": {"type": "string", "description": "Full file contents"}
+    "content": {"type": "string", "description": "Full file contents"},
+    "intent":  {"type": "string", "description": "Short reason for this write, for other agents' conflict notices"}
   },
   "required": ["path", "content"]
 }`),
@@ -775,17 +813,18 @@ func (f *FS) writeTool() Tool {
 				Output:   fmt.Sprintf("%s %s (+%d -%d)", verb, name, stat.Added, stat.Removed),
 				Diff:     diff,
 				DiffStat: &stat,
-				Intent:   fmt.Sprintf("%s %s", verb, name),
+				Intent:   fileIntent(a.Intent, fmt.Sprintf("%s %s", verb, name)),
 			}, nil
 		},
 	}
 }
 
 type editArgs struct {
-	Path string `json:"path"`
-	Old  string `json:"old"`
-	New  string `json:"new"`
-	All  bool   `json:"all,omitempty"`
+	Path   string `json:"path"`
+	Old    string `json:"old"`
+	New    string `json:"new"`
+	All    bool   `json:"all,omitempty"`
+	Intent string `json:"intent,omitempty"`
 
 	// Patches is the hash-anchored form. It points at lines by the anchors
 	// `read` printed, so the model names a line instead of retyping its
@@ -803,7 +842,8 @@ func (f *FS) editTool() Tool {
 			"    cheapest form — you name a line instead of retyping its context.\n" +
 			"  exact — old/new strings. The old string must appear exactly once unless all\n" +
 			"    is true, and must match the file byte for byte including indentation.\n" +
-			"Anchors are only valid for the version you read; if the file changed, re-read it.",
+			"Anchors are only valid for the version you read; if the file changed, re-read it. " +
+			"Optionally provide intent, a short reason other agents can see if their copy conflicts.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -811,6 +851,7 @@ func (f *FS) editTool() Tool {
     "old":  {"type": "string", "description": "Exact text to replace, including indentation"},
     "new":  {"type": "string", "description": "Replacement text"},
     "all":  {"type": "boolean", "description": "Replace every occurrence instead of requiring exactly one"},
+    "intent": {"type": "string", "description": "Short reason for this edit, for other agents' conflict notices"},
     "patches": {
       "type": "array",
       "description": "Anchored edits, using the anchors read printed beside each line",
@@ -846,7 +887,7 @@ func (f *FS) editTool() Tool {
 			before := string(data)
 
 			if len(a.Patches) > 0 {
-				return f.applyAnchoredEdit(full, before, a.Patches)
+				return f.applyAnchoredEdit(full, before, a.Patches, a.Intent)
 			}
 			if a.Old == "" && a.New == "" {
 				return Result{}, fmt.Errorf(
@@ -905,7 +946,7 @@ func (f *FS) editTool() Tool {
 				Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 				Diff:     diff,
 				DiffStat: &stat,
-				Intent:   fmt.Sprintf("editing %s", name),
+				Intent:   fileIntent(a.Intent, fmt.Sprintf("editing %s", name)),
 			}, nil
 		},
 	}
@@ -1051,7 +1092,7 @@ func (f *FS) multiEditTool() Tool {
 // refusing loudly rather than fuzzily matching. Silently best-effort applying a
 // patch to a file that moved underneath corrupts it, which is strictly worse
 // than the retry the anchors were meant to save (plan.md Part V).
-func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Result, error) {
+func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch, intent string) (Result, error) {
 	name := f.rel(full)
 
 	st, ok := f.anchors.lookup(full)
@@ -1122,7 +1163,7 @@ func (f *FS) applyAnchoredEdit(full, before string, patches []AnchorPatch) (Resu
 		Output:   fmt.Sprintf("edited %s (+%d -%d)\n\n%s", name, stat.Added, stat.Removed, around),
 		Diff:     diff,
 		DiffStat: &stat,
-		Intent:   fmt.Sprintf("editing %s", name),
+		Intent:   fileIntent(intent, fmt.Sprintf("editing %s", name)),
 	}, nil
 }
 

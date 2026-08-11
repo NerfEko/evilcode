@@ -301,6 +301,7 @@ func (s *Server) Broadcast(from, text string) int {
 
 // Peers describes the other agents in the swarm.
 func (s *Server) Peers(self string) []tools.Peer {
+	s.refreshWorkerStaleness(time.Now())
 	var out []tools.Peer
 	for _, info := range s.Sessions() {
 		if info.Name == self {
@@ -311,6 +312,7 @@ func (s *Server) Peers(self string) []tools.Peer {
 			Task:    info.Task,
 			Worker:  info.Worker,
 			Running: info.Running,
+			Stale:   info.Stale,
 			Files:   s.Files.Files(info.Name),
 			Since:   time.Since(info.Started),
 		})

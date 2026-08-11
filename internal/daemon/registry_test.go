@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,6 +27,86 @@ func TestRegistryReportsAConflictToTheReader(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Notice(), "turn 12") {
 		t.Errorf("notice = %q", got[0].Notice())
+	}
+}
+
+func TestConflictNoticeCarriesIntentAndDiffPreview(t *testing.T) {
+	r := NewRegistry()
+	r.Read("bat", "auth.go", 12)
+	diff := "--- a/auth.go\n+++ b/auth.go\n@@ -1,3 +1,3 @@\n-old\n+new\n context\nextra line that should be omitted"
+
+	got := r.WriteWithDetails("crypt", "auth.go", 14, "refactor the auth guard", diff)
+	if len(got) != 1 {
+		t.Fatalf("conflicts = %d, want one reader", len(got))
+	}
+	notice := got[0].Notice()
+	for _, want := range []string{"Intent: refactor the auth guard", "@@ -1,3 +1,3 @@", "-old", "+new"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice = %q, want %q", notice, want)
+		}
+	}
+	if strings.Contains(notice, "extra line that should be omitted") {
+		t.Errorf("notice included diff beyond the preview bound: %q", notice)
+	}
+}
+
+func TestRegistryTellsBothWritersAboutAnOverlappingWrite(t *testing.T) {
+	r := NewRegistry()
+	r.WriteWithDetails("bat", "auth.go", 3, "tighten auth", "-old\n+bat")
+	got := r.WriteWithDetails("crypt", "auth.go", 8, "rename auth", "-bat\n+crypt")
+	if len(got) != 2 {
+		t.Fatalf("conflicts = %d, want both writers", len(got))
+	}
+	seen := map[string]string{}
+	for _, c := range got {
+		if !c.WriterConflict {
+			t.Errorf("conflict = %+v, want writer-specific wording", c)
+		}
+		seen[c.Session] = c.Notice()
+	}
+	if !strings.Contains(seen["bat"], "crypt") || !strings.Contains(seen["bat"], "rename auth") {
+		t.Errorf("earlier writer notice = %q", seen["bat"])
+	}
+	if !strings.Contains(seen["crypt"], "bat") || !strings.Contains(seen["crypt"], "tighten auth") {
+		t.Errorf("current writer notice = %q", seen["crypt"])
+	}
+}
+
+func TestWriterRereadDoesNotResurfaceAnOlderPeerWrite(t *testing.T) {
+	current := time.Now()
+	r := NewRegistry()
+	r.now = func() time.Time { return current }
+	r.WriteWithDetails("bat", "auth.go", 1, "first change", "-old\n+bat")
+	current = current.Add(time.Second)
+	r.WriteWithDetails("crypt", "auth.go", 2, "second change", "-bat\n+crypt")
+	current = current.Add(time.Second)
+	r.Read("crypt", "auth.go", 3)
+	current = current.Add(time.Second)
+	got := r.WriteWithDetails("crypt", "auth.go", 4, "follow-up after reread", "-crypt\n+new")
+	if len(got) != 1 || got[0].Session != "bat" || got[0].Other != "crypt" {
+		t.Fatalf("post-reread conflicts = %+v; want only the earlier writer told about the new write", got)
+	}
+}
+
+func TestRegistryExpiresOldReadsAndTrimsWrites(t *testing.T) {
+	current := time.Now()
+	r := NewRegistry()
+	r.now = func() time.Time { return current }
+	r.Read("bat", "auth.go", 1)
+	r.Write("crypt", "auth.go", 2)
+	current = current.Add(RegistryTouchExpiry + time.Second)
+	if got := r.Write("crypt", "auth.go", 3); len(got) != 0 {
+		t.Errorf("an expired read produced a conflict: %+v", got)
+	}
+
+	for i := 0; i < RegistryWriteLogLimit+7; i++ {
+		r.Write(fmt.Sprintf("worker-%d", i), fmt.Sprintf("file-%d.go", i), i)
+	}
+	if len(r.writes) != RegistryWriteLogLimit {
+		t.Errorf("write log length = %d, want %d", len(r.writes), RegistryWriteLogLimit)
+	}
+	if len(r.Files("bat")) != 0 {
+		t.Error("the expired read remained visible in Files")
 	}
 }
 

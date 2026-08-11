@@ -63,12 +63,22 @@ func markdownStyleJSON(m theme.Markdown) []byte {
 // transcript every frame is O(total length) and shows up immediately on a long
 // conversation (plan.md §9.1).
 type Markdown struct {
-	mu       sync.Mutex
-	prose    theme.Markdown
-	width    int
-	renderer *glamour.TermRenderer
-	cache    map[string]string
+	mu         sync.Mutex
+	prose      theme.Markdown
+	width      int
+	renderer   *glamour.TermRenderer
+	cache      map[string]string
+	cacheBytes int
 }
+
+const (
+	// Markdown output is also retained in each settled Block's render cache,
+	// so keeping an unbounded second copy here made a long session's heap grow
+	// with every unique assistant message. A bounded cache still catches common
+	// repeated snippets without turning old conversation history into a leak.
+	maxMarkdownCacheEntries = 256
+	maxMarkdownCacheBytes   = 8 << 20
+)
 
 // NewMarkdown builds a renderer for the given wrap width.
 func NewMarkdown(width int, prose theme.Markdown) *Markdown {
@@ -84,6 +94,7 @@ func (m *Markdown) SetProse(prose theme.Markdown) {
 	m.mu.Lock()
 	m.prose = prose
 	m.cache = map[string]string{}
+	m.cacheBytes = 0
 	width := m.width
 	m.mu.Unlock()
 	m.setWidth(width)
@@ -107,6 +118,7 @@ func (m *Markdown) setWidth(width int) {
 	}
 	m.width = width
 	m.cache = map[string]string{}
+	m.cacheBytes = 0
 }
 
 // SetWidth re-creates the renderer when the terminal resizes, dropping the
@@ -141,7 +153,16 @@ func (m *Markdown) Render(src string, cache bool) string {
 	}
 	out := m.renderLocked(src)
 	if cache {
-		m.cache[src] = out
+		entryBytes := len(src) + len(out)
+		if entryBytes <= maxMarkdownCacheBytes {
+			if len(m.cache) >= maxMarkdownCacheEntries ||
+				m.cacheBytes+entryBytes > maxMarkdownCacheBytes {
+				m.cache = map[string]string{}
+				m.cacheBytes = 0
+			}
+			m.cache[src] = out
+			m.cacheBytes += entryBytes
+		}
 	}
 	return out
 }

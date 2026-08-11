@@ -60,6 +60,15 @@ func TestForegroundOutputIsBounded(t *testing.T) {
 // allocatedDuring reports how many bytes were allocated while fn ran.
 func allocatedDuring(t *testing.T, fn func()) uint64 {
 	t.Helper()
+	if raceDetectorEnabled {
+		// The race runtime instruments every copy from the subprocess pipe and
+		// charges several bytes per byte transferred to TotalAlloc. Run the
+		// behavioral assertions, but leave heap-budget measurement to the
+		// ordinary binary where TotalAlloc reflects application allocations.
+		fn()
+		t.Log("allocation threshold skipped under race instrumentation")
+		return 0
+	}
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)

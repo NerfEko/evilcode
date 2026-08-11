@@ -76,6 +76,7 @@ func Run(args []string) (int, error) {
 	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
 		return ExitError, err
 	}
+	cfg.AddDiscoveredCodex()
 	// A resumed session remembers the model it left off with; use it unless an
 	// explicit -m overrides (§18). Headless resume matches the TUI here, so the
 	// same conversation picks up the same model either way.
@@ -158,7 +159,8 @@ func Run(args []string) (int, error) {
 				WithExposure(exposure).Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
-			if len(promptSkills) > 0 {
+			ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
+			if skills != nil {
 				ts = append(ts, tools.NewSkillTool(skills))
 			}
 		}
@@ -171,6 +173,7 @@ func Run(args []string) (int, error) {
 	conv.Persist(func(m provider.Message) error { return store.WriteMessage(m) })
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
+	skills.SetOnLoad(a.SetToolPolicy)
 	// An explicit [[model]] context_window wins; otherwise the provider is
 	// asked, so a discovered window drives the meter and compaction instead
 	// of the hardcoded guess behind them.
@@ -208,6 +211,23 @@ func Run(args []string) (int, error) {
 		a.Recall = func(ctx context.Context, in string) (string, any) {
 			tail, hits := mem.Recall(ctx, in)
 			return tail, hits
+		}
+	}
+	if cfg.Features.SkillRetrieval {
+		memoryRecall := a.Recall
+		a.Recall = func(ctx context.Context, in string) (string, any) {
+			var tail string
+			var display any
+			if memoryRecall != nil {
+				tail, display = memoryRecall(ctx, in)
+			}
+			if skillTail := skills.Relevant(ctx, in, prov); skillTail != "" {
+				if tail != "" {
+					tail += "\n\n"
+				}
+				tail += skillTail
+			}
+			return tail, display
 		}
 	}
 

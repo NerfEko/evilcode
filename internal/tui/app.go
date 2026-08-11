@@ -35,15 +35,28 @@ import (
 // name, animations at frame 0, no wall-clock text (plan.md invariant 5).
 func Deterministic() bool { return os.Getenv("EVILCODE_DETERMINISTIC") == "1" }
 
-// tickMsg drives animation at the spinner's cadence.
+// tickMsg drives animation and the small amount of work that has no event
+// source (elapsed time, background completion, and pending questions).
 type tickMsg time.Time
 
 // eventMsg carries one agent event into the bubbletea loop. The agent core
 // knows nothing about this type — it just writes to a channel (invariant 1).
 type eventMsg agent.Event
 
+// eventBatchMsg keeps a fast provider stream from turning every tiny token
+// delta into a complete layout/render pass. The agent channel is buffered, so
+// the command that bridges it can drain a short burst without changing event
+// ordering or the agent/frontend contract.
+type eventBatchMsg []agent.Event
+
 // eventsClosedMsg signals the agent stream ended.
 type eventsClosedMsg struct{}
+
+type transcriptHeightEntry struct {
+	valid  bool
+	width  int
+	height int
+}
 
 // Model is the bubbletea model.
 type Model struct {
@@ -64,16 +77,10 @@ type Model struct {
 	transcriptCacheWidth int
 	transcriptCacheValid bool
 
-	// altHeight is the content height measured at an alternate wrap width, the
-	// probe the scrollbar-hysteresis decision runs every frame. Without this the
-	// probe walked every block on every 80ms tick — and as the conversation
-	// grew, each tick's per-block cache-key build and compare made the frame
-	// steadily slower, which is the lag that accumulates over a long session.
-	// It is cleared alongside the transcript cache: only a content or width
-	// change moves the height, and those already invalidate.
-	altHeight      int
-	altHeightWidth int
-	altHeightValid bool
+	// transcriptHeightCache stores the line count for the current and the
+	// scrollbar-probe widths. Counting a long, settled transcript does not need
+	// to rebuild Rows, but it still used to walk every block on every tick.
+	transcriptHeightCache [2]transcriptHeightEntry
 
 	editor Editor
 
@@ -277,6 +284,11 @@ type Model struct {
 	// is off.
 	memory *memory.Manager
 
+	// skills is the live index behind the prompt and /skills. skillContext lets
+	// a reload rebuild the system prompt without losing project instructions.
+	skills       *tools.SkillSet
+	skillContext agent.ProjectContext
+
 	// graphics is the image protocol this terminal speaks, and imagesOn is the
 	// Alt+Shift+I toggle. pendingImages holds escape sequences to emit after
 	// the next frame — they carry no printable cells, so they must not be part
@@ -285,15 +297,6 @@ type Model struct {
 	imagesOn      bool
 	pendingImages string
 	drawnImages   map[int]imagePlacement
-
-	// imgOwner, imgFirst and imgCounts memoize the image block's transcript
-	// geometry — first line and row count per image block — across frames. Idle
-	// ticks hand View the same cached owner slice every frame, and the scan
-	// otherwise walks the whole transcript on every 80ms tick even when there
-	// is not a single image in it. Cleared with the transcript cache.
-	imgOwner  []int
-	imgFirst  map[int]int
-	imgCounts map[int]int
 
 	// rawOut is what the next Update writes straight to the terminal through
 	// tea.Raw: image transmissions and deletions, which the cell renderer drops
@@ -334,6 +337,15 @@ type Model struct {
 	streamStart  time.Time
 	streamChars  int
 	estimatedOut int
+
+	// Builders make delta accumulation amortized rather than copying the whole
+	// answer for every provider chunk. Block.Text is still materialized after
+	// each append so tests and non-rendering consumers see the same state; the
+	// string returned by strings.Builder shares the append-only buffer safely.
+	streamBuilder       *strings.Builder
+	streamBuilderIdx    int
+	reasoningBuilder    *strings.Builder
+	reasoningBuilderIdx int
 
 	// genMS accumulates generation time across a turn's requests, which is what
 	// tokens-per-second is measured over.
@@ -376,7 +388,9 @@ type Model struct {
 	reloadTo string
 
 	// overnight is the supervised long-run loop (§5), inert unless armed.
-	overnight Overnight
+	overnight                 Overnight
+	overnightPreflightPending bool
+	overnightReportDone       atomic.Pointer[overnightReportCompletion]
 
 	// advisor is the §21 second opinion, and lsp the language-server manager.
 	// Both are nil when unconfigured, which every path has to survive.
@@ -416,15 +430,17 @@ type Model struct {
 func NewModel(a *agent.Agent, h HeaderState) *Model {
 	p := theme.Dracula()
 	return &Model{
-		agent:           a,
-		renderer:        NewRenderer(p, 80),
-		header:          h,
-		started:         time.Now(),
-		streamingIdx:    -1,
-		reasoningIdx:    -1,
-		dock:            NewDock(),
-		widgetsOn:       true,
-		widgetLastShown: map[WidgetKind]uint64{}, widgetLastChanged: map[WidgetKind]uint64{},
+		agent:               a,
+		renderer:            NewRenderer(p, 80),
+		header:              h,
+		started:             time.Now(),
+		streamingIdx:        -1,
+		reasoningIdx:        -1,
+		streamBuilderIdx:    -1,
+		reasoningBuilderIdx: -1,
+		dock:                NewDock(),
+		widgetsOn:           true,
+		widgetLastShown:     map[WidgetKind]uint64{}, widgetLastChanged: map[WidgetKind]uint64{},
 		widgetHashes: map[WidgetKind]uint64{},
 		thinking:     ThinkingCurrent,
 		diffMode:     DiffInline,
@@ -527,12 +543,53 @@ func (m *Model) WithMemory(mem *memory.Manager) *Model {
 	return m
 }
 
+// WithSkills attaches the live skill index. Bodies remain in tools; the TUI
+// only owns listing, reload feedback, and the refreshed prompt metadata.
+func (m *Model) WithSkills(skills *tools.SkillSet, pc agent.ProjectContext) *Model {
+	m.skills, m.skillContext = skills, pc
+	return m
+}
+
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.waitForEvent(), m.tick())
 }
 
 func (m *Model) tick() tea.Cmd {
-	return tea.Tick(SpinnerInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+	// A settled transcript has no spinner to animate. Keeping a 12.5 fps full
+	// frame loop alive while idle made a long session spend a measurable amount
+	// of CPU doing identical layout work. Background progress and pending asks
+	// still get picked up promptly on the slower cadence; an in-flight turn
+	// keeps the normal spinner cadence.
+	interval := IdleTickInterval
+	if m.processing || m.hasRunningBackground() {
+		interval = SpinnerInterval
+	} else if len(m.blocks) == 0 && m.animate() {
+		// The welcome art is decorative and considerably more expensive than a
+		// settled text frame; four frames per second keeps it alive without
+		// making startup burn a core.
+		interval = IdleArtInterval
+	}
+	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// IdleTickInterval is deliberately separate from SpinnerInterval: idle work
+// is state polling, not animation. A half-second is quick enough for a task
+// completion or an ask prompt while avoiding a needless redraw storm.
+const IdleTickInterval = 500 * time.Millisecond
+
+const IdleArtInterval = 250 * time.Millisecond
+
+func (m *Model) hasRunningBackground() bool {
+	if m.bg == nil {
+		return false
+	}
+	for _, task := range m.bg.Tasks() {
+		done, _, _ := task.Snapshot()
+		if !done {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForEvent bridges the agent's channel into bubbletea's message loop.
@@ -548,8 +605,63 @@ func (m *Model) waitForEvent() tea.Cmd {
 		if !ok {
 			return eventsClosedMsg{}
 		}
-		return eventMsg(e)
+
+		// Non-stream events are latency-sensitive boundaries (turn start, tool
+		// start/result, errors), so return them as soon as the channel has no
+		// already-queued follow-up. Streaming deltas get a short coalescing window
+		// so a provider's token cadence cannot force one View per chunk.
+		events := []agent.Event{e}
+		if !streamEvent(e.Kind) {
+			events = drainEvents(events, m.agent.Events(), maxEventBatch, maxEventBatchBytes)
+			return eventBatchMsg(events)
+		}
+
+		timer := time.NewTimer(eventBatchWindow)
+		defer timer.Stop()
+		for len(events) < maxEventBatch && eventBatchBytes(events) < maxEventBatchBytes {
+			select {
+			case next := <-m.agent.Events():
+				events = append(events, next)
+			case <-timer.C:
+				return eventBatchMsg(events)
+			case <-m.agent.Done():
+				return eventBatchMsg(events)
+			}
+		}
+		return eventBatchMsg(events)
 	}
+}
+
+const (
+	// A small debounce is enough to absorb normal SSE/provider bursts without
+	// making the first visible token feel delayed.
+	eventBatchWindow   = 20 * time.Millisecond
+	maxEventBatch      = 64
+	maxEventBatchBytes = 64 << 10
+)
+
+func streamEvent(kind agent.EventKind) bool {
+	return kind == agent.EventTextDelta || kind == agent.EventReasoningDelta
+}
+
+func eventBatchBytes(events []agent.Event) int {
+	total := 0
+	for _, e := range events {
+		total += len(e.Text) + len(e.Output) + len(e.Diff) + len(e.ErrText)
+	}
+	return total
+}
+
+func drainEvents(events []agent.Event, ch <-chan agent.Event, maxEvents, maxBytes int) []agent.Event {
+	for len(events) < maxEvents && eventBatchBytes(events) < maxBytes {
+		select {
+		case next := <-ch:
+			events = append(events, next)
+		default:
+			return events
+		}
+	}
+	return events
 }
 
 // Update handles one message and, alongside whatever that produced, flushes any
@@ -594,21 +706,12 @@ func (r rawFlush) String() string {
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// A wheel event only moves the scroll window — handleWheel touches nothing
-	// but scroll and overscroll state, never content, layout settings, or the
-	// renderer. Letting it skip the blanket invalidation keeps a fast flick on
-	// a long conversation (several wheel events a second, each of which used to
-	// rebuild the entire transcript) from paying O(transcript) per event. If
-	// the scrollbar decision flips as a result, applyWrapWidth invalidates the
-	// cache when the width change reaches it on the next frame.
-	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
-		return m.handleWheel(wheel)
-	}
-
-	// Tick only advances clocks. Every other message may change transcript
-	// content, layout, or renderer settings, so invalidate once at the shared
-	// boundary instead of trying to remember every mutation site.
-	if _, ok := msg.(tickMsg); !ok {
+	// Most key/paste/mouse messages only change the composer or viewport. They
+	// still trigger a frame, but rebuilding a settled transcript for every
+	// character typed is exactly the long-session input lag users feel. Keep the
+	// shared invalidation for messages that can change transcript/layout state;
+	// event and command paths remain conservative.
+	if m.transcriptInvalidatedBy(msg) {
 		m.invalidateTranscriptCache()
 	}
 	switch msg := msg.(type) {
@@ -622,6 +725,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case compactDone:
 		m.applyCompaction(msg)
 		return m, nil
+
+	case overnightPreflightResult:
+		return m, m.applyOvernightPreflight(msg)
 
 	case clipboardImage:
 		m.applyClipboardImage(msg)
@@ -670,6 +776,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notice = "✓ background: " + done.Label
 			}
 		}
+		for done := m.overnightReportDone.Swap(nil); done != nil; done = done.next {
+			m.applyOvernightReportCompletion(done)
+		}
 		// A pending question is picked up here rather than pushed, so the tool
 		// goroutine never touches model state.
 		if m.ask == nil {
@@ -685,6 +794,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case eventMsg:
 		m.applyEvent(agent.Event(msg))
+		return m, m.waitForEvent()
+
+	case eventBatchMsg:
+		m.applyEventBatch([]agent.Event(msg))
 		return m, m.waitForEvent()
 
 	case tea.KeyPressMsg:
@@ -727,12 +840,80 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) transcriptInvalidatedBy(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tickMsg, tea.MouseWheelMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg,
+		tea.KeyReleaseMsg, tea.PasteMsg:
+		return false
+	case tea.MouseClickMsg:
+		// Only left-click has a handler; other buttons are intentionally ignored.
+		return msg.Mouse().Button == tea.MouseLeft
+	case tea.KeyPressMsg:
+		return !m.composerOnlyKey(msg)
+	default:
+		return true
+	}
+}
+
+func (m *Model) composerOnlyKey(msg tea.KeyPressMsg) bool {
+	key := msg.Key()
+	// Bindings are resolved before ordinary input. A user may deliberately bind
+	// a printable key (for example "x") to a layout action, so Text alone is not
+	// proof that this message only edits the composer. Treat every configured
+	// action conservatively; actions that alter wrapping or inline cards must
+	// never leave a settled transcript cache behind.
+	if m.keymap != nil {
+		if _, ok := m.keymap.Lookup(key.String()); ok {
+			return false
+		}
+	}
+	if key.Text != "" {
+		return true
+	}
+	if NewlineKeys[key.String()] {
+		return true
+	}
+	switch key.String() {
+	case "backspace", "delete", "left", "right", "up", "down", "home", "end", "pgup", "pgdown":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyEventBatch folds a provider burst before the next render. Adjacent
+// deltas of the same kind are joined first, which also keeps append work
+// amortized when a provider emits many tiny fragments.
+func (m *Model) applyEventBatch(events []agent.Event) {
+	for i := 0; i < len(events); {
+		e := events[i]
+		if streamEvent(e.Kind) {
+			var text strings.Builder
+			text.WriteString(e.Text)
+			j := i + 1
+			for j < len(events) && events[j].Kind == e.Kind {
+				text.WriteString(events[j].Text)
+				j++
+			}
+			e.Text = text.String()
+			m.applyEvent(e)
+			i = j
+			continue
+		}
+		m.applyEvent(e)
+		i++
+	}
+}
+
 // applyEvent folds one agent event into the view.
 func (m *Model) applyEvent(e agent.Event) {
 	e = sanitizeEvent(e)
 	switch e.Kind {
 	case agent.EventTurnStart:
 		m.processing = true
+		if m.overnight.Active {
+			m.overnight.BeginTurn()
+		}
 		m.turnAt = time.Now()
 		m.status = StatusState{Phase: PhaseSending, Animate: !Deterministic()}
 		m.genMS, m.estimatedOut, m.streamChars = 0, 0, 0
@@ -766,7 +947,7 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.blocks = append(m.blocks, Block{Kind: BlockAssistant, Streaming: true})
 			m.streamingIdx = len(m.blocks) - 1
 		}
-		m.blocks[m.streamingIdx].Text += e.Text
+		m.appendStreamText(m.streamingIdx, e.Text, false)
 		m.observeStreamed(e.Text)
 		m.followIfPinned()
 
@@ -779,7 +960,7 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.blocks = append(m.blocks, Block{Kind: BlockReasoning, Streaming: true})
 			m.reasoningIdx = len(m.blocks) - 1
 		}
-		m.blocks[m.reasoningIdx].Text += e.Text
+		m.appendStreamText(m.reasoningIdx, e.Text, true)
 		m.observeStreamed(e.Text)
 		m.followIfPinned()
 
@@ -792,6 +973,9 @@ func (m *Model) applyEvent(e agent.Event) {
 
 	case agent.EventToolResult:
 		m.status.Phase = PhaseStreaming
+		if m.overnight.Active {
+			m.overnight.AddToolCheck(overnightToolCheck(e))
+		}
 		b := Block{
 			Kind:       BlockTool,
 			ToolName:   e.Call.Name,
@@ -951,6 +1135,32 @@ func (m *Model) applyEvent(e agent.Event) {
 	}
 }
 
+// appendStreamText keeps the public Block.Text view current while using an
+// append-only builder underneath. Repeated `Text += delta` copies the entire
+// answer for every chunk, turning a long response into quadratic CPU and
+// allocation work.
+func (m *Model) appendStreamText(idx int, delta string, reasoning bool) {
+	if idx < 0 || idx >= len(m.blocks) {
+		return
+	}
+	var builder **strings.Builder
+	var builderIdx *int
+	if reasoning {
+		builder, builderIdx = &m.reasoningBuilder, &m.reasoningBuilderIdx
+	} else {
+		builder, builderIdx = &m.streamBuilder, &m.streamBuilderIdx
+	}
+	if *builder == nil || *builderIdx != idx {
+		b := &strings.Builder{}
+		b.Grow(len(m.blocks[idx].Text) + len(delta))
+		b.WriteString(m.blocks[idx].Text)
+		*builder = b
+		*builderIdx = idx
+	}
+	(*builder).WriteString(delta)
+	m.blocks[idx].Text = (*builder).String()
+}
+
 // sanitizeEvent strips terminal control sequences from everything an event
 // carries into the UI.
 //
@@ -1036,10 +1246,12 @@ func (m *Model) lastBlockIsPrompt(text string) bool {
 // finishStreaming freezes the streaming block so it caches from now on.
 func (m *Model) finishStreaming() {
 	if m.streamingIdx >= 0 && m.streamingIdx < len(m.blocks) {
-		m.blocks[m.streamingIdx].Streaming = false
+		block := &m.blocks[m.streamingIdx]
+		block.Streaming = false
+		block.dropStreamingCache()
 		// A fence only becomes renderable once it closes, which is why this is
 		// here rather than on every delta: mmdc on half a diagram fails slowly.
-		m.renderDiagrams(m.blocks[m.streamingIdx].Text)
+		m.renderDiagrams(block.Text)
 	}
 	m.streamingIdx = -1
 
@@ -1564,15 +1776,21 @@ func (m *Model) retrievePending() (bool, tea.Model, tea.Cmd) {
 // Prev/Next Prompt landed on the wrong line.
 func (m *Model) userPromptRows() []int {
 	tr := m.transcriptLines()
-	var rows []int
-	seen := make(map[int]bool)
-	for i, owner := range tr.Owner {
-		if owner < 0 || seen[owner] {
-			continue
+	rows := make([]int, 0, m.promptCount)
+	if len(tr.First) == len(m.blocks) {
+		for i := range m.blocks {
+			if m.blocks[i].Kind == BlockUser && tr.First[i] >= 0 {
+				rows = append(rows, int(tr.First[i]))
+			}
 		}
-		seen[owner] = true
-		if m.blocks[owner].Kind == BlockUser {
-			rows = append(rows, i)
+		return rows
+	}
+	// Defensive fallback for callers that construct Rows without provenance.
+	seen := make(map[int]bool)
+	for row, owner := range tr.Owner {
+		if owner >= 0 && !seen[owner] && m.blocks[owner].Kind == BlockUser {
+			seen[owner] = true
+			rows = append(rows, row)
 		}
 	}
 	return rows
@@ -2109,6 +2327,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 		infos    []provider.ModelInfo
 		hasKey   bool
 		needsKey bool
+		kind     config.ProviderKind
 	}
 
 	results := make(chan result, len(provs))
@@ -2117,7 +2336,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 		go func() {
 			p, err := pc.Build()
 			if err != nil {
-				results <- result{name: pc.Name}
+				results <- result{name: pc.Name, kind: pc.Kind}
 				return
 			}
 			infos, err := p.Models(ctx)
@@ -2125,6 +2344,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 				name: pc.Name, infos: infos,
 				hasKey:   pc.APIKeyValue() != "",
 				needsKey: pc.APIKeyEnv != "",
+				kind:     pc.Kind,
 			}
 		}()
 	}
@@ -2133,7 +2353,9 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 	for range provs {
 		r := <-results
 		via := "local"
-		if r.needsKey {
+		if r.kind == config.KindCodex {
+			via = "oauth"
+		} else if r.needsKey {
 			if r.hasKey {
 				via = "api-key"
 			} else {
@@ -2276,6 +2498,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "memory":
 		return m, m.memoryCommand(strings.TrimSpace(m.commandArg))
+
+	case "skills":
+		return m, m.skillsCommand(strings.TrimSpace(m.commandArg))
 
 	case "selfdev":
 		return m, m.selfdevCommand()
@@ -2731,8 +2956,15 @@ func (m *Model) renumberPrompts() {
 	seen := 0
 	for i := len(m.blocks) - 1; i >= 0; i-- {
 		if m.blocks[i].Kind == BlockUser {
+			oldDecay := m.blocks[i].Decay
 			m.blocks[i].Decay = seen
-			m.blocks[i].dropCache()
+			// The exponential ramp rounds to the same gray for old prompts. Keep
+			// those render caches once moving one step older no longer changes a
+			// visible color; otherwise every submit re-rendered the entire prompt
+			// history and input latency grew with session age.
+			if theme.Rainbow(oldDecay) != theme.Rainbow(seen) {
+				m.blocks[i].dropCache()
+			}
 			seen++
 		}
 	}
@@ -2751,13 +2983,29 @@ func (m *Model) invalidateTranscriptCache() {
 	m.transcriptCache = Rows{}
 	m.transcriptCacheWidth = 0
 	m.transcriptCacheValid = false
-	m.altHeightValid = false
-	// The dock and image-placement memos are keyed on the cached slices; any
-	// content or width change makes them stale.
-	if m.dock != nil {
-		m.dock.invalidateMemo()
+	m.transcriptHeightCache = [2]transcriptHeightEntry{}
+}
+
+func (m *Model) cachedTranscriptHeight(width int) (int, bool) {
+	for _, entry := range m.transcriptHeightCache {
+		if entry.valid && entry.width == width {
+			return entry.height, true
+		}
 	}
-	m.imgOwner, m.imgFirst, m.imgCounts = nil, nil, nil
+	return 0, false
+}
+
+func (m *Model) rememberTranscriptHeight(width, height int) {
+	for i := range m.transcriptHeightCache {
+		if !m.transcriptHeightCache[i].valid || m.transcriptHeightCache[i].width == width {
+			m.transcriptHeightCache[i] = transcriptHeightEntry{valid: true, width: width, height: height}
+			return
+		}
+	}
+	// Only the current width and one scrollbar probe are used. Replacing the
+	// older probe is safe and keeps this cache bounded if a caller asks for a
+	// transient width (for example while resizing).
+	m.transcriptHeightCache[1] = transcriptHeightEntry{valid: true, width: width, height: height}
 }
 
 // transcriptLines renders every block to lines plus the provenance of each line
@@ -2783,12 +3031,9 @@ func (m *Model) transcriptLines() Rows {
 		return m.transcriptCache
 	}
 	animT, animating := m.entryAnim.Progress(time.Now())
-	cacheable := len(m.blocks) > 0 && !animating
-	for i := range m.blocks {
-		if m.blocks[i].Streaming {
-			cacheable = false
-			break
-		}
+	cacheable := len(m.blocks) > 0 && !animating && !m.hasStreamingBlock()
+	if cacheable && m.transcriptCacheValid && m.transcriptCacheWidth == m.renderer.Width {
+		return m.transcriptCache
 	}
 
 	if len(m.blocks) == 0 {
@@ -2797,10 +3042,18 @@ func (m *Model) transcriptLines() Rows {
 		for i := range owner {
 			owner[i] = -1
 		}
-		return Rows{Lines: welcome, Owner: owner}
+		rows := Rows{Lines: welcome, Owner: owner}
+		if cacheable {
+			m.rememberTranscriptHeight(m.renderer.Width, len(rows.Lines))
+		}
+		return rows
 	}
 	var out []string
 	var owner []int
+	first := make([]int32, len(m.blocks))
+	for i := range first {
+		first[i] = -1
+	}
 	addChrome := func(lines []string) {
 		out = append(out, lines...)
 		for range lines {
@@ -2808,6 +3061,9 @@ func (m *Model) transcriptLines() Rows {
 		}
 	}
 	addOwned := func(idx int, lines []string) {
+		if len(lines) > 0 && first[idx] < 0 {
+			first[idx] = int32(len(out))
+		}
 		out = append(out, lines...)
 		for range lines {
 			owner = append(owner, idx)
@@ -2849,11 +3105,12 @@ func (m *Model) transcriptLines() Rows {
 	if len(out) != len(owner) {
 		panic(fmt.Sprintf("transcriptLines: len(Lines)=%d != len(Owner)=%d", len(out), len(owner)))
 	}
-	rows := Rows{Lines: out, Owner: owner}
+	rows := Rows{Lines: out, Owner: owner, First: first}
 	if cacheable && (!m.transcriptCacheValid || m.transcriptCacheWidth == m.renderer.Width) {
 		m.transcriptCache = rows
 		m.transcriptCacheWidth = m.renderer.Width
 		m.transcriptCacheValid = true
+		m.rememberTranscriptHeight(m.renderer.Width, len(rows.Lines))
 	}
 	return rows
 }
@@ -2913,8 +3170,10 @@ func (m *Model) stackFor(contentHeight int) Stack {
 // the cached height instead of walking every block again, which is what kept
 // the frame time climbing as the conversation grew.
 func (m *Model) contentHeightAtWidth(width int) int {
-	if m.altHeightValid && m.altHeightWidth == width {
-		return m.altHeight
+	if !m.hasStreamingBlock() {
+		if height, ok := m.cachedTranscriptHeight(width); ok {
+			return height
+		}
 	}
 	old := m.renderer.Width
 	if old != width {
@@ -2924,15 +3183,25 @@ func (m *Model) contentHeightAtWidth(width int) int {
 	if old != width {
 		m.renderer.SetWidth(old)
 	}
-	m.altHeight = height
-	m.altHeightWidth = width
-	m.altHeightValid = true
 	return height
 }
 
 func (m *Model) transcriptHeightOnly() int {
+	animating := false
+	if _, active := m.entryAnim.Progress(time.Now()); active {
+		animating = true
+	}
+	if !animating && !m.hasStreamingBlock() {
+		if height, ok := m.cachedTranscriptHeight(m.renderer.Width); ok {
+			return height
+		}
+	}
 	if len(m.blocks) == 0 {
-		return len(m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt()))
+		height := len(m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt()))
+		if !animating {
+			m.rememberTranscriptHeight(m.renderer.Width, height)
+		}
+		return height
 	}
 	height := len(m.renderer.RenderHeader(m.header)) + 1
 	for i := range m.blocks {
@@ -2947,7 +3216,15 @@ func (m *Model) transcriptHeightOnly() int {
 			Items: m.todos.Items(), Plan: m.todos.Plan(), Goals: m.todos.Goals(),
 		})) + 1
 	}
+	if !animating && !m.hasStreamingBlock() {
+		m.rememberTranscriptHeight(m.renderer.Width, height)
+	}
 	return height
+}
+
+func (m *Model) hasStreamingBlock() bool {
+	return (m.streamingIdx >= 0 && m.streamingIdx < len(m.blocks) && m.blocks[m.streamingIdx].Streaming) ||
+		(m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) && m.blocks[m.reasoningIdx].Streaming)
 }
 
 // imageGraphics returns protocol sequences for image blocks that are visible
@@ -2959,7 +3236,17 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 	if m.drawnImages == nil {
 		m.drawnImages = map[int]imagePlacement{}
 	}
-	first, counts := m.imageBlockLines(tr.Owner)
+	first := make(map[int]int)
+	counts := make(map[int]int)
+	for line, owner := range tr.Owner {
+		if owner < 0 || owner >= len(m.blocks) || m.blocks[owner].Kind != BlockImage {
+			continue
+		}
+		if _, ok := first[owner]; !ok {
+			first[owner] = line
+		}
+		counts[owner]++
+	}
 	visible := make(map[int]imagePlacement)
 	// An open overlay is spliced over the finished frame, but a picture is
 	// painted over the whole screen and would cover it — so while one is open
@@ -3026,30 +3313,6 @@ func (m *Model) imageGraphics(tr Rows, start, end, transcriptRows, frameRows int
 		out.WriteString(graphics.CursorPosition(frameRows, 1))
 	}
 	return out.String()
-}
-
-// imageBlockLines returns each image block's first transcript line and row
-// count. The scan walks every row of the transcript, so it is memoized by the
-// owner slice's identity: an idle frame hands View the same cached slice every
-// time, and rebuilding the maps on every 80ms tick would pay the full
-// transcript length for a transcript that has not changed.
-func (m *Model) imageBlockLines(owner []int) (first, counts map[int]int) {
-	if m.imgFirst != nil && sameSlice(m.imgOwner, owner) {
-		return m.imgFirst, m.imgCounts
-	}
-	first, counts = map[int]int{}, map[int]int{}
-	for line, block := range owner {
-		if block < 0 || block >= len(m.blocks) || m.blocks[block].Kind != BlockImage {
-			continue
-		}
-		if _, ok := first[block]; !ok {
-			first[block] = line
-		}
-		counts[block]++
-	}
-	m.imgOwner = owner
-	m.imgFirst, m.imgCounts = first, counts
-	return first, counts
 }
 
 // clearDrawnImages takes every picture off the terminal and forgets it, so the
@@ -3236,10 +3499,22 @@ func (m *Model) View() tea.View {
 	// or off after a line wrapped across its reserved column.
 	withoutBar, withBar := len(content), len(content)
 	width := m.renderer.Width
-	if m.scrollbarOn {
-		withoutBar = m.contentHeightAtWidth(width + 1)
-	} else {
-		withBar = m.contentHeightAtWidth(width - 1)
+	if !m.hasStreamingBlock() {
+		if m.scrollbarOn {
+			withoutBar = m.contentHeightAtWidth(width + 1)
+		} else {
+			withBar = m.contentHeightAtWidth(width - 1)
+		}
+	} else if len(content) > res.Transcript {
+		// A live answer changes its height every frame. Probing a second wrap
+		// width here would render the live block twice, so let the current-width
+		// result drive the obvious case and settle the hysteresis once streaming
+		// ends.
+		if m.scrollbarOn {
+			withoutBar = len(content)
+		} else {
+			withBar = len(content)
+		}
 	}
 	m.scrollbarOn = ScrollbarVisible(m.scrollbarOn, withBar, withoutBar, res.Transcript)
 
@@ -3247,7 +3522,7 @@ func (m *Model) View() tea.View {
 	// inset are painted into these rows. Docking last meant measuring rows that
 	// were already full width and concluding there was nowhere to go, which is
 	// why the boxes vanished (plan.md §8.3).
-	rows = m.dockWidgets(rows, content, res.Transcript, start, owner)
+	rows = m.dockWidgets(rows, content, res.Transcript, start, owner, tr.First)
 
 	if m.scrollbarOn && res.Transcript > 0 {
 		bar := m.renderer.RenderScrollbar(m.scroll.Offset, len(content), res.Transcript, !m.scroll.Paused)
@@ -3785,7 +4060,9 @@ func (m *Model) cacheProviderActive() bool {
 //
 // Widgets are suppressed entirely while the welcome art is showing: an empty
 // screen decorated with status boxes is busier than the thing it decorates.
-func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop int, owner []int) []string {
+func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop int, owner []int,
+	firstIndex ...[]int32,
+) []string {
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
 		m.placements = nil
 		return rows
@@ -3830,15 +4107,16 @@ func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop in
 	// The streaming tail is the live block whose rows are still changing — the
 	// boundary of the settled region (§2.3). At most one block is Streaming at a
 	// time (the newest), and -1 means the turn is finished.
-	streamingBlock := -1
-	for i := range blocks {
-		if blocks[i].Streaming {
-			streamingBlock = i
-		}
+	streamingBlock := m.streamingIdx
+	if streamingBlock < 0 || streamingBlock >= len(blocks) || !blocks[streamingBlock].Streaming {
+		streamingBlock = m.reasoningIdx
+	}
+	if streamingBlock < 0 || streamingBlock >= len(blocks) || !blocks[streamingBlock].Streaming {
+		streamingBlock = -1
 	}
 
 	placements := m.dock.Layout(render, candidates, content, owner, kindOf,
-		streamingBlock, usable, scrollTop, transcriptRows)
+		streamingBlock, usable, scrollTop, transcriptRows, firstIndex...)
 
 	m.swarmDocked = false
 	for _, p := range placements {

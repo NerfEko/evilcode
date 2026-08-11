@@ -200,16 +200,80 @@ func Transcript(msgs []provider.Message) string {
 		if msg.Role == provider.RoleSystem {
 			continue
 		}
-		text := strings.TrimSpace(msg.Content)
+		text := compactionMessageText(msg)
 		if text == "" {
 			continue
-		}
-		if len(text) > CompactMessageCap {
-			text = truncateAtRune(text, CompactMessageCap) + "…"
 		}
 		fmt.Fprintf(&b, "%s: %s\n\n", msg.Role, text)
 	}
 	return b.String()
+}
+
+// compactionMessageText preserves the operational facts carried outside
+// Message.Content. Tool-call assistant rows are commonly content-empty; if the
+// call name/arguments are omitted, the following result appears in the summary
+// with no explanation of what action produced it. The complete representation
+// remains subject to one fixed per-message budget.
+func compactionMessageText(msg provider.Message) string {
+	var b strings.Builder
+	full := false
+	appendChunk := func(chunk string) {
+		if full || chunk == "" {
+			return
+		}
+		remaining := CompactMessageCap - b.Len()
+		if remaining <= 0 {
+			full = true
+			return
+		}
+		if len(chunk) <= remaining {
+			b.WriteString(chunk)
+			return
+		}
+		const marker = "..."
+		if remaining <= len(marker) {
+			b.WriteString(marker[:remaining])
+		} else {
+			b.WriteString(truncateAtRune(chunk, remaining-len(marker)))
+			b.WriteString(marker)
+		}
+		full = true
+	}
+
+	content := strings.TrimSpace(msg.Content)
+	if msg.Role == provider.RoleTool {
+		appendChunk("[Result")
+		if msg.ToolName != "" {
+			appendChunk(": ")
+			appendChunk(msg.ToolName)
+		}
+		appendChunk("]")
+		if content != "" {
+			appendChunk(" ")
+			appendChunk(content)
+		}
+	} else {
+		appendChunk(content)
+	}
+	for _, call := range msg.ToolCalls {
+		if b.Len() > 0 {
+			appendChunk("\n")
+		}
+		appendChunk("[Tool: ")
+		appendChunk(call.Name)
+		if len(call.Args) > 0 {
+			appendChunk(" - ")
+			appendChunk(string(call.Args))
+		}
+		appendChunk("]")
+	}
+	for range msg.Images {
+		if b.Len() > 0 {
+			appendChunk("\n")
+		}
+		appendChunk("[Image]")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // Compact summarises a conversation and replaces it with the summary.
@@ -324,7 +388,10 @@ func (c *Compactor) WaitForRelevance(
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	ticker := time.NewTicker(time.Millisecond)
+	// The relevance worker only changes state when its request completes; a
+	// 1ms poll burns a core during every grace period. Ten milliseconds keeps
+	// the 50ms wait responsive without turning compaction into a busy loop.
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		c.mu.Lock()

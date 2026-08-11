@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"evilcode/internal/jsonl"
 )
 
 // Kind classifies a memory. The kinds are the plan's, and they exist to let
@@ -184,52 +186,36 @@ func readMemoryLine(r *bufio.Reader) ([]byte, bool, error) {
 // not be decoded as one record. The required top-level keys avoid promoting a
 // nested JSON object from a record into a new memory.
 func salvageMemoryRecords(line []byte) []Record {
-	var out []Record
-	for cursor := 0; cursor < len(line); {
-		rel := bytes.IndexByte(line[cursor:], '{')
-		if rel < 0 {
-			break
-		}
-		start := cursor + rel
-		dec := json.NewDecoder(bytes.NewReader(line[start:]))
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			cursor = start + 1
-			continue
-		}
-
+	return jsonl.Salvage(line, []byte(`{"id"`), func(raw []byte) (Record, bool) {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil {
-			cursor = start + 1
-			continue
+			return Record{}, false
 		}
 		if _, ok := fields["id"]; !ok {
-			cursor = start + 1
-			continue
+			return Record{}, false
 		}
 		if _, ok := fields["text"]; !ok {
-			cursor = start + 1
-			continue
+			return Record{}, false
 		}
 		if _, ok := fields["kind"]; !ok {
-			cursor = start + 1
-			continue
+			return Record{}, false
 		}
-
 		var record Record
 		if err := json.Unmarshal(raw, &record); err != nil {
-			cursor = start + 1
-			continue
+			return Record{}, false
 		}
-		out = append(out, record)
-		consumed := int(dec.InputOffset())
-		if consumed <= 0 {
-			cursor = start + 1
-		} else {
-			cursor = start + consumed
+		return record, true
+	}, func(candidate jsonl.Candidate) bool {
+		if candidate.Depth != 1 {
+			return true
 		}
-	}
-	return out
+		switch candidate.KeyBefore() {
+		case "", "id", "text", "kind", "session", "ts", "scope", "project_root", "vec", "embedding_model", "deleted":
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 // repairMemoryTail removes a malformed final line and writes any recovered

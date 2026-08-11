@@ -65,6 +65,9 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if !cfg.Features.AutoPoke {
 		t.Error("auto_poke defaults to true and was not set in the file")
 	}
+	if cfg.Features.SkillRetrieval {
+		t.Error("skill_retrieval defaults to false and was not set in the file")
+	}
 	if cfg.Display.Theme != "catppuccin-frappe" {
 		t.Errorf("theme = %q, want the default", cfg.Display.Theme)
 	}
@@ -81,6 +84,7 @@ default_model = "m@ollama-local"
 keybinding_hints = false
 [features]
 auto_poke = false
+skill_retrieval = true
 `)
 	cfg, err := LoadFrom(path)
 	if err != nil {
@@ -91,6 +95,9 @@ auto_poke = false
 	}
 	if cfg.Features.AutoPoke {
 		t.Error("an explicit false must win over the default true")
+	}
+	if !cfg.Features.SkillRetrieval {
+		t.Error("an explicit skill_retrieval true must be honored")
 	}
 }
 
@@ -782,6 +789,63 @@ func TestDeepSeekIsAFirstClassKind(t *testing.T) {
 	}
 	if _, ok := built.(*provider.OpenAI); !ok {
 		t.Errorf("deepseek built as %T, want the OpenAI client (same wire protocol)", built)
+	}
+}
+
+func TestCodexDiscoveryAddsProviderOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	authPath := filepath.Join(home, "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"access","refresh_token":"refresh","account_id":"account"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	before := len(cfg.Providers)
+	if !cfg.AddDiscoveredCodex() {
+		t.Fatal("AddDiscoveredCodex() = false, want a discovered account")
+	}
+	if len(cfg.Providers) != before+1 {
+		t.Fatalf("providers = %d, want %d", len(cfg.Providers), before+1)
+	}
+	pc := cfg.FindProvider("codex")
+	if pc == nil || pc.Kind != KindCodex || pc.AuthFile != authPath || pc.BaseURL != provider.DefaultCodexBaseURL {
+		t.Fatalf("discovered provider = %+v", pc)
+	}
+	if !cfg.AddDiscoveredCodex() || len(cfg.Providers) != before+1 {
+		t.Fatalf("second discovery changed provider list: %+v", cfg.Providers)
+	}
+}
+
+func TestLoadDiscoversCodexForDefaultModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"access","refresh_token":"refresh","account_id":"account"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := write(t, `default_model = "gpt-5.3-codex@codex"`)
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FindProvider("codex") == nil {
+		t.Fatal("@codex default was validated before discovery")
+	}
+	prov, model, err := cfg.Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "gpt-5.3-codex" || prov.Name() != "codex" {
+		t.Errorf("resolved to %s@%s", model, prov.Name())
+	}
+}
+
+func TestCodexProviderRejectsAPIKeyConfig(t *testing.T) {
+	cfg := Config{
+		DefaultModel: "gpt-5.3-codex@codex",
+		Providers:    []ProviderConfig{{Name: "codex", Kind: KindCodex, APIKeyEnv: "CODEX_KEY"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Codex API-key configuration unexpectedly validated")
 	}
 }
 

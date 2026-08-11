@@ -2,6 +2,25 @@
 
 Append-only. Each entry: what the spec said, what was built instead, why.
 
+## 2026-08-10 — J9 skill retrieval is an in-memory summary index
+
+**Spec:** embed skills alongside durable memories so a strong match can inject a
+summary while keeping the body one `skill` call away.
+
+**Built:** skill summaries use the active provider's embedding interface and a
+small in-memory cosine index. Vectors are cached for the session and discarded
+on `/skills reload`; skill bodies and metadata remain filesystem-backed.
+
+**Why:** skill material is user-authored workspace configuration, not durable
+memory. Persisting it in the memory JSONL bank would make a reload stale and
+would mix instructions with facts. The same provider/embedder and thresholded
+recall seam provide the intended behavior without polluting the memory store.
+
+`skill_retrieval` is off by default because injecting a matching summary into a
+turn changes the prompt after the stable system prefix and costs prompt-cache
+stability. The ordinary index stays in the system prompt and the full body is
+still loaded only on demand.
+
 ## 2026-07-30 — P0.3 codex review step not active
 
 **Spec** (§0.2 step 6, Phase 0 task 3): kick off a background codex review of every
