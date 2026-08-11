@@ -100,6 +100,24 @@ func TestIgnoredMouseMotionKeepsSettledTranscriptCache(t *testing.T) {
 	}
 }
 
+// TestMouseWheelScrollsTranscript locks in that a MouseWheelMsg dispatched
+// through update reaches handleWheel. The handler existed but was unwired, so
+// real wheel events (kitty SGR mouse) were silently dropped — only terminals
+// that convert the wheel to Up/Down arrow keys scrolled at all.
+func TestMouseWheelScrollsTranscript(t *testing.T) {
+	m := perfModelForLagTest(t, 120)
+	m.View()
+	if m.scroll.Offset != 0 {
+		t.Fatalf("start offset = %d, want 0", m.scroll.Offset)
+	}
+	for i := 0; i < 10; i++ {
+		m.update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelUp}))
+	}
+	if m.scroll.Offset == 0 {
+		t.Fatal("wheel-up through update did not move scroll offset; handleWheel is unwired")
+	}
+}
+
 func TestPrintableBindingInvalidatesSettledTranscriptCache(t *testing.T) {
 	m := perfModelForLagTest(t, 20)
 	km, problems := NewKeymap(map[string]string{

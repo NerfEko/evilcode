@@ -820,6 +820,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.openQuickViewAt(mouse)
 
+	case tea.MouseWheelMsg:
+		return m.handleWheel(msg)
+
 	case tea.PasteMsg:
 		if m.loginMode {
 			m.editor.Insert(msg.Content)
