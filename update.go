@@ -1,109 +1,201 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
-	"evilcode/internal/tools"
-	"evilcode/internal/tui"
 	"evilcode/internal/tuicmd"
 )
 
-// runUpdate follows origin, tests the fetched source, then replaces the
-// resolved executable. It never touches a dirty checkout or a binary before
-// the build and tests pass.
-func runUpdate() error {
-	root, err := gitOutput(".", "rev-parse", "--show-toplevel")
-	if err != nil {
-		return fmt.Errorf("update: not inside a git checkout: %w", err)
-	}
-	root = strings.TrimSpace(root)
-	// `update` builds ./ in this checkout and installs the result over the
-	// running binary, so the checkout has to actually be evilcode's. Without
-	// this, running `evilcode update` from inside any other Go repository
-	// fast-forwards *that* repo and installs *its* main package as evilcode.
-	if !tui.IsEvilcodeRepo(root) {
-		return fmt.Errorf("update refused: %s is not evilcode's own checkout; run it from there", root)
-	}
-	status, err := gitOutput(root, "status", "--porcelain")
-	if err != nil {
-		return fmt.Errorf("update: checking the working tree: %w", err)
-	}
-	if strings.TrimSpace(status) != "" {
-		return fmt.Errorf("update refused: working tree is dirty:\n%s", strings.TrimSpace(status))
-	}
-	oldHead, err := gitOutput(root, "rev-parse", "HEAD")
-	if err != nil {
-		return fmt.Errorf("update: finding current revision: %w", err)
-	}
+// releaseLatest is Forgejo's "latest release" endpoint for the canonical
+// evilcode repository. `update` downloads a prebuilt binary from here rather
+// than building from a local checkout, so it works from any directory and
+// needs no Go toolchain — only a network connection and a writable install
+// path.
+const (
+	releaseLatest = "https://git.evileko.dev/api/v1/repos/evileko/evilcode/releases/latest"
+	releaseHost   = "git.evileko.dev"
+)
 
+// httpClient bounds every request `update` makes so a hung connection can
+// never wedge it indefinitely. Two minutes is generous for a ~30 MB binary on
+// a slow link and short enough that a dead server fails fast.
+var httpClient = &http.Client{Timeout: 2 * time.Minute}
+
+// release is the subset of Forgejo's release JSON that update acts on.
+type release struct {
+	TagName string  `json:"tag_name"`
+	Assets  []asset `json:"assets"`
+}
+
+// asset is one downloadable file attached to a release.
+type asset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+}
+
+func (r release) findAsset(name string) *asset {
+	for i := range r.Assets {
+		if r.Assets[i].Name == name {
+			return &r.Assets[i]
+		}
+	}
+	return nil
+}
+
+func (r release) assetNames() string {
+	names := make([]string, len(r.Assets))
+	for i, a := range r.Assets {
+		names[i] = a.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// runUpdate fetches the newest Forgejo release, downloads the binary built
+// for this OS/arch, and atomically swaps it in over the running executable.
+// It never touches the installed binary before the download completes.
+func runUpdate() error {
 	exe, mode, dir, err := updateTarget()
 	if err != nil {
 		return err
 	}
-	if err := gitRun(root, "fetch", "--prune", "origin"); err != nil {
-		return fmt.Errorf("update: fetch origin failed: %w", err)
-	}
-	branch, err := gitOutput(root, "symbolic-ref", "--short", "HEAD")
+	rel, err := latestRelease()
 	if err != nil {
-		return fmt.Errorf("update refused: detached HEAD")
+		return fmt.Errorf("update: %w", err)
 	}
-	branch = strings.TrimSpace(branch)
-	remote := "origin/" + branch
-	if _, err := gitOutput(root, "rev-parse", "--verify", remote); err != nil {
-		return fmt.Errorf("update: origin has no %s", remote)
-	}
-	counts, err := gitOutput(root, "rev-list", "--left-right", "--count", "HEAD..."+remote)
-	if err != nil {
-		return fmt.Errorf("update: comparing with %s: %w", remote, err)
-	}
-	ahead, behind, err := parseAheadBehind(counts)
-	if err != nil {
-		return fmt.Errorf("update: invalid revision comparison: %w", err)
-	}
-	if ahead > 0 {
-		return fmt.Errorf("update refused: local branch is ahead of or diverged from %s", remote)
-	}
-	if behind == 0 {
+	tag := strings.TrimSpace(rel.TagName)
+	if tag != "" && tag == tuicmd.Version {
 		fmt.Printf("already up to date (%s)\n", tuicmd.Version)
 		return nil
 	}
-	if err := gitRun(root, "merge", "--ff-only", remote); err != nil {
-		return fmt.Errorf("update: fast-forward failed: %w", err)
-	}
-	oldHead = strings.TrimSpace(oldHead)
-	rollback := func(failure error) error { return updateFailure(root, oldHead, failure) }
-
-	// No --dirty: the tree was checked clean at the top of this function, and
-	// `--dirty=false` does not mean "do not mark dirty" — it makes the mark the
-	// literal string "false", stamping versions like "feat-2false".
-	newVersion, err := gitOutput(root, "describe", "--tags", "--always")
-	if err != nil {
-		newVersion = "unknown"
+	want := "evilcode-" + runtime.GOOS + "-" + runtime.GOARCH
+	a := rel.findAsset(want)
+	if a == nil {
+		return fmt.Errorf("update: release %s has no binary for %s/%s (assets: %s)", tag, runtime.GOOS, runtime.GOARCH, rel.assetNames())
 	}
 	tmp := filepath.Join(dir, ".evilcode-update-"+strconv.Itoa(os.Getpid()))
 	defer os.Remove(tmp)
-	args := []string{"build", "-trimpath", "-ldflags=-X=evilcode/internal/tuicmd.Version=" + strings.TrimSpace(newVersion), "-o", tmp, "./"}
-	if out, err := commandOutput(root, "go", args...); err != nil {
-		return rollback(fmt.Errorf("update: build failed; binary unchanged:\n%s", updateTrimOutput(out)))
-	}
-	if out, err := commandOutput(root, "go", "test", "./..."); err != nil {
-		return rollback(fmt.Errorf("update: tests failed; binary unchanged:\n%s", updateTrimOutput(out)))
+	if err := download(a.URL, tmp); err != nil {
+		return fmt.Errorf("update: downloading %s: %w", a.Name, err)
 	}
 	if err := os.Chmod(tmp, mode.Perm()); err != nil {
-		return rollback(fmt.Errorf("update: preserving executable mode: %w", err))
+		return fmt.Errorf("update: preserving executable mode: %w", err)
 	}
 	if err := os.Rename(tmp, exe); err != nil {
-		return rollback(fmt.Errorf("update: installing %s: %w\nmanual: go build -trimpath -o %s .", exe, err, shellQuote(exe)))
+		return fmt.Errorf("update: installing %s: %w\nmanual: curl -fL -o %s %s", exe, err, shellQuote(exe), a.URL)
 	}
-	fmt.Printf("updated %s: %s -> %s\n", exe, tuicmd.Version, strings.TrimSpace(newVersion))
+	fmt.Printf("updated %s: %s -> %s\n", exe, tuicmd.Version, tag)
 	return nil
 }
 
+// latestRelease fetches and decodes the newest release from Forgejo.
+func latestRelease() (release, error) {
+	var r release
+	resp, err := httpGet(releaseLatest)
+	if err != nil {
+		return r, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return r, fmt.Errorf("latest release: HTTP %s", resp.Status)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return r, err
+	}
+	if r.TagName == "" {
+		return r, fmt.Errorf("latest release: no tag_name in response")
+	}
+	return r, nil
+}
+
+// download writes url to dst. The temp file is created first so a failed
+// transfer leaves an empty file for the deferred Remove rather than a partial
+// binary that could be mistaken for a good one.
+func download(url, dst string) error {
+	resp, err := httpGet(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %s", resp.Status)
+	}
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// httpGet issues a GET. A public repo answers without credentials; a private
+// mirror or a gated download returns 401/403, in which case we retry once with
+// a Basic header drawn from `git credential fill` for releaseHost. The prompt
+// is disabled so a missing credential fails fast instead of hanging.
+func httpGet(url string) (*http.Response, error) {
+	resp, err := httpClient.Do(newGet(url))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		return resp, nil
+	}
+	resp.Body.Close()
+	auth, err := credentialHeader(releaseHost)
+	if err != nil {
+		return nil, err
+	}
+	req := newGet(url)
+	req.Header.Set("Authorization", auth)
+	return httpClient.Do(req)
+}
+
+func newGet(url string) *http.Request {
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	return req
+}
+
+// credentialHeader returns an "Authorization: Basic ..." header for host using
+// the credential git itself stores for HTTPS pushes to the same host.
+func credentialHeader(host string) (string, error) {
+	cmd := exec.Command("git", "credential", "fill")
+	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=https\nhost=%s\n\n", host))
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("no stored credential for %s: %w", host, err)
+	}
+	user, pass := "", ""
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "username="):
+			user = strings.TrimPrefix(line, "username=")
+		case strings.HasPrefix(line, "password="):
+			pass = strings.TrimPrefix(line, "password=")
+		}
+	}
+	if user == "" || pass == "" {
+		return "", fmt.Errorf("credential for %s has no username or password", host)
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass)), nil
+}
+
+// updateTarget resolves the running executable and confirms its directory is
+// writable by creating and removing a probe file. The mode is returned so the
+// replacement keeps the same permissions rather than imposing 0755.
 func updateTarget() (exe string, mode os.FileMode, dir string, err error) {
 	exe, err = os.Executable()
 	if err != nil {
@@ -120,7 +212,7 @@ func updateTarget() (exe string, mode os.FileMode, dir string, err error) {
 	dir = filepath.Dir(exe)
 	probe, err := os.CreateTemp(dir, ".evilcode-update-probe-*")
 	if err != nil {
-		return "", 0, "", fmt.Errorf("update: install path is not writable; manual: go build -trimpath -o %s .", shellQuote(exe))
+		return "", 0, "", fmt.Errorf("update: install path is not writable; manual: curl -fL -o %s <download url>", shellQuote(exe))
 	}
 	probeName := probe.Name()
 	_ = probe.Close()
@@ -128,60 +220,6 @@ func updateTarget() (exe string, mode os.FileMode, dir string, err error) {
 	return exe, info.Mode(), dir, nil
 }
 
-func gitRun(dir string, args ...string) error {
-	_, err := commandOutput(dir, "git", args...)
-	return err
-}
-
-func gitOutput(dir string, args ...string) (string, error) {
-	return commandOutput(dir, "git", args...)
-}
-
-func commandOutput(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return tools.Truncate(string(out)), err
-	}
-	return tools.Truncate(string(out)), nil
-}
-
-func parseAheadBehind(s string) (ahead, behind int, err error) {
-	parts := strings.Fields(s)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("want two counts, got %q", s)
-	}
-	ahead, err = strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, err
-	}
-	behind, err = strconv.Atoi(parts[1])
-	return ahead, behind, err
-}
-
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-// updateFailure puts the clean checkout back where it started when the fetched
-// revision cannot build or test. If anything else dirtied it during the run,
-// leave that work alone and say so rather than resetting user files.
-func updateFailure(root, oldHead string, failure error) error {
-	status, err := gitOutput(root, "status", "--porcelain")
-	if err != nil || strings.TrimSpace(status) != "" {
-		return fmt.Errorf("%w (source was not rolled back because the checkout changed)", failure)
-	}
-	if err := gitRun(root, "reset", "--hard", oldHead); err != nil {
-		return fmt.Errorf("%w (source rollback failed: %v)", failure, err)
-	}
-	return failure
-}
-
-func updateTrimOutput(out string) string {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) > 20 {
-		lines = append(lines[:20], fmt.Sprintf("… and %d more lines", len(lines)-20))
-	}
-	return strings.Join(lines, "\n")
 }

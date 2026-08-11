@@ -1,4 +1,5 @@
 evilcode
+dist/
 probe/frames/
 shots/
 *.png

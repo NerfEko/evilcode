@@ -509,3 +509,26 @@ would satisfy the type signature while failing the semantic behavior the task
 requires. Revisit if the project adopts a maintained pure-Go runtime and a
 versioned model distribution policy; until then BM25 is the honest availability
 floor rather than a misleading pseudo-embedding.
+
+## 2026-08-10 — `evilcode update` downloads releases, does not verify checksums
+
+**Spec:** F5.1/F5.2 built and tested from a local checkout, then swapped the
+binary in. By explicit user direction, `update` was changed to pull the latest
+Forgejo release and install it automatically.
+
+**Built instead:** `update` hits
+`https://git.evileko.dev/api/v1/repos/evileko/evilcode/releases/latest`, picks
+the `evilcode-{GOOS}-{GOARCH}` asset, downloads it, and atomically renames it
+over the running executable. No local checkout, no `go build`, no test gate;
+the release is assumed to be built and tested at publish time.
+
+**Why:** the standalone-binary install path is the point — `update` must work
+from any directory with no Go toolchain. Re-running the build/test gate at
+install time would re-introduce the toolchain dependency the change removes.
+
+**Worth revisiting:** ship a `evilcode-linux-amd64.sha256` asset and verify it
+before the rename, so a corrupt or tampered download never installs. Also,
+comparing only `tuicmd.Version` to the release tag means a dev build carrying
+the default `v0.1.0` reports "already up to date" against the real v0.1.0
+release; a separate build-stamp (e.g. a release commit SHA) would let `update`
+distinguish a dev build from the matching release.

@@ -6139,3 +6139,27 @@ through `004a510` while all eleven `jcode-*` tags (`jcode-1` through
 same atomic push. Their local copies were then deleted. The premature J6 tag
 was retired, not moved or rewritten; its historical provenance finding remains
 recorded above.
+
+## 2026-08-10 release-based self-update
+
+`evilcode update` no longer builds from a local checkout. It now queries
+Forgejo's latest-release endpoint for the canonical repo, downloads the
+`evilcode-{GOOS}-{GOARCH}` asset, and atomically renames it over the running
+executable — so `update` works from any directory with no Go toolchain, only a
+network connection and a writable install path.
+
+What broke and what it taught:
+- The old source flow refused to run outside evilcode's own checkout, which
+  made `update` useless once evilcode was installed as a standalone binary.
+  Replacing it removed the git/checkout/build machinery entirely; `update.go`
+  shrank and the `parseAheadBehind`/`gitRun`/`commandOutput` helpers and their
+  test were deleted because they were the old flow.
+- Public repo answers the API and asset download with no auth; the 401/403
+  path still exists, retrying with a Basic header from `git credential fill`
+  (prompt disabled) so a private mirror keeps working.
+- `default Version = "v0.1.0"` collides with the first release tag, so a dev
+  build (no ldflags) reports "already up to date" against a v0.1.0 release
+  even when its code predates the tag. Left as-is: changing the default would
+  break the probe goldens, which render `evilcode · v0.1.0` in the header.
+- No checksum verification yet: the download trusts the canonical Forgejo
+  host over HTTPS. A SHA256 asset is the obvious next step (see DEVIATIONS).
