@@ -112,6 +112,12 @@ the Codex CLI; rotated credentials are saved back to its auth file. ec never pri
 token. `/login status codex` reports whether the account is available; use `codex login` to
 sign in or change accounts.
 
+Optional service credentials use `/connect`, with masked input. `/connect brave` saves a
+Brave Search API key in the user-only `[web]` config block, activates `web_search` for the
+current session, and survives the next launch. `/connect brave status` reports presence
+without printing the key. The `BRAVE_SEARCH_API_KEY` environment variable (or its
+`BRAVE_API_KEY` alias) takes precedence over the saved value.
+
 `context_window` is likewise optional: the window and capabilities of every Ollama model,
 local or cloud, are read from the provider, so the meter and auto-compaction are right
 without a `[[model]]` block per model. Set one only to correct what the provider claims.
@@ -177,6 +183,8 @@ State lives in `~/.local/share/evilcode/` as `sessions/*.jsonl`,
 | `EVILCODE_DETERMINISTIC=1` | fixed session name, frozen animation, no wall-clock text |
 | `EVILCODE_GRAPHICS` | force `kitty`, `sixel` or `none` |
 | `EVILCODE_DICTATE` | speech-to-text command for `evilcode dictate` |
+| `BRAVE_SEARCH_API_KEY` | expose the live Brave-backed `web_search` tool |
+| `BRAVE_API_KEY` | alias accepted for `BRAVE_SEARCH_API_KEY` |
 
 ## Features
 
@@ -249,9 +257,10 @@ repository's pinned model or roles never leak into another session's.
 
 ### Tools
 
-`read`, `write`, `edit`, `glob`, `grep`, `bash`, `bg`, `ask`, `todo`, git helpers, and MCP
-servers adapted into the same interface. Batches dispatch through a fixed worker pool
-with a cap on both concurrency and total size.
+`read`, `write`, `edit`, `glob`, `grep`, `bash`, `bg`, `ask`, `todo`, git helpers, the
+optional Brave-backed `web_search`, and MCP servers are adapted into the same interface.
+Batches dispatch through a fixed worker pool with a cap on both concurrency and total
+size. Set `BRAVE_SEARCH_API_KEY` or use `/connect brave` to enable web search.
 
 `bash` adopts a command that exceeds its timeout into the background instead of
 starting it over. Use `bg status`, `bg output`/`tail`, `bg wait`, or `bg cancel`; long

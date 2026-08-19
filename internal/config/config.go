@@ -24,6 +24,10 @@ const (
 	EnvConfigPath  = "EVILCODE_CONFIG"
 	EnvOllamaKey   = "OLLAMA_API_KEY"
 	EnvDeepSeekKey = "DEEPSEEK_API_KEY"
+	// EnvBraveSearchKey is the preferred key name for the optional web_search
+	// tool. EnvBraveKey is accepted too because it is a common shorthand.
+	EnvBraveSearchKey = "BRAVE_SEARCH_API_KEY"
+	EnvBraveKey       = "BRAVE_API_KEY"
 )
 
 // ProviderKind selects which wire protocol a provider speaks.
@@ -55,6 +59,13 @@ type ProviderConfig struct {
 	// standard CODEX_HOME/auth.json (or ~/.codex/auth.json) is discovered.
 	// It is ignored by providers that do not use Codex OAuth.
 	AuthFile string `toml:"auth_file"`
+}
+
+// WebConfig holds credentials for optional web capabilities. It is written
+// with restrictive permissions by SaveBraveSearchAPIKey; environment values
+// still take precedence when present.
+type WebConfig struct {
+	BraveAPIKey string `toml:"brave_api_key"`
 }
 
 // ModelConfig is an optional `[[model]]` block carrying per-model overrides
@@ -168,6 +179,7 @@ type Config struct {
 	Display        Display           `toml:"display"`
 	Features       Features          `toml:"features"`
 	Keybindings    map[string]string `toml:"keybindings"`
+	Web            WebConfig         `toml:"web"`
 
 	// Dictate is the speech-to-text command `evilcode dictate` runs. A command
 	// rather than a bundled engine: STT setups are personal — a local
@@ -345,6 +357,35 @@ func SaveProviderAPIKey(providerName, key string) error {
 		for _, p := range newProviderSections(updated, providerName, key) {
 			updated += "\n" + providerSection(p)
 		}
+	}
+	return writeConfigAtomic(path, []byte(updated))
+}
+
+// SaveBraveSearchAPIKey writes the Brave Search key into the dedicated [web]
+// table while preserving unknown TOML text. API keys entered through the TUI
+// are stored in the user config, which is written with mode 0600.
+func SaveBraveSearchAPIKey(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("config: Brave Search API key is required")
+	}
+	path := os.Getenv(EnvConfigPath)
+	if path == "" {
+		path = filepath.Join(ConfigDir(), "config.toml")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	updated, found := updateWebBraveKey(string(data), key)
+	if !found {
+		if updated != "" {
+			if !strings.HasSuffix(updated, "\n") {
+				updated += "\n"
+			}
+			updated += "\n"
+		}
+		updated += "[web]\nbrave_api_key = " + strconv.Quote(key) + "\n"
 	}
 	return writeConfigAtomic(path, []byte(updated))
 }
@@ -535,6 +576,43 @@ func updateProviderKey(text, providerName, key string) (string, bool, error) {
 	return text, false, nil
 }
 
+func updateWebBraveKey(text, key string) (string, bool) {
+	if text == "" {
+		return text, false
+	}
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	lines := strings.SplitAfter(text, "\n")
+	for start := 0; start < len(lines); start++ {
+		if strings.TrimSpace(lines[start]) != "[web]" {
+			continue
+		}
+		end := start + 1
+		for end < len(lines) {
+			trimmed := strings.TrimSpace(lines[end])
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				break
+			}
+			end++
+		}
+		value := "brave_api_key = " + strconv.Quote(key) + "\n"
+		for i := start + 1; i < end; i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			name, _, ok := strings.Cut(trimmed, "=")
+			if !ok || strings.TrimSpace(name) != "brave_api_key" {
+				continue
+			}
+			indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+			lines[i] = indent + value
+			return strings.Join(lines, ""), true
+		}
+		lines = append(lines[:end], append([]string{value}, lines[end:]...)...)
+		return strings.Join(lines, ""), true
+	}
+	return text, false
+}
+
 func writeConfigAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -712,6 +790,27 @@ func (p ProviderConfig) APIKeyValue() string {
 		}
 	}
 	return p.APIKey
+}
+
+// BraveSearchAPIKey returns a Brave key supplied through the environment.
+// Config-file values are resolved by (*Config).BraveSearchAPIKey so callers
+// that already loaded configuration do not need to read it a second time.
+func BraveSearchAPIKey() string {
+	for _, name := range []string{EnvBraveSearchKey, EnvBraveKey} {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// BraveSearchAPIKey resolves the Brave key with environment precedence over
+// the value saved by /connect brave.
+func (c *Config) BraveSearchAPIKey() string {
+	if value := BraveSearchAPIKey(); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.Web.BraveAPIKey)
 }
 
 // Resolve turns a model reference into a live provider and the bare model name.

@@ -80,6 +80,9 @@ var Commands = []Command{
 			"/login [provider]       enter a masked API key for a provider (e.g. /login deepseek)\n" +
 			"/login status [provider] report whether a key/account is present without printing it.\n" +
 			"                         Codex OAuth is discovered from `codex login`; it does not accept an API key."},
+	{Name: "connect", Help: "Connect an API service",
+		Long: "/connect brave         enter a masked Brave Search API key\n" +
+			"/connect brave status  report whether a Brave key is present without printing it."},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
 	{Name: "theme", Help: "Switch, score, or generate a palette",
@@ -182,7 +185,7 @@ var HelpSections = []HelpSection{
 	{"Self-development", []string{"selfdev", "rebuild", "reload"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
-	{"System", []string{"config", "theme", "login", "terminal-setup", "screenshot",
+	{"System", []string{"config", "theme", "login", "connect", "terminal-setup", "screenshot",
 		"compact", "fix", "btw", "cancel", "quit"}},
 }
 

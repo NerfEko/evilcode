@@ -146,9 +146,10 @@ type Model struct {
 	// commandArg holds the argument of the command being run.
 	commandArg string
 
-	// loginMode owns the composer while a cloud key is entered. The editor is
-	// reset completely when it ends so undo/stash cannot resurrect the secret.
-	// loginProvider names the provider the entered key is saved to.
+	// loginMode owns the composer while a provider or service key is entered.
+	// The editor is reset completely when it ends so undo/stash cannot
+	// resurrect the secret. loginProvider is the credential target; it is kept
+	// for the existing login picker state and also carries "brave" for /connect.
 	loginMode     bool
 	loginProvider string
 
@@ -177,6 +178,12 @@ type Model struct {
 	// fs is the filesystem tool group, held so a model switch can update its
 	// vision gate to match. nil when the session runs canned/headless tools.
 	fs *tools.FS
+
+	// braveSearch is held so /connect brave can activate web_search in the
+	// current TUI session without a restart. Its tool is present in interactive
+	// sessions even before a key is configured; the tool returns a clear setup
+	// error until this pointer receives one.
+	braveSearch *tools.BraveSearch
 
 	// compactor summarises and replaces the conversation when it gets long.
 	compactor *agent.Compactor
@@ -488,6 +495,12 @@ func (m *Model) WithSessions(dataDir, cwd string, store *session.Store) *Model {
 // list models from every provider and switch the live provider on selection.
 func (m *Model) WithProviders(provs []config.ProviderConfig) *Model {
 	m.providers = provs
+	return m
+}
+
+// WithBraveSearch attaches the live Brave client used by /connect brave.
+func (m *Model) WithBraveSearch(search *tools.BraveSearch) *Model {
+	m.braveSearch = search
 	return m
 }
 
@@ -2525,6 +2538,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "login":
 		return m, m.loginCommand(strings.TrimSpace(arg))
+
+	case "connect":
+		return m, m.connectCommand(strings.TrimSpace(arg))
 
 	case "productivity":
 		return m, m.productivityCommand()
