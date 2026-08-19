@@ -44,6 +44,36 @@ func TestDefaultModelFollowsCloudKey(t *testing.T) {
 	}
 }
 
+func TestBraveSearchAPIKeyPrefersDedicatedEnvironmentName(t *testing.T) {
+	t.Setenv(EnvBraveSearchKey, "search-key")
+	t.Setenv(EnvBraveKey, "short-key")
+	if got := BraveSearchAPIKey(); got != "search-key" {
+		t.Errorf("BraveSearchAPIKey() = %q, want the dedicated key", got)
+	}
+}
+
+func TestBraveSearchAPIKeyAcceptsShortAlias(t *testing.T) {
+	t.Setenv(EnvBraveSearchKey, "")
+	t.Setenv(EnvBraveKey, "short-key")
+	if got := BraveSearchAPIKey(); got != "short-key" {
+		t.Errorf("BraveSearchAPIKey() = %q, want the short alias", got)
+	}
+}
+
+func TestConfigBraveSearchAPIKeyPrefersEnvironmentOverSavedValue(t *testing.T) {
+	t.Setenv(EnvBraveSearchKey, "env-key")
+	t.Setenv(EnvBraveKey, "")
+	cfg := &Config{Web: WebConfig{BraveAPIKey: "file-key"}}
+	if got := cfg.BraveSearchAPIKey(); got != "env-key" {
+		t.Errorf("Config.BraveSearchAPIKey() = %q, want the environment key", got)
+	}
+
+	t.Setenv(EnvBraveSearchKey, "")
+	if got := cfg.BraveSearchAPIKey(); got != "file-key" {
+		t.Errorf("Config.BraveSearchAPIKey() = %q, want the saved key", got)
+	}
+}
+
 func TestPartialConfigKeepsDefaults(t *testing.T) {
 	// The regression this guards: booleans that default to true must survive a
 	// config file that never mentions them.
@@ -553,6 +583,52 @@ future_setting = "also keep"
 	}
 	if got := cfg.Providers[0].APIKeyValue(); got != key {
 		t.Fatalf("loaded key = %q, want saved key", got)
+	}
+}
+
+func TestSaveBraveSearchAPIKeyPreservesUnknownTOMLAndUses0600(t *testing.T) {
+	path := write(t, `default_model = "m@ollama-local"
+unknown_setting = "keep me"
+
+[[provider]]
+name = "ollama-local"
+kind = "ollama"
+base_url = "http://localhost:11434"
+
+[web]
+brave_api_key = "old"
+
+[future]
+future_setting = "also keep"
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvBraveSearchKey, "")
+	t.Setenv(EnvBraveKey, "")
+	key := "brave-test-secret"
+	if err := SaveBraveSearchAPIKey(key); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !containsAll(text, "unknown_setting = \"keep me\"", "future_setting = \"also keep\"", "brave_api_key = \""+key+"\"") {
+		t.Fatalf("writer dropped or failed to update TOML: %s", text)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("config mode = %o, want 0600", info.Mode().Perm())
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.BraveSearchAPIKey(); got != key {
+		t.Fatalf("loaded Brave key = %q, want saved key", got)
 	}
 }
 

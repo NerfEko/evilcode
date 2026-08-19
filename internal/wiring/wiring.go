@@ -219,6 +219,9 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 			ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
+			if key := cfg.BraveSearchAPIKey(); key != "" {
+				ts = append(ts, tools.NewBraveSearch(key).Tools()...)
+			}
 		}
 		// No `ask` tool: a headless session has nobody to ask, and a tool that
 		// is present and always fails is worse than one that is absent.

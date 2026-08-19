@@ -435,6 +435,56 @@ func (m *Model) statsCommand() tea.Cmd {
 	return nil
 }
 
+func (m *Model) connectCommand(arg string) tea.Cmd {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		m.notice = "usage: /connect brave [status]"
+		return nil
+	}
+	target := strings.ToLower(parts[0])
+	status := false
+	if target == "status" {
+		if len(parts) != 1 {
+			m.notice = "usage: /connect brave [status]"
+			return nil
+		}
+		target = "brave"
+		status = true
+	} else if len(parts) > 1 {
+		if len(parts) != 2 || strings.ToLower(parts[1]) != "status" {
+			m.notice = "usage: /connect brave [status]"
+			return nil
+		}
+		status = true
+	}
+	if target != "brave" {
+		m.notice = "usage: /connect brave [status]"
+		return nil
+	}
+	if status {
+		cfg, err := config.Load()
+		if err != nil {
+			m.notice = "brave connection status unavailable"
+			return nil
+		}
+		if cfg.BraveSearchAPIKey() != "" {
+			m.notice = "brave: API key present"
+		} else {
+			m.notice = "brave: no API key configured"
+		}
+		return nil
+	}
+	if m.processing {
+		m.notice = "Finish or interrupt the turn first, then /connect"
+		return nil
+	}
+	m.loginMode = true
+	m.loginProvider = "brave"
+	m.editor = Editor{}
+	m.notice = "Brave Search API key · input hidden · Enter saves · Esc cancels"
+	return nil
+}
+
 func (m *Model) loginCommand(arg string) tea.Cmd {
 	// `/login status [provider]` reports a key's presence without printing it.
 	if arg == "status" || strings.HasPrefix(arg, "status ") {
@@ -590,10 +640,15 @@ func (m *Model) handleLoginPickerKey(key string) (tea.Model, tea.Cmd) {
 func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "ctrl+c":
+		target := m.loginProvider
 		m.loginMode = false
 		m.editor = Editor{}
 		m.loginProvider = ""
-		m.notice = "login cancelled"
+		if target == "brave" {
+			m.notice = "connect cancelled"
+		} else {
+			m.notice = "login cancelled"
+		}
 		return m, nil
 	case "enter":
 		keyText := m.editor.Text
@@ -605,7 +660,32 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 		}
 		m.loginProvider = ""
 		if strings.TrimSpace(keyText) == "" {
-			m.notice = target + " login cancelled: no key entered"
+			if target == "brave" {
+				m.notice = "brave connection cancelled: no key entered"
+			} else {
+				m.notice = target + " login cancelled: no key entered"
+			}
+			return m, nil
+		}
+		if target == "brave" {
+			keyText = strings.TrimSpace(keyText)
+			if err := config.SaveBraveSearchAPIKey(keyText); err != nil {
+				m.notice = "brave connection failed"
+				return m, nil
+			}
+			activeKey := keyText
+			envKey := config.BraveSearchAPIKey()
+			if envKey != "" {
+				activeKey = envKey
+			}
+			if m.braveSearch != nil {
+				m.braveSearch.APIKey = activeKey
+			}
+			if envKey != "" {
+				m.notice = "Brave Search API key saved · environment key remains active"
+			} else {
+				m.notice = "Brave Search API key saved"
+			}
 			return m, nil
 		}
 		if err := config.SaveProviderAPIKey(target, keyText); err != nil {

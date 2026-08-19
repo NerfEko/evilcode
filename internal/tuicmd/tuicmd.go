@@ -266,6 +266,9 @@ func runOnce(args []string) (string, error) {
 		return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 	}, cfg.Features.Advisor)
 	advisor.TodoState = todos.Summary
+	// Keep the client in the model even when no key exists yet: /connect brave
+	// can then activate web_search for the very next turn without a restart.
+	braveSearch := tools.NewBraveSearch(cfg.BraveSearchAPIKey())
 
 	// Last in the chain. It never appends, so it cannot starve anything, and
 	// putting it after auto-poke is what makes "one arguing voice at a time"
@@ -288,7 +291,8 @@ func runOnce(args []string) (string, error) {
 		WithMemory(mem).
 		WithAdvisor(advisor, lsps).
 		WithCompactor(compactor).
-		WithVision(overrides.Vision)
+		WithVision(overrides.Vision).
+		WithBraveSearch(braveSearch)
 	// The read-tool vision gate tracks the active model: a /model switch
 	// re-evaluates it, so neither gate is stale after the picker changes the
 	// model. WithVisionFor wires fsTools.VisionFn to the live capability.
@@ -304,6 +308,7 @@ func runOnce(args []string) (string, error) {
 		ts = append(fsTools.Tools(), execTools.Tools()...)
 		ts = append(ts, tools.NewGit(pc.Root).Tools()...)
 		ts = append(ts, tools.NewSessionSearchWithCurrentName(dataDir, store.CurrentName))
+		ts = append(ts, braveSearch.Tools()...)
 	}
 	ts = append(ts, tools.NewTodo(todos, nil))
 	ts = append(ts, tools.NewAsk(m.Asker()))
