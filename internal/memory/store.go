@@ -5,7 +5,7 @@
 // means cgo plus a compiled `.so` the user has to install before evilcode will
 // start — a hard dependency for a bank that holds a few thousand short strings.
 // A JSONL file with a brute-force cosine scan is the same behavior at this
-// scale, so that is what this is. See DEVIATIONS.md.
+// scale, so that is what this is. See docs/DEVIATIONS.md.
 package memory
 
 import (

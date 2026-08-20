@@ -15,7 +15,7 @@ import (
 // What this test can check is the rule the fix rests on: a worker with a retry
 // armed is not finished, and the report that arms it says so by returning false.
 // The ordering window itself is between two goroutines and microseconds wide
-// against the mock; see LOOPS.md for why it is not reproduced here.
+// against the mock; see docs/LOOPS.md for why it is not reproduced here.
 func TestArmingARetryDoesNotFinishTheWorker(t *testing.T) {
 	srv, _ := testServer(t)
 	defer srv.Close()

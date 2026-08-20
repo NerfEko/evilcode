@@ -23,7 +23,7 @@ import (
 //
 // Color emoji fonts are deliberately not usable: they carry their artwork in
 // COLR/CBDT tables that x/image cannot rasterize, so their glyphs have outlines
-// of zero ink. See DEVIATIONS.md.
+// of zero ink. See docs/DEVIATIONS.md.
 var defaultFallbackFonts = []string{
 	"/usr/share/fonts/symbols-nerd-font/SymbolsNerdFontMono-Regular.ttf",
 	"~/.local/share/fonts/symbols-nerd-font/SymbolsNerdFontMono-Regular.ttf",
