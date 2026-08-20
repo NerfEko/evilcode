@@ -1,7 +1,7 @@
+ evilcode · v1.0.0                                                                                                  ╭──────────────────────╮
  session: Dracula 🧛                                                                                                │ Context 436/200k     │
  /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯
- skills: /agent-architect /agent-browser /commit /dreaming +15 more
  <repo> (main)
 
  Here is the plan.
@@ -18,7 +18,6 @@
  │ Validation                                                                                       │
  │ The test above, plus one manual cold start.                                                      │
  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 
  🧭 Planning wire the auth flow... (plan-only; no edits)
  1>

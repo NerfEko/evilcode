@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -280,6 +282,28 @@ func TestRenderPaintsBackgrounds(t *testing.T) {
 func TestRenderEmptyInput(t *testing.T) {
 	if _, err := RenderString(""); err != nil {
 		t.Fatalf("RenderString(\"\"): %v", err)
+	}
+}
+
+func TestRenderFileFailurePreservesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "frame.ansi")
+	dst := filepath.Join(dir, "frame.png")
+	if err := os.WriteFile(src, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("previous image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderFileSize(src, dst, 0); err == nil {
+		t.Fatal("invalid font size unexpectedly rendered")
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "previous image" {
+		t.Errorf("failed render destroyed the previous output: %q", got)
 	}
 }
 

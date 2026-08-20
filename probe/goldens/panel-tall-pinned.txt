@@ -1,21 +1,21 @@
- skills: /agent-architect /agent-browser /commit /dreaming +15 more   │ testdata/big.go
- <repo> (main)                                   │ ┌─ diff
-                                                                      │ │  package testdata
- 1› renumber them                                                     │ │
-                                                                      │ │ -// big is a probe fixture for the side panel: a file long enough
- Renumbering all of them.                                             │ │ -// does not fit the panel, which is where a panel that cannot scr
-                                                                      │ │ -// first half and silently drops the rest.
-   ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ -//
-                                                                      │ │ -// Committed in the state BEFORE the scenario's write, for the sa
- All fifteen now multiply.                                            │ │ ... 25 more changes ...
+ <repo> (main)                                   │ testdata/big.go
+                                                                      │ ┌─ diff
+ 1› renumber them                                                     │ │  package testdata
+                                                                      │ │
+ Renumbering all of them.                                             │ │ -// big is a probe fixture for the side panel: a file long enough
+                                                                      │ │ -// does not fit the panel, which is where a panel that cannot scr
+   ✓ write testdata/big.go · 7 tok (+15 -22)                          │ │ -// first half and silently drops the rest.
+                                                                      │ │ -//
+ All fifteen now multiply.                                            │ │ -// Committed in the state BEFORE the scenario's write, for the sa
+                                                                      │ │ ... 25 more changes ...
                                                                       │ │ +func india(a int) int    { return a * 9 }
                                                                       │ │ +func juliet(a int) int   { return a * 10 }
                                                                       │ │ +func kilo(a int) int     { return a * 11 }
-                                                                      │ │ +func lima(a int) int     { return a * 12 }
- 💡 Ctrl+R searches your prompt history                               │ │ +func mike(a int) int     { return a * 13 }
- Diff mode: pinned                                                    │ │ +func november(a int) int { return a * 14 }
- 2>                                                                   │ │ +func oscar(a int) int    { return a * 15 }
-   mock-large · 408/200k ctx · dracula                                │ └─ (+15 -22 total)
+ 💡 Ctrl+R searches your prompt history                               │ │ +func lima(a int) int     { return a * 12 }
+ Diff mode: pinned                                                    │ │ +func mike(a int) int     { return a * 13 }
+ 2>                                                                   │ │ +func november(a int) int { return a * 14 }
+   mock-large · 408/200k ctx · dracula                                │ │ +func oscar(a int) int    { return a * 15 }
+                                                                      │ └─ (+15 -22 total)
                                                                       │
                                                                       │
                                                                       │

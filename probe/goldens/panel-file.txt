@@ -1,13 +1,12 @@
- skills: /agent-architect /agent-browser /commit /dreaming +15 more   │ testdata/clamp.go
- <repo> (main)                                   │   8 │ // makes every scenario's edit fail with "old string not found
-                                                                      │   9 │ // goldens then bake in the failure — which is exactly what ha
- 1› fix the clamp                                                     │  10 │ func clamp(offset, max int) int {
-                                                                      │     │-    if offset > max {
- Fixing the off-by-one.                                               │  11 │+    if offset >= max {
-                                                                      │  12 │         return max
-   ✓ edit testdata/clamp.go · 72 tok (+1 -1)                          │  13 │     }
-                                                                      │  14 │     return offset
- That was the clamp bug.                                              │
+ <repo> (main)                                   │ testdata/clamp.go
+                                                                      │   8 │ // makes every scenario's edit fail with "old string not found
+ 1› fix the clamp                                                     │   9 │ // goldens then bake in the failure — which is exactly what ha
+                                                                      │  10 │ func clamp(offset, max int) int {
+ Fixing the off-by-one.                                               │     │-    if offset > max {
+                                                                      │  11 │+    if offset >= max {
+   ✓ edit testdata/clamp.go · 72 tok (+1 -1)                          │  12 │         return max
+                                                                      │  13 │     }
+ That was the clamp bug.                                              │  14 │     return offset
                                                                       │
                                                                       │
                                                                       │
@@ -16,6 +15,7 @@
  Diff mode: file                                                      │
  2>                                                                   │
    mock-large · 386/200k ctx · dracula                                │
+                                                                      │
                                                                       │
                                                                       │
                                                                       │

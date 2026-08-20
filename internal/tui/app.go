@@ -455,7 +455,6 @@ type Model struct {
 	confirmQuit  bool
 	scrollbarOn  bool
 	cancelTurn   context.CancelFunc
-	lastFrameLen int
 }
 
 // NewModel builds the TUI over an agent.
@@ -1265,6 +1264,12 @@ func (m *Model) applyEvent(e agent.Event) {
 	case agent.EventTurnEnd:
 		m.finishStreaming()
 		m.processing = false
+		// Slack is temporary scaffolding for a collapsing reasoning trace while
+		// the answer streams. A short answer may not spend all of it; carrying
+		// that remainder past the turn leaves a permanent blank hole and lets two
+		// attached clients settle on different vertical positions.
+		m.scroll.ClearSlack()
+		m.updateSessionTitle()
 		// Read before the reset: the status line is per-turn and is cleared in
 		// the next statement, so the overnight budget was always told zero.
 		spent := m.status.TokensIn + m.status.TokensOut
@@ -2679,7 +2684,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 				results <- result{name: pc.Name, kind: pc.Kind}
 				return
 			}
-			infos, err := p.Models(ctx)
+			infos, _ := p.Models(ctx)
 			results <- result{
 				name: pc.Name, infos: infos,
 				hasKey:   pc.APIKeyValue() != "",
@@ -3276,6 +3281,9 @@ func (m *Model) clearEditor() {
 }
 
 func (m *Model) typingWPM(text string) int {
+	if Deterministic() {
+		return 0
+	}
 	words := len(strings.Fields(text))
 	if words < minimumWPMWords || m.typingStarted.IsZero() {
 		return 0
@@ -4472,6 +4480,13 @@ func (m *Model) dockWidgets(rows, content []string, transcriptRows, scrollTop in
 	if !m.widgetsOn || len(m.blocks) == 0 || transcriptRows <= 0 {
 		m.placements = nil
 		return rows
+	}
+	if Deterministic() {
+		// Residents encode which intermediate frame first happened to expose a
+		// slot. Event batching and terminal scheduling may partition the same
+		// final state differently, so a golden run chooses from the current state
+		// on every render instead of preserving that timing accident.
+		m.dock.Reset()
 	}
 	blocks := m.blocks
 	kindOf := func(idx int) BlockKind {

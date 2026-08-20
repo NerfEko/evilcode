@@ -90,3 +90,12 @@ func TestUserTranscriptRendersWPMAfterMessage(t *testing.T) {
 		t.Fatalf("user rows = %q, want the WPM marker after the message", joined)
 	}
 }
+
+func TestDeterministicModeDoesNotExposeWallClockWPM(t *testing.T) {
+	t.Setenv("EVILCODE_DETERMINISTIC", "1")
+	m := newTestModel(t)
+	m.typingStarted = time.Now().Add(-time.Second)
+	if got := m.typingWPM("one two three four five"); got != 0 {
+		t.Errorf("deterministic WPM = %d, want no wall-clock value", got)
+	}
+}

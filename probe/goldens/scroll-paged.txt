@@ -1,6 +1,6 @@
- ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                     ╰────────────────────────────────╯
- skills: /agent-architect /agent-browser /commit /dreaming +15 more
- <repo> (main)                                                                                                        ╷
+ /model to switch · local:mock · mock-large                                                                       │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                               ╰──────────────────────╯ ╷
+ <repo> (main)                                                                                                        │
                                                                                                                                            │
  1› long answer                                                                                                                            │
                                                                                                                                            │

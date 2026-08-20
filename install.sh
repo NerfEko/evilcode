@@ -25,14 +25,19 @@ api="${base}/api/v1/repos/${repo}/releases/latest"
 interactive=0
 if [ -t 1 ]; then
   interactive=1
-  c_bold=$'\033[1m'
-  c_green=$'\033[32m'
-  c_cyan=$'\033[36m'
-  c_dim=$'\033[2m'
-  c_red=$'\033[31m'
-  c_reset=$'\033[0m'
+  c_bold=$(printf '\033[1m')
+  c_green=$(printf '\033[32m')
+  c_cyan=$(printf '\033[36m')
+  c_dim=$(printf '\033[2m')
+  c_red=$(printf '\033[31m')
+  c_reset=$(printf '\033[0m')
 else
-  c_bold= c_green= c_cyan= c_dim= c_red= c_reset=
+  c_bold=
+  c_green=
+  c_cyan=
+  c_dim=
+  c_red=
+  c_reset=
 fi
 
 # A one-line step with a result appended after the ellipsis. Printing the
@@ -90,6 +95,42 @@ ec_link="${install_dir}/ec"
 config_dir="${EVILCODE_CONFIG_DIR:-$HOME/.config/evilcode}"
 data_dir="${EVILCODE_DATA_DIR:-$HOME/.local/share/evilcode}"
 
+# Refuse recursive operations on broad paths even if a mistyped environment
+# override and an interactive confirmation line up. Existing directories are
+# resolved physically so spellings such as $HOME/.config/.. and symlinks back
+# to $HOME cannot bypass the check.
+assert_safe_tree_target() {
+  safe_label=$1
+  safe_input=$2
+  case "$safe_input" in
+    ''|'/'|'.'|'..'|-*)
+      printf '%serror:%s refusing to remove unsafe %s path %s\n' "$c_red" "$c_reset" "$safe_label" "$safe_input" >&2
+      return 1
+      ;;
+  esac
+
+  if [ -d "$safe_input" ]; then
+    safe_resolved=$(CDPATH=; cd -P "$safe_input" 2>/dev/null && pwd -P) || return 1
+  else
+    safe_parent=$(dirname "$safe_input")
+    safe_base=$(basename "$safe_input")
+    if [ ! -d "$safe_parent" ]; then
+      return 0
+    fi
+    safe_parent=$(CDPATH=; cd -P "$safe_parent" 2>/dev/null && pwd -P) || return 1
+    safe_resolved="${safe_parent}/${safe_base}"
+  fi
+  safe_home=$(CDPATH=; cd -P "$HOME" 2>/dev/null && pwd -P) || return 1
+  safe_cwd=$(pwd -P) || return 1
+  case "$safe_resolved" in
+    '/'|"$safe_home"|"$safe_cwd")
+      printf '%serror:%s refusing to remove unsafe %s path %s (resolves to %s)\n' \
+        "$c_red" "$c_reset" "$safe_label" "$safe_input" "$safe_resolved" >&2
+      return 1
+      ;;
+  esac
+}
+
 # Detect an existing install. Check the install directory first (where this
 # script puts the binary), then PATH. The raw path is kept as-is so removal
 # deletes the right thing whether it is a real file or a symlink.
@@ -130,8 +171,13 @@ do_install() {
     printf '%serror:%s install dir %s is not writable\n' "$c_red" "$c_reset" "$install_dir" >&2
     exit 1
   fi
-  tmp="${install_dir}/.evilcode-install-$$"
-  trap 'rm -f "$tmp"' EXIT
+  if [ -d "$ec_link" ] && [ ! -L "$ec_link" ]; then
+    printf '%serror:%s %s is a directory; refusing to place the ec symlink inside it\n' \
+      "$c_red" "$c_reset" "$ec_link" >&2
+    exit 1
+  fi
+  tmp=$(mktemp "${install_dir}/.evilcode-install.XXXXXXXX")
+  trap 'rm -f "$tmp"' 0
 
   say 'download' "evilcode ${tag} (${os}/${arch}) … "
   # Progress bar when stderr is a terminal (the 'curl | sh' case); silent
@@ -162,7 +208,7 @@ do_install() {
     *":${install_dir}:"*) ;;
     *)
       printf '\n%sNote:%s %s is not on your PATH.\n' "$c_red" "$c_reset" "$install_dir" >&2
-      printf '  Add it:  %sexport PATH="%s:$PATH"%s\n' "$c_dim" "$install_dir" "$c_reset" >&2
+      printf "  Add it:  %sexport PATH=\"%s:\$PATH\"%s\n" "$c_dim" "$install_dir" "$c_reset" >&2
       ;;
   esac
 
@@ -178,8 +224,8 @@ print_tips() {
   printf '\n%sTips%s\n' "$c_bold" "$c_reset"
   printf '  - Run %sollama serve%s for a local Ollama endpoint. Without an\n' "$c_green" "$c_reset"
   printf '    Ollama Cloud key, models route through the local daemon.\n'
-  printf '  - Add a provider key with %s/login%s in the TUI, or set %s$OLLAMA_API_KEY%s\n' "$c_cyan" "$c_reset" "$c_dim" "$c_reset"
-  printf '    (or %s$OPENAI_API_KEY%s / %s$DEEPSEEK_API_KEY%s); %s/model%s switches models.\n' "$c_dim" "$c_reset" "$c_dim" "$c_reset" "$c_cyan" "$c_reset"
+  printf "  - Add a provider key with %s/login%s in the TUI, or set %s\$OLLAMA_API_KEY%s\n" "$c_cyan" "$c_reset" "$c_dim" "$c_reset"
+  printf "    (or %s\$OPENAI_API_KEY%s / %s\$DEEPSEEK_API_KEY%s); %s/model%s switches models.\n" "$c_dim" "$c_reset" "$c_dim" "$c_reset" "$c_cyan" "$c_reset"
   printf '  - For the full toolset install %srg%s (grep), %stmux%s (probe), %sgopls%s (lsp).\n' "$c_green" "$c_reset" "$c_green" "$c_reset" "$c_green" "$c_reset"
   printf '  - Self-update with %sevilcode update%s; shell completions with\n' "$c_cyan" "$c_reset"
   printf '    %sevilcode completions bash|zsh|fish%s.\n' "$c_cyan" "$c_reset"
@@ -207,6 +253,12 @@ do_remove() {
   printf ' and %s' "$ec_here"
   printf '\n'
   if confirm "Also remove config and data ($config_dir, $data_dir)? [y/N] " n; then
+    if [ -e "$config_dir" ] || [ -L "$config_dir" ]; then
+      assert_safe_tree_target config "$config_dir" || exit 1
+    fi
+    if [ -e "$data_dir" ] || [ -L "$data_dir" ]; then
+      assert_safe_tree_target data "$data_dir" || exit 1
+    fi
     rm -rf "$config_dir" "$data_dir"
     printf '%s✓%s removed config and data\n' "$c_green" "$c_reset"
   fi
@@ -224,7 +276,14 @@ do_reset_config() {
     printf 'Not reset.\n'
     return 0
   fi
-  bak="${config_dir}.bak.$(date +%Y%m%d-%H%M%S)"
+  assert_safe_tree_target config "$config_dir" || exit 1
+  bak_base="${config_dir}.bak.$(date +%Y%m%d-%H%M%S)"
+  bak=$bak_base
+  bak_n=1
+  while [ -e "$bak" ] || [ -L "$bak" ]; do
+    bak="${bak_base}.${bak_n}"
+    bak_n=$((bak_n + 1))
+  done
   mv "$config_dir" "$bak"
   printf '%s✓%s backed up to %s\n' "$c_green" "$c_reset" "$bak"
   printf 'Defaults will apply on next launch.\n'

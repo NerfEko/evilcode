@@ -43,6 +43,9 @@ func RunDictate(args []string) error {
 	if len(args) > 0 {
 		command = args
 	}
+	if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
+		return fmt.Errorf("no speech-to-text command is configured; set %s", DictateEnv)
+	}
 	if _, err := exec.LookPath(command[0]); err != nil {
 		return fmt.Errorf(
 			"%s is not installed. Set %s to your speech-to-text command — "+

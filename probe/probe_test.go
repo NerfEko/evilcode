@@ -58,14 +58,21 @@ func framesDir(root string) string {
 	return filepath.Join(root, "probe", "frames", "run-"+strconv.Itoa(os.Getpid()))
 }
 
+func probeBinary(root string) string {
+	if path := strings.TrimSpace(os.Getenv("EVILCODE_BIN")); path != "" {
+		return path
+	}
+	return filepath.Join(root, "evilcode")
+}
+
 func TestScenarios(t *testing.T) {
 	root := repoRoot(t)
 
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed; probe scenarios need it")
 	}
-	if _, err := os.Stat(filepath.Join(root, "evilcode")); err != nil {
-		t.Skip("no ./evilcode binary; run: go build -o evilcode ./")
+	if _, err := os.Stat(probeBinary(root)); err != nil {
+		t.Skip("no evilcode binary; run: go build -o evilcode ./ or set EVILCODE_BIN")
 	}
 
 	files, err := filepath.Glob(filepath.Join(root, "probe", "scenarios", "*.txt"))

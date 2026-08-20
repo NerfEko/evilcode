@@ -20,6 +20,7 @@ import (
 	"evilcode/internal/graphics"
 	"evilcode/internal/provider"
 	"evilcode/internal/tui"
+	"evilcode/internal/tuicmd"
 )
 
 // Run attaches to a daemon session, or lists what the daemon is holding.
@@ -78,7 +79,12 @@ func Run(args []string) error {
 			Kind: daemon.MsgInterrupt, Session: snap.Session,
 			Text: in.Text, Urgent: in.Urgent,
 		})
-		return err == nil
+		if err != nil {
+			a.Notice(agent.LevelError, "could not send interrupt to daemon: %v", err)
+		}
+		// Even on failure, do not queue this in the proxy agent: no local loop
+		// exists to drain it, so it would remain pending forever.
+		return true
 	}
 	a.SetRunning(snap.Running)
 	defer a.Close()
@@ -107,7 +113,7 @@ func Run(args []string) error {
 		})
 	}
 	m.WithSwarm(swarm, func(task string) (string, error) {
-		return summon(path, task)
+		return summon(path, snap.Session, task)
 	}).
 		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
 		WithPersistentModelState(cfg.LastModel, cfg.ReasoningEfforts, nil, nil).
@@ -157,7 +163,7 @@ const SummonTimeout = 30 * time.Second
 // A second connection rather than the attached one: the attached connection is
 // mid-stream with events, and interleaving a request/response exchange into it
 // would mean the reply could arrive behind a hundred deltas.
-func summon(path, task string) (string, error) {
+func summon(path, spawner, task string) (string, error) {
 	c, err := daemon.DialPath(path)
 	if err != nil {
 		return "", err
@@ -167,7 +173,7 @@ func summon(path, task string) (string, error) {
 		return "", err
 	}
 
-	if err := c.Send(daemon.ClientMsg{Kind: daemon.MsgSpawn, Task: task}); err != nil {
+	if err := c.Send(daemon.ClientMsg{Kind: daemon.MsgSpawn, Session: spawner, Task: task}); err != nil {
 		return "", err
 	}
 	for {
@@ -200,6 +206,10 @@ func pollRoster(path, self string, swarm *tui.SwarmState) {
 		if err != nil {
 			return
 		}
+		if err := c.SetDeadline(5 * time.Second); err != nil {
+			c.Close()
+			return
+		}
 		sessions, err := c.List()
 		c.Close()
 		if err != nil {
@@ -226,7 +236,7 @@ func pollRoster(path, self string, swarm *tui.SwarmState) {
 func header(cfg *config.Config, snap *daemon.Snapshot, path string) tui.HeaderState {
 	h := tui.HeaderState{
 		SessionName:     snap.Session,
-		Version:         Version,
+		Version:         tuicmd.Version,
 		Model:           snap.Model,
 		ReasoningEffort: provider.ReasoningEffort(snap.ReasoningEffort),
 		Provider:        snap.Provider,
@@ -271,10 +281,6 @@ func clientSeed() string {
 	}
 	return fmt.Sprint(os.Getpid())
 }
-
-// Version matches the TUI's, so a client and server built from different
-// commits are visibly mismatched rather than subtly incompatible.
-const Version = "v0.1.0"
 
 func printSessions(client *daemon.Client) error {
 	sessions, err := client.List()

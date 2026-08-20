@@ -493,7 +493,7 @@ func (o *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 	var out struct {
 		Data []map[string]any `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, providerJSONMaxBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	models := make([]ModelInfo, 0, len(out.Data))

@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="$REPO/evilcode"
+BIN="${EVILCODE_BIN:-$REPO/evilcode}"
 # Captured frames land here. It is overridable for the same reason the socket
 # is: two concurrent runs capture the same golden names, and the second write
 # would land between the first run's capture and its read.
@@ -133,6 +133,7 @@ cmd_boot() {
              XDG_STATE_HOME='$FAKEHOME/.local/state' \
              TERM=xterm-256color COLORTERM=truecolor \
              EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
+             EVILCODE_SKILL_DIRS= \
              EVILCODE_GRAPHICS='$gfx' \
              EVILCODE_SCENARIO='$scenario' ${app[*]}"
     settle
@@ -160,7 +161,7 @@ probe_env() {
     printf "XDG_CACHE_HOME='%s/.cache' XDG_STATE_HOME='%s/.local/state' " \
         "$FAKEHOME" "$FAKEHOME"
     printf "XDG_RUNTIME_DIR='%s' TERM=xterm-256color COLORTERM=truecolor " "$TMUX_TMPDIR"
-    printf "EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock "
+    printf "EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock EVILCODE_SKILL_DIRS= "
 }
 
 cmd_serve() {
@@ -182,7 +183,7 @@ cmd_serve() {
         XDG_CONFIG_HOME="$FAKEHOME/.config" \
         XDG_CACHE_HOME="$FAKEHOME/.cache" \
         XDG_STATE_HOME="$FAKEHOME/.local/state" \
-        EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
+        EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock EVILCODE_SKILL_DIRS= \
         EVILCODE_SCENARIO="$scenario" \
         "$BIN" serve -socket "$SOCKET_PATH" -q >"$TMUX_TMPDIR/serve.log" 2>&1 &
     echo $! >"$SERVE_PID"

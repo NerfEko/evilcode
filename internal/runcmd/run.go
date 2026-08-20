@@ -33,6 +33,11 @@ const (
 	ExitInterrupted = 130
 )
 
+// MaxPromptBytes bounds a prompt read from stdin. Command-line arguments are
+// already bounded by the operating system; a pipe is not, and ReadAll let an
+// accidental binary stream consume memory until the process died.
+const MaxPromptBytes = 4 << 20
+
 // Run executes one headless turn and returns a process exit code.
 func Run(args []string) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -50,8 +55,10 @@ func Run(args []string) (int, error) {
 	if prompt == "" {
 		// Reading from a pipe makes `evilcode run` composable with the shell.
 		if stat, err := os.Stdin.Stat(); err == nil && stat.Mode()&os.ModeCharDevice == 0 {
-			piped, _ := io.ReadAll(os.Stdin)
-			prompt = strings.TrimSpace(string(piped))
+			prompt, err = readPipedPrompt(os.Stdin)
+			if err != nil {
+				return ExitError, err
+			}
 		}
 	}
 	if prompt == "" {
@@ -148,7 +155,7 @@ func Run(args []string) (int, error) {
 	// flag means a session relying on default_model silently gets no
 	// per-model settings at all, which is how anchor_edits appeared to be
 	// broken when it was simply never switched on.
-	overrides := cfg.ModelOverrides(modelName)
+	overrides := cfg.ModelOverrides(config.ModelRef(modelName, prov.Name()))
 	exposure := tools.NewExposure()
 	var lsps *lsp.Manager
 	if !*noTools {
@@ -256,8 +263,11 @@ func Run(args []string) (int, error) {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 	go func() {
-		<-sig
-		cancel()
+		select {
+		case <-sig:
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
 	if len(priorMessages) > 0 && !*quiet {
@@ -272,6 +282,17 @@ func Run(args []string) (int, error) {
 		exit = ExitError
 	}
 	return exit, runErr
+}
+
+func readPipedPrompt(r io.Reader) (string, error) {
+	piped, err := io.ReadAll(io.LimitReader(r, MaxPromptBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading prompt from stdin: %w", err)
+	}
+	if len(piped) > MaxPromptBytes {
+		return "", fmt.Errorf("prompt from stdin exceeds %d bytes", MaxPromptBytes)
+	}
+	return strings.TrimSpace(string(piped)), nil
 }
 
 // printer renders the event stream to the terminal. It is a type rather than a
@@ -538,7 +559,11 @@ func toolTarget(raw json.RawMessage) string {
 func shorten(s string) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if len(s) > 60 {
-		return s[:59] + "…"
+		cut := 59
+		for cut > 0 && s[cut]&0xc0 == 0x80 {
+			cut--
+		}
+		return s[:cut] + "…"
 	}
 	return s
 }

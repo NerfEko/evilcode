@@ -145,3 +145,27 @@ func TestAConfinedWriteCannotBeRedirectedAfterItsCheck(t *testing.T) {
 		t.Errorf("the file outside the workspace was rewritten: %q", data)
 	}
 }
+
+func TestConfinedWriteDoesNotDeleteAPreexistingTempNamedFile(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target.txt")
+	oldTemp := filepath.Join(root, ".target.txt.tmp")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldTemp, []byte("belongs to the user\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := NewFS(root).WithConfine(true)
+	if err := f.writeConfined(target, []byte("new\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(oldTemp)
+	if err != nil {
+		t.Fatalf("the writer deleted a preexisting .tmp file: %v", err)
+	}
+	if string(got) != "belongs to the user\n" {
+		t.Errorf("preexisting .tmp file was changed: %q", got)
+	}
+}

@@ -69,6 +69,21 @@ func TestOllamaStreamText(t *testing.T) {
 	}
 }
 
+func TestJSONIntRejectsFractionsAndOverflow(t *testing.T) {
+	for _, value := range []any{
+		1.5,
+		json.Number("9223372036854775808"),
+		json.Number("not-a-number"),
+	} {
+		if got, ok := jsonInt(value); ok {
+			t.Errorf("jsonInt(%v) = %d, true; want rejection", value, got)
+		}
+	}
+	if got, ok := jsonInt(json.Number("42000000000")); !ok || got != 42000000000 {
+		t.Errorf("jsonInt(valid count) = %d, %v", got, ok)
+	}
+}
+
 func TestOllamaStreamThinking(t *testing.T) {
 	body := `{"message":{"role":"assistant","thinking":"let me "},"done":false}
 {"message":{"role":"assistant","thinking":"check"},"done":false}

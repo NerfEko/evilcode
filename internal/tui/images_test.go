@@ -301,7 +301,8 @@ func TestMermaidCacheKeyDependsOnSource(t *testing.T) {
 	if hashSource("graph TD; A-->B;") == hashSource("graph TD; A-->C;") {
 		t.Error("two different diagrams share a cache key")
 	}
-	if hashSource("x") != hashSource("x") {
+	source := strings.Join([]string{"x"}, "")
+	if hashSource(source) != hashSource(strings.Clone(source)) {
 		t.Error("the same diagram hashed differently twice")
 	}
 }

@@ -283,6 +283,16 @@ func (s *Store) Append(e Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("session store is closed")
+	}
+	return s.appendLocked(line)
+}
+
+// appendLocked writes one already-encoded entry while s.mu is held. Close uses
+// it for the final marker after setting closed, while ordinary appends check
+// closed before reaching it.
+func (s *Store) appendLocked(line []byte) error {
 	if s.file == nil || s.w == nil {
 		return errors.New("session store is closed")
 	}
@@ -460,11 +470,17 @@ func (s *Store) reopenLocked() error {
 // process on top of whatever the meta-write error already reported (H5.12).
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
+		data, dataErr := json.Marshal(Meta{Kind: MetaCleanExit})
+		line, lineErr := json.Marshal(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
+
 		s.mu.Lock()
+		defer s.mu.Unlock()
 		s.closed = true
-		s.mu.Unlock()
-		metaErr := s.WriteMeta(Meta{Kind: MetaCleanExit})
-		s.closeErr = errors.Join(metaErr, s.closeFile())
+		metaErr := errors.Join(dataErr, lineErr)
+		if metaErr == nil {
+			metaErr = s.appendLocked(line)
+		}
+		s.closeErr = errors.Join(metaErr, s.closeFileLocked())
 	})
 	return s.closeErr
 }
@@ -478,6 +494,10 @@ func (s *Store) Close() error {
 func (s *Store) closeFile() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.closeFileLocked()
+}
+
+func (s *Store) closeFileLocked() error {
 	if s.file == nil || s.w == nil {
 		return nil
 	}

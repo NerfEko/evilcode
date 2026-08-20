@@ -143,6 +143,9 @@ func TestTitle(t *testing.T) {
 	if got := Title("crypt", "⚰"); got != "Crypt ⚰" {
 		t.Errorf("Title() = %q", got)
 	}
+	if got := Title("éclair", "✨"); got != "Éclair ✨" {
+		t.Errorf("Title() split a Unicode character: %q", got)
+	}
 }
 
 func TestPickNameAvoidsCollisions(t *testing.T) {

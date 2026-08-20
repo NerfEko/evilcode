@@ -588,7 +588,7 @@ func exitStatus(err error) string {
 func shortCmd(cmd string) string {
 	cmd = strings.TrimSpace(strings.ReplaceAll(cmd, "\n", " "))
 	if len(cmd) > 48 {
-		return cmd[:47] + "…"
+		return cmd[:backToRuneBoundary(cmd, 47)] + "…"
 	}
 	return cmd
 }

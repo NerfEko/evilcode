@@ -95,7 +95,7 @@ var refusalMarkers = []string{
 func looksLikeRefusal(content string) bool {
 	head := strings.ToLower(strings.TrimSpace(content))
 	if len(head) > 200 {
-		head = head[:200]
+		head = truncateAtRune(head, 200)
 	}
 	for _, m := range refusalMarkers {
 		if strings.Contains(head, m) {

@@ -205,7 +205,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 
 	// Overrides are looked up by the *resolved* model, not the flag: a session
 	// relying on default_model would otherwise silently get none of them.
-	overrides := cfg.ModelOverrides(modelName)
+	overrides := cfg.ModelOverrides(config.ModelRef(modelName, prov.Name()))
 	exposure := tools.NewExposure()
 	var lsps *lsp.Manager
 	if !opts.NoTools {

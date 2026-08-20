@@ -112,7 +112,7 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return s[:backToRuneBoundary(s, n-1)] + "…"
 }
 
 // PendingAsk holds the question the UI is showing, and the ones behind it.

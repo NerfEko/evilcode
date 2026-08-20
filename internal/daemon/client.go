@@ -113,6 +113,9 @@ func (c *Client) Attach(name string, since int) (*Snapshot, error) {
 		}
 		switch msg.Kind {
 		case MsgSnapshot:
+			if msg.Snapshot == nil {
+				return nil, fmt.Errorf("daemon sent an empty session snapshot")
+			}
 			return msg.Snapshot, nil
 		case MsgError:
 			return nil, fmt.Errorf("%s", msg.Err)

@@ -580,6 +580,12 @@ func ExtractJSON(s string) string {
 
 // Truncate caps text at n bytes on a rune boundary.
 func Truncate(s string, n int) string {
+	if n <= 0 {
+		if s == "" {
+			return ""
+		}
+		return "[truncated]"
+	}
 	if len(s) <= n {
 		return s
 	}

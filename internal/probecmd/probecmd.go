@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"evilcode/internal/ansirender"
@@ -64,15 +65,25 @@ func runRender(args []string) error {
 		if err != nil {
 			return err
 		}
-		out, err := os.Create(dst)
+		dir := filepath.Dir(dst)
+		out, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".*")
 		if err != nil {
 			return err
 		}
+		tmp := out.Name()
+		defer os.Remove(tmp)
 		if err := ansirender.WritePNGSize(out, string(in), *size); err != nil {
 			out.Close()
 			return err
 		}
-		return out.Close()
+		if err := out.Sync(); err != nil {
+			out.Close()
+			return err
+		}
+		if err := out.Close(); err != nil {
+			return err
+		}
+		return os.Rename(tmp, dst)
 	}
 	return ansirender.RenderFileSize(src, dst, *size)
 }

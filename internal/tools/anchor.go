@@ -249,7 +249,7 @@ func truncateForError(s string) string {
 	if len(s) <= 40 {
 		return s
 	}
-	return s[:39] + "…"
+	return s[:backToRuneBoundary(s, 39)] + "…"
 }
 
 // AnnotateLines renders `read` output with anchors:

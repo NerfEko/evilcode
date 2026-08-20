@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,12 +80,25 @@ func writeAtomicBeneath(root, full string, data []byte) error {
 		mode = st.Mode & 0o777
 	}
 
-	tmp := "." + base + ".tmp"
-	_ = unix.Unlinkat(dirFd, tmp, 0)
-	fd, err := unix.Openat(dirFd, tmp,
-		unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, mode)
-	if err != nil {
-		return fmt.Errorf("creating a temporary file in the workspace: %w", err)
+	var tmp string
+	fd := -1
+	for range 16 {
+		var suffix [8]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			return fmt.Errorf("creating a temporary filename in the workspace: %w", err)
+		}
+		tmp = "." + base + "." + hex.EncodeToString(suffix[:]) + ".tmp"
+		fd, err = unix.Openat(dirFd, tmp,
+			unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, mode)
+		if err == nil {
+			break
+		}
+		if err != unix.EEXIST {
+			return fmt.Errorf("creating a temporary file in the workspace: %w", err)
+		}
+	}
+	if fd < 0 {
+		return fmt.Errorf("creating a temporary file in the workspace: too many name collisions")
 	}
 	file := os.NewFile(uintptr(fd), tmp)
 

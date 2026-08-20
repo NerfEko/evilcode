@@ -47,3 +47,18 @@ func TestNewStoreErrorsOnUnreadableFile(t *testing.T) {
 		t.Errorf("expected a permission error, got: %v", err)
 	}
 }
+
+func TestNewStoreRejectsOversizedStateFile(t *testing.T) {
+	dir := t.TempDir()
+	todos := filepath.Join(dir, "todos")
+	if err := os.MkdirAll(todos, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(todos, "swarm.json")
+	if err := os.WriteFile(path, []byte(`{"padding":"`+strings.Repeat("x", maxStateBytes)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(dir, "swarm"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized todo state error = %v", err)
+	}
+}

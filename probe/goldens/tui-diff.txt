@@ -1,8 +1,7 @@
- evilcode · v0.1.0                                                                                        ╭────────────────────────────────╮
- session: Dracula 🧛                                                                                      │ 💡 Ctrl+R searches your prompt │
- /model to switch · local:mock · mock-large                                                               │ history                        │
- ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                       ╰────────────────────────────────╯
- skills: /agent-architect /agent-browser /commit /dreaming +15 more
+ evilcode · v1.0.0
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
  <repo> (main)
 
  1› fix the clamp
@@ -11,10 +10,10 @@
 
    ✓ edit testdata/clamp.go · 72 tok (+1 -1)
  ┌─ diff
- │  // makes every scenario's edit fail with "old string not found", and the
- │  // goldens then bake in the failure — which is exactly what happened once.
- │  func clamp(offset, max int) int {
- │ -    if offset > max {
+ │  // makes every scenario's edit fail with "old string not found", and the                                        ╭──────────────────────╮
+ │  // goldens then bake in the failure — which is exactly what happened once.                                      │ Context 386/200k     │
+ │  func clamp(offset, max int) int {                                                                               │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ │ -    if offset > max {                                                                                           ╰──────────────────────╯
  │ +    if offset >= max {
  │          return max
  │      }

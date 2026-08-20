@@ -1,8 +1,7 @@
- evilcode · v0.1.0                                                                                        ╭────────────────────────────────╮
- session: Dracula 🧛                                                                                      │ 💡 Ctrl+R searches your prompt │
- /model to switch · local:mock · mock-large                                                               │ history                        │
- ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                       ╰────────────────────────────────╯
- skills: /agent-architect /agent-browser /commit /dreaming +15 more
+ evilcode · v1.0.0                                                                                                  ╭──────────────────────╮
+ session: Dracula 🧛                                                                                                │ Context 122/200k     │
+ /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯
  <repo> (main)
 
  1› first prompt

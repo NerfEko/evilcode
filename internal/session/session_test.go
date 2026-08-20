@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unicode/utf8"
 
 	"evilcode/internal/provider"
 )
@@ -79,6 +80,27 @@ func TestResumeAppends(t *testing.T) {
 	final, _ := Messages(st2.Path)
 	if len(final) != 2 || final[1].Content != "second" {
 		t.Errorf("final messages = %+v, want the resume appended", final)
+	}
+}
+
+func TestStoreRefusesAppendsAfterCloseStarts(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "too late"}); err == nil {
+		t.Fatal("an append succeeded after the clean-exit marker")
+	}
+	msgs, err := Messages(st.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("message was written after close: %+v", msgs)
 	}
 }
 
@@ -789,6 +811,10 @@ func TestDeriveTitlePrefersWhatTheAgentUnderstood(t *testing.T) {
 	}
 	if got := DeriveTitle("", "", "", ""); got != "" {
 		t.Errorf("got %q, want empty", got)
+	}
+	unicodeTitle := strings.Repeat("é", 31)
+	if got := DeriveTitle(unicodeTitle, "", "", ""); !utf8.ValidString(got) {
+		t.Errorf("title split a UTF-8 sequence: %q", got)
 	}
 }
 

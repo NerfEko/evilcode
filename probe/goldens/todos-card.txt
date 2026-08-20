@@ -1,6 +1,6 @@
- /model to switch · local:mock · mock-large                                                             │ history			 │
- ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                     ╰────────────────────────────────╯
- skills: /agent-architect /agent-browser /commit /dreaming +15 more                                                                        ╷
+ session: Dracula 🧛
+ /model to switch · local:mock · mock-large                                                                                                ╷
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                                        │
  <repo> (main)                                                                                                        │
                                                                                                                                            │
  1› wire the auth flow                                                                                                                     │
@@ -23,10 +23,10 @@
  Done.                                                                                                                                     │
                                                                                                                                            │
    ⚠ We poked about 3 incomplete todos 3 times and the list did not change. We stopped; pick it up yourself or update the todos.           │
- Understands user intent 87%                                                                                                               │
-   User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before                                         │
-                    work starts                                                                                                            │
- auth flow  ●●○○                                                                                                                           │
+ Understands user intent 87%                                                                                      ╭──────────────────────╮ │
+   User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before                │ Context 122/200k     │ │
+                    work starts                                                                                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │
+ auth flow  ●●○○                                                                                                  ╰──────────────────────╯ │
    Closed feedback loop 92% · Ownership 88%                                                                                                │
    Feedback · go test ./internal/auth/...                                                                                                  │
    ● Wire the refresh path                                                                                                                 │

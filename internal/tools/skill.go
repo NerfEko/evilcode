@@ -66,6 +66,12 @@ type SkillSet struct {
 // sees. The home directory is resolved here rather than passed by callers so
 // TUI, headless, and daemon sessions cannot quietly disagree.
 func SkillDirs(repoRoot, configDir string) []string {
+	if raw, ok := os.LookupEnv("EVILCODE_SKILL_DIRS"); ok {
+		if strings.TrimSpace(raw) == "" {
+			return nil
+		}
+		return uniquePaths(filepath.SplitList(raw))
+	}
 	var dirs []string
 	if repoRoot != "" {
 		dirs = append(dirs,

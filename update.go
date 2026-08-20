@@ -1,16 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,14 +24,29 @@ import (
 // needs no Go toolchain — only a network connection and a writable install
 // path.
 const (
-	releaseLatest = "https://git.evileko.dev/api/v1/repos/evileko/evilcode/releases/latest"
-	releaseHost   = "git.evileko.dev"
+	releaseLatest       = "https://git.evileko.dev/api/v1/repos/evileko/evilcode/releases/latest"
+	releaseHost         = "git.evileko.dev"
+	maxReleaseJSONBytes = 2 << 20
+	maxBinaryBytes      = 512 << 20
 )
 
 // httpClient bounds every request `update` makes so a hung connection can
 // never wedge it indefinitely. Two minutes is generous for a ~30 MB binary on
 // a slow link and short enough that a dead server fails fast.
-var httpClient = &http.Client{Timeout: 2 * time.Minute}
+var httpClient = &http.Client{
+	Timeout: 2 * time.Minute,
+	CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("update redirect uses insecure scheme %q", req.URL.Scheme)
+		}
+		// A release download may legitimately redirect to object storage, but a
+		// Forgejo credential belongs only to Forgejo.
+		if !strings.EqualFold(req.URL.Hostname(), releaseHost) {
+			req.Header.Del("Authorization")
+		}
+		return nil
+	},
+}
 
 // release is the subset of Forgejo's release JSON that update acts on.
 type release struct {
@@ -83,13 +99,26 @@ func runUpdate() error {
 	if a == nil {
 		return fmt.Errorf("update: release %s has no binary for %s/%s (assets: %s)", tag, runtime.GOOS, runtime.GOARCH, rel.assetNames())
 	}
-	tmp := filepath.Join(dir, ".evilcode-update-"+strconv.Itoa(os.Getpid()))
-	defer os.Remove(tmp)
-	if err := download(a.URL, tmp); err != nil {
+	tmpFile, err := os.CreateTemp(dir, ".evilcode-update-*")
+	if err != nil {
+		return fmt.Errorf("update: creating temporary binary: %w", err)
+	}
+	tmp := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+	}()
+	if err := download(a.URL, tmpFile); err != nil {
 		return fmt.Errorf("update: downloading %s: %w", a.Name, err)
 	}
-	if err := os.Chmod(tmp, mode.Perm()); err != nil {
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("update: syncing downloaded binary: %w", err)
+	}
+	if err := tmpFile.Chmod(mode.Perm()); err != nil {
 		return fmt.Errorf("update: preserving executable mode: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("update: closing downloaded binary: %w", err)
 	}
 	if err := os.Rename(tmp, exe); err != nil {
 		return fmt.Errorf("update: installing %s: %w\nmanual: curl -fL -o %s %s", exe, err, shellQuote(exe), a.URL)
@@ -109,7 +138,14 @@ func latestRelease() (release, error) {
 	if resp.StatusCode != http.StatusOK {
 		return r, fmt.Errorf("latest release: HTTP %s", resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseJSONBytes+1))
+	if err != nil {
+		return r, err
+	}
+	if len(body) > maxReleaseJSONBytes {
+		return r, fmt.Errorf("latest release response exceeds %d bytes", maxReleaseJSONBytes)
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
 		return r, err
 	}
 	if r.TagName == "" {
@@ -118,11 +154,10 @@ func latestRelease() (release, error) {
 	return r, nil
 }
 
-// download writes url to dst. The temp file is created first so a failed
-// transfer leaves an empty file for the deferred Remove rather than a partial
-// binary that could be mistaken for a good one.
-func download(url, dst string) error {
-	resp, err := httpGet(url)
+// download writes rawURL into a newly-created temporary file, bounding the
+// response and checking the executable header before it can replace anything.
+func download(rawURL string, dst *os.File) error {
+	resp, err := httpGet(rawURL)
 	if err != nil {
 		return err
 	}
@@ -130,23 +165,39 @@ func download(url, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %s", resp.Status)
 	}
-	f, err := os.Create(dst)
+	n, err := io.Copy(dst, io.LimitReader(resp.Body, maxBinaryBytes+1))
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
+	if n > maxBinaryBytes {
+		return fmt.Errorf("download exceeds %d bytes", maxBinaryBytes)
+	}
+	if n < 4 {
+		return fmt.Errorf("download is empty or truncated")
+	}
+	if _, err := dst.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	return f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(dst, magic[:]); err != nil {
+		return err
+	}
+	if string(magic[:]) != "\x7fELF" {
+		return fmt.Errorf("download is not a Linux executable")
+	}
+	return nil
 }
 
 // httpGet issues a GET. A public repo answers without credentials; a private
 // mirror or a gated download returns 401/403, in which case we retry once with
 // a Basic header drawn from `git credential fill` for releaseHost. The prompt
 // is disabled so a missing credential fails fast instead of hanging.
-func httpGet(url string) (*http.Response, error) {
-	resp, err := httpClient.Do(newGet(url))
+func httpGet(rawURL string) (*http.Response, error) {
+	req, err := newGet(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -158,24 +209,54 @@ func httpGet(url string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req := newGet(url)
+	req, err = newGet(rawURL)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Authorization", auth)
 	return httpClient.Do(req)
 }
 
-func newGet(url string) *http.Request {
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	return req
+func newGet(rawURL string) (*http.Request, error) {
+	if err := validateReleaseURL(rawURL); err != nil {
+		return nil, err
+	}
+	return http.NewRequest(http.MethodGet, rawURL, nil)
+}
+
+// validateReleaseURL prevents a release response from turning its asset URL
+// into a credential exfiltration request. Credentials are fetched for and sent
+// only to the canonical HTTPS Forgejo host.
+func validateReleaseURL(rawURL string) error {
+	u, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid update URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("update URL must use HTTPS")
+	}
+	if u.User != nil {
+		return fmt.Errorf("update URL must not contain user information")
+	}
+	if !strings.EqualFold(u.Hostname(), releaseHost) || u.Port() != "" {
+		return fmt.Errorf("update URL host %q is not %s", u.Host, releaseHost)
+	}
+	return nil
 }
 
 // credentialHeader returns an "Authorization: Basic ..." header for host using
 // the credential git itself stores for HTTPS pushes to the same host.
 func credentialHeader(host string) (string, error) {
-	cmd := exec.Command("git", "credential", "fill")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "credential", "fill")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=https\nhost=%s\n\n", host))
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("credential lookup for %s timed out: %w", host, ctx.Err())
+		}
 		return "", fmt.Errorf("no stored credential for %s: %w", host, err)
 	}
 	user, pass := "", ""

@@ -1,5 +1,7 @@
- ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                       ╰────────────────────────────────╯
- skills: /agent-architect /agent-browser /commit /dreaming +15 more
+ evilcode · v1.0.0                                                                                                  ╭──────────────────────╮
+ session: Dracula 🧛                                                                                                │ Context 460/200k     │
+ /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯
  <repo> (main)
 
  1› explain the config
@@ -8,9 +10,6 @@
 
  Defaults are filled in first and TOML decodes over them, so an absent key keeps its default — including booleans that default to true,
  which a merge from zero would clear.
-
-
-
  💡 Ctrl+R searches your prompt history
  2>
    mock-large · 460/200k ctx · dracula

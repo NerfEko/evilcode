@@ -15,7 +15,7 @@ import (
 
 // Subcommands is the completion set for the first argument.
 var Subcommands = []string{
-	"tui", "run", "serve", "attach", "probe", "dictate", "completions", "help",
+	"tui", "run", "serve", "attach", "resume", "update", "probe", "dictate", "completions", "help",
 }
 
 // Flags maps a subcommand to the flags it accepts. Hand-maintained rather than
@@ -27,6 +27,7 @@ var Flags = map[string][]string{
 	"run":    {"-m", "-q", "-resume", "-no-tools", "-remote", "-socket"},
 	"serve":  {"-m", "-q", "-socket"},
 	"attach": {"-l", "-socket"},
+	"resume": {"-from"},
 	"probe":  {"-size"},
 }
 
