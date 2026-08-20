@@ -24,21 +24,55 @@ for images on terminals without the kitty graphics protocol.
 
 ## Install
 
+One line — downloads the prebuilt linux/amd64 binary from the latest release
+and installs it to `~/.local/bin/evilcode` plus an `ec` symlink. No Go
+toolchain, no clone, no build:
+
+```sh
+curl -fsSL https://evileko.dev/evilcode | sh
+```
+
+The script prints each step (retrieve version, download, install) and a few
+tips. If `~/.local/bin` is not on your `PATH` it warns and prints the
+`export PATH=…` line to add to your shell rc.
+
+If evilcode is already installed, the script asks what to do instead of
+silently reinstalling:
+
+```
+1) Check for updates   — runs 'evilcode update' (compares versions, swaps in
+                         the latest or reports 'already up to date')
+2) Reinstall latest    — fresh download + atomic install over the existing
+3) Remove evilcode     — deletes the binary + ec symlink; optional second
+                         confirm removes config and session data
+4) Reset config        — backs up ~/.config/evilcode to .bak.<timestamp> and
+                         removes it so defaults apply
+5) Exit
+```
+
+You can also self-update directly at any time:
+
+```sh
+evilcode update
+```
+
+`update` fetches the latest release binary (`evilcode-<os>-<arch>`) and
+atomically swaps it over the running executable.
+
+### Build from source
+
+For an arch without a release binary (e.g. arm64 once built) or to run from a
+checkout:
+
 ```sh
 git clone https://git.evileko.dev/evileko/evilcode
 cd evilcode
 go build -o evilcode ./
-```
-
-Put it on your PATH with a symlink rather than a copy, so a rebuild takes effect
-without re-linking:
-
-```sh
 ln -sf "$PWD/evilcode" ~/.local/bin/evilcode
 ln -sf "$PWD/evilcode" ~/.local/bin/ec
 ```
 
-Shell completions:
+### Shell completions
 
 ```sh
 evilcode completions zsh  > ~/.zfunc/_evilcode
