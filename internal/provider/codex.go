@@ -823,11 +823,14 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 			calls.setArguments(item, arguments)
 		case "response.completed":
 			if response, ok := event["response"].(map[string]any); ok {
-				if output, ok := response["output"].([]any); ok {
+				if output, ok := response["output"].([]any); ok && len(output) > 0 {
 					// Preserve exactly the provider's output order. Replaying
 					// every item is required for manually managed Responses
 					// history; with store=false, reasoning items carry the
 					// encrypted state that lets the next tool round continue.
+					// The ChatGPT Codex backend currently sends an empty output
+					// array here even though output_item.done carried complete
+					// items. In that case, retain the streaming fallback above.
 					finalItems := make([]json.RawMessage, 0, len(output))
 					for _, value := range output {
 						if item, ok := value.(map[string]any); ok {

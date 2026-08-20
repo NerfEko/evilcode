@@ -269,6 +269,44 @@ func TestCodexReplaysProviderOutputItemsWithoutReconstruction(t *testing.T) {
 	}
 }
 
+func TestCodexRetainsDoneItemsWhenCompletedOutputIsEmpty(t *testing.T) {
+	// This is the event shape returned by the live ChatGPT Codex backend: the
+	// completed items arrive individually, while response.completed contains an
+	// output field that is present but empty.
+	sse := strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque-ciphertext"}}`,
+		"",
+		`data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{\"path\":\"x\"}"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":12,"output_tokens":4}}}`,
+		"",
+	}, "\n")
+
+	ch := make(chan Chunk, 4)
+	streamCodexSSE(context.Background(), strings.NewReader(sse), ch)
+	close(ch)
+	var done Chunk
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		if chunk.Done {
+			done = chunk
+		}
+	}
+	if len(done.ProviderItems) != 2 {
+		t.Fatalf("provider items = %d, want output_item.done fallback", len(done.ProviderItems))
+	}
+	var reasoningItem map[string]any
+	if err := json.Unmarshal(done.ProviderItems[0], &reasoningItem); err != nil ||
+		reasoningItem["encrypted_content"] != "opaque-ciphertext" {
+		t.Errorf("reasoning provider item = %#v, err %v", reasoningItem, err)
+	}
+	if len(done.ToolCalls) != 1 || done.ToolCalls[0].ID != "call_1" {
+		t.Errorf("tool calls = %+v", done.ToolCalls)
+	}
+}
+
 func jsonEqual(a, b []byte) bool {
 	return bytes.Equal(a, b)
 }
