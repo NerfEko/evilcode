@@ -140,6 +140,14 @@ type Model struct {
 	favorites      []string
 	saveModelPrefs func(defaultModel string, favorites []string) error
 
+	// lastModel and reasoningPrefs are global model state, distinct from the
+	// per-session transcript metadata. They let a fresh launch resume the
+	// user's last model while each model keeps its own effort value.
+	lastModel           string
+	reasoningPrefs      map[string]provider.ReasoningEffort
+	saveLastModel       func(string) error
+	saveReasoningEffort func(string, provider.ReasoningEffort) error
+
 	// sawEscapeHint keeps the trailing-backslash tip to once per session.
 	sawEscapeHint bool
 
@@ -230,10 +238,11 @@ type Model struct {
 	showHints bool
 
 	// thinking is the reasoning display mode (§9.7).
-	thinking           ThinkingMode
-	reasoningEffort    provider.ReasoningEffort
-	reasoningLevels    []provider.ReasoningEffort
-	setReasoningEffort func(provider.ReasoningEffort) error
+	thinking                ThinkingMode
+	reasoningEffort         provider.ReasoningEffort
+	reasoningEffortExplicit bool
+	reasoningLevels         []provider.ReasoningEffort
+	setReasoningEffort      func(provider.ReasoningEffort) error
 
 	// Self-test state (§14): frame capture, layout overlays, and the
 	// anchor-stability recorder behind /smoothness.
@@ -440,6 +449,14 @@ type Model struct {
 func NewModel(a *agent.Agent, h HeaderState) *Model {
 	p := theme.Dracula()
 	levels := provider.NormalizeReasoningEfforts(h.ReasoningEfforts)
+	effortExplicit := h.ReasoningEffort.Valid()
+	actualProvider := providerForAgent(a)
+	if actualProvider != nil && !provider.SupportsReasoningEffort(actualProvider) {
+		// A stale per-model preference must not make a non-reasoning provider
+		// look as though it supports a live control.
+		h.ReasoningEffort = ""
+		effortExplicit = false
+	}
 	if len(levels) == 0 && a != nil {
 		levels = provider.ReasoningEffortLevelsForProvider(a.Provider, h.Model)
 	}
@@ -460,7 +477,8 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 	}
 	if len(levels) > 0 {
 		effort = preferredReasoningEffort(levels, effort)
-		if provider.SupportsReasoningEffort(providerForAgent(a)) || h.ReasoningEffort.Valid() {
+		if provider.SupportsReasoningEffort(actualProvider) ||
+			(actualProvider == nil && (effortExplicit || len(h.ReasoningEfforts) > 0)) {
 			h.ReasoningEffort = effort
 		}
 		if a != nil && provider.SupportsReasoningEffort(a.Provider) {
@@ -482,18 +500,19 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		dock:                NewDock(),
 		widgetsOn:           true,
 		widgetLastShown:     map[WidgetKind]uint64{}, widgetLastChanged: map[WidgetKind]uint64{},
-		widgetHashes:    map[WidgetKind]uint64{},
-		thinking:        ThinkingCurrent,
-		reasoningEffort: effort,
-		reasoningLevels: levels,
-		diffMode:        DiffInline,
-		panelRatio:      50,
-		showHints:       true,
-		overscroll:      Overscroll{Mode: OverscrollPull},
-		welcomeFocus:    true,
-		artVariant:      PickVariant(h.SessionName),
-		decorate:        os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
-		drawnImages:     map[int]imagePlacement{},
+		widgetHashes:            map[WidgetKind]uint64{},
+		thinking:                ThinkingCurrent,
+		reasoningEffort:         effort,
+		reasoningEffortExplicit: effortExplicit,
+		reasoningLevels:         levels,
+		diffMode:                DiffInline,
+		panelRatio:              50,
+		showHints:               true,
+		overscroll:              Overscroll{Mode: OverscrollPull},
+		welcomeFocus:            true,
+		artVariant:              PickVariant(h.SessionName),
+		decorate:                os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
+		drawnImages:             map[int]imagePlacement{},
 	}
 }
 
@@ -545,6 +564,7 @@ func (m *Model) WithReasoningEffort(effort provider.ReasoningEffort,
 	if parsed, ok := provider.ParseReasoningEffort(string(effort)); ok {
 		m.reasoningEffort = preferredReasoningEffort(m.reasoningLevels, parsed)
 		m.header.ReasoningEffort = m.reasoningEffort
+		m.reasoningEffortExplicit = true
 	}
 	m.setReasoningEffort = setter
 	return m
@@ -577,6 +597,37 @@ func (m *Model) WithModelPrefs(defaultModel string, favorites []string, save fun
 	m.defaultModel = defaultModel
 	m.favorites = append([]string(nil), favorites...)
 	m.saveModelPrefs = save
+	return m
+}
+
+// WithPersistentModelState wires the global last-model and per-model effort
+// preferences. The values are loaded once at startup; savers are called only
+// after a live selection is accepted, and a failed write is surfaced in the
+// notice while the live session continues with the selected value.
+func (m *Model) WithPersistentModelState(lastModel string, efforts map[string]string,
+	saveLastModel func(string) error,
+	saveReasoningEffort func(string, provider.ReasoningEffort) error) *Model {
+	m.lastModel = lastModel
+	m.saveLastModel = saveLastModel
+	m.saveReasoningEffort = saveReasoningEffort
+	m.reasoningPrefs = make(map[string]provider.ReasoningEffort, len(efforts))
+	for ref, raw := range efforts {
+		if effort, ok := provider.ParseReasoningEffort(raw); ok {
+			m.reasoningPrefs[ref] = effort
+		}
+	}
+	if !m.reasoningEffortExplicit {
+		if effort, ok := m.reasoningPrefs[m.activeModelRef()]; ok &&
+			hasReasoningEffort(m.reasoningLevels, effort) && m.reasoningEffortAvailable() {
+			m.reasoningEffort = effort
+			m.header.ReasoningEffort = effort
+			if m.setReasoningEffort != nil {
+				_ = m.setReasoningEffort(effort)
+			} else if m.agent != nil {
+				_ = m.agent.SetReasoningEffort(effort)
+			}
+		}
+	}
 	return m
 }
 
@@ -1776,9 +1827,10 @@ func (m *Model) reasoningEffortAvailable() bool {
 	return m.agent != nil && provider.SupportsReasoningEffort(m.agent.Provider)
 }
 
-// setReasoningEffort applies a validated effort level to the live session.
-// The value is deliberately session-local: changing it never rewrites model
-// preferences or a repository config block, so experimentation stays cheap.
+// setEffort applies a validated effort level to the live session and remembers
+// it for this model. The provider change happens first so a failed provider
+// request cannot leave a preference that was never actually applied; a storage
+// failure is reported but does not undo the live setting.
 func (m *Model) setEffort(effort provider.ReasoningEffort) bool {
 	parsed, ok := provider.ParseReasoningEffort(string(effort))
 	if !ok {
@@ -1811,6 +1863,11 @@ func (m *Model) setEffort(effort provider.ReasoningEffort) bool {
 	m.reasoningEffort = parsed
 	m.header.ReasoningEffort = parsed
 	m.notice = "Reasoning effort: " + string(parsed) + " · applies to the next request"
+	if ref := m.activeModelRef(); ref != "" {
+		if err := m.rememberEffort(ref, parsed); err != nil {
+			m.notice += " · could not remember: " + err.Error()
+		}
+	}
 	return true
 }
 
@@ -2237,6 +2294,8 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 // hide that the resume path lost the switch.
 func (m *Model) applyModel(sel ModelEntry) {
 	previousModel := m.header.Model
+	previousProvider := m.header.Provider
+	previousRef := config.ModelRef(previousModel, previousProvider)
 	if sel.Provider != "" && sel.Provider != m.header.Provider {
 		// Crossing providers rebuilds the live client. The picker lists
 		// models from every configured provider, so a selection can name
@@ -2255,6 +2314,7 @@ func (m *Model) applyModel(sel ModelEntry) {
 	if sel.Provider != "" {
 		m.header.Provider = sel.Provider
 	}
+	targetRef := config.ModelRef(m.header.Model, m.header.Provider)
 	m.agent.Model = sel.Name
 	levels := provider.NormalizeReasoningEfforts(sel.ReasoningEfforts)
 	if len(levels) == 0 && m.agent != nil {
@@ -2269,7 +2329,12 @@ func (m *Model) applyModel(sel ModelEntry) {
 	m.reasoningLevels = provider.NormalizeReasoningEfforts(levels)
 	m.header.ReasoningEfforts = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
 	if len(m.reasoningLevels) > 0 && m.reasoningEffortAvailable() {
-		next := preferredReasoningEffort(m.reasoningLevels, m.reasoningEffort)
+		fallback := provider.DefaultReasoningEffort
+		if targetRef == previousRef {
+			fallback = m.reasoningEffort
+		}
+		next := preferredReasoningEffort(m.reasoningLevels,
+			m.rememberedEffort(targetRef, fallback))
 		if next != m.reasoningEffort {
 			if m.setReasoningEffort != nil {
 				if err := m.setReasoningEffort(next); err != nil {
@@ -2293,6 +2358,9 @@ func (m *Model) applyModel(sel ModelEntry) {
 		m.vision.Store(m.visionFor(sel.Name))
 	}
 	m.notice = "Model: " + sel.Name
+	if err := m.rememberModel(targetRef); err != nil {
+		m.notice += " · could not remember: " + err.Error()
+	}
 	if m.store != nil {
 		if werr := m.store.WriteModel(config.ModelRef(m.header.Model, m.header.Provider)); werr != nil {
 			m.notice = "could not record model: " + werr.Error()
@@ -3609,17 +3677,22 @@ func (m *Model) relayoutImages(width int) {
 }
 
 func (m *Model) composerState() ComposerState {
+	effort := provider.ReasoningEffort("")
+	if m.reasoningEffortAvailable() {
+		effort = m.reasoningEffort
+	}
 	return ComposerState{
-		Text:         m.editor.Text,
-		Cursor:       m.editor.Cursor,
-		PromptNumber: m.promptCount,
-		Model:        m.header.Model,
-		CtxUsed:      m.ctxUsed,
-		CtxMax:       m.contextMax(),
-		Session:      m.header.SessionName,
-		Processing:   m.processing,
-		PaletteOpen:  m.paletteOpen(),
-		Masked:       m.loginMode,
+		Text:            m.editor.Text,
+		Cursor:          m.editor.Cursor,
+		PromptNumber:    m.promptCount,
+		Model:           m.header.Model,
+		ReasoningEffort: effort,
+		CtxUsed:         m.ctxUsed,
+		CtxMax:          m.contextMax(),
+		Session:         m.header.SessionName,
+		Processing:      m.processing,
+		PaletteOpen:     m.paletteOpen(),
+		Masked:          m.loginMode,
 	}
 }
 

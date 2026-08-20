@@ -86,6 +86,12 @@ func (c *Config) Clone() *Config {
 	out := *c
 	out.Providers = append([]ProviderConfig(nil), c.Providers...)
 	out.Models = append([]ModelConfig(nil), c.Models...)
+	if c.ReasoningEfforts != nil {
+		out.ReasoningEfforts = make(map[string]string, len(c.ReasoningEfforts))
+		for k, v := range c.ReasoningEfforts {
+			out.ReasoningEfforts[k] = v
+		}
+	}
 	out.MCP = append([]MCPServer(nil), c.MCP...)
 	out.Dictate = append([]string(nil), c.Dictate...)
 	if c.Keybindings != nil {

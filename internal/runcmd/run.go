@@ -77,18 +77,34 @@ func Run(args []string) (int, error) {
 		return ExitError, err
 	}
 	cfg.AddDiscoveredCodex()
-	// A resumed session remembers the model it left off with; use it unless an
-	// explicit -m overrides (§18). Headless resume matches the TUI here, so the
-	// same conversation picks up the same model either way.
+	// A resumed session remembers the model it left off with; a fresh invocation
+	// uses the last global model unless an explicit -m or environment override
+	// wins. Headless resume matches the TUI here.
 	ref := *model
 	if ref == "" && *resume != "" {
 		if info, err := session.Describe(dataDir, *resume); err == nil {
 			ref = info.Model
 		}
 	}
+	usingLastModel := false
+	if ref == "" && *resume == "" && cfg.LastModel != "" &&
+		os.Getenv(config.EnvModel) == "" && os.Getenv(config.EnvProvider) == "" {
+		ref = cfg.LastModel
+		usingLastModel = true
+	}
 	prov, modelName, err := cfg.Resolve(ref)
+	if err != nil && usingLastModel {
+		prov, modelName, err = cfg.Resolve("")
+	}
 	if err != nil {
 		return ExitError, err
+	}
+	if last := config.ModelRef(modelName, prov.Name()); last != cfg.LastModel {
+		if saveErr := config.SaveLastModel(last); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "evilcode: could not remember model:", saveErr)
+		} else {
+			cfg.LastModel = last
+		}
 	}
 
 	var store *session.Store
@@ -174,6 +190,7 @@ func Run(args []string) (int, error) {
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	skills.SetOnLoad(a.SetToolPolicy)
+	applySavedReasoningEffort(a, cfg, prov, modelName)
 	// An explicit [[model]] context_window wins; otherwise the provider is
 	// asked, so a discovered window drives the meter and compaction instead
 	// of the hardcoded guess behind them.
@@ -475,6 +492,32 @@ func toolLine(e agent.Event) string {
 		fmt.Fprintf(&b, "\n    %s", e.ErrMessage())
 	}
 	return b.String()
+}
+
+func applySavedReasoningEffort(a *agent.Agent, cfg *config.Config,
+	p provider.Provider, model string) {
+	if a == nil || cfg == nil || !provider.SupportsReasoningEffort(p) {
+		return
+	}
+	effort := cfg.ReasoningEffortFor(config.ModelRef(model, p.Name()))
+	if !effort.Valid() {
+		return
+	}
+	levels := provider.NormalizeReasoningEfforts(
+		provider.ReasoningEffortLevelsForProvider(p, model))
+	if len(levels) > 0 && !containsEffort(levels, effort) {
+		return
+	}
+	_ = a.SetReasoningEffort(effort)
+}
+
+func containsEffort(levels []provider.ReasoningEffort, want provider.ReasoningEffort) bool {
+	for _, level := range levels {
+		if level == want {
+			return true
+		}
+	}
+	return false
 }
 
 // toolTarget pulls the one argument worth showing beside the tool name: the

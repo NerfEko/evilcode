@@ -85,20 +85,38 @@ func runOnce(args []string) (string, error) {
 	// `@codex` and the model picker work without a separate ec login flow.
 	cfg.AddDiscoveredCodex()
 
-	// A resumed session remembers the model it left off with (§18). Use it
-	// unless an explicit -m overrides, so /resume lands on the same model the
-	// conversation was having rather than the config default. A session with no
-	// recorded model (recorded before the field existed) falls through to the
-	// default, which is the prior behaviour.
+	// A resumed session remembers the model it left off with (§18). A fresh
+	// launch uses the last global model when there is no explicit model or
+	// environment override, so the picker does not have to be reopened every
+	// time. Explicit -m/EVILCODE_MODEL and a session's own model win.
 	ref := *model
 	if ref == "" && *resume != "" {
 		if info, err := session.Describe(dataDir, *resume); err == nil {
 			ref = info.Model
 		}
 	}
+	usingLastModel := false
+	if ref == "" && *resume == "" && cfg.LastModel != "" &&
+		os.Getenv(config.EnvModel) == "" && os.Getenv(config.EnvProvider) == "" {
+		ref = cfg.LastModel
+		usingLastModel = true
+	}
 	prov, modelName, err := cfg.Resolve(ref)
+	if err != nil && usingLastModel {
+		// A provider can be removed or a model can be renamed after the last
+		// launch. A stale convenience preference must not make startup fail; the
+		// configured default is the safe fallback.
+		prov, modelName, err = cfg.Resolve("")
+	}
 	if err != nil {
 		return "", err
+	}
+	if last := config.ModelRef(modelName, prov.Name()); last != cfg.LastModel {
+		if saveErr := config.SaveLastModel(last); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "evilcode: could not remember model:", saveErr)
+		} else {
+			cfg.LastModel = last
+		}
 	}
 
 	var store *session.Store
@@ -286,6 +304,8 @@ func runOnce(args []string) (string, error) {
 		WithSessions(dataDir, cwd, store).
 		WithProviders(cfg.Providers).
 		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
+		WithPersistentModelState(cfg.LastModel, cfg.ReasoningEfforts,
+			config.SaveLastModel, config.SaveReasoningEffort).
 		WithBackground(execTools.Bg).
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
 		WithMemory(mem).
@@ -366,10 +386,12 @@ func headerState(cfg *config.Config, sessionName, model, providerName, cwd strin
 		Version:     Version,
 		Provider:    providerName,
 		Model:       model,
-		Cwd:         prettyPath(cwd),
-		Branch:      gitBranch(cwd),
-		Skills:      skillNames,
-		MCP:         mcpSummaries,
+		ReasoningEffort: cfg.ReasoningEffortFor(
+			config.ModelRef(model, providerName)),
+		Cwd:    prettyPath(cwd),
+		Branch: gitBranch(cwd),
+		Skills: skillNames,
+		MCP:    mcpSummaries,
 	}
 	for _, p := range cfg.Providers {
 		ready := p.APIKeyValue() != "" || p.APIKeyEnv == ""

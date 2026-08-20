@@ -758,6 +758,64 @@ func TestSaveModelPrefsOnAFreshMachineStillLoads(t *testing.T) {
 	}
 }
 
+func TestSavePersistentModelStatePreservesAndReloads(t *testing.T) {
+	path := write(t, `# keep this comment
+default_model = "mistral@ollama-local"
+unknown_setting = "keep me"
+
+[[provider]]
+name = "ollama-local"
+kind = "ollama"
+base_url = "http://localhost:11434"
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaKey, "")
+
+	if err := SaveLastModel("gpt-5.6-luna@openai"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveReasoningEffort("gpt-5.6-luna@openai", provider.ReasoningEffortMax); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveReasoningEffort("mistral@ollama-local", provider.ReasoningEffortLow); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !containsAll(text, "# keep this comment", "unknown_setting = \"keep me\"",
+		"last_model = \"gpt-5.6-luna@openai\"",
+		"reasoning_efforts = {\"gpt-5.6-luna@openai\" = \"max\", \"mistral@ollama-local\" = \"low\"}") {
+		t.Fatalf("persistent state writer dropped or missed config: %s", text)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LastModel != "gpt-5.6-luna@openai" {
+		t.Errorf("last model = %q, want gpt-5.6-luna@openai", cfg.LastModel)
+	}
+	if got := cfg.ReasoningEffortFor("gpt-5.6-luna@openai"); got != provider.ReasoningEffortMax {
+		t.Errorf("Luna effort = %q, want max", got)
+	}
+	if got := cfg.ReasoningEffortFor("mistral@ollama-local"); got != provider.ReasoningEffortLow {
+		t.Errorf("Mistral effort = %q, want low", got)
+	}
+}
+
+func TestConfigCloneCopiesReasoningEfforts(t *testing.T) {
+	original := &Config{ReasoningEfforts: map[string]string{"m@mock": "high"}}
+	clone := original.Clone()
+	clone.ReasoningEfforts["m@mock"] = "low"
+	if original.ReasoningEfforts["m@mock"] != "high" {
+		t.Fatal("Clone shares the reasoning effort map with the original")
+	}
+}
+
 func TestSaveModelPrefsEmptyFavoritesRemovesTheKey(t *testing.T) {
 	path := write(t, `default_model = "a@ollama-local"
 favorite_models = ["a@ollama-local", "b@ollama-local"]

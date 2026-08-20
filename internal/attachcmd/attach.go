@@ -110,6 +110,7 @@ func Run(args []string) error {
 		return summon(path, task)
 	}).
 		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
+		WithPersistentModelState(cfg.LastModel, cfg.ReasoningEfforts, nil, nil).
 		WithGraphics(graphics.Detect(), filepath.Join(config.DataDir(), "diagrams"))
 	m.RebuildFrom(conv.Messages())
 	go pollRoster(path, snap.Session, swarm)
@@ -228,13 +229,16 @@ func header(cfg *config.Config, snap *daemon.Snapshot, path string) tui.HeaderSt
 		Version:         Version,
 		Model:           snap.Model,
 		ReasoningEffort: provider.ReasoningEffort(snap.ReasoningEffort),
-		Provider:        "daemon",
+		Provider:        snap.Provider,
 		AuthKind:        "socket",
 		Cwd:             snap.Cwd,
 		Attached:        path,
 		// Seeded by pid, so two terminals on one session get different names
 		// and each keeps its own across a repaint.
 		ClientName: core.PickName(core.Creatures, core.SeedFrom(clientSeed()), nil),
+	}
+	if h.Provider == "" {
+		h.Provider = "daemon"
 	}
 	for _, level := range snap.ReasoningEfforts {
 		if parsed, ok := provider.ParseReasoningEffort(level); ok {

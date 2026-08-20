@@ -162,7 +162,11 @@ type ServerMsg struct {
 type Snapshot struct {
 	Session string `json:"session"`
 	Model   string `json:"model"`
-	Cwd     string `json:"cwd"`
+	// Provider is the configured provider instance behind the daemon session.
+	// The client needs it to key persistent per-model preferences correctly;
+	// "daemon" is only a transport label, not the model's provider identity.
+	Provider string `json:"provider,omitempty"`
+	Cwd      string `json:"cwd"`
 
 	// ReasoningEffort is the session's current live effort setting.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`

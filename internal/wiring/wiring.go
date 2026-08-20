@@ -83,6 +83,15 @@ func modelRefForResume(dataDir string, opts Options) string {
 	return ""
 }
 
+func containsEffort(levels []provider.ReasoningEffort, want provider.ReasoningEffort) bool {
+	for _, level := range levels {
+		if level == want {
+			return true
+		}
+	}
+	return false
+}
+
 // Session is everything a caller has to hold onto and close.
 type Session struct {
 	Agent  *agent.Agent
@@ -140,7 +149,17 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 	cfg.AddDiscoveredCodex()
 
-	prov, modelName, err := cfg.Resolve(modelRefForResume(dataDir, opts))
+	ref := modelRefForResume(dataDir, opts)
+	usingLastModel := false
+	if ref == "" && opts.Model == "" && opts.Resume == "" && cfg.LastModel != "" &&
+		os.Getenv(config.EnvModel) == "" && os.Getenv(config.EnvProvider) == "" {
+		ref = cfg.LastModel
+		usingLastModel = true
+	}
+	prov, modelName, err := cfg.Resolve(ref)
+	if err != nil && usingLastModel {
+		prov, modelName, err = cfg.Resolve("")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +248,13 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
+	if effort := cfg.ReasoningEffortFor(config.ModelRef(modelName, prov.Name())); effort.Valid() && provider.SupportsReasoningEffort(prov) {
+		levels := provider.NormalizeReasoningEfforts(
+			provider.ReasoningEffortLevelsForProvider(prov, modelName))
+		if len(levels) == 0 || containsEffort(levels, effort) {
+			_ = a.SetReasoningEffort(effort)
+		}
+	}
 	skills.SetOnLoad(a.SetToolPolicy)
 	// An explicit [[model]] context_window wins; otherwise the provider is
 	// asked, so a discovered window drives the meter and compaction instead

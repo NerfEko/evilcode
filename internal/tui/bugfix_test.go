@@ -226,9 +226,10 @@ func TestIdleHintCarriesLiveStateNotADeadKeybinding(t *testing.T) {
 	// "Ctrl+Enter to queue" at rest is untrue — there is no turn to queue
 	// behind — and it was the one always-visible row.
 	got := idleHint(ComposerState{
-		Model: "glm-5.2:cloud", CtxUsed: 12_000, CtxMax: 200_000, Session: "dracula",
+		Model: "gpt-5.6-luna", ReasoningEffort: provider.ReasoningEffortMax,
+		CtxUsed: 12_000, CtxMax: 200_000, Session: "dracula",
 	})
-	for _, want := range []string{"glm-5.2:cloud", "12.0k/200k ctx", "6%", "dracula"} {
+	for _, want := range []string{"gpt-5.6-luna max", "12.0k/200k ctx", "6%", "dracula"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hint %q is missing %q", got, want)
 		}

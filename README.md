@@ -112,10 +112,13 @@ the Codex CLI; rotated credentials are saved back to its auth file. ec never pri
 token. `/login status codex` reports whether the account is available; use `codex login` to
 sign in or change accounts.
 
-Reasoning models expose a session-local `/reasoning` control, with `Alt+R` cycling the
-active model's advertised levels. The control is translated for Codex, OpenAI-compatible
-providers, DeepSeek, and Ollama; the model picker shows the levels returned by each
-provider when its catalog exposes them.
+Reasoning-capable models expose a `/reasoning` control, with `Alt+R` cycling the active
+model's advertised levels. The selected effort appears after the model in the composer
+footer (for example, `gpt-5.6-luna max`) and is remembered per model in the config, so
+switching back restores that model's setting. The last model is remembered too; an
+explicit `-m`, `EVILCODE_MODEL`, or resumed session still takes precedence. The control is
+translated for Codex, OpenAI-compatible providers, DeepSeek, and Ollama; the model picker
+shows the levels returned by each provider when its catalog exposes them.
 
 Optional service credentials use `/connect`, with masked input. `/connect brave` saves a
 Brave Search API key in the user-only `[web]` config block, activates `web_search` for the

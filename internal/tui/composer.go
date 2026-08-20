@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/provider"
 	"evilcode/internal/theme"
 )
 
@@ -60,15 +61,16 @@ type ComposerState struct {
 
 	Processing bool
 
-	// Model, CtxUsed, CtxMax and Session feed the idle hint. At rest the row
+	// Model, ReasoningEffort, CtxUsed, CtxMax and Session feed the idle hint. At rest the row
 	// is the only always-visible place to put live state, and it was spending
 	// itself on a keybinding that does not apply when nothing is running.
-	Model      string
-	CtxUsed    int
-	CtxMax     int
-	Session    string
-	SkillMode  bool
-	NewSession bool
+	Model           string
+	ReasoningEffort provider.ReasoningEffort
+	CtxUsed         int
+	CtxMax          int
+	Session         string
+	SkillMode       bool
+	NewSession      bool
 
 	// PaletteOpen hides the hint line, since the palette floats where it goes.
 	PaletteOpen bool
@@ -142,7 +144,11 @@ func roundTokens(n int) string {
 func idleHint(s ComposerState) string {
 	var parts []string
 	if s.Model != "" {
-		parts = append(parts, s.Model)
+		model := s.Model
+		if s.ReasoningEffort.Valid() {
+			model += " " + string(s.ReasoningEffort)
+		}
+		parts = append(parts, model)
 	}
 	if s.CtxUsed > 0 && s.CtxMax > 0 {
 		ctx := fmt.Sprintf("%s/%s ctx", humanTokens(s.CtxUsed), roundTokens(s.CtxMax))

@@ -67,3 +67,76 @@ func TestReasoningEffortRecognizesOllamaGLMModels(t *testing.T) {
 		t.Errorf("Ollama GLM header effort = %q, want medium", m.header.ReasoningEffort)
 	}
 }
+
+func TestReasoningEffortRestoresPerModelAndPersistsChanges(t *testing.T) {
+	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""),
+		"gpt-5.6-luna", nil, agent.NewConversation(""))
+	t.Cleanup(a.Close)
+
+	var savedModel string
+	var savedRef string
+	var savedEffort provider.ReasoningEffort
+	m := NewModel(a, HeaderState{Provider: "openai", Model: "gpt-5.6-luna"}).
+		WithPersistentModelState(
+			"",
+			map[string]string{
+				"gpt-5.6-luna@openai":  "max",
+				"gpt-5.6-terra@openai": "high",
+			},
+			func(ref string) error {
+				savedModel = ref
+				return nil
+			},
+			func(ref string, effort provider.ReasoningEffort) error {
+				savedRef, savedEffort = ref, effort
+				return nil
+			},
+		)
+
+	// Switching away restores Terra's remembered value and writes the global
+	// last-model preference.
+	m.applyModel(ModelEntry{
+		Name:             "gpt-5.6-terra",
+		Provider:         "openai",
+		ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts(),
+	})
+	if m.reasoningEffort != provider.ReasoningEffortHigh {
+		t.Errorf("Terra effort = %q, want high", m.reasoningEffort)
+	}
+	if savedModel != "gpt-5.6-terra@openai" {
+		t.Errorf("saved model = %q, want gpt-5.6-terra@openai", savedModel)
+	}
+	if !m.setEffort(provider.ReasoningEffortMax) {
+		t.Fatal("changing Terra's effort should succeed")
+	}
+	if savedRef != "gpt-5.6-terra@openai" || savedEffort != provider.ReasoningEffortMax {
+		t.Errorf("saved Terra effort = %q/%q, want gpt-5.6-terra@openai/max", savedRef, savedEffort)
+	}
+
+	// And switching back restores Luna's independent value rather than Terra's.
+	m.applyModel(ModelEntry{
+		Name:             "gpt-5.6-luna",
+		Provider:         "openai",
+		ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts(),
+	})
+	if m.reasoningEffort != provider.ReasoningEffortMax {
+		t.Errorf("Luna effort = %q, want max", m.reasoningEffort)
+	}
+}
+
+func TestWithPersistentModelStateRestoresAnUnspecifiedInitialHeader(t *testing.T) {
+	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""),
+		"gpt-5.6-luna", nil, agent.NewConversation(""))
+	t.Cleanup(a.Close)
+	m := NewModel(a, HeaderState{Provider: "openai", Model: "gpt-5.6-luna"}).
+		WithPersistentModelState("", map[string]string{
+			"gpt-5.6-luna@openai": "max",
+		}, nil, nil)
+
+	if m.reasoningEffort != provider.ReasoningEffortMax {
+		t.Errorf("initial effort = %q, want max", m.reasoningEffort)
+	}
+	if m.header.ReasoningEffort != provider.ReasoningEffortMax {
+		t.Errorf("initial header effort = %q, want max", m.header.ReasoningEffort)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -168,6 +169,17 @@ const DefaultThinkingLines = 6
 // Config is the whole configuration.
 type Config struct {
 	DefaultModel string `toml:"default_model"`
+
+	// LastModel is the model most recently used by the interactive client. It
+	// is separate from DefaultModel so an explicit picker default remains a
+	// deliberate preference while a normal launch resumes where the user left
+	// off.
+	LastModel string `toml:"last_model"`
+
+	// ReasoningEfforts remembers the last selected effort by canonical
+	// model@provider reference. An effort is a model preference, not a global
+	// session setting: switching back to Luna should restore Luna's value.
+	ReasoningEfforts map[string]string `toml:"reasoning_efforts"`
 
 	// FavoriteModels are model refs pinned in the picker (plan.md §5.3). They
 	// render with a ♥ marker and Shift+Tab cycles the active model through
@@ -406,6 +418,168 @@ func SaveModelPrefs(defaultModel string, favorites []string) error {
 	}
 	updated := updateModelPrefs(string(data), defaultModel, favorites)
 	return writeConfigAtomic(path, []byte(updated))
+}
+
+// SaveLastModel records the model the interactive client most recently used.
+// It intentionally does not rewrite default_model: Ctrl+O remains a deliberate
+// default preference, while an ordinary model switch can still be resumed on
+// the next launch.
+func SaveLastModel(modelRef string) error {
+	modelRef = strings.TrimSpace(modelRef)
+	if modelRef == "" {
+		return fmt.Errorf("config: last model reference is required")
+	}
+	path := os.Getenv(EnvConfigPath)
+	if path == "" {
+		path = filepath.Join(ConfigDir(), "config.toml")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	updated := updateTopLevelString(string(data), "last_model", modelRef)
+	return writeConfigAtomic(path, []byte(updated))
+}
+
+// SaveReasoningEffort records one model's effort without dropping preferences
+// for other models. The file is read immediately before the update so a long
+// lived daemon does not overwrite a newer entry written by another client.
+func SaveReasoningEffort(modelRef string, effort provider.ReasoningEffort) error {
+	modelRef = strings.TrimSpace(modelRef)
+	if modelRef == "" {
+		return fmt.Errorf("config: model reference is required for reasoning effort")
+	}
+	if !effort.Valid() {
+		return fmt.Errorf("config: unsupported reasoning effort %q", effort)
+	}
+	path := os.Getenv(EnvConfigPath)
+	if path == "" {
+		path = filepath.Join(ConfigDir(), "config.toml")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+
+	var saved struct {
+		ReasoningEfforts map[string]string `toml:"reasoning_efforts"`
+	}
+	if len(data) > 0 {
+		if _, err := toml.Decode(string(data), &saved); err != nil {
+			return fmt.Errorf("config: parsing %s: %w", path, err)
+		}
+	}
+	if saved.ReasoningEfforts == nil {
+		saved.ReasoningEfforts = map[string]string{}
+	}
+	saved.ReasoningEfforts[modelRef] = string(effort)
+	updated := updateTopLevelReasoningEfforts(string(data), saved.ReasoningEfforts)
+	return writeConfigAtomic(path, []byte(updated))
+}
+
+// ReasoningEffortFor returns a saved effort for a canonical model reference.
+// Invalid or stale values are ignored so a hand-edited config cannot prevent a
+// model from starting; the provider capability list will choose its default.
+func (c *Config) ReasoningEffortFor(modelRef string) provider.ReasoningEffort {
+	if c == nil {
+		return ""
+	}
+	if raw := c.ReasoningEfforts[strings.TrimSpace(modelRef)]; raw != "" {
+		if effort, ok := provider.ParseReasoningEffort(raw); ok {
+			return effort
+		}
+	}
+	return ""
+}
+
+// updateTopLevelString replaces or inserts one generated top-level TOML
+// string. User comments and unknown settings remain byte-for-byte intact.
+func updateTopLevelString(text, key, value string) string {
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	lines := strings.SplitAfter(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "[") {
+			if strings.HasPrefix(trimmed, "[") {
+				break
+			}
+			continue
+		}
+		name, _, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(name) != key {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		lines[i] = indent + key + " = " + strconv.Quote(value) + "\n"
+		return strings.Join(lines, "")
+	}
+
+	insert := len(lines) - 1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			insert = i
+			break
+		}
+	}
+	entry := key + " = " + strconv.Quote(value) + "\n"
+	lines = append(lines[:insert], append([]string{entry}, lines[insert:]...)...)
+	return strings.Join(lines, "")
+}
+
+// updateTopLevelReasoningEfforts replaces or inserts the compact inline table
+// used for the generated per-model effort map. Keys are sorted so repeated
+// writes do not churn the config file for map iteration order alone.
+func updateTopLevelReasoningEfforts(text string, efforts map[string]string) string {
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	keys := make([]string, 0, len(efforts))
+	for key := range efforts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var value strings.Builder
+	value.WriteString("reasoning_efforts = {")
+	for i, key := range keys {
+		if i > 0 {
+			value.WriteString(", ")
+		}
+		value.WriteString(strconv.Quote(key))
+		value.WriteString(" = ")
+		value.WriteString(strconv.Quote(efforts[key]))
+	}
+	value.WriteString("}\n")
+
+	lines := strings.SplitAfter(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			break
+		}
+		name, _, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(name) != "reasoning_efforts" {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		lines[i] = indent + value.String()
+		return strings.Join(lines, "")
+	}
+
+	insert := len(lines) - 1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "[") {
+			insert = i
+			break
+		}
+	}
+	lines = append(lines[:insert], append([]string{value.String()}, lines[insert:]...)...)
+	return strings.Join(lines, "")
 }
 
 // updateModelPrefs rewrites the `default_model` and `favorite_models` keys,

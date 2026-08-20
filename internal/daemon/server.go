@@ -497,8 +497,14 @@ func (s *Server) Open(name string) (*Session, error) {
 
 	// Built outside the lock: resolving a model can touch the network, and
 	// holding the server lock across that would stall `list` for every client.
+	s.mu.Lock()
+	cfg := s.Cfg.Clone()
+	s.mu.Unlock()
+	if cfg == nil {
+		return nil, fmt.Errorf("daemon: no configuration")
+	}
 	todos, bank := s.shared()
-	built, err := wiring.Build(s.Cfg, wiring.Options{
+	built, err := wiring.Build(cfg, wiring.Options{
 		Model: s.Model, Resume: name, Cwd: s.Cwd, Extract: true,
 		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
 	})
@@ -819,6 +825,7 @@ func (sess *Session) snapshot(cwd string) *Snapshot {
 	return &Snapshot{
 		Session:          sess.Name,
 		Model:            sess.Model,
+		Provider:         sess.built.Agent.Provider.Name(),
 		Cwd:              cwd,
 		ReasoningEffort:  effort,
 		ReasoningEfforts: levelNames,
@@ -1064,10 +1071,22 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: "reasoning effort before attach"})
 				continue
 			}
-			if err := sess.built.Agent.SetReasoningEffort(
-				provider.ReasoningEffort(msg.ReasoningEffort)); err != nil {
+			effort := provider.ReasoningEffort(msg.ReasoningEffort)
+			if err := sess.built.Agent.SetReasoningEffort(effort); err != nil {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
+				continue
 			}
+			ref := config.ModelRef(sess.built.Agent.Model, sess.built.Agent.Provider.Name())
+			if err := config.SaveReasoningEffort(ref, effort); err != nil {
+				send(ServerMsg{Kind: MsgError, Err: "could not remember reasoning effort: " + err.Error()})
+				continue
+			}
+			s.mu.Lock()
+			if s.Cfg.ReasoningEfforts == nil {
+				s.Cfg.ReasoningEfforts = map[string]string{}
+			}
+			s.Cfg.ReasoningEfforts[ref] = string(effort)
+			s.mu.Unlock()
 
 		case MsgSpawn:
 			// Attributed to the attached session, not spawned free-floating:
