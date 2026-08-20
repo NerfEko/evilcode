@@ -230,7 +230,10 @@ type Model struct {
 	showHints bool
 
 	// thinking is the reasoning display mode (§9.7).
-	thinking ThinkingMode
+	thinking           ThinkingMode
+	reasoningEffort    provider.ReasoningEffort
+	reasoningLevels    []provider.ReasoningEffort
+	setReasoningEffort func(provider.ReasoningEffort) error
 
 	// Self-test state (§14): frame capture, layout overlays, and the
 	// anchor-stability recorder behind /smoothness.
@@ -436,6 +439,37 @@ type Model struct {
 // NewModel builds the TUI over an agent.
 func NewModel(a *agent.Agent, h HeaderState) *Model {
 	p := theme.Dracula()
+	levels := provider.NormalizeReasoningEfforts(h.ReasoningEfforts)
+	if len(levels) == 0 && a != nil {
+		levels = provider.ReasoningEffortLevelsForProvider(a.Provider, h.Model)
+	}
+	effort := h.ReasoningEffort
+	if !effort.Valid() {
+		effort = provider.DefaultReasoningEffort
+		if a != nil {
+			if configured := a.ReasoningEffort(); configured.Valid() && len(levels) > 0 {
+				effort = configured
+			}
+		}
+	}
+	if len(levels) == 0 && h.ReasoningEffort.Valid() {
+		// Attached clients may not have a local provider object. The daemon
+		// snapshot normally supplies the exact list; this broad fallback keeps
+		// older daemons and manually constructed headers usable.
+		levels = provider.OpenAIReasoningEfforts()
+	}
+	if len(levels) > 0 {
+		effort = preferredReasoningEffort(levels, effort)
+		if provider.SupportsReasoningEffort(providerForAgent(a)) || h.ReasoningEffort.Valid() {
+			h.ReasoningEffort = effort
+		}
+		if a != nil && provider.SupportsReasoningEffort(a.Provider) {
+			// Keep the visible initial value and the first request in sync. The
+			// agent still leaves unsupported/non-reasoning models untouched
+			// because they produce no capability list here.
+			_ = a.SetReasoningEffort(effort)
+		}
+	}
 	return &Model{
 		agent:               a,
 		renderer:            NewRenderer(p, 80),
@@ -448,16 +482,18 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		dock:                NewDock(),
 		widgetsOn:           true,
 		widgetLastShown:     map[WidgetKind]uint64{}, widgetLastChanged: map[WidgetKind]uint64{},
-		widgetHashes: map[WidgetKind]uint64{},
-		thinking:     ThinkingCurrent,
-		diffMode:     DiffInline,
-		panelRatio:   50,
-		showHints:    true,
-		overscroll:   Overscroll{Mode: OverscrollPull},
-		welcomeFocus: true,
-		artVariant:   PickVariant(h.SessionName),
-		decorate:     os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
-		drawnImages:  map[int]imagePlacement{},
+		widgetHashes:    map[WidgetKind]uint64{},
+		thinking:        ThinkingCurrent,
+		reasoningEffort: effort,
+		reasoningLevels: levels,
+		diffMode:        DiffInline,
+		panelRatio:      50,
+		showHints:       true,
+		overscroll:      Overscroll{Mode: OverscrollPull},
+		welcomeFocus:    true,
+		artVariant:      PickVariant(h.SessionName),
+		decorate:        os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
+		drawnImages:     map[int]imagePlacement{},
 	}
 }
 
@@ -495,6 +531,35 @@ func (m *Model) WithSessions(dataDir, cwd string, store *session.Store) *Model {
 // list models from every provider and switch the live provider on selection.
 func (m *Model) WithProviders(provs []config.ProviderConfig) *Model {
 	m.providers = provs
+	return m
+}
+
+// WithReasoningEffort attaches a live effort setter. Local sessions use the
+// agent directly; attached sessions provide a setter that forwards the change
+// to the daemon-owned agent.
+func (m *Model) WithReasoningEffort(effort provider.ReasoningEffort,
+	setter func(provider.ReasoningEffort) error) *Model {
+	if len(m.reasoningLevels) == 0 {
+		m.reasoningLevels = provider.OpenAIReasoningEfforts()
+	}
+	if parsed, ok := provider.ParseReasoningEffort(string(effort)); ok {
+		m.reasoningEffort = preferredReasoningEffort(m.reasoningLevels, parsed)
+		m.header.ReasoningEffort = m.reasoningEffort
+	}
+	m.setReasoningEffort = setter
+	return m
+}
+
+// WithReasoningEfforts supplies the active model's ordered capability list.
+// Providers that expose it through Models() call this when a model is selected;
+// attached clients use it from the daemon snapshot.
+func (m *Model) WithReasoningEfforts(levels []provider.ReasoningEffort) *Model {
+	m.reasoningLevels = provider.NormalizeReasoningEfforts(levels)
+	m.header.ReasoningEfforts = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
+	if len(m.reasoningLevels) > 0 {
+		m.reasoningEffort = preferredReasoningEffort(m.reasoningLevels, m.reasoningEffort)
+		m.header.ReasoningEffort = m.reasoningEffort
+	}
 	return m
 }
 
@@ -1093,6 +1158,12 @@ func (m *Model) applyEvent(e agent.Event) {
 			// generation and reports a rate that is not the model's.
 			m.status.TokensPerSecond = float64(m.status.TokensOut) /
 				(float64(m.genMS) / 1000)
+		}
+
+	case agent.EventReasoningEffort:
+		if e.ReasoningEffort.Valid() {
+			m.reasoningEffort = e.ReasoningEffort
+			m.header.ReasoningEffort = e.ReasoningEffort
 		}
 
 	case agent.EventNotice:
@@ -1695,6 +1766,62 @@ func (m *Model) paletteSuggestions() []Suggestion {
 	return RankCommands(strings.TrimPrefix(m.editor.Text, "/"), VisibleCommands())
 }
 
+func (m *Model) reasoningEffortAvailable() bool {
+	if len(m.reasoningLevels) == 0 {
+		return false
+	}
+	if m.setReasoningEffort != nil {
+		return true
+	}
+	return m.agent != nil && provider.SupportsReasoningEffort(m.agent.Provider)
+}
+
+// setReasoningEffort applies a validated effort level to the live session.
+// The value is deliberately session-local: changing it never rewrites model
+// preferences or a repository config block, so experimentation stays cheap.
+func (m *Model) setEffort(effort provider.ReasoningEffort) bool {
+	parsed, ok := provider.ParseReasoningEffort(string(effort))
+	if !ok {
+		m.notice = "reasoning effort must be none|minimal|low|medium|high|xhigh|max"
+		return false
+	}
+	if len(m.reasoningLevels) > 0 && !hasReasoningEffort(m.reasoningLevels, parsed) {
+		m.notice = "unsupported for this model; available: " + reasoningEffortsText(m.reasoningLevels)
+		return false
+	}
+	if !m.reasoningEffortAvailable() {
+		name := m.header.Provider
+		if name == "" {
+			name = "this provider"
+		}
+		m.notice = "reasoning effort is unavailable for " + name
+		return false
+	}
+	if m.setReasoningEffort != nil {
+		if err := m.setReasoningEffort(parsed); err != nil {
+			m.notice = "could not set reasoning effort: " + err.Error()
+			return false
+		}
+	} else if m.agent != nil {
+		if err := m.agent.SetReasoningEffort(parsed); err != nil {
+			m.notice = "could not set reasoning effort: " + err.Error()
+			return false
+		}
+	}
+	m.reasoningEffort = parsed
+	m.header.ReasoningEffort = parsed
+	m.notice = "Reasoning effort: " + string(parsed) + " · applies to the next request"
+	return true
+}
+
+func (m *Model) cycleReasoningEffort() {
+	if !m.reasoningEffortAvailable() {
+		m.setEffort(m.reasoningEffort)
+		return
+	}
+	m.setEffort(m.reasoningEffort.NextIn(m.reasoningLevels))
+}
+
 // runAction executes a bound action. The bool reports whether it was handled,
 // so an action the current context does not support falls through to the fixed
 // keys rather than being swallowed.
@@ -1746,6 +1873,8 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 	case ActionThinkingDisplay:
 		m.thinking = m.thinking.Next()
 		m.notice = "Thinking display: " + string(m.thinking)
+	case ActionReasoningEffort:
+		m.cycleReasoningEffort()
 	case ActionRetrievePending:
 		return m.retrievePending()
 	default:
@@ -2107,6 +2236,7 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 // meta write is surfaced the way WriteCheckpoint does: a success notice would
 // hide that the resume path lost the switch.
 func (m *Model) applyModel(sel ModelEntry) {
+	previousModel := m.header.Model
 	if sel.Provider != "" && sel.Provider != m.header.Provider {
 		// Crossing providers rebuilds the live client. The picker lists
 		// models from every configured provider, so a selection can name
@@ -2126,6 +2256,36 @@ func (m *Model) applyModel(sel ModelEntry) {
 		m.header.Provider = sel.Provider
 	}
 	m.agent.Model = sel.Name
+	levels := provider.NormalizeReasoningEfforts(sel.ReasoningEfforts)
+	if len(levels) == 0 && m.agent != nil {
+		levels = provider.ReasoningEffortLevelsForProvider(m.agent.Provider, sel.Name)
+	}
+	if len(levels) == 0 && m.setReasoningEffort != nil && sel.Name == previousModel {
+		// An attached daemon can return a sparse model list from an older
+		// server. Keep the previously learned capability list until the next
+		// snapshot rather than hiding the live control.
+		levels = m.reasoningLevels
+	}
+	m.reasoningLevels = provider.NormalizeReasoningEfforts(levels)
+	m.header.ReasoningEfforts = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
+	if len(m.reasoningLevels) > 0 && m.reasoningEffortAvailable() {
+		next := preferredReasoningEffort(m.reasoningLevels, m.reasoningEffort)
+		if next != m.reasoningEffort {
+			if m.setReasoningEffort != nil {
+				if err := m.setReasoningEffort(next); err != nil {
+					m.notice = "could not set reasoning effort: " + err.Error()
+				}
+			} else if m.agent != nil {
+				if err := m.agent.SetReasoningEffort(next); err != nil {
+					m.notice = "could not set reasoning effort: " + err.Error()
+				}
+			}
+		}
+		m.reasoningEffort = next
+		m.header.ReasoningEffort = next
+	} else {
+		m.header.ReasoningEffort = ""
+	}
 	// A model switch can change vision capability; re-evaluate both
 	// the user-attachment gate and the read-tool gate against the new
 	// model so neither is stale.
@@ -2265,6 +2425,35 @@ func (m *Model) openPicker() tea.Cmd {
 func (m *Model) applyModels(msg modelsLoaded) {
 	m.modelsPending = false
 	m.models = msg.entries
+	// A model can start with a conservative name-based fallback before the
+	// catalog has answered. Once the provider returns exact capabilities, sync
+	// the active model too; otherwise the picker would show max while the
+	// header and Alt+R would keep cycling the stale fallback list.
+	for _, entry := range m.models {
+		if entry.Provider != m.header.Provider || entry.Name != m.header.Model ||
+			len(entry.ReasoningEfforts) == 0 {
+			continue
+		}
+		m.reasoningLevels = provider.NormalizeReasoningEfforts(entry.ReasoningEfforts)
+		m.header.ReasoningEfforts = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
+		if m.reasoningEffortAvailable() {
+			next := preferredReasoningEffort(m.reasoningLevels, m.reasoningEffort)
+			if next != m.reasoningEffort {
+				if m.setReasoningEffort != nil {
+					if err := m.setReasoningEffort(next); err != nil {
+						m.notice = "could not set reasoning effort: " + err.Error()
+					}
+				} else if m.agent != nil {
+					if err := m.agent.SetReasoningEffort(next); err != nil {
+						m.notice = "could not set reasoning effort: " + err.Error()
+					}
+				}
+			}
+			m.reasoningEffort = next
+			m.header.ReasoningEffort = next
+		}
+		break
+	}
 	if m.pickerOpen {
 		m.showPicker(m.models)
 	}
@@ -2318,9 +2507,10 @@ func fetchModels(prov provider.Provider, current, providerName string) []ModelEn
 	out := make([]ModelEntry, 0, len(infos))
 	for _, info := range infos {
 		e := ModelEntry{
-			Name:     info.Name,
-			Provider: providerName,
-			Current:  info.Name == current,
+			Name:             info.Name,
+			Provider:         providerName,
+			Current:          info.Name == current,
+			ReasoningEfforts: provider.NormalizeReasoningEfforts(info.ReasoningEfforts),
 		}
 		if info.Size != "" {
 			e.Detail = info.Size
@@ -2380,10 +2570,11 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 		}
 		for _, info := range r.infos {
 			e := ModelEntry{
-				Name:     info.Name,
-				Provider: r.name,
-				Via:      via,
-				Current:  r.name == currentProvider && info.Name == current,
+				Name:             info.Name,
+				Provider:         r.name,
+				Via:              via,
+				Current:          r.name == currentProvider && info.Name == current,
+				ReasoningEfforts: provider.NormalizeReasoningEfforts(info.ReasoningEfforts),
 			}
 			if info.Size != "" {
 				e.Detail = info.Size
@@ -2437,6 +2628,15 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "model", "models":
 		return m, m.openPicker()
+
+	case "reasoning", "effort":
+		value := strings.TrimSpace(m.commandArg)
+		if value == "" {
+			m.cycleReasoningEffort()
+			return m, nil
+		}
+		m.setEffort(provider.ReasoningEffort(strings.ToLower(value)))
+		return m, nil
 
 	case "plan":
 		// /plan is a one-shot synthetic user turn, not a mode: no flag, no
@@ -2783,6 +2983,7 @@ func helpText() string {
 		{"Esc", "cancel: close overlays, interrupt, or clear input"},
 		{"Ctrl+C", "interrupt; twice when idle to quit"},
 		{"Ctrl+G", "toggle a scroll bookmark"},
+		{"Alt+R", "cycle reasoning effort"},
 		{"PgUp/PgDn", "scroll a page"},
 	} {
 		b.WriteString("  " + k[0] + strings.Repeat(" ", max(16-len(k[0]), 1)) + k[1] + "\n")

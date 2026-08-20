@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -152,7 +153,8 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	c := NewCodex("codex", server.URL, CodexAuthInfo{AccessToken: token, AccountID: account})
 	c.HTTP = server.Client()
 	stream, err := c.ChatStream(context.Background(), Req{
-		Model: "gpt-5.3-codex",
+		Model:           "gpt-5.3-codex",
+		ReasoningEffort: ReasoningEffortHigh,
 		Messages: []Message{
 			{Role: RoleSystem, Content: "be concise"},
 			{Role: RoleUser, Content: "read x"},
@@ -205,6 +207,10 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	if body["model"] != "gpt-5.3-codex" || body["instructions"] != "be concise" || body["stream"] != true {
 		t.Errorf("request envelope = %+v", body)
 	}
+	reasoningBody, ok := body["reasoning"].(map[string]any)
+	if !ok || reasoningBody["effort"] != "high" {
+		t.Errorf("reasoning = %#v, want high", body["reasoning"])
+	}
 	input, ok := body["input"].([]any)
 	if !ok || len(input) != 3 {
 		t.Fatalf("input = %#v, want three mapped items plus instructions", body["input"])
@@ -236,7 +242,7 @@ func TestCodexModelsAndRefresh(t *testing.T) {
 				t.Errorf("client_version = %q", r.URL.Query().Get("client_version"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":[{"slug":"gpt-5.3-codex","display_name":"GPT-5.3-Codex","visibility":"list","context_window":131072,"input_modalities":["text","image"]},{"slug":"internal-worker","visibility":"hide"},{"id":"fallback","context_window":null}]}`)
+			io.WriteString(w, `{"models":[{"slug":"gpt-5.3-codex","display_name":"GPT-5.3-Codex","visibility":"list","context_window":131072,"input_modalities":["text","image"],"supported_reasoning_efforts":["low","high"]},{"slug":"internal-worker","visibility":"hide"},{"id":"fallback","context_window":null}]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -252,6 +258,12 @@ func TestCodexModelsAndRefresh(t *testing.T) {
 	if len(models) != 2 || models[0].Name != "gpt-5.3-codex" || !models[0].Vision || models[0].ContextWindow != 131072 || models[1].Name != "fallback" {
 		t.Fatalf("models = %+v", models)
 	}
+	if got := models[0].ReasoningEfforts; len(got) != 2 || got[0] != ReasoningEffortLow || got[1] != ReasoningEffortHigh {
+		t.Errorf("Codex reasoning efforts = %v, want low/high", got)
+	}
+	if got := models[1].ReasoningEfforts; len(got) != 4 || got[0] != ReasoningEffortLow || got[3] != ReasoningEffortXHigh {
+		t.Errorf("Codex fallback reasoning efforts = %v, got %v", CodexReasoningEfforts(), got)
+	}
 	if refreshBody["grant_type"] != "refresh_token" || refreshBody["refresh_token"] != refresh || refreshBody["client_id"] != defaultCodexClientID {
 		t.Errorf("refresh body = %+v", refreshBody)
 	}
@@ -260,6 +272,16 @@ func TestCodexModelsAndRefresh(t *testing.T) {
 	}
 	if c.refreshToken != rotated {
 		t.Errorf("refresh token = %q, want rotated token", c.refreshToken)
+	}
+}
+
+func TestCodexGPT56FallbackIncludesMax(t *testing.T) {
+	c := &Codex{}
+	want := OpenAIGPT56ReasoningEfforts()
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"} {
+		if got := c.reasoningEffortLevelsForModel(model); !slices.Equal(got, want) {
+			t.Errorf("%s efforts = %v, want %v", model, got, want)
+		}
 	}
 }
 

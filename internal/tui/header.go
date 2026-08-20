@@ -7,6 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/core"
+	"evilcode/internal/provider"
 	"evilcode/internal/theme"
 )
 
@@ -18,6 +19,15 @@ type HeaderState struct {
 	Provider string
 	Model    string
 	AuthKind string
+
+	// ReasoningEffort is shown when the active provider supports live effort
+	// control. It stays beside the model so the setting is visible without
+	// spending another header row.
+	ReasoningEffort provider.ReasoningEffort
+	// ReasoningEfforts is the active model's ordered capability list. It is
+	// optional for ordinary local construction and is useful to attached TUI
+	// clients that learn capabilities from the daemon snapshot.
+	ReasoningEfforts []provider.ReasoningEffort
 
 	// Cwd and Branch describe the workspace.
 	Cwd    string
@@ -92,6 +102,9 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 	}
 	if h.Model != "" {
 		modelLine += dim.Render(" · ") + system.Render(h.Model)
+	}
+	if h.ReasoningEffort.Valid() {
+		modelLine += dim.Render(" · effort:") + system.Render(string(h.ReasoningEffort))
 	}
 	out = append(out, modelLine)
 

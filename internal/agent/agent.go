@@ -56,6 +56,11 @@ type Agent struct {
 	// NumCtx requests a context window from providers that accept one.
 	NumCtx int
 
+	// reasoningEffort is guarded by mu because the TUI can change it while a
+	// tool round is still running. The next provider request sees the new
+	// value without racing the current stream.
+	reasoningEffort provider.ReasoningEffort
+
 	// MaxSteps bounds tool-call rounds in one turn. Zero — the default — does
 	// not bound them at all; see DefaultMaxSteps.
 	MaxSteps int
@@ -240,6 +245,46 @@ func (a *Agent) Running() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.running
+}
+
+// ReasoningEffort returns the active effort, using the provider's current
+// default when the user has not explicitly selected one.
+func (a *Agent) ReasoningEffort() provider.ReasoningEffort {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reasoningEffort.Valid() {
+		return a.reasoningEffort
+	}
+	return provider.DefaultReasoningEffort
+}
+
+// configuredReasoningEffort returns the explicit setting, if any. Keeping the
+// unset state lets ordinary OpenAI-compatible models retain their own default;
+// Codex applies medium at its provider edge.
+func (a *Agent) configuredReasoningEffort() provider.ReasoningEffort {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reasoningEffort
+}
+
+// SetReasoningEffort changes the setting used by the next provider request.
+// It emits a small state event so attached UIs update together with the
+// daemon-owned agent.
+func (a *Agent) SetReasoningEffort(effort provider.ReasoningEffort) error {
+	parsed, ok := provider.ParseReasoningEffort(string(effort))
+	if !ok {
+		return fmt.Errorf("unsupported reasoning effort %q", effort)
+	}
+	a.mu.Lock()
+	changed := a.reasoningEffort != parsed
+	a.reasoningEffort = parsed
+	a.mu.Unlock()
+	if changed && a.events != nil {
+		e := a.newEvent(EventReasoningEffort)
+		e.ReasoningEffort = parsed
+		a.emit(e)
+	}
+	return nil
 }
 
 // PendingInterrupts reports how many messages are waiting to be injected.
@@ -642,10 +687,11 @@ func retryable(err error) bool {
 
 func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) {
 	req := provider.Req{
-		Model:    a.Model,
-		Messages: a.Conv.Messages(),
-		Tools:    toolDefs(a.Tools),
-		NumCtx:   a.NumCtx,
+		Model:           a.Model,
+		Messages:        a.Conv.Messages(),
+		Tools:           toolDefs(a.Tools),
+		NumCtx:          a.NumCtx,
+		ReasoningEffort: a.configuredReasoningEffort(),
 	}
 
 	started := time.Now()

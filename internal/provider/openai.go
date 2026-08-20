@@ -20,21 +20,93 @@ type OpenAI struct {
 	BaseURL string
 	APIKey  string
 	HTTP    *http.Client
+
+	// The request transport is shared by ordinary OpenAI-compatible gateways
+	// and DeepSeek, but the latter wraps thinking in an extra body field and
+	// uses high/max rather than the OpenAI vocabulary.
+	supportsReasoningEffort bool
+	reasoningProtocol       openAIReasoningProtocol
 }
+
+type openAIReasoningProtocol uint8
+
+const (
+	openAIReasoningProtocolStandard openAIReasoningProtocol = iota
+	openAIReasoningProtocolDeepSeek
+)
 
 func NewOpenAI(name, baseURL, apiKey string) *OpenAI {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
 	return &OpenAI{
-		name:    name,
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		HTTP:    &http.Client{},
+		name:                    name,
+		BaseURL:                 strings.TrimRight(baseURL, "/"),
+		APIKey:                  apiKey,
+		HTTP:                    &http.Client{},
+		supportsReasoningEffort: true,
+		reasoningProtocol:       openAIReasoningProtocolStandard,
 	}
 }
 
 func (o *OpenAI) Name() string { return o.name }
+
+// WithReasoningEffort toggles the optional reasoning_effort request field.
+// It is used for OpenAI-compatible providers that share this transport but do
+// not implement that parameter.
+func (o *OpenAI) WithReasoningEffort(enabled bool) *OpenAI {
+	o.supportsReasoningEffort = enabled
+	return o
+}
+
+// WithDeepSeekReasoning selects DeepSeek's OpenAI-compatible thinking
+// protocol. Keeping this on the concrete provider means config and callers do
+// not have to infer wire behavior from a URL string.
+func (o *OpenAI) WithDeepSeekReasoning() *OpenAI {
+	o.supportsReasoningEffort = true
+	o.reasoningProtocol = openAIReasoningProtocolDeepSeek
+	return o
+}
+
+func (o *OpenAI) isDeepSeekReasoning() bool {
+	return o.reasoningProtocol == openAIReasoningProtocolDeepSeek
+}
+
+func (o *OpenAI) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
+	if !o.supportsReasoningEffort {
+		return nil
+	}
+	if o.isDeepSeekReasoning() {
+		lower := strings.ToLower(strings.TrimSpace(model))
+		if !strings.Contains(lower, "reasoner") && !strings.Contains(lower, "r1") &&
+			!strings.Contains(lower, "think") {
+			return nil
+		}
+		return DeepSeekReasoningEfforts()
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(lower, "gpt-5.6"):
+		return OpenAIGPT56ReasoningEfforts()
+	case strings.Contains(lower, "gpt-5"):
+		return OpenAIReasoningEfforts()
+	case strings.HasPrefix(lower, "o1"), strings.HasPrefix(lower, "o3"),
+		strings.HasPrefix(lower, "o4"):
+		return []ReasoningEffort{
+			ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh,
+		}
+	case strings.Contains(lower, "codex"):
+		return CodexReasoningEfforts()
+	case strings.Contains(lower, "reason"), strings.Contains(lower, "think"),
+		strings.Contains(lower, "r1"):
+		return []ReasoningEffort{
+			ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh,
+		}
+	default:
+		return nil
+	}
+}
 
 type oaiMessage struct {
 	Role string `json:"role"`
@@ -116,11 +188,15 @@ type oaiToolCall struct {
 }
 
 type oaiReq struct {
-	Model       string       `json:"model"`
-	Messages    []oaiMessage `json:"messages"`
-	Tools       []oaiTool    `json:"tools,omitempty"`
-	Stream      bool         `json:"stream"`
-	Temperature *float64     `json:"temperature,omitempty"`
+	Model           string       `json:"model"`
+	Messages        []oaiMessage `json:"messages"`
+	Tools           []oaiTool    `json:"tools,omitempty"`
+	Stream          bool         `json:"stream"`
+	ReasoningEffort string       `json:"reasoning_effort,omitempty"`
+	Thinking        *struct {
+		Type string `json:"type"`
+	} `json:"thinking,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
 	StreamOpts  *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options,omitempty"`
@@ -214,6 +290,22 @@ func (o *OpenAI) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) 
 		Tools:       toOAITools(req.Tools),
 		Stream:      true,
 		Temperature: req.Temperature,
+	}
+	if o.supportsReasoningEffort && req.ReasoningEffort.Valid() {
+		if o.isDeepSeekReasoning() {
+			if req.ReasoningEffort == ReasoningEffortNone {
+				body.Thinking = &struct {
+					Type string `json:"type"`
+				}{Type: "disabled"}
+			} else {
+				body.Thinking = &struct {
+					Type string `json:"type"`
+				}{Type: "enabled"}
+				body.ReasoningEffort = deepSeekReasoningEffort(req.ReasoningEffort)
+			}
+		} else {
+			body.ReasoningEffort = string(req.ReasoningEffort)
+		}
 	}
 	body.StreamOpts = &struct {
 		IncludeUsage bool `json:"include_usage"`
@@ -399,16 +491,35 @@ func (o *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 		return nil, httpError(resp.StatusCode, resp.Body)
 	}
 	var out struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
 	models := make([]ModelInfo, 0, len(out.Data))
-	for _, m := range out.Data {
-		models = append(models, ModelInfo{Name: m.ID})
+	for _, raw := range out.Data {
+		name, _ := raw["id"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		levels := reasoningEffortsFromMetadata(raw)
+		if len(levels) == 0 {
+			levels = o.reasoningEffortLevelsForModel(name)
+		}
+		models = append(models, ModelInfo{Name: name, ReasoningEfforts: levels})
 	}
 	return models, nil
+}
+
+func deepSeekReasoningEffort(effort ReasoningEffort) string {
+	switch effort {
+	case ReasoningEffortXHigh, ReasoningEffortMax:
+		return "max"
+	default:
+		// DeepSeek's public API currently treats low, medium, and high as the
+		// high reasoning mode. The UI keeps the shared vocabulary, while this
+		// edge performs the provider-specific translation.
+		return "high"
+	}
 }

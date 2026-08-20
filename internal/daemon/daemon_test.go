@@ -118,6 +118,8 @@ func TestWorkerPromptCarriesTaskHintsAndSchema(t *testing.T) {
 		"fix the clamp",
 		"internal/tui/scroll.go",
 		"hint, not a boundary",
+		"preserve unrelated work",
+		"verify the result",
 		`{"type":"object"}`,
 	} {
 		if !strings.Contains(got, want) {

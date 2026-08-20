@@ -93,7 +93,11 @@ type ollamaChatReq struct {
 	Messages []ollamaMessage `json:"messages"`
 	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Stream   bool            `json:"stream"`
-	Options  map[string]any  `json:"options,omitempty"`
+	// Think is false for disabled reasoning and a level string for enabled
+	// reasoning. It is interface{} so false remains an explicit JSON value
+	// rather than disappearing through omitempty.
+	Think   any            `json:"think,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 type ollamaTool struct {
@@ -155,6 +159,9 @@ func (o *Ollama) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) 
 		Messages: toOllamaMessages(req.Messages),
 		Tools:    toOllamaTools(req.Tools),
 		Stream:   true,
+	}
+	if req.ReasoningEffort.Valid() {
+		body.Think = ollamaThinkValue(req.Model, req.ReasoningEffort)
 	}
 	if req.NumCtx > 0 || req.Temperature != nil {
 		body.Options = map[string]any{}
@@ -291,9 +298,10 @@ func (o *Ollama) EmbedModel(ctx context.Context, model string, texts []string) (
 
 type ollamaTagsResp struct {
 	Models []struct {
-		Name    string `json:"name"`
-		Size    int64  `json:"size"`
-		Details struct {
+		Name         string   `json:"name"`
+		Size         int64    `json:"size"`
+		Capabilities []string `json:"capabilities"`
+		Details      struct {
 			ParameterSize string `json:"parameter_size"`
 		} `json:"details"`
 	} `json:"models"`
@@ -321,14 +329,17 @@ func (o *Ollama) Models(ctx context.Context) ([]ModelInfo, error) {
 	}
 	out := make([]ModelInfo, len(tags.Models))
 	for i, m := range tags.Models {
-		out[i] = ModelInfo{Name: m.Name, Size: m.Details.ParameterSize}
+		out[i] = ModelInfo{
+			Name:             m.Name,
+			Size:             m.Details.ParameterSize,
+			ReasoningEfforts: ollamaReasoningEffortsForCapabilities(m.Name, m.Capabilities),
+		}
 	}
 
-	// /api/tags is a catalogue listing: names and disk sizes, no context window
-	// and no capabilities. Ollama Cloud does not even fill parameter_size. The
-	// per-model detail lives behind /api/show, so it is fetched here rather than
-	// left for every caller to guess at or for the user to hand-write a
-	// [[model]] context_window block for each of seventeen cloud models.
+	// /api/tags supplies names, sizes, and (on current Ollama versions)
+	// capabilities. Ollama Cloud does not always fill parameter_size, and older
+	// servers may omit capabilities, so /api/show still enriches each entry with
+	// the authoritative per-model details.
 	//
 	// Bounded fan-out: one request per model, ShowConcurrency at a time, and the
 	// caller's deadline governs. A model that does not answer keeps its listing
@@ -352,6 +363,9 @@ func (o *Ollama) Models(ctx context.Context) ([]ModelInfo, error) {
 			}
 			out[i].ContextWindow = detail.ContextWindow
 			out[i].Vision = detail.Vision
+			if len(detail.ReasoningEfforts) > 0 {
+				out[i].ReasoningEfforts = detail.ReasoningEfforts
+			}
 			if detail.Size != "" {
 				out[i].Size = detail.Size
 			}
@@ -372,6 +386,19 @@ type ollamaShowResp struct {
 	Details      struct {
 		ParameterSize string `json:"parameter_size"`
 	} `json:"details"`
+}
+
+func ollamaReasoningEffortsForCapabilities(model string, capabilities []string) []ReasoningEffort {
+	for _, capability := range capabilities {
+		if !strings.EqualFold(capability, "thinking") {
+			continue
+		}
+		if strings.Contains(strings.ToLower(model), "gpt-oss") {
+			return OllamaThinkingReasoningEfforts()
+		}
+		return OllamaReasoningEfforts()
+	}
+	return nil
 }
 
 // Show fetches one model's metadata, memoized for the life of the client: a
@@ -419,10 +446,11 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 		}
 	}
 	for _, c := range show.Capabilities {
-		if c == "vision" {
+		if strings.EqualFold(c, "vision") {
 			info.Vision = true
 		}
 	}
+	info.ReasoningEfforts = ollamaReasoningEffortsForCapabilities(model, show.Capabilities)
 	// Cloud reports a bare parameter count where local reports "8B". Render the
 	// count so the picker's detail column stays one kind of thing.
 	if n, ok := jsonInt(show.ModelInfo["general.parameter_count"]); ok && n > 0 {
@@ -433,6 +461,55 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 	o.showCache[model] = info
 	o.showMu.Unlock()
 	return info, nil
+}
+
+func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
+	o.showMu.Lock()
+	if info, ok := o.showCache[model]; ok && len(info.ReasoningEfforts) > 0 {
+		levels := append([]ReasoningEffort(nil), info.ReasoningEfforts...)
+		o.showMu.Unlock()
+		return levels
+	}
+	o.showMu.Unlock()
+
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if strings.Contains(lower, "gpt-oss") {
+		return OllamaThinkingReasoningEfforts()
+	}
+	if strings.Contains(lower, "think") || strings.Contains(lower, "reason") ||
+		strings.Contains(lower, "r1") || strings.Contains(lower, "qwen3") ||
+		strings.Contains(lower, "glm") || strings.Contains(lower, "qwq") {
+		return OllamaReasoningEfforts()
+	}
+	return nil
+}
+
+func ollamaThinkValue(model string, effort ReasoningEffort) any {
+	if effort == ReasoningEffortNone {
+		return false
+	}
+	if strings.Contains(strings.ToLower(model), "gpt-oss") {
+		switch effort {
+		case ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh:
+			return string(effort)
+		default:
+			return string(ReasoningEffortHigh)
+		}
+	}
+	// Ollama's current thinking API accepts levels for most thinking models;
+	// preserve the selected level instead of collapsing every enabled value to
+	// the same boolean. The shared vocabulary has two values that Ollama does
+	// not name directly, so translate them to the nearest supported level.
+	switch effort {
+	case ReasoningEffortMinimal:
+		return string(ReasoningEffortLow)
+	case ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortMax:
+		return string(effort)
+	case ReasoningEffortXHigh:
+		return string(ReasoningEffortMax)
+	default:
+		return true
+	}
 }
 
 // jsonInt reads a number that came through encoding/json as a float64 without

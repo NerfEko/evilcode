@@ -854,8 +854,10 @@ func (p ProviderConfig) Build() (provider.Provider, error) {
 		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()), nil
 	case KindDeepSeek:
 		// DeepSeek speaks the OpenAI-compatible chat completions API, so the
-		// OpenAI client serves it unchanged — only the base URL and key differ.
-		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()), nil
+		// OpenAI client supplies the transport — its thinking wrapper is selected
+		// explicitly because DeepSeek's reasoning_effort vocabulary differs.
+		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()).
+			WithDeepSeekReasoning(), nil
 	case KindCodex:
 		auth, err := provider.DiscoverCodexAuthAt(p.AuthFile)
 		if err != nil {

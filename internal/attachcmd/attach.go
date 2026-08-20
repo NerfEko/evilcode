@@ -88,10 +88,27 @@ func Run(args []string) error {
 	// push channel would mean a second stream to keep ordered against the
 	// event one.
 	swarm := &tui.SwarmState{}
-	m := tui.NewModel(a, header(cfg, snap, path)).
-		WithSwarm(swarm, func(task string) (string, error) {
-			return summon(path, task)
-		}).
+	m := tui.NewModel(a, header(cfg, snap, path))
+	if len(snap.ReasoningEfforts) > 0 {
+		levels := make([]provider.ReasoningEffort, 0, len(snap.ReasoningEfforts))
+		for _, level := range snap.ReasoningEfforts {
+			if parsed, ok := provider.ParseReasoningEffort(level); ok {
+				levels = append(levels, parsed)
+			}
+		}
+		m.WithReasoningEfforts(levels)
+	}
+	if snap.ReasoningEffort != "" || len(snap.ReasoningEfforts) > 0 {
+		m.WithReasoningEffort(provider.ReasoningEffort(snap.ReasoningEffort), func(effort provider.ReasoningEffort) error {
+			return client.Send(daemon.ClientMsg{
+				Kind: daemon.MsgReasoningEffort, Session: snap.Session,
+				ReasoningEffort: string(effort),
+			})
+		})
+	}
+	m.WithSwarm(swarm, func(task string) (string, error) {
+		return summon(path, task)
+	}).
 		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
 		WithGraphics(graphics.Detect(), filepath.Join(config.DataDir(), "diagrams"))
 	m.RebuildFrom(conv.Messages())
@@ -207,16 +224,22 @@ func pollRoster(path, self string, swarm *tui.SwarmState) {
 // (plan.md §20).
 func header(cfg *config.Config, snap *daemon.Snapshot, path string) tui.HeaderState {
 	h := tui.HeaderState{
-		SessionName: snap.Session,
-		Version:     Version,
-		Model:       snap.Model,
-		Provider:    "daemon",
-		AuthKind:    "socket",
-		Cwd:         snap.Cwd,
-		Attached:    path,
+		SessionName:     snap.Session,
+		Version:         Version,
+		Model:           snap.Model,
+		ReasoningEffort: provider.ReasoningEffort(snap.ReasoningEffort),
+		Provider:        "daemon",
+		AuthKind:        "socket",
+		Cwd:             snap.Cwd,
+		Attached:        path,
 		// Seeded by pid, so two terminals on one session get different names
 		// and each keeps its own across a repaint.
 		ClientName: core.PickName(core.Creatures, core.SeedFrom(clientSeed()), nil),
+	}
+	for _, level := range snap.ReasoningEfforts {
+		if parsed, ok := provider.ParseReasoningEffort(level); ok {
+			h.ReasoningEfforts = append(h.ReasoningEfforts, parsed)
+		}
 	}
 	for _, p := range cfg.Providers {
 		ready := p.APIKeyValue() != "" || p.APIKeyEnv == ""

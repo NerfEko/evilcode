@@ -91,12 +91,13 @@ func CheckSocketPath(path string) error {
 
 // Client message kinds (client → server).
 const (
-	MsgAttach    = "attach"
-	MsgInput     = "input"
-	MsgInterrupt = "interrupt"
-	MsgSpawn     = "spawn"
-	MsgList      = "list"
-	MsgDetach    = "detach"
+	MsgAttach          = "attach"
+	MsgInput           = "input"
+	MsgInterrupt       = "interrupt"
+	MsgReasoningEffort = "reasoning_effort"
+	MsgSpawn           = "spawn"
+	MsgList            = "list"
+	MsgDetach          = "detach"
 )
 
 // ClientMsg is one frame from a client.
@@ -109,6 +110,9 @@ type ClientMsg struct {
 
 	// Text is the prompt for input, or the interjection for interrupt.
 	Text string `json:"text,omitempty"`
+
+	// ReasoningEffort changes the effort used by the next provider request.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
 	// Urgent marks an interrupt that should land at the next safe point rather
 	// than waiting for the turn to finish (plan.md §6.3).
@@ -159,6 +163,13 @@ type Snapshot struct {
 	Session string `json:"session"`
 	Model   string `json:"model"`
 	Cwd     string `json:"cwd"`
+
+	// ReasoningEffort is the session's current live effort setting.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
+	// ReasoningEfforts is the active model's ordered capability list. It lets an
+	// attached TUI render the same provider-specific picker as a local client.
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 
 	// Running says whether a turn is in flight, so a client that attaches
 	// mid-turn shows the spinner instead of an idle composer.

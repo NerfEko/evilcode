@@ -18,8 +18,9 @@ type bgArgs struct {
 func (e *Exec) bgTool() Tool {
 	return Tool{
 		Name: "bg",
-		Desc: "Inspect and control commands running in the background. " +
-			"Use list/status/output/tail/wait/cancel; wait blocks instead of polling.",
+		Desc: "Inspect and control commands started with bash background=true. Use list " +
+			"when the task id is unknown, status for state, output or tail for output, " +
+			"wait to block until completion, and cancel to stop it. Prefer wait over polling.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

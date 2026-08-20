@@ -13,11 +13,17 @@ import (
 )
 
 // CompactPrompt asks for a summary a fresh context window can work from.
-const CompactPrompt = `Summarize this coding session for a fresh context window.
+const CompactPrompt = `Summarize this coding session for a fresh coding-agent context.
 
-Keep decisions made, files changed, what is still outstanding, and anything the
-next turn would otherwise have to rediscover. Drop pleasantries and dead ends.
-Be dense.`
+Preserve these facts, using compact bullets:
+- goal and user constraints
+- decisions and assumptions
+- files changed and why
+- verification actually run and its outcome
+- work remaining, blockers, and the next useful action
+- important project, provider, or tool constraints
+
+Do not invent results. Omit pleasantries, raw file contents, and dead ends.`
 
 // CompactMessageCap bounds one message inside the transcript handed to the
 // summariser, so a single pasted file cannot crowd out the conversation.

@@ -38,6 +38,7 @@ const (
 	ActionHistorySearch   Action = "history_search"
 	ActionRetrievePending Action = "retrieve_pending"
 	ActionThinkingDisplay Action = "thinking_display_cycle"
+	ActionReasoningEffort Action = "reasoning_effort_cycle"
 	ActionBackgroundTask  Action = "background_task"
 )
 
@@ -69,6 +70,7 @@ var DefaultBindings = []Binding{
 	{ActionHistorySearch, []string{"ctrl+r"}, "search prompt history"},
 	{ActionRetrievePending, []string{"ctrl+up", "alt+up"}, "retrieve staged messages"},
 	{ActionThinkingDisplay, []string{"alt+t"}, "cycle thinking display"},
+	{ActionReasoningEffort, []string{"alt+r"}, "cycle reasoning effort"},
 	{ActionBackgroundTask, []string{"alt+b"}, "send the running tool to the background"},
 }
 

@@ -802,14 +802,39 @@ func (sess *Session) snapshot(cwd string) *Snapshot {
 		}
 		out = append(out, Message{Role: string(m.Role), Content: m.Content, Repairs: m.Repairs})
 	}
-	return &Snapshot{
-		Session:  sess.Name,
-		Model:    sess.Model,
-		Cwd:      cwd,
-		Running:  sess.built.Agent.Running(),
-		Seq:      sess.ring.Seq(),
-		Messages: out,
+	levels := provider.ReasoningEffortLevelsForProvider(
+		sess.built.Agent.Provider, sess.built.Agent.Model)
+	levelNames := make([]string, 0, len(levels))
+	for _, level := range levels {
+		levelNames = append(levelNames, string(level))
 	}
+	effort := ""
+	if len(levels) > 0 && provider.SupportsReasoningEffort(sess.built.Agent.Provider) {
+		active := sess.built.Agent.ReasoningEffort()
+		if !containsReasoningEffort(levels, active) {
+			active = levels[0]
+		}
+		effort = string(active)
+	}
+	return &Snapshot{
+		Session:          sess.Name,
+		Model:            sess.Model,
+		Cwd:              cwd,
+		ReasoningEffort:  effort,
+		ReasoningEfforts: levelNames,
+		Running:          sess.built.Agent.Running(),
+		Seq:              sess.ring.Seq(),
+		Messages:         out,
+	}
+}
+
+func containsReasoningEffort(levels []provider.ReasoningEffort, want provider.ReasoningEffort) bool {
+	for _, level := range levels {
+		if level == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Input starts a turn. A turn already in flight is interjected into instead,
@@ -1033,6 +1058,16 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				continue
 			}
 			sess.Interrupt(msg.Text, msg.Urgent)
+
+		case MsgReasoningEffort:
+			if sess == nil {
+				send(ServerMsg{Kind: MsgError, Err: "reasoning effort before attach"})
+				continue
+			}
+			if err := sess.built.Agent.SetReasoningEffort(
+				provider.ReasoningEffort(msg.ReasoningEffort)); err != nil {
+				send(ServerMsg{Kind: MsgError, Err: err.Error()})
+			}
 
 		case MsgSpawn:
 			// Attributed to the attached session, not spawned free-floating:

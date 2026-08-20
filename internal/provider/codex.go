@@ -435,6 +435,10 @@ func (c *Codex) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 	if err != nil {
 		return nil, err
 	}
+	effort := req.ReasoningEffort
+	if !effort.Valid() {
+		effort = DefaultReasoningEffort
+	}
 	body := codexRequest{
 		Model:             req.Model,
 		Instructions:      instructions,
@@ -442,7 +446,7 @@ func (c *Codex) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 		Tools:             tools,
 		ToolChoice:        "auto",
 		ParallelToolCalls: true,
-		Reasoning:         &codexReasoning{Effort: "medium", Summary: "auto"},
+		Reasoning:         &codexReasoning{Effort: string(effort), Summary: "auto"},
 		Store:             false,
 		Stream:            true,
 		Include:           []string{"reasoning.encrypted_content"},
@@ -912,12 +916,22 @@ type codexModelsResponse struct {
 }
 
 type codexModel struct {
-	Slug            string          `json:"slug"`
-	ID              string          `json:"id"`
-	DisplayName     string          `json:"display_name"`
-	Visibility      string          `json:"visibility"`
-	ContextWindow   json.RawMessage `json:"context_window"`
-	InputModalities []string        `json:"input_modalities"`
+	Slug                      string          `json:"slug"`
+	ID                        string          `json:"id"`
+	DisplayName               string          `json:"display_name"`
+	Visibility                string          `json:"visibility"`
+	ContextWindow             json.RawMessage `json:"context_window"`
+	InputModalities           []string        `json:"input_modalities"`
+	ReasoningEfforts          []string        `json:"reasoning_efforts"`
+	SupportedReasoningEfforts []string        `json:"supported_reasoning_efforts"`
+	Reasoning                 json.RawMessage `json:"reasoning"`
+}
+
+func (c *Codex) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(model)), "gpt-5.6") {
+		return OpenAIGPT56ReasoningEfforts()
+	}
+	return CodexReasoningEfforts()
 }
 
 func (c *Codex) Models(ctx context.Context) ([]ModelInfo, error) {
@@ -978,8 +992,17 @@ func (c *Codex) Models(ctx context.Context) ([]ModelInfo, error) {
 				break
 			}
 		}
+		metadata := map[string]any{
+			"reasoning_efforts":           model.ReasoningEfforts,
+			"supported_reasoning_efforts": model.SupportedReasoningEfforts,
+			"reasoning":                   model.Reasoning,
+		}
+		levels := reasoningEffortsFromMetadata(metadata)
+		if len(levels) == 0 {
+			levels = c.reasoningEffortLevelsForModel(name)
+		}
 		models = append(models, ModelInfo{Name: name, ContextWindow: contextWindow,
-			Vision: vision})
+			Vision: vision, ReasoningEfforts: levels})
 	}
 	return models, nil
 }

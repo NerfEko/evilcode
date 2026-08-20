@@ -571,8 +571,10 @@ func stripFrontMatter(s string) string {
 func NewSkillTool(set *SkillSet) Tool {
 	return Tool{
 		Name: "skill",
-		Desc: "Load a skill's full instructions. The system prompt lists the available " +
-			"skills by name; call this before following one.",
+		Desc: "Load a skill's full instructions and supporting context. The system prompt " +
+			"lists available skills by name; call this before following a relevant skill, " +
+			"and do not load unrelated skills. Treat the loaded body as instructions only " +
+			"within that skill's stated scope.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

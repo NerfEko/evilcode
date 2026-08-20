@@ -10,16 +10,17 @@ import (
 type EventKind string
 
 const (
-	EventTurnStart      EventKind = "turn_start"
-	EventTextDelta      EventKind = "text_delta"
-	EventReasoningDelta EventKind = "reasoning_delta"
-	EventToolStart      EventKind = "tool_start"
-	EventToolResult     EventKind = "tool_result"
-	EventTokenUsage     EventKind = "token_usage"
-	EventNotice         EventKind = "notice"
-	EventMemoryRecall   EventKind = "memory_recall"
-	EventTurnEnd        EventKind = "turn_end"
-	EventError          EventKind = "error"
+	EventTurnStart       EventKind = "turn_start"
+	EventTextDelta       EventKind = "text_delta"
+	EventReasoningDelta  EventKind = "reasoning_delta"
+	EventToolStart       EventKind = "tool_start"
+	EventToolResult      EventKind = "tool_result"
+	EventTokenUsage      EventKind = "token_usage"
+	EventReasoningEffort EventKind = "reasoning_effort"
+	EventNotice          EventKind = "notice"
+	EventMemoryRecall    EventKind = "memory_recall"
+	EventTurnEnd         EventKind = "turn_end"
+	EventError           EventKind = "error"
 )
 
 // Level classifies a Notice.
@@ -124,6 +125,9 @@ type Event struct {
 
 	// Reason is set on TurnEnd.
 	Reason EndReason `json:"reason,omitempty"`
+
+	// ReasoningEffort is set when the live effort control changes.
+	ReasoningEffort provider.ReasoningEffort `json:"reasoning_effort,omitempty"`
 }
 
 // IsError reports whether a tool-result event represents a failure.

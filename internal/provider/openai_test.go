@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 )
 
@@ -49,6 +51,114 @@ func TestToolCallsEmitInIndexOrder(t *testing.T) {
 		t.Errorf("tool calls out of index order: got [%s, %s], want [call_a, call_b] "+
 			"(index 1's fragment arrived first but must still sort after index 0)",
 			got.ToolCalls[0].ID, got.ToolCalls[1].ID)
+	}
+}
+
+func TestOpenAIReasoningEffortWire(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	oai := NewOpenAI("oai", srv.URL, "k")
+	ch, err := oai.ChatStream(context.Background(), Req{
+		Model: "gpt-5.2", ReasoningEffort: ReasoningEffortHigh,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := drain(ch); err != nil {
+		t.Fatal(err)
+	}
+	if got := bodies[0]["reasoning_effort"]; got != "high" {
+		t.Errorf("reasoning_effort = %v, want high", got)
+	}
+	if _, ok := bodies[0]["thinking"]; ok {
+		t.Error("ordinary OpenAI request unexpectedly included DeepSeek thinking")
+	}
+}
+
+func TestDeepSeekReasoningEffortWire(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	oai := NewOpenAI("deepseek", srv.URL, "k").WithDeepSeekReasoning()
+	for _, effort := range []ReasoningEffort{ReasoningEffortMax, ReasoningEffortNone} {
+		ch, err := oai.ChatStream(context.Background(), Req{
+			Model: "deepseek-reasoner", ReasoningEffort: effort,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, _, err := drain(ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := bodies[0]["reasoning_effort"]; got != "max" {
+		t.Errorf("DeepSeek max effort = %v, want max", got)
+	}
+	thinking, ok := bodies[0]["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" {
+		t.Errorf("DeepSeek enabled thinking = %#v", bodies[0]["thinking"])
+	}
+	if _, ok := bodies[1]["reasoning_effort"]; ok {
+		t.Error("DeepSeek disabled thinking unexpectedly included reasoning_effort")
+	}
+	thinking, ok = bodies[1]["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "disabled" {
+		t.Errorf("DeepSeek disabled thinking = %#v", bodies[1]["thinking"])
+	}
+}
+
+func TestOpenAIModelsExposeReasoningEfforts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[
+			{"id":"gpt-5.2","reasoning_efforts":["none","low","high"]},
+			{"id":"gateway-reasoner","reasoning":{"effort":{"levels":["low","medium"]}}},
+			{"id":"o3-mini"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	models, err := NewOpenAI("oai", srv.URL, "k").Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models = %+v", models)
+	}
+	if got := models[0].ReasoningEfforts; len(got) != 3 || got[0] != ReasoningEffortNone || got[2] != ReasoningEffortHigh {
+		t.Errorf("gpt-5.2 efforts = %v", got)
+	}
+	if got := models[1].ReasoningEfforts; len(got) != 2 || got[0] != ReasoningEffortLow || got[1] != ReasoningEffortMedium {
+		t.Errorf("gateway efforts = %v", got)
+	}
+	if got := models[2].ReasoningEfforts; len(got) != 3 || got[0] != ReasoningEffortLow || got[2] != ReasoningEffortHigh {
+		t.Errorf("o3-mini fallback efforts = %v", got)
+	}
+}
+
+func TestOpenAIGPT56FallbackIncludesMax(t *testing.T) {
+	oai := NewOpenAI("oai", "http://example.invalid", "")
+	want := OpenAIGPT56ReasoningEfforts()
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"} {
+		if got := oai.reasoningEffortLevelsForModel(model); !slices.Equal(got, want) {
+			t.Errorf("%s efforts = %v, want %v", model, got, want)
+		}
 	}
 }
 

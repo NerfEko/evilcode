@@ -780,7 +780,10 @@ func newSessionSearch(dataDir string, currentName func() string) Tool {
 	index := newSessionSearchIndex()
 	return Tool{
 		Name: "session_search",
-		Desc: "Search past sessions by what was said. Returns the session name, date, role, and matching excerpt. Use role user, assistant, tool, or any.",
+		Desc: "Search past sessions by what was said when the current transcript, project " +
+			"files, and memory do not contain an earlier decision. Use distinctive words or " +
+			"a phrase. Returns session name, date, role, and matching excerpt; the current " +
+			"session is excluded. Use role user, assistant, tool, or any.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

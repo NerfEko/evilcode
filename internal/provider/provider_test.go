@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -374,6 +375,43 @@ func TestOllamaChatStreamAgainstServer(t *testing.T) {
 	}
 }
 
+func TestOllamaReasoningEffortWire(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Write([]byte(`{"message":{"content":"ok"},"done":true}` + "\n"))
+	}))
+	defer srv.Close()
+
+	o := NewOllama("ollama", srv.URL, "")
+	for _, req := range []Req{
+		{Model: "qwen3", ReasoningEffort: ReasoningEffortNone},
+		{Model: "gpt-oss:20b", ReasoningEffort: ReasoningEffortHigh},
+		{Model: "qwen3", ReasoningEffort: ReasoningEffortMax},
+	} {
+		ch, err := o.ChatStream(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, _, err := drain(ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := bodies[0]["think"]; got != false {
+		t.Errorf("Ollama disabled thinking = %#v, want false", got)
+	}
+	if got := bodies[1]["think"]; got != "high" {
+		t.Errorf("Ollama gpt-oss thinking = %#v, want high", got)
+	}
+	if got := bodies[2]["think"]; got != "max" {
+		t.Errorf("Ollama max thinking = %#v, want max", got)
+	}
+}
+
 func TestOllamaOmitsAuthWhenNoKey(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -447,6 +485,15 @@ func TestOllamaChatStreamSurfacesHTTPError(t *testing.T) {
 	}
 	if he, _ = err.(*HTTPError); he == nil || he.Retryable() {
 		t.Errorf("a 401 must be surfaced as non-retryable, got %v", err)
+	}
+}
+
+func TestOllamaReasoningEffortFallbackRecognizesGLM(t *testing.T) {
+	o := NewOllama("ollama-local", "", "")
+	got := o.reasoningEffortLevelsForModel("glm-5.2:cloud")
+	want := OllamaReasoningEfforts()
+	if !slices.Equal(got, want) {
+		t.Fatalf("GLM reasoning levels = %v, want %v", got, want)
 	}
 }
 
@@ -526,6 +573,9 @@ func TestOllamaModelsEnrichesFromShow(t *testing.T) {
 	if got := byName["glm-5.2"]; got.ContextWindow != 1000000 || got.Vision || got.Size != "756B" {
 		t.Errorf("glm-5.2 = %+v, want ctx 1000000, no vision, size 756B", got)
 	}
+	if got := byName["glm-5.2"].ReasoningEfforts; !slices.Equal(got, OllamaReasoningEfforts()) {
+		t.Errorf("glm-5.2 reasoning efforts = %v, want %v", got, OllamaReasoningEfforts())
+	}
 	if got := byName["gemma4:31b"]; got.ContextWindow != 262144 || !got.Vision || got.Size != "33B" {
 		t.Errorf("gemma4:31b = %+v, want ctx 262144, vision, size 33B", got)
 	}
@@ -543,10 +593,11 @@ func TestOllamaModelsEnrichesFromShow(t *testing.T) {
 
 func TestOllamaModelsSurviveAShowThatFails(t *testing.T) {
 	// A catalogue missing a context window beats no catalogue: the picker must
-	// still list a model whose detail lookup errored.
+	// still list a model whose detail lookup errored, including capabilities
+	// reported directly by current /api/tags responses.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tags" {
-			w.Write([]byte(`{"models":[{"name":"m","details":{"parameter_size":"8B"}}]}`))
+			w.Write([]byte(`{"models":[{"name":"mystery-model","details":{"parameter_size":"8B"},"capabilities":["completion","thinking"]}]}`))
 			return
 		}
 		w.WriteHeader(http.StatusInternalServerError)
@@ -557,8 +608,11 @@ func TestOllamaModelsSurviveAShowThatFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || models[0].Name != "m" || models[0].Size != "8B" {
+	if len(models) != 1 || models[0].Name != "mystery-model" || models[0].Size != "8B" {
 		t.Errorf("models = %+v, want the listing kept", models)
+	}
+	if got := models[0].ReasoningEfforts; !slices.Equal(got, OllamaReasoningEfforts()) {
+		t.Errorf("thinking capabilities = %v, want %v", got, OllamaReasoningEfforts())
 	}
 }
 

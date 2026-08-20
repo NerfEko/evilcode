@@ -8,6 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/provider"
 	"evilcode/internal/theme"
 )
 
@@ -490,13 +491,14 @@ func TestPendingRowsAreCapped(t *testing.T) {
 func TestHeaderContent(t *testing.T) {
 	r := testRenderer(80)
 	lines := plainLines(r.RenderHeader(HeaderState{
-		SessionName: "bat",
-		Version:     "v0.3.1",
-		Provider:    "ollama-cloud",
-		Model:       "qwen3-coder:480b-cloud",
-		AuthKind:    "api-key",
-		Cwd:         "~/projects/evilcode",
-		Branch:      "main",
+		SessionName:     "bat",
+		Version:         "v0.3.1",
+		Provider:        "ollama-cloud",
+		Model:           "qwen3-coder:480b-cloud",
+		ReasoningEffort: provider.ReasoningEffortHigh,
+		AuthKind:        "api-key",
+		Cwd:             "~/projects/evilcode",
+		Branch:          "main",
 		Providers: []ProviderStatus{
 			{Name: "ollama-cloud", Ready: true},
 			{Name: "openrouter", Ready: false},
@@ -505,7 +507,7 @@ func TestHeaderContent(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{
 		"evilcode", "v0.3.1", "Bat 🦇", "/model to switch",
-		"api-key:ollama-cloud", "qwen3-coder:480b-cloud",
+		"api-key:ollama-cloud", "qwen3-coder:480b-cloud", "effort:high",
 		"● ollama-cloud", "○ openrouter", "~/projects/evilcode (main)",
 	} {
 		if !strings.Contains(joined, want) {

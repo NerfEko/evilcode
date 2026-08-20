@@ -7,6 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/core"
+	"evilcode/internal/provider"
 	"evilcode/internal/theme"
 	"evilcode/internal/tools"
 )
@@ -39,6 +40,10 @@ type ModelEntry struct {
 	// Unavailable and Limited drive the marker gutter.
 	Unavailable bool
 	Limited     bool
+
+	// ReasoningEfforts is the ordered capability list returned by the
+	// provider's model catalogue, shown in the selected-row notice.
+	ReasoningEfforts []provider.ReasoningEffort
 }
 
 // PickerColumn is which column the left/right keys are focused on.
@@ -277,6 +282,10 @@ func pickerNotice(e ModelEntry) string {
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(210, 150, 110)))).Italic(true).
 			Render("⚠ " + e.Detail)
+	case len(e.ReasoningEfforts) > 0:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(150, 170, 190)))).Italic(true).
+			Render("reasoning: " + reasoningEffortsText(e.ReasoningEfforts))
 	default:
 		return ""
 	}

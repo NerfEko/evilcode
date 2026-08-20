@@ -286,8 +286,10 @@ func (f *FS) readTool() Tool {
 	return Tool{
 		Name:     "read",
 		Exposure: f.exposure,
-		Desc: "Read a file from the workspace. Returns the contents with line numbers. " +
-			"Use offset and limit to page through a large file.",
+		Desc: "Read an existing file and return its contents with line numbers. Use this " +
+			"before editing; use glob for directory or filename discovery. Use offset and " +
+			"limit to page through a large text file. Image paths are attached only when " +
+			"the active model supports vision.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -765,9 +767,10 @@ func fileIntent(provided, fallback string) string {
 func (f *FS) writeTool() Tool {
 	return Tool{
 		Name: "write",
-		Desc: "Write a file, creating it or replacing its entire contents. " +
-			"To change part of an existing file, prefer edit. Optionally provide " +
-			"intent, a short reason other agents can see if their copy conflicts.",
+		Desc: "Create a new file or replace an existing file's entire contents. Read the " +
+			"target first; for a localized change, prefer edit, because write overwrites " +
+			"the complete file. Optionally provide intent, a short reason other agents " +
+			"can see if their copy conflicts.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -842,7 +845,9 @@ func (f *FS) editTool() Tool {
 			"    cheapest form — you name a line instead of retyping its context.\n" +
 			"  exact — old/new strings. The old string must appear exactly once unless all\n" +
 			"    is true, and must match the file byte for byte including indentation.\n" +
-			"Anchors are only valid for the version you read; if the file changed, re-read it. " +
+			"Use the latest read as the source for patches. Anchors are only valid for that " +
+			"version; if the file changed or an exact edit does not match, re-read it rather " +
+			"than guessing. " +
 			"Optionally provide intent, a short reason other agents can see if their copy conflicts.",
 		Schema: json.RawMessage(`{
   "type": "object",
@@ -974,11 +979,13 @@ type multiEditArgs struct {
 func (f *FS) multiEditTool() Tool {
 	return Tool{
 		Name: "multiedit",
-		Desc: "Apply several edits to one file in one pass. Each edit is {old, new, all}; " +
+		Desc: "Apply several precise, localized edits to one file in one pass. Read the " +
+			"latest version first; this is not a whole-file rewrite. Each edit is {old, new, all}; " +
 			"old must appear exactly once unless all is true. Edits apply in order against " +
 			"the accumulating content, so a later edit can touch text an earlier one " +
 			"produced. A failed edit is reported and skipped — it does not roll back the " +
-			"ones before it. One atomic write, so the file changes once.",
+			"ones before it. Inspect the result and re-read if any edit failed. One atomic " +
+			"write, so the file changes once.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -1184,7 +1191,9 @@ func (f *FS) globTool() Tool {
 	return Tool{
 		Name: "glob",
 		Desc: "Find files by glob pattern, e.g. '**/*.go' or 'internal/**/*_test.go'. " +
-			"Returns paths relative to the workspace root.",
+			"Use this for path inventory, not content search; use grep for contents. " +
+			"Returns paths relative to the workspace root and skips common dependency " +
+			"and generated directories.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

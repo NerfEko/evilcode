@@ -44,7 +44,9 @@ func (g *Git) overviewTool() Tool {
 	return Tool{
 		Name: "git_overview",
 		Desc: "Summarize the repository: current branch, staged and unstaged file counts, " +
-			"and recent commits. Use this instead of shelling out to git status.",
+			"and recent commits. Use this as the first repository check and before committing; " +
+			"it exposes existing user changes, which must not be discarded. Use this instead " +
+			"of shelling out to git status.",
 		Schema: json.RawMessage(`{"type": "object", "properties": {}}`),
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			branch, err := g.run(ctx, "rev-parse", "--abbrev-ref", "HEAD")
@@ -129,8 +131,8 @@ type gitFileDiffArgs struct {
 func (g *Git) fileDiffTool() Tool {
 	return Tool{
 		Name: "git_file_diff",
-		Desc: "Show the diff for one file. Set staged to see what is staged rather than " +
-			"what is in the working tree.",
+		Desc: "Show the diff for one file. Use this after editing to inspect what changed. " +
+			"Set staged to see the index rather than the working tree; this tool is read-only.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -179,8 +181,8 @@ type gitHunkArgs struct {
 func (g *Git) hunkTool() Tool {
 	return Tool{
 		Name: "git_hunk",
-		Desc: "Show a single hunk of a file's diff, numbered from 1. Use this to work " +
-			"through a large diff without loading all of it.",
+		Desc: "Show a single hunk of a file's working-tree diff, numbered from 1. Use this " +
+			"to inspect a large diff without loading all of it; it is read-only.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

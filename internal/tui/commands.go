@@ -27,6 +27,11 @@ var Commands = []Command{
 		Long: "Open the model picker, or pass a model reference directly:\n" +
 			"  /model qwen3-coder:480b-cloud@ollama-cloud"},
 	{Name: "models", Help: "List available models"},
+	{Name: "reasoning", Help: "Set reasoning effort",
+		Long: "/reasoning [none|minimal|low|medium|high|xhigh|max]\n" +
+			"  Values follow the active model's advertised capabilities. With no\n" +
+			"  value, cycles those capabilities. Alt+R is the shortcut."},
+	{Name: "effort", Help: "Set reasoning effort", Hidden: true},
 
 	{Name: "plan", Help: "Plan before implementing",
 		Long: "Injects a planning turn: the model researches and returns a plan card,\n" +
@@ -178,7 +183,7 @@ type HelpSection struct {
 // never be invisible (plan.md §5.5).
 var HelpSections = []HelpSection{
 	{"Getting around", []string{"help", "keys", "context", "stats", "info", "version"}},
-	{"Models", []string{"model", "models"}},
+	{"Models", []string{"model", "models", "reasoning"}},
 	{"Working", []string{"plan", "review", "bugfix", "describe", "todos", "poke", "memory", "skills"}},
 	{"Swarm", []string{"summon", "agents"}},
 	{"Analysis", []string{"lsp", "advisor", "productivity", "overnight"}},
@@ -219,5 +224,6 @@ var HelpKeys = [][2]string{
 	{"Ctrl+U / K / W", "kill to start / to end / previous word"},
 	{"Ctrl+A / E", "start / end of line"},
 	{"Ctrl+Z / S", "undo input / stash and restore a draft"},
+	{"Alt+R", "cycle the active model's reasoning effort"},
 	{"PgUp / PgDn", "scroll a page"},
 }
