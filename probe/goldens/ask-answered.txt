@@ -1,4 +1,4 @@
- evilcode · v1.0.0                                                                                                  ╭──────────────────────╮
+ evilcode · v1.0.1                                                                                                  ╭──────────────────────╮
  session: Dracula 🧛                                                                                                │ Context 406/200k     │
  /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯
