@@ -116,4 +116,17 @@ case ":${PATH}:" in
     ;;
 esac
 
-printf '\nRun %sevilcode%s to start, or %sevilcode update%s to self-update.\n\n' "$c_green" "$c_reset" "$c_green" "$c_reset"
+printf '\n%sNext steps%s\n' "$c_bold" "$c_reset"
+printf '  %s$%s evilcode            launch the TUI (or %sec%s)\n' "$c_dim" "$c_reset" "$c_green" "$c_reset"
+printf '  %s$%s ec -m <model>@<provider>  start with a specific model\n' "$c_dim" "$c_reset"
+printf '  %s$%s evilcode run "prompt"    headless one-shot\n' "$c_dim" "$c_reset"
+
+printf '\n%sTips%s\n' "$c_bold" "$c_reset"
+printf '  - Run %sollama serve%s for a local Ollama endpoint. Without an\n' "$c_green" "$c_reset"
+printf '    Ollama Cloud key, models route through the local daemon.\n'
+printf '  - Add a provider key with %s/login%s in the TUI, or set %s$OLLAMA_API_KEY%s\n' "$c_cyan" "$c_reset" "$c_dim" "$c_reset"
+printf '    (or %s$OPENAI_API_KEY%s / %s$DEEPSEEK_API_KEY%s); %s/model%s switches models.\n' "$c_dim" "$c_reset" "$c_dim" "$c_reset" "$c_cyan" "$c_reset"
+printf '  - For the full toolset install %srg%s (grep), %stmux%s (probe), %sgopls%s (lsp).\n' "$c_green" "$c_reset" "$c_green" "$c_reset" "$c_green" "$c_reset"
+printf '  - Self-update with %sevilcode update%s; shell completions with\n' "$c_cyan" "$c_reset"
+printf '    %sevilcode completions bash|zsh|fish%s.\n' "$c_cyan" "$c_reset"
+printf '\n'
