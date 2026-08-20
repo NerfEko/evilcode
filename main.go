@@ -27,7 +27,7 @@ subcommands:
   serve      background daemon hosting sessions
   attach     attach a TUI to a running daemon session
   resume     import and resume a Claude, Codex, or OpenCode session
-  update     fetch, test, and atomically install the newest build
+  update     fetch and atomically install the latest release binary
   completions print a shell completion script: bash | zsh | fish
   probe      self-test rig; see 'evilcode probe -h'
   dictate    speech-to-text into the composer
