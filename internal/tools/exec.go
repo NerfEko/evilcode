@@ -199,7 +199,10 @@ func (e *Exec) bashTool() Tool {
 			"long-running command, then use bg wait; commands needing input can use stdin. " +
 			"After a mutation, use this to run the most relevant check and act on its output; " +
 			"do not rerun an unchanged command just to fill a turn. Child temporary files use " +
-			"the configured scratch directory.",
+			"the configured scratch directory. A destructive-command gate may hold a command " +
+			"until you supply a justification; if it is refused, do not retry the same form. " +
+			"If output is empty or suspiciously narrow, make one or two meaningful fallbacks " +
+			"before adapting or reporting the blocker; never spin on the same failed call.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

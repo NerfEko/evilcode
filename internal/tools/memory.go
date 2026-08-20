@@ -149,7 +149,8 @@ func reflectTool(m *memory.Manager) Tool {
 	return Tool{
 		Name: "reflect",
 		Desc: "Ask a question of the whole memory bank and get a synthesized answer. " +
-			"Use it when the answer spans several memories rather than sitting in one.",
+			"Prefer recall for a single lookup; use reflect only when the answer spans " +
+			"several memories rather than sitting in one.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

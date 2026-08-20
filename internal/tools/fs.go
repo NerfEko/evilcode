@@ -289,7 +289,9 @@ func (f *FS) readTool() Tool {
 		Desc: "Read an existing file and return its contents with line numbers. Use this " +
 			"before editing; use glob for directory or filename discovery. Keep reads narrow " +
 			"with offset and limit, then act once the target and surrounding pattern are clear. " +
-			"Image paths are attached only when the active model supports vision.",
+			"A file past the single-read limit is refused unless you pass offset and limit or " +
+			"grep it for what you need. Image paths are attached only when the active model " +
+			"supports vision.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

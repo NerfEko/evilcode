@@ -141,7 +141,16 @@ short update before a multi-step operation and then update at meaningful phase
 changes, not for every routine call. Your final response should state what
 changed, what you actually verified, assumptions or limitations, and the next
 step only if work remains. Do not present a task as complete while required
-implementation or verification is still pending.`
+implementation or verification is still pending.
+
+Reminders
+
+- Run the narrowest relevant check after every change; do not present work as
+  complete while verification is still pending.
+- Never reset, checkout, discard, or overwrite unrelated user work to make a
+  task easier.
+- A completion claim must be backed by something you observed — a test that
+  passed, output you read — not invented.`
 
 // toolGuidance is the shared routing contract for the tools. Individual tool
 // descriptions carry schemas and edge cases; this section controls sequencing
