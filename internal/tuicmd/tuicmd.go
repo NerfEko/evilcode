@@ -25,7 +25,7 @@ import (
 )
 
 // Version is the build's version string.
-var Version = "v0.1.0"
+var Version = "v1.0.0"
 
 // Run starts the interactive TUI.
 // Run starts the interactive TUI, and re-enters it for each session switch.
