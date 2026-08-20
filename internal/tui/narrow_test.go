@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"evilcode/internal/memory"
+	"evilcode/internal/provider"
 	"evilcode/internal/todo"
 )
 
@@ -25,6 +26,13 @@ func TestNothingOverflowsANarrowTerminal(t *testing.T) {
 				Entries: []ModelEntry{{Name: "a-rather-long-model-name", Provider: "ollama-cloud",
 					Detail: "480b", Recommended: true}},
 				Height: 6,
+			})
+		},
+		"reasoning-picker": func(r *Renderer) []string {
+			return r.RenderReasoningPicker(reasoningPickerState{
+				sel:      ModelEntry{Name: "a-rather-long-model-name", Provider: "ollama-cloud"},
+				levels:   provider.OllamaReasoningEfforts(),
+				selected: 3,
 			})
 		},
 		"help": func(r *Renderer) []string { return r.RenderHelp(0, r.Width, 24) },

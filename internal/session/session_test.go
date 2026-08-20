@@ -20,9 +20,14 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: "hi"},
-		{Role: provider.RoleAssistant, Content: "hello", ToolCalls: []provider.ToolCall{
-			{ID: "c1", Name: "read", Args: json.RawMessage(`{"path":"a.go"}`)},
-		}},
+		{Role: provider.RoleAssistant, Content: "hello",
+			ProviderItems: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}`),
+				json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"c1","name":"read","arguments":"{\"path\":\"a.go\"}"}`),
+			},
+			ToolCalls: []provider.ToolCall{
+				{ID: "c1", Name: "read", Args: json.RawMessage(`{"path":"a.go"}`)},
+			}},
 		{Role: provider.RoleTool, Content: "package main", ToolCallID: "c1", ToolName: "read"},
 	}
 	for _, m := range msgs {
@@ -46,6 +51,9 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if len(got[1].ToolCalls) != 1 || got[1].ToolCalls[0].Name != "read" {
 		t.Errorf("tool calls did not survive: %+v", got[1])
+	}
+	if len(got[1].ProviderItems) != 2 || !strings.Contains(string(got[1].ProviderItems[0]), "encrypted_content") {
+		t.Errorf("provider items did not survive session replay: %s", got[1].ProviderItems)
 	}
 	if got[2].ToolCallID != "c1" {
 		t.Errorf("tool result lost its call ID: %+v", got[2])

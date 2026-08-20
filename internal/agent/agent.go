@@ -624,6 +624,10 @@ func (a *Agent) commitPartial(msg provider.Message) {
 		return
 	}
 	msg.ToolCalls = nil
+	// ProviderItems describe a completed response. An interrupted response may
+	// have finished individual output items without completing the response as
+	// a whole; replaying that partial array can resurrect an undispatched call.
+	msg.ProviderItems = nil
 	a.Conv.Append(msg)
 }
 
@@ -729,6 +733,7 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 		// Tool calls may arrive at any point, including with no text before
 		// them — never assume deltas come first (plan.md Part V).
 		msg.ToolCalls = append(msg.ToolCalls, chunk.ToolCalls...)
+		msg.ProviderItems = append(msg.ProviderItems, chunk.ProviderItems...)
 
 		if chunk.Usage != nil {
 			e := a.newEvent(EventTokenUsage)

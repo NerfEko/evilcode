@@ -218,6 +218,13 @@ type Message struct {
 	// ToolCalls is set on assistant messages that requested tools.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
+	// ProviderItems carries opaque output items a provider needs replayed on a
+	// later request. The Codex Responses API uses this for the complete ordered
+	// response.output array, including encrypted reasoning items. Keeping it on
+	// the message makes stateless tool continuations and resumed sessions obey
+	// the same wire contract without exposing provider details to the agent.
+	ProviderItems []json.RawMessage `json:"provider_items,omitempty"`
+
 	// ToolCallID is set on tool-result messages, naming the call they answer.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 
@@ -300,12 +307,13 @@ type Usage struct {
 // some models buffer the entire tool call before emitting anything — never
 // assume text deltas arrive first (plan.md Part V).
 type Chunk struct {
-	Text      string
-	Reasoning string
-	ToolCalls []ToolCall
-	Usage     *Usage
-	Done      bool
-	Err       error
+	Text          string
+	Reasoning     string
+	ToolCalls     []ToolCall
+	ProviderItems []json.RawMessage
+	Usage         *Usage
+	Done          bool
+	Err           error
 }
 
 // ModelInfo describes an available model.

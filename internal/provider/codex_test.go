@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -146,7 +147,7 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 		io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"}}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"item_2\",\"call_id\":\"call_2\",\"name\":\"write\",\"arguments\":\"\"}}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"item_2\",\"call_id\":\"call_2\",\"name\":\"write\",\"arguments\":\"{\\\"ok\\\":true}\"}\n\n")
-		io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":4,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"encrypted_content\":\"opaque-ciphertext\"},{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]},{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"},{\"type\":\"function_call\",\"id\":\"item_2\",\"call_id\":\"call_2\",\"name\":\"write\",\"arguments\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":4,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n")
 	}))
 	defer server.Close()
 
@@ -190,6 +191,14 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	if done.ToolCalls[1].ID != "call_2" || done.ToolCalls[1].Name != "write" {
 		t.Errorf("second tool call = %+v", done.ToolCalls[1])
 	}
+	if len(done.ProviderItems) != 4 {
+		t.Fatalf("provider items = %d, want the complete response.output array", len(done.ProviderItems))
+	}
+	var reasoningItem map[string]any
+	if err := json.Unmarshal(done.ProviderItems[0], &reasoningItem); err != nil ||
+		reasoningItem["type"] != "reasoning" || reasoningItem["encrypted_content"] != "opaque-ciphertext" {
+		t.Errorf("reasoning provider item = %#v, err %v", reasoningItem, err)
+	}
 	if done.Usage == nil || done.Usage.PromptTokens != 12 || done.Usage.CompletionTokens != 4 || done.Usage.CacheReadTokens != 3 {
 		t.Errorf("usage = %+v", done.Usage)
 	}
@@ -219,6 +228,49 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	if !ok || len(tools) != 1 {
 		t.Fatalf("tools = %#v", body["tools"])
 	}
+}
+
+func TestCodexReplaysProviderOutputItemsWithoutReconstruction(t *testing.T) {
+	reasoning := json.RawMessage(`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque-ciphertext"}`)
+	message := json.RawMessage(`{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"working"}]}`)
+	call := json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{\"path\":\"x\"}"}`)
+
+	_, input, err := toCodexInput([]Message{
+		{Role: RoleUser, Content: "inspect x"},
+		{
+			Role:          RoleAssistant,
+			Content:       "this reconstructed content must not be duplicated",
+			ToolCalls:     []ToolCall{{ID: "call_1", Name: "wrong", Args: json.RawMessage(`{}`)}},
+			ProviderItems: []json.RawMessage{reasoning, message, call},
+		},
+		{Role: RoleTool, ToolCallID: "call_1", Content: "contents"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 5 {
+		t.Fatalf("input items = %d, want user + three exact output items + tool result", len(input))
+	}
+	for i, want := range []json.RawMessage{reasoning, message, call} {
+		if !jsonEqual(input[i+1], want) {
+			t.Errorf("replayed item %d = %s, want exact semantic item %s", i, input[i+1], want)
+		}
+	}
+	var final struct {
+		Type   string `json:"type"`
+		CallID string `json:"call_id"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(input[4], &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Type != "function_call_output" || final.CallID != "call_1" || final.Output != "contents" {
+		t.Errorf("tool continuation = %+v", final)
+	}
+}
+
+func jsonEqual(a, b []byte) bool {
+	return bytes.Equal(a, b)
 }
 
 func TestCodexModelsAndRefresh(t *testing.T) {

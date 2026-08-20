@@ -137,6 +137,72 @@ func TestToolTurnRunsToolAndContinues(t *testing.T) {
 	}
 }
 
+func TestToolTurnCarriesProviderItemsIntoContinuation(t *testing.T) {
+	p := &providerItemsProvider{}
+	noop := tools.Set{{
+		Name:   "inspect",
+		Desc:   "inspect",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run: func(context.Context, json.RawMessage) (tools.Result, error) {
+			return tools.Result{Output: "observed"}, nil
+		},
+	}}
+	a := newTestAgent(t, p, noop)
+	if _, err := collect(t, a, func() error { return a.Run(context.Background(), "go") }); err != nil {
+		t.Fatal(err)
+	}
+	if !p.sawProviderItems {
+		t.Fatal("the second provider request lost the first response's opaque output items")
+	}
+	msgs := a.Conv.Messages()
+	var persisted bool
+	for _, msg := range msgs {
+		if msg.Role == provider.RoleAssistant && len(msg.ToolCalls) > 0 {
+			persisted = len(msg.ProviderItems) == 2
+		}
+	}
+	if !persisted {
+		t.Fatal("the tool-call assistant message did not retain provider items in the conversation")
+	}
+}
+
+type providerItemsProvider struct {
+	calls            int
+	sawProviderItems bool
+}
+
+func (p *providerItemsProvider) Name() string { return "provider-items" }
+func (p *providerItemsProvider) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, nil
+}
+func (p *providerItemsProvider) Models(context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *providerItemsProvider) ChatStream(_ context.Context, req provider.Req) (<-chan provider.Chunk, error) {
+	p.calls++
+	ch := make(chan provider.Chunk, 2)
+	if p.calls == 1 {
+		ch <- provider.Chunk{
+			ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "inspect", Args: json.RawMessage(`{}`)}},
+			ProviderItems: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}`),
+				json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"inspect","arguments":"{}"}`),
+			},
+		}
+		ch <- provider.Chunk{Done: true}
+	} else {
+		for _, msg := range req.Messages {
+			if msg.Role == provider.RoleAssistant && len(msg.ToolCalls) == 1 && len(msg.ProviderItems) == 2 {
+				p.sawProviderItems = true
+			}
+		}
+		ch <- provider.Chunk{Text: "done"}
+		ch <- provider.Chunk{Done: true}
+	}
+	close(ch)
+	return ch, nil
+}
+
 func TestToolResultAppendedEvenOnError(t *testing.T) {
 	// A tool_use with no adjacent tool_result is a protocol violation, so a
 	// failing tool still has to answer.

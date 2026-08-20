@@ -140,3 +140,138 @@ func TestWithPersistentModelStateRestoresAnUnspecifiedInitialHeader(t *testing.T
 		t.Errorf("initial header effort = %q, want max", m.header.ReasoningEffort)
 	}
 }
+
+// TestPickerShowsReasoningMenuAfterModelSelection drives the model picker the
+// way keypresses do: the first Enter opens a reasoning-level menu instead of
+// applying the model, and the second Enter accepts the highlighted level. The
+// menu highlights the model's last used effort, or high when none is remembered.
+func TestPickerShowsReasoningMenuAfterModelSelection(t *testing.T) {
+	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""),
+		"gpt-5.6-luna", nil, agent.NewConversation(""))
+	t.Cleanup(a.Close)
+
+	var savedRef string
+	var savedEffort provider.ReasoningEffort
+	m := NewModel(a, HeaderState{Provider: "openai", Model: "gpt-5.6-luna"}).
+		WithPersistentModelState(
+			"",
+			map[string]string{"gpt-5.6-luna@openai": "max"},
+			nil,
+			func(ref string, effort provider.ReasoningEffort) error {
+				savedRef, savedEffort = ref, effort
+				return nil
+			},
+		)
+	m.pickerOpen = true
+	m.picker.Entries = []ModelEntry{
+		{Name: "gpt-5.6-luna", Provider: "openai", Current: true,
+			ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts()},
+		{Name: "gpt-5.6-terra", Provider: "openai",
+			ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts()},
+	}
+	m.picker.Selected = 1
+
+	// First Enter: the model is not applied yet; the reasoning menu opens.
+	if _, _ = m.handlePickerKey("enter"); m.header.Model != "gpt-5.6-luna" {
+		t.Fatalf("first Enter applied the model early: header.Model = %q", m.header.Model)
+	}
+	if !m.reasoningPickerOpen {
+		t.Fatal("first Enter should open the reasoning-level menu")
+	}
+	if m.pickerOpen {
+		t.Fatal("the model picker should close when the reasoning menu opens")
+	}
+	// Terra has no remembered effort, so the highlight defaults to high.
+	if got := m.reasoningPicker.levels[m.reasoningPicker.selected]; got != provider.ReasoningEffortHigh {
+		t.Errorf("default highlight = %q, want high", got)
+	}
+
+	// Second Enter: the highlighted level is applied with the model.
+	if _, _ = m.handleReasoningPickerKey("enter"); m.header.Model != "gpt-5.6-terra" {
+		t.Fatalf("second Enter should apply the model: header.Model = %q", m.header.Model)
+	}
+	if m.reasoningEffort != provider.ReasoningEffortHigh {
+		t.Errorf("applied effort = %q, want high", m.reasoningEffort)
+	}
+	if m.reasoningPickerOpen {
+		t.Error("the reasoning menu should close after confirming")
+	}
+	if savedRef != "gpt-5.6-terra@openai" || savedEffort != provider.ReasoningEffortHigh {
+		t.Errorf("saved effort = %q/%q, want gpt-5.6-terra@openai/high", savedRef, savedEffort)
+	}
+}
+
+// TestPickerReasoningMenuHighlightsLastUsedLevel checks that a model with a
+// remembered effort highlights that level rather than the high default.
+func TestPickerReasoningMenuHighlightsLastUsedLevel(t *testing.T) {
+	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""),
+		"gpt-5.6-luna", nil, agent.NewConversation(""))
+	t.Cleanup(a.Close)
+
+	m := NewModel(a, HeaderState{Provider: "openai", Model: "gpt-5.6-luna"}).
+		WithPersistentModelState("", map[string]string{
+			"gpt-5.6-luna@openai": "max",
+		}, nil, nil)
+	m.pickerOpen = true
+	m.picker.Entries = []ModelEntry{
+		{Name: "gpt-5.6-luna", Provider: "openai", Current: true,
+			ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts()},
+	}
+	m.picker.Selected = 0
+
+	if _, _ = m.handlePickerKey("enter"); !m.reasoningPickerOpen {
+		t.Fatal("first Enter should open the reasoning-level menu")
+	}
+	if got := m.reasoningPicker.levels[m.reasoningPicker.selected]; got != provider.ReasoningEffortMax {
+		t.Errorf("highlight = %q, want max (the remembered level)", got)
+	}
+}
+
+// TestPickerSkipsReasoningMenuForNonReasoningModel checks that a model with no
+// reasoning levels is applied directly, with no second menu.
+func TestPickerSkipsReasoningMenuForNonReasoningModel(t *testing.T) {
+	a := agent.New("s", provider.NewMock("mock", "chat"), "mock-large", nil,
+		agent.NewConversation("system"))
+	t.Cleanup(a.Close)
+	m := NewModel(a, HeaderState{Model: "mock-large", Provider: "mock"})
+	m.pickerOpen = true
+	m.picker.Entries = []ModelEntry{
+		{Name: "mock-large", Provider: "mock", Current: true},
+		{Name: "mock-small", Provider: "mock"},
+	}
+	m.picker.Selected = 1
+
+	if _, _ = m.handlePickerKey("enter"); m.header.Model != "mock-small" {
+		t.Fatalf("header.Model = %q, want mock-small applied directly", m.header.Model)
+	}
+	if m.reasoningPickerOpen {
+		t.Error("a non-reasoning model should not open the reasoning menu")
+	}
+}
+
+// TestPickerReasoningMenuEscapeCancels checks that Esc closes the reasoning
+// menu without applying the model.
+func TestPickerReasoningMenuEscapeCancels(t *testing.T) {
+	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""),
+		"gpt-5.6-luna", nil, agent.NewConversation(""))
+	t.Cleanup(a.Close)
+	m := NewModel(a, HeaderState{Provider: "openai", Model: "gpt-5.6-luna"})
+	m.pickerOpen = true
+	m.picker.Entries = []ModelEntry{
+		{Name: "gpt-5.6-luna", Provider: "openai", Current: true,
+			ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts()},
+		{Name: "gpt-5.6-terra", Provider: "openai",
+			ReasoningEfforts: provider.OpenAIGPT56ReasoningEfforts()},
+	}
+	m.picker.Selected = 1
+
+	if _, _ = m.handlePickerKey("enter"); !m.reasoningPickerOpen {
+		t.Fatal("first Enter should open the reasoning-level menu")
+	}
+	if _, _ = m.handleReasoningPickerKey("esc"); m.reasoningPickerOpen {
+		t.Error("Esc should close the reasoning menu")
+	}
+	if m.header.Model != "gpt-5.6-luna" {
+		t.Errorf("Esc should not apply the model: header.Model = %q", m.header.Model)
+	}
+}

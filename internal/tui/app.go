@@ -130,6 +130,13 @@ type Model struct {
 	picker     PickerState
 	pickerOpen bool
 
+	// reasoningPicker is the inline reasoning-level picker shown after a model
+	// is chosen. It confirms the effort before applying the selection,
+	// defaulting to the model's last used level or high so a second Enter
+	// accepts it without navigation.
+	reasoningPicker     reasoningPickerState
+	reasoningPickerOpen bool
+
 	// models supplies picker entries; it is set once the provider answers.
 	models []ModelEntry
 
@@ -1497,6 +1504,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handlePickerKey(key)
 	}
 
+	// The reasoning picker owns the keyboard while it is open.
+	if m.reasoningPickerOpen {
+		return m.handleReasoningPickerKey(key)
+	}
+
 	// The palette owns navigation and accept keys while it is open.
 	if m.paletteOpen() {
 		suggestions := m.paletteSuggestions()
@@ -2224,6 +2236,14 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 				m.notice = sel.Name + " is unavailable"
 				return m, nil
 			}
+			// A model with reasoning levels gets a second menu to confirm the
+			// effort before the selection is applied. A second Enter accepts
+			// the highlighted level (the model's last used value, or high).
+			if m.openReasoningPicker(sel) {
+				m.pickerOpen = false
+				m.picker.Filter = ""
+				return m, nil
+			}
 			m.applyModel(sel)
 		}
 		m.pickerOpen = false
@@ -2306,13 +2326,24 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// applyModel switches the live session to the selected model: rebuilds the
-// provider when the selection crosses providers, updates the header, the
-// agent, the vision gate, and records the switch so a later /resume picks up
-// this model rather than the one the session started with (§18). A failed
-// meta write is surfaced the way WriteCheckpoint does: a success notice would
-// hide that the resume path lost the switch.
+// applyModel switches the live session to the selected model using the
+// remembered or preferred reasoning effort. It is the non-explicit path: a
+// Shift+Tab favorite cycle, a sparse-catalog selection, and tests all use it.
 func (m *Model) applyModel(sel ModelEntry) {
+	m.applyModelWithEffort(sel, "", false)
+}
+
+// applyModelWithEffort switches the live session to the selected model:
+// rebuilds the provider when the selection crosses providers, updates the
+// header, the agent, the vision gate, and records the switch so a later /resume
+// picks up this model rather than the one the session started with (§18). A
+// failed meta write is surfaced the way WriteCheckpoint does: a success notice
+// would hide that the resume path lost the switch.
+//
+// When explicit is true the effort comes from the reasoning picker and is
+// persisted for the model; otherwise the remembered or preferred default is
+// used, matching the pre-picker behavior.
+func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEffort, explicit bool) {
 	previousModel := m.header.Model
 	previousProvider := m.header.Provider
 	previousRef := config.ModelRef(previousModel, previousProvider)
@@ -2349,12 +2380,17 @@ func (m *Model) applyModel(sel ModelEntry) {
 	m.reasoningLevels = provider.NormalizeReasoningEfforts(levels)
 	m.header.ReasoningEfforts = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
 	if len(m.reasoningLevels) > 0 && m.reasoningEffortAvailable() {
-		fallback := provider.DefaultReasoningEffort
-		if targetRef == previousRef {
-			fallback = m.reasoningEffort
+		var next provider.ReasoningEffort
+		if explicit && effort.Valid() {
+			next = preferredReasoningEffort(m.reasoningLevels, effort)
+		} else {
+			fallback := provider.DefaultReasoningEffort
+			if targetRef == previousRef {
+				fallback = m.reasoningEffort
+			}
+			next = preferredReasoningEffort(m.reasoningLevels,
+				m.rememberedEffort(targetRef, fallback))
 		}
-		next := preferredReasoningEffort(m.reasoningLevels,
-			m.rememberedEffort(targetRef, fallback))
 		if next != m.reasoningEffort {
 			if m.setReasoningEffort != nil {
 				if err := m.setReasoningEffort(next); err != nil {
@@ -2368,6 +2404,13 @@ func (m *Model) applyModel(sel ModelEntry) {
 		}
 		m.reasoningEffort = next
 		m.header.ReasoningEffort = next
+		if explicit {
+			// The picker's choice is a deliberate preference; persist it so the
+			// next switch back to this model highlights the same level.
+			if err := m.rememberEffort(targetRef, next); err != nil {
+				m.notice = "Model: " + sel.Name + " · could not remember: " + err.Error()
+			}
+		}
 	} else {
 		m.header.ReasoningEffort = ""
 	}
@@ -2378,6 +2421,9 @@ func (m *Model) applyModel(sel ModelEntry) {
 		m.vision.Store(m.visionFor(sel.Name))
 	}
 	m.notice = "Model: " + sel.Name
+	if explicit && m.reasoningEffort.Valid() && len(m.reasoningLevels) > 0 {
+		m.notice = "Model: " + sel.Name + " · " + string(m.reasoningEffort)
+	}
 	if err := m.rememberModel(targetRef); err != nil {
 		m.notice += " · could not remember: " + err.Error()
 	}
@@ -3496,6 +3542,10 @@ func (m *Model) stackFor(contentHeight int) Stack {
 		s.Heights[SlotPicker] += len(m.renderer.RenderPicker(m.picker))
 		s.Heights[SlotPickerGap] = 1
 	}
+	if m.reasoningPickerOpen {
+		s.Heights[SlotPicker] += len(m.renderer.RenderReasoningPicker(m.reasoningPicker))
+		s.Heights[SlotPickerGap] = 1
+	}
 	if m.loginPickerOpen {
 		s.Heights[SlotPicker] += len(m.renderer.RenderLoginPicker(m.loginPicker))
 		s.Heights[SlotPickerGap] = 1
@@ -3680,7 +3730,7 @@ func (m *Model) clearDrawnImages() {
 // these.
 func (m *Model) overlayOpen() bool {
 	return m.paletteOpen() || m.history.Active || m.pickerOpen ||
-		m.loginPickerOpen || m.sessionsOpen || m.helpOpen || m.ask != nil
+		m.reasoningPickerOpen || m.loginPickerOpen || m.sessionsOpen || m.helpOpen || m.ask != nil
 }
 
 // imageSequence encodes one placement, memoizing sixel.
@@ -3930,6 +3980,10 @@ func (m *Model) View() tea.View {
 	}
 	if m.pickerOpen {
 		rows = append(rows, m.renderer.RenderPicker(m.picker)...)
+		rows = append(rows, "")
+	}
+	if m.reasoningPickerOpen {
+		rows = append(rows, m.renderer.RenderReasoningPicker(m.reasoningPicker)...)
 		rows = append(rows, "")
 	}
 	if m.loginPickerOpen {

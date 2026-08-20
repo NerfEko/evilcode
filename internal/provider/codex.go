@@ -499,6 +499,21 @@ func toCodexInput(msgs []Message) (string, []json.RawMessage, error) {
 			}
 			input = append(input, raw)
 		case RoleAssistant:
+			if len(msg.ProviderItems) > 0 {
+				for i, item := range msg.ProviderItems {
+					var envelope struct {
+						Type string `json:"type"`
+					}
+					if !json.Valid(item) || json.Unmarshal(item, &envelope) != nil ||
+						strings.TrimSpace(envelope.Type) == "" {
+						return "", nil, fmt.Errorf("codex: provider output item %d is invalid", i+1)
+					}
+					// Copy the raw bytes so the request does not alias mutable
+					// session state while it is being marshalled.
+					input = append(input, append(json.RawMessage(nil), item...))
+				}
+				continue
+			}
 			if msg.Content != "" || len(msg.Images) > 0 {
 				item := map[string]any{"type": "message", "role": "assistant",
 					"content": codexContent(msg.Content, msg.Images, "output")}
@@ -741,6 +756,7 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 	sc.Buffer(make([]byte, 0, 64*1024), codexStreamMaxBytes)
 	dataLines := make([]string, 0, 2)
 	calls := newCodexCallAccum()
+	var providerItems []json.RawMessage
 	completed := false
 	terminal := false
 
@@ -780,6 +796,15 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		case "response.output_item.added", "response.output_item.done":
 			if item, ok := event["item"].(map[string]any); ok {
 				calls.addItem(item)
+				// The added event often lacks final arguments or encrypted
+				// reasoning content. Keep only done items as the streaming
+				// fallback; response.completed replaces these with its
+				// authoritative ordered output array when present.
+				if kind == "response.output_item.done" {
+					if raw, err := json.Marshal(item); err == nil {
+						providerItems = append(providerItems, raw)
+					}
+				}
 			}
 		case "response.function_call_arguments.delta":
 			delta, _ := event["delta"].(string)
@@ -799,17 +824,27 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		case "response.completed":
 			if response, ok := event["response"].(map[string]any); ok {
 				if output, ok := response["output"].([]any); ok {
+					// Preserve exactly the provider's output order. Replaying
+					// every item is required for manually managed Responses
+					// history; with store=false, reasoning items carry the
+					// encrypted state that lets the next tool round continue.
+					finalItems := make([]json.RawMessage, 0, len(output))
 					for _, value := range output {
 						if item, ok := value.(map[string]any); ok {
 							calls.addItem(item)
+							if raw, err := json.Marshal(item); err == nil {
+								finalItems = append(finalItems, raw)
+							}
 						}
 					}
+					providerItems = finalItems
 				}
 			}
 			usage := codexUsage(event)
 			completed = true
 			terminal = true
-			return send(Chunk{ToolCalls: calls.finish(), Usage: usage, Done: true})
+			return send(Chunk{ToolCalls: calls.finish(), ProviderItems: providerItems,
+				Usage: usage, Done: true})
 		case "response.failed", "response.incomplete", "error":
 			message := codexEventError(event, kind)
 			send(Chunk{Err: fmt.Errorf("codex: %s", message)})
