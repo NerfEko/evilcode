@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1035,8 +1036,30 @@ func TestLineAnchorIsWhitespaceSensitive(t *testing.T) {
 	if LineAnchor("func main() {") == LineAnchor("\tfunc main() {") {
 		t.Error("indentation must affect the anchor")
 	}
-	if LineAnchor("a") != LineAnchor("a") {
+	line := strings.Join([]string{"a"}, "")
+	if LineAnchor(line) != LineAnchor(strings.Clone(line)) {
 		t.Error("anchors must be stable")
+	}
+}
+
+func TestStrictDecodeRejectsTrailingJSONValue(t *testing.T) {
+	var dst struct {
+		Path string `json:"path"`
+	}
+	err := strictDecode(json.RawMessage(`{"path":"first"} {"path":"second"}`), &dst)
+	if err == nil {
+		t.Fatal("accepted more than one JSON argument value")
+	}
+}
+
+func TestWriteReportsAnExistingEmptyFileAsWritten(t *testing.T) {
+	f := tempFS(t, map[string]string{"empty.txt": ""})
+	res, err := run(t, f.Tools(), "write", map[string]any{"path": "empty.txt", "content": "now populated\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.Output, "wrote empty.txt ") {
+		t.Errorf("output = %q, want an existing empty file reported as written", res.Output)
 	}
 }
 
@@ -1166,6 +1189,18 @@ func TestSkillDirsUseNearestFirstHomeOverlays(t *testing.T) {
 	}
 	if strings.Join(dirs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("skill dirs = %v, want %v", dirs, want)
+	}
+}
+
+func TestSkillDirsCanBeIsolatedForAReproducibleHarness(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	t.Setenv("EVILCODE_SKILL_DIRS", strings.Join([]string{first, second, first}, string(os.PathListSeparator)))
+	if got := SkillDirs("ignored-repo", "ignored-config"); !slices.Equal(got, []string{first, second}) {
+		t.Errorf("SkillDirs override = %v", got)
+	}
+	t.Setenv("EVILCODE_SKILL_DIRS", "")
+	if got := SkillDirs("ignored-repo", "ignored-config"); len(got) != 0 {
+		t.Errorf("empty SkillDirs override = %v, want no skill directories", got)
 	}
 }
 

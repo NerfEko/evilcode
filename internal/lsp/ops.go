@@ -528,6 +528,15 @@ func ApplyEdits(text string, edits []TextEdit) (string, error) {
 		}
 		return a.Character > b.Character
 	})
+	// Ranges are expressed against the original document. Overlapping edits have
+	// no well-defined sequential application; after the first changes a line's
+	// length, applying the second with its original offsets can even slice beyond
+	// the new line and panic. Refuse a broken server response before mutating.
+	for i := 1; i < len(sorted); i++ {
+		if positionAfter(sorted[i].Range.End, sorted[i-1].Range.Start) {
+			return "", fmt.Errorf("language server returned overlapping edits")
+		}
+	}
 
 	for _, e := range sorted {
 		if e.Range.Start.Line < 0 || e.Range.Start.Line >= len(lines) {
@@ -560,4 +569,8 @@ func ApplyEdits(text string, edits []TextEdit) (string, error) {
 		lines = append(lines[:e.Range.Start.Line], rest...)
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func positionAfter(a, b Position) bool {
+	return a.Line > b.Line || (a.Line == b.Line && a.Character > b.Character)
 }

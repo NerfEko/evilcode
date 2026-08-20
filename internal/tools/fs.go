@@ -796,8 +796,11 @@ func (f *FS) writeTool() Tool {
 			defer f.lockPath(full)()
 
 			before := ""
+			existed := true
 			if old, err := f.readConfined(full); err == nil {
 				before = string(old)
+			} else if errors.Is(err, os.ErrNotExist) {
+				existed = false
 			}
 			if err := f.mkdirAllConfined(full); err != nil {
 				return Result{}, err
@@ -812,7 +815,7 @@ func (f *FS) writeTool() Tool {
 			name := f.rel(full)
 			diff, stat := makeDiff(name, before, a.Content)
 			verb := "wrote"
-			if before == "" {
+			if !existed {
 				verb = "created"
 			}
 			return Result{

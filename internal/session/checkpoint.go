@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"evilcode/internal/provider"
 )
@@ -347,10 +348,15 @@ func createExclusive(dataDir, name string) (*Store, error) {
 func DeriveTitle(activeGroup, userIntention, firstTodo, firstPrompt string) string {
 	for _, candidate := range []string{activeGroup, userIntention, firstTodo, firstPrompt} {
 		if s := strings.TrimSpace(candidate); s != "" {
+			s = strings.ReplaceAll(s, "\n", " ")
 			if len(s) > 60 {
-				s = s[:59] + "…"
+				cut := 59
+				for cut > 0 && !utf8.RuneStart(s[cut]) {
+					cut--
+				}
+				s = s[:cut] + "…"
 			}
-			return strings.ReplaceAll(s, "\n", " ")
+			return s
 		}
 	}
 	return ""

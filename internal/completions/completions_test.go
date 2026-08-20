@@ -138,7 +138,7 @@ func TestEverySubcommandInMainIsCompleted(t *testing.T) {
 		}
 	}
 	// And the reverse: anything main.go handles and a person would type.
-	for _, sub := range []string{"tui", "run", "serve", "attach", "probe", "dictate"} {
+	for _, sub := range []string{"tui", "run", "serve", "attach", "resume", "update", "probe", "dictate", "completions", "help"} {
 		if !contains(Subcommands, sub) {
 			t.Errorf("main.go handles %q, which completions never offer", sub)
 		}

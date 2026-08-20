@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Named is one entry in a name table: a word and exactly one safe emoji.
@@ -87,7 +88,8 @@ func Title(name, emoji string) string {
 	if name == "" {
 		return emoji
 	}
-	return strings.ToUpper(name[:1]) + name[1:] + " " + emoji
+	first, size := utf8.DecodeRuneInString(name)
+	return strings.ToUpper(string(first)) + name[size:] + " " + emoji
 }
 
 // PickName chooses a name from a table, avoiding those already taken. A taken

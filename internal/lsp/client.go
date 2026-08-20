@@ -939,7 +939,7 @@ func (m *Manager) For(ctx context.Context, path string) (*Client, error) {
 			return nil, fmt.Errorf("language-server manager is closed")
 		}
 		command, ok = m.Commands[lang]
-		if !ok {
+		if !ok || len(command) == 0 || strings.TrimSpace(command[0]) == "" {
 			m.mu.Unlock()
 			return nil, fmt.Errorf("no language server is configured for %s files", lang)
 		}
@@ -1019,6 +1019,8 @@ func (m *Manager) Status() []Status {
 			s.Running = true
 		} else if err, ok := m.failed[lang]; ok {
 			s.Err = err.Error()
+		} else if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
+			s.Err = "disabled"
 		} else if _, err := exec.LookPath(command[0]); err != nil {
 			s.Err = "not installed"
 		}

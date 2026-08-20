@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strconv"
@@ -357,7 +358,20 @@ func unmarshalArgs(raw json.RawMessage, dst any) error {
 func strictDecode(raw json.RawMessage, dst any) error {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
-	return dec.Decode(dst)
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	// Decoder.Decode stops after one complete value. Without an explicit EOF
+	// check, `{"path":"a"} {"path":"b"}` silently runs the first request and
+	// ignores the second, even though the input is not one valid argument value.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("tool arguments contain more than one JSON value")
+		}
+		return fmt.Errorf("invalid trailing data after tool arguments: %w", err)
+	}
+	return nil
 }
 
 // repairArgs fixes common argument mistakes against a tool's schema before

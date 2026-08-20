@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -30,6 +31,11 @@ const (
 	EnvBraveSearchKey = "BRAVE_SEARCH_API_KEY"
 	EnvBraveKey       = "BRAVE_API_KEY"
 )
+
+// Config updates are read-modify-write operations. Serialize them within the
+// process so two daemon sessions saving preferences at once cannot each replace
+// the file with a view that predates the other's change.
+var configWriteMu sync.Mutex
 
 // ProviderKind selects which wire protocol a provider speaks.
 type ProviderKind string
@@ -347,6 +353,8 @@ func LoadFrom(path string) (*Config, error) {
 // unknown TOML text. A full decode/encode round trip would silently delete
 // settings newer than this binary knows about.
 func SaveProviderAPIKey(providerName, key string) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
 	if providerName == "" {
 		return fmt.Errorf("config: provider name is required")
 	}
@@ -377,6 +385,8 @@ func SaveProviderAPIKey(providerName, key string) error {
 // table while preserving unknown TOML text. API keys entered through the TUI
 // are stored in the user config, which is written with mode 0600.
 func SaveBraveSearchAPIKey(key string) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return fmt.Errorf("config: Brave Search API key is required")
@@ -408,6 +418,8 @@ func SaveBraveSearchAPIKey(key string) error {
 // binary knows about, so the update is a targeted text edit, exactly like
 // SaveProviderAPIKey.
 func SaveModelPrefs(defaultModel string, favorites []string) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
 	path := os.Getenv(EnvConfigPath)
 	if path == "" {
 		path = filepath.Join(ConfigDir(), "config.toml")
@@ -425,6 +437,8 @@ func SaveModelPrefs(defaultModel string, favorites []string) error {
 // default preference, while an ordinary model switch can still be resumed on
 // the next launch.
 func SaveLastModel(modelRef string) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
 	modelRef = strings.TrimSpace(modelRef)
 	if modelRef == "" {
 		return fmt.Errorf("config: last model reference is required")
@@ -445,6 +459,8 @@ func SaveLastModel(modelRef string) error {
 // for other models. The file is read immediately before the update so a long
 // lived daemon does not overwrite a newer entry written by another client.
 func SaveReasoningEffort(modelRef string, effort provider.ReasoningEffort) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
 	modelRef = strings.TrimSpace(modelRef)
 	if modelRef == "" {
 		return fmt.Errorf("config: model reference is required for reasoning effort")
@@ -918,9 +934,17 @@ func (c *Config) FindProvider(name string) *ProviderConfig {
 // zero value when none are set.
 func (c *Config) ModelOverrides(ref string) ModelConfig {
 	model, _ := SplitModelRef(ref)
+	// An exact provider-qualified override wins regardless of declaration order.
+	// A qualified override for foo@one must never leak onto foo@two merely because
+	// both references share the same bare model name.
 	for _, m := range c.Models {
-		name, _ := SplitModelRef(m.Name)
-		if name == model || m.Name == ref {
+		if m.Name == ref {
+			return m
+		}
+	}
+	for _, m := range c.Models {
+		name, providerName := SplitModelRef(m.Name)
+		if providerName == "" && name == model {
 			return m
 		}
 	}

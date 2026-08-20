@@ -86,6 +86,11 @@ func (c *Config) Clone() *Config {
 	out := *c
 	out.Providers = append([]ProviderConfig(nil), c.Providers...)
 	out.Models = append([]ModelConfig(nil), c.Models...)
+	out.FavoriteModels = append([]string(nil), c.FavoriteModels...)
+	out.Roles.Default = append([]string(nil), c.Roles.Default...)
+	out.Roles.Smol = append([]string(nil), c.Roles.Smol...)
+	out.Roles.Plan = append([]string(nil), c.Roles.Plan...)
+	out.Roles.Commit = append([]string(nil), c.Roles.Commit...)
 	if c.ReasoningEfforts != nil {
 		out.ReasoningEfforts = make(map[string]string, len(c.ReasoningEfforts))
 		for k, v := range c.ReasoningEfforts {
@@ -93,6 +98,10 @@ func (c *Config) Clone() *Config {
 		}
 	}
 	out.MCP = append([]MCPServer(nil), c.MCP...)
+	for i := range out.MCP {
+		out.MCP[i].Args = append([]string(nil), c.MCP[i].Args...)
+		out.MCP[i].Env = append([]string(nil), c.MCP[i].Env...)
+	}
 	out.Dictate = append([]string(nil), c.Dictate...)
 	if c.Keybindings != nil {
 		out.Keybindings = make(map[string]string, len(c.Keybindings))

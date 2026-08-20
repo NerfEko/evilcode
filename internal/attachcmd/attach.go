@@ -134,7 +134,12 @@ func run(args []string, autoStart bool) error {
 			Kind: daemon.MsgInterrupt, Session: snap.Session,
 			Text: in.Text, Urgent: in.Urgent,
 		})
-		return err == nil
+		if err != nil {
+			a.Notice(agent.LevelError, "could not send interrupt to daemon: %v", err)
+		}
+		// Even on failure, do not queue this in the proxy agent: no local loop
+		// exists to drain it, so it would remain pending forever.
+		return true
 	}
 	a.SetRunning(snap.Running)
 	defer a.Close()
@@ -401,6 +406,10 @@ func pollRoster(path, self string, swarm *tui.SwarmState) {
 		if err != nil {
 			return
 		}
+		if err := c.SetDeadline(5 * time.Second); err != nil {
+			c.Close()
+			return
+		}
 		sessions, err := c.List()
 		c.Close()
 		if err != nil {
@@ -476,10 +485,6 @@ func clientSeed() string {
 	}
 	return fmt.Sprint(os.Getpid())
 }
-
-// Version matches the TUI's, so a client and server built from different
-// commits are visibly mismatched rather than subtly incompatible.
-const Version = buildinfo.Version
 
 func printSessions(client *daemon.Client) error {
 	sessions, err := client.List()

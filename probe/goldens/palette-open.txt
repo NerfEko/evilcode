@@ -27,8 +27,8 @@
  /help               Show help
  /model              Switch model
  /models             List available models
+ /reasoning          Set reasoning effort
  /plan               Plan before implementing
  /review             Review a path or this branch
  /bugfix             Reproduce and fix a bug
- /describe           Explain code structure
- /todos              Toggle the todo card  +43 more
+ /describe           Explain code structure  +45 more

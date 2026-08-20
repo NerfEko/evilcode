@@ -106,6 +106,11 @@ type Record struct {
 	Deleted bool `json:"deleted,omitempty"`
 }
 
+func cloneRecord(r Record) Record {
+	r.Vec = append([]float32(nil), r.Vec...)
+	return r
+}
+
 // Store is the memory bank, held in memory and appended to a JSONL file.
 type Store struct {
 	Path string
@@ -474,14 +479,14 @@ func (s *Store) AddWithOptions(text string, kind Kind, session string, vec []flo
 		merged.Session = session
 		merged.TS = ts
 		if len(vec) > 0 {
-			merged.Vec = vec
+			merged.Vec = append([]float32(nil), vec...)
 			merged.EmbeddingModel = options.EmbeddingModel
 		}
 		if err := s.append(merged); err != nil {
 			return Record{}, false, err
 		}
 		s.records[i] = merged
-		return merged, true, nil
+		return cloneRecord(merged), true, nil
 	}
 
 	r := Record{
@@ -492,7 +497,7 @@ func (s *Store) AddWithOptions(text string, kind Kind, session string, vec []flo
 		TS:             ts,
 		Scope:          scope,
 		ProjectRoot:    projectRoot,
-		Vec:            vec,
+		Vec:            append([]float32(nil), vec...),
 		EmbeddingModel: options.EmbeddingModel,
 	}
 	if err := s.append(r); err != nil {
@@ -500,7 +505,7 @@ func (s *Store) AddWithOptions(text string, kind Kind, session string, vec []flo
 	}
 	s.nextID++
 	s.records = append(s.records, r)
-	return r, false, nil
+	return cloneRecord(r), false, nil
 }
 
 // findDuplicate returns the index of a near-identical memory, or -1.
@@ -583,7 +588,7 @@ func (s *Store) AllByScope(projectRoot string, scope Scope) []Record {
 				normalizeProjectRoot(r.ProjectRoot) == projectRoot
 		}
 		if visible {
-			out = append(out, r)
+			out = append(out, cloneRecord(r))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TS.After(out[j].TS) })
@@ -648,7 +653,7 @@ func (s *Store) Search(query string, vec []float32, n int, threshold float64, op
 	records := make([]Record, 0, len(s.records))
 	for _, r := range s.records {
 		if !r.Deleted && visibleInProject(r, opts.ProjectRoot) {
-			records = append(records, r)
+			records = append(records, cloneRecord(r))
 		}
 	}
 	if len(records) == 0 {

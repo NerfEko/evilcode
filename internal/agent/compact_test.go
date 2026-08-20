@@ -97,6 +97,25 @@ func TestCompactUsesWhatPersistReturned(t *testing.T) {
 	}
 }
 
+func TestCompactUsesWhatPersistWithTailReturned(t *testing.T) {
+	conv := compactableConversation()
+	stored := []provider.Message{{Role: provider.RoleUser, Content: "canonical durable replay"}}
+	c := &Compactor{
+		Summarize: summarizer("s", nil),
+		PersistWithTail: func(string, []provider.Message) ([]provider.Message, error) {
+			return stored, nil
+		},
+	}
+
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	msgs := conv.Messages()
+	if got := msgs[len(msgs)-1].Content; got != "canonical durable replay" {
+		t.Errorf("memory = %q, want what durable storage returned", got)
+	}
+}
+
 func TestCompactKeepsARelevantOlderMessage(t *testing.T) {
 	conv := NewConversation("sys")
 	for i := 0; i < RecentTurnsToKeep+2; i++ {

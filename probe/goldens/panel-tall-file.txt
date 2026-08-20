@@ -1,21 +1,21 @@
- skills: /agent-architect /agent-browser /commit /dreaming +15 more   │ testdata/big.go
- <repo> (main)                                   │   1 │ package testdata
-                                                                      │   2 │
- 1› renumber them                                                     │     │-// big is a probe fixture for the side panel: a file long enou
-                                                                      │     │-// does not fit the panel, which is where a panel that cannot
- Renumbering all of them.                                             │     │-// first half and silently drops the rest.
-                                                                      │     │-//
-   ✓ write testdata/big.go · 7 tok (+15 -22)                          │     │-// Committed in the state BEFORE the scenario's write, for the
-                                                                      │     │-// clamp.go is: the probe restores testdata from git before ev
- All fifteen now multiply.                                            │     │-// uncommitted fixture stays rewritten and every later run see
+ <repo> (main)                                   │ testdata/big.go
+                                                                      │   1 │ package testdata
+ 1› renumber them                                                     │   2 │
+                                                                      │     │-// big is a probe fixture for the side panel: a file long enou
+ Renumbering all of them.                                             │     │-// does not fit the panel, which is where a panel that cannot
+                                                                      │     │-// first half and silently drops the rest.
+   ✓ write testdata/big.go · 7 tok (+15 -22)                          │     │-//
+                                                                      │     │-// Committed in the state BEFORE the scenario's write, for the
+ All fifteen now multiply.                                            │     │-// clamp.go is: the probe restores testdata from git before ev
+                                                                      │     │-// uncommitted fixture stays rewritten and every later run see
                                                                       │     │-func alpha(a int) int    { return a + 1 }
                                                                       │     │-func bravo(a int) int    { return a + 2 }
                                                                       │     │-func charlie(a int) int  { return a + 3 }
-                                                                      │     │-func delta(a int) int    { return a + 4 }
- 💡 Ctrl+R searches your prompt history                               │     │-func echo(a int) int     { return a + 5 }
- Diff mode: file                                                      │     │-func foxtrot(a int) int  { return a + 6 }
- 2>                                                                   │     │-func golf(a int) int     { return a + 7 }
-   mock-large · 408/200k ctx · dracula                                │     │-func hotel(a int) int    { return a + 8 }
+ 💡 Ctrl+R searches your prompt history                               │     │-func delta(a int) int    { return a + 4 }
+ Diff mode: file                                                      │     │-func echo(a int) int     { return a + 5 }
+ 2>                                                                   │     │-func foxtrot(a int) int  { return a + 6 }
+   mock-large · 408/200k ctx · dracula                                │     │-func golf(a int) int     { return a + 7 }
+                                                                      │     │-func hotel(a int) int    { return a + 8 }
                                                                       │     │-func india(a int) int    { return a + 9 }
                                                                       │     │-func juliet(a int) int   { return a + 10 }
                                                                       │     │-func kilo(a int) int     { return a + 11 }

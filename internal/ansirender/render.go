@@ -7,7 +7,9 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+	"math"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"golang.org/x/image/font"
@@ -91,6 +93,9 @@ func loadFaces(size float64) (*faceSet, error) {
 }
 
 func facesFor(size float64) (*faceSet, error) {
+	if size <= 0 || size > 256 || math.IsNaN(size) || math.IsInf(size, 0) {
+		return nil, fmt.Errorf("ansirender: font size must be between 0 and 256 pixels")
+	}
 	facesMu.Lock()
 	defer facesMu.Unlock()
 	if fs, ok := facesBySiz[size]; ok {
@@ -237,13 +242,30 @@ func RenderFileSize(src, dst string, size float64) error {
 	if err != nil {
 		return err
 	}
-	out, err := os.Create(dst)
+	mode := os.FileMode(0o644)
+	if info, statErr := os.Stat(dst); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	out, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*")
 	if err != nil {
+		return err
+	}
+	tmp := out.Name()
+	defer os.Remove(tmp)
+	if err := out.Chmod(mode); err != nil {
+		out.Close()
 		return err
 	}
 	if err := WritePNGSize(out, string(in), size); err != nil {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }

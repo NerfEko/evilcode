@@ -127,11 +127,69 @@ type Goal struct {
 	EndToEndOwnershipHistory  []uint8 `json:"end_to_end_ownership_history,omitempty"`
 }
 
+func cloneUint8Ptr(value *uint8) *uint8 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneItem(item Item) Item {
+	item.Group = cloneStringPtr(item.Group)
+	item.BlockedBy = append([]string(nil), item.BlockedBy...)
+	item.Confidence = cloneUint8Ptr(item.Confidence)
+	item.CompletionConfidence = cloneUint8Ptr(item.CompletionConfidence)
+	item.ConfidenceHistory = append([]uint8(nil), item.ConfidenceHistory...)
+	return item
+}
+
+func cloneItems(items []Item) []Item {
+	out := make([]Item, len(items))
+	for i, item := range items {
+		out[i] = cloneItem(item)
+	}
+	return out
+}
+
+func cloneGoal(goal Goal) Goal {
+	goal.ClosedFeedbackLoop = cloneUint8Ptr(goal.ClosedFeedbackLoop)
+	goal.FeedbackLoop = cloneStringPtr(goal.FeedbackLoop)
+	goal.EndToEndOwnership = cloneUint8Ptr(goal.EndToEndOwnership)
+	goal.ClosedFeedbackLoopHistory = append([]uint8(nil), goal.ClosedFeedbackLoopHistory...)
+	goal.EndToEndOwnershipHistory = append([]uint8(nil), goal.EndToEndOwnershipHistory...)
+	return goal
+}
+
+func cloneGoals(goals []Goal) []Goal {
+	out := make([]Goal, len(goals))
+	for i, goal := range goals {
+		out[i] = cloneGoal(goal)
+	}
+	return out
+}
+
+func clonePlan(plan Plan) Plan {
+	plan.UserIntention = cloneStringPtr(plan.UserIntention)
+	plan.UnderstandsUserIntent = cloneUint8Ptr(plan.UnderstandsUserIntent)
+	plan.UnderstandsUserIntentHistory = append([]uint8(nil), plan.UnderstandsUserIntentHistory...)
+	return plan
+}
+
 // Limits from plan.md §12.6. These are coordination state, not a log, and an
 // unbounded one is a memory leak with extra steps.
 const (
 	MaxItems        = 1024
 	MaxObservations = 256
+	maxStateBytes   = 8 << 20
 )
 
 // Thresholds from plan.md §12.3.
@@ -225,10 +283,13 @@ func readJSON(path string, dst any) error {
 	if err != nil {
 		return err
 	}
-	data, readErr := io.ReadAll(f)
+	data, readErr := io.ReadAll(io.LimitReader(f, maxStateBytes+1))
 	closeErr := f.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return err
+	}
+	if len(data) > maxStateBytes {
+		return fmt.Errorf("%s exceeds %d bytes", path, maxStateBytes)
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
@@ -301,10 +362,16 @@ func (s *Store) save() error {
 		staged = append(staged, tmp)
 	}
 	backups := make([]string, len(files))
+	installed := make([]bool, len(files))
 	restore := func() error {
 		var restoreErr error
 		for i, f := range files {
 			if backups[i] == "" {
+				if installed[i] {
+					if err := os.RemoveAll(f.path); err != nil && !os.IsNotExist(err) {
+						restoreErr = errors.Join(restoreErr, err)
+					}
+				}
 				continue
 			}
 			if err := os.RemoveAll(f.path); err != nil && !os.IsNotExist(err) {
@@ -344,6 +411,7 @@ func (s *Store) save() error {
 		if err := os.Rename(staged[i], f.path); err != nil {
 			return errors.Join(err, restore())
 		}
+		installed[i] = true
 	}
 	for _, old := range backups {
 		if old != "" {
@@ -357,21 +425,21 @@ func (s *Store) save() error {
 func (s *Store) Items() []Item {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Item(nil), s.items...)
+	return cloneItems(s.items)
 }
 
 // Goals returns a copy of the stored goals.
 func (s *Store) Goals() []Goal {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Goal(nil), s.goals...)
+	return cloneGoals(s.goals)
 }
 
 // Plan returns the session plan.
 func (s *Store) Plan() Plan {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.plan
+	return clonePlan(s.plan)
 }
 
 // Goal looks up a group's goal.
@@ -380,7 +448,7 @@ func (s *Store) Goal(group string) (Goal, bool) {
 	defer s.mu.Unlock()
 	for _, g := range s.goals {
 		if g.Group == group {
-			return g, true
+			return cloneGoal(g), true
 		}
 	}
 	return Goal{}, false
@@ -465,11 +533,30 @@ func (s *Store) Apply(w Write) (Result, error) {
 				Explanation: fmt.Sprintf("item %q depends on itself", item.Content)}, nil
 		}
 	}
-
-	validIDs := make(map[string]bool, len(s.items)+len(seen))
-	for _, it := range s.items {
-		validIDs[it.ID] = true
+	if w.Plan != nil && w.Plan.UnderstandsUserIntent != nil && *w.Plan.UnderstandsUserIntent > 100 {
+		return Result{Rejected: true,
+			Explanation: fmt.Sprintf("understands_user_intent is %d, which must be 0-100", *w.Plan.UnderstandsUserIntent)}, nil
 	}
+	seenGoals := make(map[string]bool, len(w.Goals))
+	for _, goal := range w.Goals {
+		if seenGoals[goal.Group] {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("goal group %q is updated more than once in this write", goal.Group)}, nil
+		}
+		seenGoals[goal.Group] = true
+		if goal.ClosedFeedbackLoop != nil && *goal.ClosedFeedbackLoop > 100 {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("goal %q closed_feedback_loop is %d, which must be 0-100", goal.Group, *goal.ClosedFeedbackLoop)}, nil
+		}
+		if goal.EndToEndOwnership != nil && *goal.EndToEndOwnership > 100 {
+			return Result{Rejected: true,
+				Explanation: fmt.Sprintf("goal %q end_to_end_ownership is %d, which must be 0-100", goal.Group, *goal.EndToEndOwnership)}, nil
+		}
+	}
+
+	// Items is a full replacement. A dependency on an old item omitted from this
+	// write would become a dangling reference as soon as the write lands.
+	validIDs := make(map[string]bool, len(seen))
 	for id := range seen {
 		validIDs[id] = true
 	}
@@ -480,6 +567,10 @@ func (s *Store) Apply(w Write) (Result, error) {
 					Explanation: fmt.Sprintf("item %q depends on unknown id %q", item.Content, dep)}, nil
 			}
 		}
+	}
+	if id, ok := dependencyCycle(w.Items); ok {
+		return Result{Rejected: true,
+			Explanation: fmt.Sprintf("todo dependencies contain a cycle involving %q", id)}, nil
 	}
 
 	// The hard gate: completing a group requires end-to-end ownership. This is
@@ -502,7 +593,7 @@ func (s *Store) Apply(w Write) (Result, error) {
 		}
 	}
 
-	prev := append([]Item(nil), s.items...)
+	prev := cloneItems(s.items)
 	res := Result{Delta: DiffItems(prev, w.Items)}
 
 	// Histories are tool-owned and append-only, and each write contributes at
@@ -512,10 +603,10 @@ func (s *Store) Apply(w Write) (Result, error) {
 
 	if w.Plan != nil {
 		firstPlanWrite := s.plan.UnderstandsUserIntent == nil
-		s.plan.UserIntention = w.Plan.UserIntention
+		s.plan.UserIntention = cloneStringPtr(w.Plan.UserIntention)
 		if v := w.Plan.UnderstandsUserIntent; v != nil {
 			s.plan.UnderstandsUserIntentHistory = appendScore(s.plan.UnderstandsUserIntentHistory, *v)
-			s.plan.UnderstandsUserIntent = v
+			s.plan.UnderstandsUserIntent = cloneUint8Ptr(v)
 
 			if *v < QualityGate {
 				s.observe(Observation{Kind: KindIntent, Score: *v})
@@ -549,10 +640,10 @@ func (s *Store) Apply(w Write) (Result, error) {
 // the undo. Slices are copied element-wise, so a write that rewrites an item in
 // place is rolled back with everything else.
 func (s *Store) snapshot() func() {
-	items := append([]Item(nil), s.items...)
-	goals := append([]Goal(nil), s.goals...)
+	items := cloneItems(s.items)
+	goals := cloneGoals(s.goals)
 	obs := append([]Observation(nil), s.obs...)
-	plan := s.plan
+	plan := clonePlan(s.plan)
 	return func() {
 		s.items, s.goals, s.obs, s.plan = items, goals, obs, plan
 	}
@@ -619,18 +710,18 @@ func (s *Store) applyGoal(in Goal) {
 	g := &s.goals[idx]
 
 	if in.FeedbackLoop != nil {
-		g.FeedbackLoop = in.FeedbackLoop
+		g.FeedbackLoop = cloneStringPtr(in.FeedbackLoop)
 	}
 	if v := in.ClosedFeedbackLoop; v != nil {
 		g.ClosedFeedbackLoopHistory = appendScore(g.ClosedFeedbackLoopHistory, *v)
-		g.ClosedFeedbackLoop = v
+		g.ClosedFeedbackLoop = cloneUint8Ptr(v)
 		if *v < QualityGate {
 			s.observe(Observation{Kind: KindLoop, Group: in.Group, Score: *v})
 		}
 	}
 	if v := in.EndToEndOwnership; v != nil {
 		g.EndToEndOwnershipHistory = appendScore(g.EndToEndOwnershipHistory, *v)
-		g.EndToEndOwnership = v
+		g.EndToEndOwnership = cloneUint8Ptr(v)
 	}
 }
 
@@ -653,6 +744,7 @@ func mergeItems(prev, incoming []Item) []Item {
 
 	out := make([]Item, 0, len(incoming))
 	for _, item := range incoming {
+		item = cloneItem(item)
 		old, existed := byID[item.ID]
 
 		// The trail is only meaningful if the agent cannot author it.
@@ -672,6 +764,37 @@ func mergeItems(prev, incoming []Item) []Item {
 		out = append(out, item)
 	}
 	return out
+}
+
+func dependencyCycle(items []Item) (string, bool) {
+	deps := make(map[string][]string, len(items))
+	for _, item := range items {
+		deps[item.ID] = item.BlockedBy
+	}
+	state := make(map[string]uint8, len(items)) // 1 visiting, 2 finished
+	var visit func(string) (string, bool)
+	visit = func(id string) (string, bool) {
+		switch state[id] {
+		case 1:
+			return id, true
+		case 2:
+			return "", false
+		}
+		state[id] = 1
+		for _, dep := range deps[id] {
+			if cycle, ok := visit(dep); ok {
+				return cycle, true
+			}
+		}
+		state[id] = 2
+		return "", false
+	}
+	for id := range deps {
+		if cycle, ok := visit(id); ok {
+			return cycle, true
+		}
+	}
+	return "", false
 }
 
 // IsSpike reports whether a completed item's confidence jumped suspiciously in

@@ -10,6 +10,7 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/provider"
+	"evilcode/internal/session"
 )
 
 // These cover the six things found in real use. Each names the wrong behaviour
@@ -318,6 +319,40 @@ func newTestModel(t *testing.T) *Model {
 	m := NewModel(a, HeaderState{SessionName: "dracula", Model: "mock-large"})
 	m.width, m.height = 100, 40
 	return m
+}
+
+func TestTurnEndPersistsTheDerivedSessionTitle(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.Open(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	m := newTestModel(t).WithSessions(dir, t.TempDir(), store)
+	m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: "repair the updater"})
+	m.applyEvent(agent.Event{Kind: agent.EventTurnEnd})
+
+	info, err := session.Describe(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Title != "repair the updater" {
+		t.Errorf("stored title = %q, want the first prompt", info.Title)
+	}
+}
+
+func TestTurnEndDropsUnspentCollapseSlack(t *testing.T) {
+	m := newTestModel(t)
+	m.scroll.Observe(100, 40)
+	m.scroll.Observe(94, 40)
+	if m.scroll.Slack() == 0 {
+		t.Fatal("test setup did not create collapse slack")
+	}
+	m.applyEvent(agent.Event{Kind: agent.EventTurnEnd})
+	if got := m.scroll.Slack(); got != 0 {
+		t.Errorf("turn end left %d blank transcript rows", got)
+	}
 }
 
 func TestSidePanelUsesTheWholeTerminalHeight(t *testing.T) {

@@ -48,6 +48,8 @@ func runSessions(args []string, once func([]string) (string, error)) error {
 	for i, a := range args {
 		if a == "-m" && i+1 < len(args) {
 			model = args[i+1]
+		} else if value, ok := strings.CutPrefix(a, "-m="); ok {
+			model = value
 		}
 	}
 	for {
@@ -73,7 +75,10 @@ func runOnce(args []string) (string, error) {
 		return "", err
 	}
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
 	dataDir := config.DataDir()
 
 	// A repo may pin its roles and default model. Loaded before resolving, so
@@ -266,7 +271,7 @@ func runOnce(args []string) (string, error) {
 	// flag means a session relying on default_model silently gets no
 	// per-model settings at all, which is how anchor_edits appeared to be
 	// broken when it was simply never switched on.
-	overrides := cfg.ModelOverrides(modelName)
+	overrides := cfg.ModelOverrides(config.ModelRef(modelName, prov.Name()))
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
 		WithConfine(cfg.Features.ConfineToWorkspace).WithExposure(exposure)
 	execTools := tools.NewExec(cwd).

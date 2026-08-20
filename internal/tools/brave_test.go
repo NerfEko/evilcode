@@ -128,6 +128,7 @@ func TestBraveSearchToolRejectsInvalidArguments(t *testing.T) {
 		{name: "missing query", args: map[string]any{}, want: "query is required"},
 		{name: "too many results", args: map[string]any{"query": "x", "max_results": 11}, want: "max_results"},
 		{name: "bad freshness", args: map[string]any{"query": "x", "freshness": "tomorrow"}, want: "invalid freshness"},
+		{name: "reversed freshness", args: map[string]any{"query": "x", "freshness": "2026-08-20to2026-08-01"}, want: "invalid freshness"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -136,6 +137,27 @@ func TestBraveSearchToolRejectsInvalidArguments(t *testing.T) {
 				t.Fatalf("err = %v, want it to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatBraveResultsNumbersOnlyUsableLinks(t *testing.T) {
+	got := formatBraveResults("x", []braveWebResult{
+		{Title: "missing", URL: ""},
+		{Title: "unsafe", URL: "javascript:alert(1)"},
+		{Title: "valid", URL: "https://example.com"},
+	})
+	if !strings.Contains(got, "\n1. valid\n") {
+		t.Errorf("usable result was not numbered from one:\n%s", got)
+	}
+	if strings.Contains(got, "javascript:") || strings.Contains(got, "\n3. valid\n") {
+		t.Errorf("unusable links leaked into numbering:\n%s", got)
+	}
+}
+
+func TestFormatBraveResultsWithNoUsableLinksSaysNoResults(t *testing.T) {
+	got := formatBraveResults("x", []braveWebResult{{Title: "bad", URL: "javascript:alert(1)"}})
+	if !strings.Contains(got, "No results found.") {
+		t.Errorf("output = %q, want no-results message", got)
 	}
 }
 

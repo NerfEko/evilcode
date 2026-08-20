@@ -422,8 +422,11 @@ func (m *Model) updateSessionTitle() {
 	if title == "" || title == m.sessionTitle {
 		return
 	}
+	if err := m.store.WriteMeta(session.Meta{Kind: session.MetaTitle, Note: title}); err != nil {
+		m.notice = "could not save session title: " + err.Error()
+		return
+	}
 	m.sessionTitle = title
-	_ = m.store.WriteMeta(session.Meta{Kind: session.MetaTitle, Note: title})
 }
 
 // deriveTitle picks the best available description of the current work.

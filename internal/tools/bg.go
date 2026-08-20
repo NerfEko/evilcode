@@ -74,13 +74,11 @@ func (e *Exec) bgTool() Tool {
 				}
 				return Result{Output: fmt.Sprintf("cancellation requested for background task %d", args.ID), Intent: fmt.Sprintf("cancel task %d", args.ID)}, nil
 			case "wait":
-				waitCtx := ctx
-				cancel := func() {}
+				timeout := 120 * time.Second
 				if args.Timeout > 0 {
-					waitCtx, cancel = context.WithTimeout(ctx, time.Duration(args.Timeout)*time.Second)
-				} else {
-					waitCtx, cancel = context.WithTimeout(ctx, 120*time.Second)
+					timeout = time.Duration(args.Timeout) * time.Second
 				}
+				waitCtx, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
 				finished, err := e.Bg.Wait(waitCtx, args.ID)
 				if finished == nil {

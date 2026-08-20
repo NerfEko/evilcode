@@ -2,14 +2,13 @@ package tui
 
 import (
 	"fmt"
-
-	tea "charm.land/bubbletea/v2"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/ansirender"
@@ -208,12 +207,28 @@ func (m *Model) writeProductivityPNG(rows []string) (string, error) {
 	}
 	path := filepath.Join(dir, "productivity.png")
 
-	f, err := os.Create(path)
+	f, err := os.CreateTemp(dir, ".productivity-*.png")
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return "", err
+	}
 	if err := ansirender.WritePNG(f, strings.Join(rows, "\n")+"\n"); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return "", err
 	}
 	return path, nil

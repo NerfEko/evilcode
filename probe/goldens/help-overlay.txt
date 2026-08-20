@@ -10,6 +10,7 @@
 │ Models                                                                                                                                   │
 │   /model             Switch model                                                                                                        │
 │   /models            List available models                                                                                               │
+│   /reasoning         Set reasoning effort                                                                                                │
 │                                                                                                                                          │
 │ Working                                                                                                                                  │
 │   /plan              Plan before implementing                                                                                            │
@@ -19,6 +20,7 @@
 │   /todos             Toggle the todo card                                                                                                │
 │   /poke              Auto-poke on/off/status                                                                                             │
 │   /memory            Long-term memory on/off/status                                                                                      │
+│   /skills            List or reload skills                                                                                               │
 │                                                                                                                                          │
 │ Swarm                                                                                                                                    │
 │   /summon            Spawn a worker agent on a task                                                                                      │
@@ -30,9 +32,7 @@
 │   /productivity      What you have been doing, as a dashboard                                                                            │
 │   /overnight         Work the todo list unattended, under hard caps                                                                      │
 │                                                                                                                                          │
-│ Self-development                                                                                                                         │
-│   /selfdev           Work on evilcode itself                                                                                             │
+│ Maintenance                                                                                                                              │
 │   /rebuild           Build, test, and restart into the new binary                                                                        │
 │   /reload            Restart, keeping this session                                                                                       │
-│                                                                                                                                          │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘

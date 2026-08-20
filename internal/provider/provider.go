@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// providerJSONMaxBytes bounds non-streaming provider metadata and embedding
+// responses. Streaming chat has its own per-frame limits; these endpoints used
+// to let a broken or hostile backend allocate without bound during Decode.
+const providerJSONMaxBytes = 64 << 20
+
 // ReasoningEffort controls how much deliberate reasoning a reasoning model
 // spends before producing its answer. The shared type contains the vocabulary
 // used by the providers Evilcode can translate at its wire boundary; each

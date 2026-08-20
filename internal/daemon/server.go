@@ -413,6 +413,13 @@ func (s *Server) Listen() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// Check again after creation. The fallback directory is predictable, so a
+	// competing process can create or swap it between the first check and
+	// MkdirAll; accepting that replacement would put the shell-bearing socket
+	// in a directory somebody else controls.
+	if err := CheckRuntimeDir(dir); err != nil {
+		return err
+	}
 
 	// Serialized against other starting daemons. Binding first fixed the
 	// original race but not its sibling: two daemons finding the *same stale*

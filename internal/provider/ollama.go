@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -260,6 +261,13 @@ func streamOllamaNDJSON(ctx context.Context, r io.Reader, ch chan<- Chunk, callS
 	}
 	if err := sc.Err(); err != nil && ctx.Err() == nil {
 		send(Chunk{Err: err})
+		return
+	}
+	if ctx.Err() == nil {
+		// A clean transport EOF is not a successful Ollama response unless a
+		// protocol record said done. Treating a truncated proxy response as a final
+		// answer silently commits partial text to the conversation.
+		send(Chunk{Err: fmt.Errorf("ollama: stream closed before a done response")})
 	}
 }
 
@@ -287,7 +295,7 @@ func (o *Ollama) EmbedModel(ctx context.Context, model string, texts []string) (
 		return nil, httpError(resp.StatusCode, resp.Body)
 	}
 	var out ollamaEmbedResp
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, providerJSONMaxBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	if out.Error != "" {
@@ -324,7 +332,7 @@ func (o *Ollama) Models(ctx context.Context) ([]ModelInfo, error) {
 		return nil, httpError(resp.StatusCode, resp.Body)
 	}
 	var tags ollamaTagsResp
-	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, providerJSONMaxBytes)).Decode(&tags); err != nil {
 		return nil, err
 	}
 	out := make([]ModelInfo, len(tags.Models))
@@ -423,7 +431,7 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 		return ModelInfo{}, httpError(resp.StatusCode, resp.Body)
 	}
 	var show ollamaShowResp
-	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, providerJSONMaxBytes)).Decode(&show); err != nil {
 		return ModelInfo{}, err
 	}
 
@@ -517,10 +525,19 @@ func ollamaThinkValue(model string, effort ReasoningEffort) any {
 func jsonInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case float64:
+		maxInt := int(^uint(0) >> 1)
+		minInt := -maxInt - 1
+		if math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n ||
+			n >= float64(maxInt) || n <= float64(minInt) {
+			return 0, false
+		}
 		return int(n), true
 	case json.Number:
 		i, err := n.Int64()
-		return int(i), err == nil
+		if err != nil || int64(int(i)) != i {
+			return 0, false
+		}
+		return int(i), true
 	}
 	return 0, false
 }

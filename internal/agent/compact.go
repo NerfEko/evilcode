@@ -328,9 +328,12 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 		if err != nil {
 			return "", fmt.Errorf("compaction was not saved: %w", err)
 		}
-		if len(stored) > 0 {
-			replay = stored
-		}
+	}
+	if len(stored) > 0 {
+		// Storage is the source of truth for what a resume will replay. Both
+		// persistence callbacks may normalize or repair the message sequence,
+		// so the live conversation must follow the canonical value they return.
+		replay = stored
 	}
 	conv.Reset(replay)
 	if c.OnCompaction != nil {
