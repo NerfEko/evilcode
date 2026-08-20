@@ -847,8 +847,9 @@ const (
 	ThinkingFull ThinkingMode = "full"
 
 	// ThinkingCurrent keeps the live trace on screen while it streams and
-	// collapses it to a summary row once the answer starts. The summary stays
-	// in the transcript — nothing is ever garbage-collected (plan.md §4.6).
+	// collapses it to a summary row once the answer starts. Codex traces stay
+	// expanded because their reasoning summary is already compact. The summary
+	// stays in the transcript — nothing is ever garbage-collected (plan.md §4.6).
 	ThinkingCurrent ThinkingMode = "current"
 )
 

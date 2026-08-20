@@ -54,6 +54,20 @@ func (m *Model) activeModelRef() string {
 	return config.ModelRef(m.header.Model, m.header.Provider)
 }
 
+// isCodexModel identifies the Codex wire backend rather than guessing from a
+// model name. The provider name covers normal configured sessions; the concrete
+// type keeps custom Codex provider names and attached/manual models correct.
+func (m *Model) isCodexModel() bool {
+	if strings.EqualFold(strings.TrimSpace(m.header.Provider), "codex") {
+		return true
+	}
+	if m.agent == nil || m.agent.Provider == nil {
+		return false
+	}
+	_, ok := m.agent.Provider.(*provider.Codex)
+	return ok
+}
+
 func (m *Model) rememberedEffort(ref string, fallback provider.ReasoningEffort) provider.ReasoningEffort {
 	if effort, ok := m.reasoningPrefs[ref]; ok {
 		return effort

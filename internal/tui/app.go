@@ -1397,7 +1397,9 @@ func (m *Model) finishStreaming() {
 }
 
 // finishReasoning freezes the live thinking trace and collapses it, unless the
-// reader has asked to keep traces open (display.keep_thinking).
+// reader has asked to keep traces open (display.keep_thinking) or the active
+// model is Codex. Codex emits a compact one-line reasoning summary, so turning
+// that summary into "thought (1 line)" loses the useful content.
 //
 // The block itself is never removed: the transcript is the session's record,
 // and a collapsed trace is a one-row summary. Scrolling past it is how the
@@ -1405,7 +1407,7 @@ func (m *Model) finishStreaming() {
 func (m *Model) finishReasoning() {
 	if m.reasoningIdx >= 0 && m.reasoningIdx < len(m.blocks) {
 		m.blocks[m.reasoningIdx].Streaming = false
-		m.blocks[m.reasoningIdx].Collapsed = !m.keepThinking
+		m.blocks[m.reasoningIdx].Collapsed = !m.keepThinking && !m.isCodexModel()
 		m.blocks[m.reasoningIdx].dropCache()
 	}
 	m.reasoningIdx = -1

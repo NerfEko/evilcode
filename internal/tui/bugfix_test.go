@@ -36,6 +36,21 @@ func TestThinkingCollapsesWhenTheAnswerStarts(t *testing.T) {
 	}
 }
 
+func TestCodexThinkingStaysVisibleWhenTheAnswerStarts(t *testing.T) {
+	m := newTestModel(t)
+	m.header.Provider = "codex"
+	m.applyEvent(agent.Event{Kind: agent.EventReasoningDelta, Text: "short Codex summary"})
+	idx := m.reasoningIdx
+	m.applyEvent(agent.Event{Kind: agent.EventTextDelta, Text: "The answer is"})
+
+	if m.blocks[idx].Collapsed {
+		t.Fatal("Codex thinking collapsed into a one-line thought summary")
+	}
+	if m.blocks[idx].Streaming {
+		t.Fatal("Codex thinking is still marked streaming")
+	}
+}
+
 func TestKeepThinkingLeavesTheTraceOpen(t *testing.T) {
 	m := newTestModel(t)
 	m.WithDisplay(config.Display{KeepThinking: true, ThinkingDisplay: "current"})
