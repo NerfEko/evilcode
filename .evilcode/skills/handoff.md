@@ -1,1 +1,0 @@
-/home/eko/.agents/skills/handoff//SKILL.md

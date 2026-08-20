@@ -1,1 +1,0 @@
-/home/eko/.agents/skills/onboarding//SKILL.md

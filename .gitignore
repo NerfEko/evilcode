@@ -11,3 +11,6 @@ lazy.md
 new.md
 looks.md
 lorem.md
+
+# Per-repo evilcode overlay (skills, .evilcode.toml): local config, not shipped.
+.evilcode/

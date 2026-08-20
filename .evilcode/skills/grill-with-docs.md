@@ -1,1 +1,0 @@
-/home/eko/.agents/skills/grill-with-docs//SKILL.md
