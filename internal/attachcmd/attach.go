@@ -72,24 +72,10 @@ func run(args []string, autoStart bool) error {
 	if *resume != "" {
 		name = strings.TrimSpace(*resume)
 	}
-	if autoStart && name == "" {
-		rows, err := client.List()
-		if err != nil {
-			return err
-		}
-		if len(rows) > 0 {
-			choice, err := tui.ChooseSession(sessionDescriptors(rows))
-			if err != nil {
-				return err
-			}
-			if choice.Cancelled {
-				return nil
-			}
-			if !choice.NewSession {
-				name = choice.Name
-			}
-		}
-	}
+	// There is no resume window on launch: the start page inside the TUI is
+	// the one place you pick a session. Attaching with no name opens a fresh
+	// session, and its empty-transcript start page offers the recent ones to
+	// resume from there.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -352,6 +338,7 @@ func sessionDescriptors(rows []daemon.SessionInfo) []tui.SessionDescriptor {
 			Name: row.Name, Model: row.Model, Cwd: row.Cwd, Title: row.Title,
 			Modified: modified, Crashed: row.Crashed, Live: row.Live,
 			Running: row.Running, Clients: row.Clients, Task: row.Task,
+			Pending: row.Pending, Messages: row.Messages,
 		})
 	}
 	return out

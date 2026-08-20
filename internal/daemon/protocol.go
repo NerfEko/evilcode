@@ -284,6 +284,14 @@ type SessionInfo struct {
 	Crashed  bool      `json:"crashed,omitempty"`
 	Stored   bool      `json:"stored,omitempty"`
 	Live     bool      `json:"live,omitempty"`
+
+	// Messages is the session's conversation length (excluding the system
+	// message), so a roster can show how much a session has in it.
+	Messages int `json:"messages,omitempty"`
+
+	// Pending is the number of interactive asks the session is waiting on,
+	// so a roster can flag a session that needs an answer (plan.md §20).
+	Pending int `json:"pending,omitempty"`
 }
 
 // ServerStatus is the stable response used by lifecycle commands.

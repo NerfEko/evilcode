@@ -33,6 +33,9 @@ type SessionRow struct {
 	Clients int
 	Task    string
 
+	// Pending is the count of interactive asks the session is waiting on.
+	Pending int
+
 	// Marked is the multi-select state.
 	Marked bool
 
@@ -67,6 +70,10 @@ type SessionDescriptor struct {
 	Running  bool
 	Clients  int
 	Task     string
+
+	// Pending is the number of interactive asks the session is blocked on,
+	// so a roster can flag a session that needs an answer.
+	Pending int
 }
 
 // SessionRows converts durable/server summaries into picker rows.
@@ -80,6 +87,7 @@ func SessionRows(descriptors []SessionDescriptor) []SessionRow {
 				Crashed: d.Crashed, Model: d.Model,
 			},
 			Live: d.Live, Running: d.Running, Clients: d.Clients, Task: d.Task,
+			Pending: d.Pending,
 		})
 	}
 	return rows
@@ -278,10 +286,14 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 func (r *Renderer) sessionStatus(row SessionRow) string {
 	dim := r.style(theme.RoleDim)
 	switch {
+	case row.Pending > 0:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Render("◉") +
+			dim.Render(" waiting on an answer")
 	case row.Live && row.Running:
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Render("◉") +
-			dim.Render(fmt.Sprintf(" running · %d client%s", row.Clients, pluralSuffix(row.Clients)))
+			dim.Render(fmt.Sprintf(" currently running · %d client%s", row.Clients, pluralSuffix(row.Clients)))
 	case row.Live:
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 220, 130)))).Render("●") +
@@ -297,7 +309,7 @@ func (r *Renderer) sessionStatus(row SessionRow) string {
 	default:
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 100, 100)))).Render("✓") +
-			dim.Render(" closed "+humanAge(row.Info.Modified))
+			dim.Render(" completed "+humanAge(row.Info.Modified))
 	}
 }
 

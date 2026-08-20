@@ -545,19 +545,35 @@ func (s *Server) Sessions() []SessionInfo {
 		running := sess.running
 		stale := worker && sess.stale && !sess.closedDone
 		sess.mu.Unlock()
+		// asks is the ask broker; its Snapshot is goroutine-safe, so it can be
+		// read outside the session lock.
+		pending := 0
+		if sess.asks != nil {
+			pending = len(sess.asks.Snapshot())
+		}
+		// Conversation length excludes the system message prepended by Conv.
+		msgCount := 0
+		if msgs := sess.built.Agent.Conv.Messages(); len(msgs) > 0 {
+			msgCount = len(msgs)
+			if msgs[0].Role == provider.RoleSystem {
+				msgCount--
+			}
+		}
 		seen[name] = true
 		out = append(out, SessionInfo{
-			Name:    name,
-			Model:   model,
-			Running: running || sess.built.Agent.Running(),
-			Clients: clients,
-			Worker:  worker,
-			Task:    task,
-			Started: started,
-			Stale:   stale,
-			Cwd:     cwd,
-			Stored:  true,
-			Live:    true,
+			Name:     name,
+			Model:    model,
+			Running:  running || sess.built.Agent.Running(),
+			Clients:  clients,
+			Worker:   worker,
+			Task:     task,
+			Started:  started,
+			Stale:    stale,
+			Cwd:      cwd,
+			Stored:   true,
+			Live:     true,
+			Pending:  pending,
+			Messages: msgCount,
 		})
 	}
 	s.mu.Unlock()
@@ -574,6 +590,7 @@ func (s *Server) Sessions() []SessionInfo {
 				Name: info.Name, Model: info.Model, Cwd: info.Cwd,
 				Started: info.Modified, Modified: info.Modified,
 				Title: info.Title, Crashed: info.Crashed, Stored: true,
+				Messages: info.Messages,
 			})
 		}
 	}

@@ -240,9 +240,14 @@ type Model struct {
 	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
 	entryAnim EntryAnimation
 
-	// welcomeChip is the focused starter prompt while the transcript is empty.
-	welcomeChip  int
-	welcomeFocus bool
+	// startPage holds the recent/active sessions offered on the empty-transcript
+	// start page, plus the arrow selection. startLoadedAt throttles the roster
+	// round trip so an idle start page does not poll the daemon every frame.
+	startRows     []SessionRow
+	startSelected int
+	startActive   bool
+	startLoadedAt time.Time
+	startLoading  bool
 
 	// keymap resolves chords, and hotkeys drives the rare-chord and near-miss
 	// feedback of §6.8.
@@ -287,11 +292,6 @@ type Model struct {
 	dataDir      string
 	store        *session.Store
 	cwd          string
-
-	// artVariant is chosen once per process so the welcome animation stays the
-	// same one for a session, and decorate gates all decorative animation.
-	artVariant Variant
-	decorate   bool
 
 	// helpOpen and helpScroll drive the full-screen help overlay (§5.5).
 	helpOpen   bool
@@ -533,9 +533,6 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		panelRatio:              50,
 		showHints:               true,
 		overscroll:              Overscroll{Mode: OverscrollPull},
-		welcomeFocus:            true,
-		artVariant:              PickVariant(h.SessionName),
-		decorate:                os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 		drawnImages:             map[int]imagePlacement{},
 	}
 }
@@ -846,7 +843,7 @@ func (m *Model) WithSkills(skills *tools.SkillSet, pc agent.ProjectContext) *Mod
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.waitForEvent(), m.tick())
+	return tea.Batch(m.waitForEvent(), m.tick(), m.refreshStartSessions())
 }
 
 func (m *Model) tick() tea.Cmd {
@@ -858,11 +855,6 @@ func (m *Model) tick() tea.Cmd {
 	interval := IdleTickInterval
 	if m.processing || m.hasRunningBackground() {
 		interval = SpinnerInterval
-	} else if len(m.blocks) == 0 && m.animate() {
-		// The welcome art is decorative and considerably more expensive than a
-		// settled text frame; four frames per second keeps it alive without
-		// making startup burn a core.
-		interval = IdleArtInterval
 	}
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
@@ -871,8 +863,6 @@ func (m *Model) tick() tea.Cmd {
 // is state polling, not animation. A half-second is quick enough for a task
 // completion or an ask prompt while avoiding a needless redraw storm.
 const IdleTickInterval = 500 * time.Millisecond
-
-const IdleArtInterval = 250 * time.Millisecond
 
 func (m *Model) hasRunningBackground() bool {
 	if m.bg != nil {
@@ -1088,7 +1078,18 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.remoteAskID = req.ID
 			}
 		}
-		return m, m.tick()
+		// The start page polls the roster on a slow cadence so its "currently
+		// running" / "completed 10m ago" labels stay honest while it is showing.
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.tick())
+		if m.needsStartRefresh() {
+			cmds = append(cmds, m.refreshStartSessions())
+		}
+		return m, tea.Batch(cmds...)
+
+	case startSessionsMsg:
+		m.applyStartSessions(msg)
+		return m, nil
 
 	case eventsClosedMsg:
 		return m, nil
@@ -1135,7 +1136,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		insert, stored := CollapsePaste(msg.Content)
 		m.editor.Insert(insert)
 		m.resetTypingIfEmpty()
-		m.welcomeFocus = false
 		if stored != nil {
 			m.pastes = append(m.pastes, *stored)
 		}
@@ -1801,27 +1801,31 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// The welcome screen's chips take the arrows and Enter (§7, item 1). The
-	// transcript is empty there, so there is no scroll to conflict with — but a
-	// rebind still gets these chords first, which is why this sits below the
-	// keymap rather than above it.
-	if len(m.blocks) == 0 && m.editor.Text == "" && len(SuggestionChips) > 0 {
+	// The start page's resume buttons take the arrows and Enter (§7, item 1).
+	// The transcript is empty there, so there is no scroll to conflict with — but
+	// a rebind still gets these chords first, which is why this sits below the
+	// keymap rather than above it. Typing any text falls through to the composer.
+	// The button row is horizontal, so ←/→ move the selection. ↑/↓ are kept as
+	// aliases since arrow keys carry no printable text and so never conflict
+	// with typing into the composer.
+	if len(m.blocks) == 0 && m.editor.Text == "" && len(m.startRows) > 0 {
 		switch key {
-		case "up":
-			m.welcomeFocus = true
-			m.welcomeChip = (m.welcomeChip - 1 + len(SuggestionChips)) % len(SuggestionChips)
+		case "left", "up":
+			m.startActive = true
+			m.startSelected = max(m.startSelected-1, 0)
+			m.loadStartPreview()
 			return m, nil
-		case "down":
-			m.welcomeFocus = true
-			m.welcomeChip = (m.welcomeChip + 1) % len(SuggestionChips)
+		case "right", "down":
+			m.startActive = true
+			m.startSelected = min(m.startSelected+1, len(m.startRows)-1)
+			m.loadStartPreview()
 			return m, nil
 		case "enter":
-			// Only when a chip is actually highlighted: with the focus dropped
-			// there is nothing on screen to say which chip Enter would send.
-			if m.welcomeFocus {
-				m.editor.Text = SuggestionChips[m.welcomeChip%len(SuggestionChips)]
-				m.editor.Cursor = len([]rune(m.editor.Text))
-				return m.send()
+			// Only resume once the user has actually picked a row with the
+			// arrows, so a reflexive Enter on a blank start page does not jump
+			// into another session.
+			if m.startActive {
+				return m.resumeStartSelected()
 			}
 		}
 	}
@@ -2070,7 +2074,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
 		m.insertPromptText(txt)
-		m.welcomeFocus = false
+		m.startActive = false
 		m.confirmQuit = false
 		// Typing normally follows the bottom; the lock keeps the reader where
 		// they were (plan.md §4.5).
@@ -3234,11 +3238,19 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		return m.runSmoothness(arg)
 
 	case "onboarding-sim":
-		for i, frame := range []int{0, 1, 2} {
+		// Demo the start page's resume buttons across the activity states a
+		// roster can show: running, waiting on an answer, ready, completed.
+		sample := []SessionRow{
+			{Info: session.Info{Name: "bat", Emoji: sessionEmoji("bat"), Messages: 42, Model: "claude", Title: "wire the auth flow"}, Live: true, Running: true, Clients: 1},
+			{Info: session.Info{Name: "owl", Emoji: sessionEmoji("owl"), Messages: 18, Model: "gpt", Title: "fix scroll math"}, Live: true, Pending: 1},
+			{Info: session.Info{Name: "fox", Emoji: sessionEmoji("fox"), Messages: 7, Model: "claude"}, Live: true, Clients: 0},
+			{Info: session.Info{Name: "moth", Emoji: sessionEmoji("moth"), Messages: 120, Model: "gpt", Title: "refactor the dock", Modified: time.Now().Add(-10 * time.Minute)}},
+		}
+		for i := range sample {
 			m.blocks = append(m.blocks, Block{
 				Kind: BlockNotice,
-				Text: fmt.Sprintf("— welcome screen %d —\n%s", i+1,
-					strings.Join(plainRows(m.renderer.RenderWelcome(frame, nil)), "\n")),
+				Text: fmt.Sprintf("— start page %d —\n%s", i+1,
+					strings.Join(plainRows(m.renderer.RenderStartPage(sample, i, true, 80, 20)), "\n")),
 			})
 		}
 		m.scroll.FollowBottom()
@@ -3798,12 +3810,13 @@ func (m *Model) transcriptLines() Rows {
 	}
 
 	if len(m.blocks) == 0 {
-		welcome := m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt())
-		owner := make([]int, len(welcome))
+		w, h := m.startPageBounds()
+		start := m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, w, h)
+		owner := make([]int, len(start))
 		for i := range owner {
 			owner[i] = -1
 		}
-		rows := Rows{Lines: welcome, Owner: owner}
+		rows := Rows{Lines: start, Owner: owner}
 		if cacheable {
 			m.rememberTranscriptHeight(m.renderer.Width, len(rows.Lines))
 		}
@@ -3962,7 +3975,8 @@ func (m *Model) transcriptHeightOnly() int {
 		}
 	}
 	if len(m.blocks) == 0 {
-		height := len(m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt()))
+		w, h := m.startPageBounds()
+		height := len(m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, w, h))
 		if !animating {
 			m.rememberTranscriptHeight(m.renderer.Width, height)
 		}
@@ -4171,13 +4185,6 @@ func (m *Model) composerState() ComposerState {
 		PaletteOpen:     m.paletteOpen(),
 		Masked:          m.loginMode,
 	}
-}
-
-func (m *Model) welcomeIndex() int {
-	if !m.welcomeFocus || len(SuggestionChips) == 0 {
-		return -1
-	}
-	return m.welcomeChip % len(SuggestionChips)
 }
 
 func (m *Model) View() tea.View {
@@ -4591,40 +4598,6 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 	return rows
 }
 
-// idleArt renders the welcome art, sized to the space actually available so it
-// never pushes the composer off a short terminal.
-//
-// When decorative animation is gated off the art still draws — frozen at frame
-// zero. What SSH and deterministic mode are protecting against is the repaint
-// cost of animating, not the picture itself; omitting it entirely would remove
-// the welcome screen rather than quiet it (plan.md §10).
-func (m *Model) idleArt() []string {
-	// A demo-only escape hatch, distinct from deterministic mode's "freeze,
-	// don't omit" guarantee above: a screen recording wants a clean, tight
-	// welcome band, not the full art.
-	if os.Getenv("EVILCODE_DEMO_NO_LOGO") != "" {
-		return nil
-	}
-	rows := min(ArtHeight, max(m.height-12, 0))
-	if rows < 6 || m.width < 40 {
-		return nil
-	}
-	width, _ := ContentWidth(m.width, m.centered)
-
-	elapsed := 0.0
-	if m.animate() {
-		elapsed = time.Since(m.started).Seconds()
-	}
-	return RenderArt(SamplerFor(m.artVariant), min(width, 72), rows, elapsed, m.animate())
-}
-
-// animate reports whether decorative animation is on. It is gated by
-// deterministic mode (so golden frames stay reproducible), by SSH (a remote
-// terminal pays for every repaint), and by config (plan.md §10).
-func (m *Model) animate() bool {
-	return m.decorate && !Deterministic()
-}
-
 // factStack gathers the always-true, never-urgent facts (§8.6).
 func (m *Model) factStack() FactStack {
 	return FactStack{
@@ -4959,7 +4932,10 @@ func paintWidget(rows, lines []string, top, col, limit int) {
 		// rather than trimming is what makes this an overlay: a row longer than
 		// col would otherwise push the box further right, which is the
 		// appending behaviour that used to send boxes past the frame edge.
-		base := truncateCells(rows[row], col)
+		// A transcript/header row may contain a literal tab from formatted
+		// content. Tabs are terminal-position dependent, so carrying one into a
+		// fixed-column overlay can move the widget border between captures.
+		base := truncateCells(strings.ReplaceAll(rows[row], "\t", "    "), col)
 		rows[row] = base + strings.Repeat(" ", max(col-lipgloss.Width(base), 0)) + line
 	}
 }

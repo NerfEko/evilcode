@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/provider"
+	"evilcode/internal/session"
 	"evilcode/internal/theme"
 )
 
@@ -516,26 +517,59 @@ func TestHeaderContent(t *testing.T) {
 	}
 }
 
-func TestWelcomeScreen(t *testing.T) {
+func TestStartPage(t *testing.T) {
 	r := testRenderer(80)
-	joined := strings.Join(plainLines(r.RenderWelcome(0, nil)), "\n")
-	if !strings.Contains(joined, WelcomeMessage) {
-		t.Errorf("welcome missing its greeting:\n%s", joined)
+	rows := []SessionRow{
+		{Info: session.Info{Name: "bat", Emoji: "🦇", Messages: 42}, Live: true, Running: true, Clients: 1},
+		{Info: session.Info{Name: "owl", Emoji: "🦉", Messages: 18}, Live: true, Pending: 1},
+		{Info: session.Info{Name: "moth", Emoji: "🦋", Messages: 3, Modified: time.Now().Add(-10 * time.Minute)}},
 	}
-	if !strings.Contains(joined, "◖") || !strings.Contains(joined, "◗") {
-		t.Errorf("welcome missing suggestion chips:\n%s", joined)
+	joined := strings.Join(plainLines(r.RenderStartPage(rows, 0, true, 80, 20)), "\n")
+	if !strings.Contains(joined, WelcomeMessage) {
+		t.Errorf("start page missing its greeting:\n%s", joined)
+	}
+	// Every session appears as a horizontal button.
+	for _, n := range []string{"bat", "owl", "moth"} {
+		if !strings.Contains(joined, n) {
+			t.Errorf("start page missing session %q:\n%s", n, joined)
+		}
+	}
+	// The selected row's full activity status is the preview box title. Each
+	// status shows up when its row is selected.
+	cases := []struct {
+		sel  int
+		want string
+	}{
+		{0, "currently running"},
+		{1, "waiting on an answer"},
+		{2, "completed 10m ago"},
+	}
+	for _, c := range cases {
+		got := strings.Join(plainLines(r.RenderStartPage(rows, c.sel, true, 80, 20)), "\n")
+		if !strings.Contains(got, c.want) {
+			t.Errorf("selecting %d: start page missing %q:\n%s", c.sel, c.want, got)
+		}
 	}
 }
 
-func TestWelcomeChipSelectionUsesFilledBackground(t *testing.T) {
+func TestStartPageSelectionHighlightsAButton(t *testing.T) {
 	r := testRenderer(80)
-	selected := strings.Join(r.RenderWelcome(0, nil), "\n")
-	plain := strings.Join(r.RenderWelcome(-1, nil), "\n")
-	if !strings.Contains(selected, "48;2;") {
-		t.Fatalf("selected welcome chip has no filled background: %q", selected)
+	rows := []SessionRow{
+		{Info: session.Info{Name: "bat", Emoji: "🦇", Messages: 1}, Live: true, Running: true, Clients: 0},
+		{Info: session.Info{Name: "owl", Emoji: "🦉", Messages: 1}, Live: true, Clients: 0},
 	}
-	if selected == plain {
-		t.Fatal("focused and unfocused welcome chips render identically")
+	active := strings.Join(r.RenderStartPage(rows, 0, true, 80, 20), "\n")
+	inactive := strings.Join(r.RenderStartPage(rows, 0, false, 80, 20), "\n")
+	other := strings.Join(r.RenderStartPage(rows, 1, true, 80, 20), "\n")
+	// The selected button gets a filled background only when active.
+	if !strings.Contains(active, "48;2;") {
+		t.Fatalf("active selected button has no filled background: %q", active)
+	}
+	if active == inactive {
+		t.Fatal("active and inactive renders are identical — the highlight is missing")
+	}
+	if active == other {
+		t.Fatal("selecting a different button did not change the render")
 	}
 }
 
