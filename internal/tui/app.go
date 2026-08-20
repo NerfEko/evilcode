@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -89,6 +90,11 @@ type Model struct {
 
 	// lastPaste times the most recent paste, for the trailing-Enter guard.
 	lastPaste time.Time
+
+	// typingStarted begins when a real keystroke puts text into an empty
+	// composer. It is cleared whenever editing returns to empty, so a prompt
+	// rebuilt from scratch gets a fresh reading.
+	typingStarted time.Time
 
 	processing bool
 
@@ -962,6 +968,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// attachment is worse than a missing one (plan.md §6.6).
 		insert, stored := CollapsePaste(msg.Content)
 		m.editor.Insert(insert)
+		m.resetTypingIfEmpty()
 		m.welcomeFocus = false
 		if stored != nil {
 			m.pastes = append(m.pastes, *stored)
@@ -1431,8 +1438,12 @@ func (m *Model) flushPending() {
 	for _, p := range m.pending {
 		texts = append(texts, p.Text)
 	}
+	wpm := 0
+	if len(m.pending) == 1 {
+		wpm = m.pending[0].WPM
+	}
 	m.pending = nil
-	m.submit(strings.Join(texts, "\n\n"))
+	m.submit(strings.Join(texts, "\n\n"), wpm)
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1516,7 +1527,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "esc":
-			m.editor.Clear()
+			m.clearEditor()
 			m.palette.Selected = 0
 			return m, nil
 		}
@@ -1588,7 +1599,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// backslashes escapes the Enter (plan.md §6.2).
 		if EndsWithEscapedNewline(m.editor.Text) {
 			m.editor.Text = StripEscapedNewline(m.editor.Text)
-			m.editor.Insert("\n")
+			m.insertPromptText("\n")
 			if !m.sawEscapeHint {
 				m.sawEscapeHint = true
 				m.notice = "Tip: run /terminal-setup to make Shift+Enter insert newlines"
@@ -1604,14 +1615,17 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+u":
 		m.editor.KillToStart()
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "ctrl+k":
 		m.editor.KillToEnd()
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "ctrl+w", "alt+backspace", "ctrl+backspace":
 		m.editor.DeleteWord()
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "ctrl+a", "home":
@@ -1642,16 +1656,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.editor.Undo() {
 			m.notice = "Restored"
 		}
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "ctrl+s":
 		if n := m.editor.Stash(); n != "" {
 			m.notice = n
 		}
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "delete":
 		m.editor.Delete()
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "ctrl+g":
@@ -1744,6 +1761,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "backspace":
 		m.editor.Backspace()
+		m.resetTypingIfEmpty()
 		return m, nil
 
 	case "pgup":
@@ -1769,7 +1787,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Newline chords insert instead of submitting (plan.md §6.2).
 	if NewlineKeys[key] {
-		m.editor.Insert("\n")
+		m.insertPromptText("\n")
 		return m, nil
 	}
 
@@ -1794,7 +1812,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Ordinary text input. Key.Text is the printable characters the key
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
-		m.editor.Insert(txt)
+		m.insertPromptText(txt)
 		m.welcomeFocus = false
 		m.confirmQuit = false
 		// Typing normally follows the bottom; the lock keeps the reader where
@@ -2673,7 +2691,7 @@ func splitCommand(input string) (name, arg string) {
 
 func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	m.commandArg = arg
-	m.editor.Clear()
+	m.clearEditor()
 	m.palette.Selected = 0
 
 	switch name {
@@ -3091,7 +3109,7 @@ func (m *Model) escape() {
 		m.interrupt(true)
 	default:
 		m.scroll.FollowBottom()
-		m.editor.Clear()
+		m.clearEditor()
 		m.notice = "Input cleared - Ctrl+Z to restore"
 	}
 }
@@ -3121,29 +3139,31 @@ func (m *Model) send() (tea.Model, tea.Cmd) {
 	if text == "" {
 		return m, nil
 	}
+	wpm := m.typingWPM(text)
 
 	switch SendActionFor(m.processing, m.editor.Text) {
 	case Queue:
-		m.pending = append(m.pending, PendingMessage{Kind: PendingQueued, Text: text})
-		m.editor.Clear()
+		m.pending = append(m.pending, PendingMessage{Kind: PendingQueued, Text: text, WPM: wpm})
+		m.clearEditor()
 		return m, nil
 
 	default:
-		m.submit(text)
+		m.submit(text, wpm)
 		return m, nil
 	}
 }
 
 // submit starts a turn.
-func (m *Model) submit(text string) {
+func (m *Model) submit(text string, wpm int) {
 	if len(m.pastes) > 0 {
 		text = ExpandPastes(text, m.pastes)
 		m.pastes = nil
 	}
 	m.blocks = append(m.blocks, Block{
-		Kind:   BlockUser,
-		Text:   text,
-		Number: m.promptCount + 1,
+		Kind:      BlockUser,
+		Text:      text,
+		Number:    m.promptCount + 1,
+		TypingWPM: wpm,
 	})
 	m.promptCount++
 	m.renumberPrompts()
@@ -3155,7 +3175,7 @@ func (m *Model) submit(text string) {
 	if m.prompts != nil {
 		_ = m.prompts.Add(text)
 	}
-	m.editor.Clear()
+	m.clearEditor()
 	m.scroll.FollowBottom()
 	m.notice = ""
 
@@ -3183,6 +3203,43 @@ func (m *Model) submit(text string) {
 			m.agent.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
 		}
 	}()
+}
+
+const minimumWPMWords = 5
+
+// insertPromptText records the first real keystroke in an empty composer.
+// Programmatic text (history, suggestions, pending-message retrieval) does not
+// start the clock, because it was not typed during this prompt.
+func (m *Model) insertPromptText(text string) {
+	wasEmpty := m.editor.Text == ""
+	m.editor.Insert(text)
+	if wasEmpty && m.editor.Text != "" && m.typingStarted.IsZero() {
+		m.typingStarted = time.Now()
+	}
+}
+
+func (m *Model) resetTypingIfEmpty() {
+	if m.editor.Text == "" {
+		m.typingStarted = time.Time{}
+	}
+}
+
+func (m *Model) clearEditor() {
+	m.editor.Clear()
+	m.typingStarted = time.Time{}
+}
+
+func (m *Model) typingWPM(text string) int {
+	words := len(strings.Fields(text))
+	if words < minimumWPMWords || m.typingStarted.IsZero() {
+		return 0
+	}
+	seconds := time.Since(m.typingStarted).Seconds()
+	if seconds <= 0 {
+		return 0
+	}
+	wpm := int(math.Round(float64(words) * 60 / seconds))
+	return max(wpm, 1)
 }
 
 // visionOK reports whether the active model accepts images.
@@ -3225,7 +3282,7 @@ func (m *Model) submitHidden(text string) {
 		return
 	}
 	m.hiddenPrompt = text
-	m.editor.Clear()
+	m.clearEditor()
 	m.scroll.FollowBottom()
 
 	ctx, cancel := context.WithCancel(context.Background())

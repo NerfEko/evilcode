@@ -6163,3 +6163,23 @@ What broke and what it taught:
   break the probe goldens, which render `evilcode · v0.1.0` in the header.
 - No checksum verification yet: the download trusts the canonical Forgejo
   host over HTTPS. A SHA256 asset is the obvious next step (see DEVIATIONS).
+
+## 2026-08-19 — reasoning traces stay readable and typed prompts show speed
+
+Codex reasoning stays expanded after the answer starts because its compact one-line
+trace is useful content, not a summary that needs collapsing. Finished non-Codex traces
+still use the `thought (N lines)` row, but opening one renders the complete stored trace;
+manually closing it drops only the automatic collapse slack, so the context above fills
+the freed rows while the context below remains anchored.
+
+Typed user prompts of at least five words now carry a dim `(N wpm)` marker on the final
+prompt row. The timer begins on the first real keystroke in an empty composer, resets
+when editing becomes empty again, and deliberately excludes paste/history/programmatic
+text. Queued prompts retain their speed when they are flushed, while a multi-message
+batch omits a misleading single speed value.
+
+README.md documents the visible behavior. Focused TUI tests cover Codex visibility,
+complete finished-trace expansion, manual-collapse anchoring, timer restart, the
+five-word cutoff, direct and queued prompt WPM, and rendering.
+
+Verified: `go test ./...`, `go vet ./...`, and `git diff --check`.

@@ -42,6 +42,10 @@ type Block struct {
 	// prompt 1 forever. It is what the band prints.
 	Number int
 
+	// TypingWPM is the user's measured words-per-minute for this prompt. Zero
+	// means the prompt was too short or did not come from timed keystrokes.
+	TypingWPM int
+
 	// Decay is the distance from the newest prompt, which is what §7.7's
 	// rainbow ramp is indexed by. Separate from Number because the two mean
 	// different things — conflating them numbered the newest prompt 1 and
@@ -138,7 +142,7 @@ func (b *Block) keep(c blockRender) {
 // unchanged strings compare without allocating; the old fmt.Sprintf key copied
 // every byte of a long reply on every repaint, even when the cache hit.
 type blockCacheKey struct {
-	kind, number                                                       int
+	kind, number, typingWPM                                            int
 	promptColor                                                        color.RGBA
 	toolTokens, added, removed                                         int
 	text, toolName, toolTarget, toolIntent                             string
@@ -281,7 +285,7 @@ func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
 		promptColor = theme.Rainbow(b.Decay)
 	}
 	return blockCacheKey{
-		kind: int(b.Kind), number: b.Number, promptColor: promptColor,
+		kind: int(b.Kind), number: b.Number, typingWPM: b.TypingWPM, promptColor: promptColor,
 		toolTokens: b.ToolTokens, added: b.Added, removed: b.Removed,
 		text: b.Text, toolName: b.ToolName, toolTarget: b.ToolTarget,
 		toolIntent: b.ToolIntent, toolPath: b.ToolPath,
@@ -372,6 +376,8 @@ func (r *Renderer) renderUser(b *Block) []string {
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUser))).Background(bg)
 	textStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUserText))).Background(bg)
+	wpmStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleDim))).Background(bg)
 
 	// Floored at 1. Prompts are 1-based, so a zero here means a construction
 	// path forgot to set Number — and a band reading "0›" in front of the user
@@ -381,7 +387,13 @@ func (r *Renderer) renderUser(b *Block) []string {
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 
 	wrapped := wrapPlain(b.Text, max(r.Width-lipgloss.Width(prefix), 1))
-	out := make([]string, 0, len(wrapped))
+	out := make([]string, 0, len(wrapped)+1)
+	wpm := ""
+	if b.TypingWPM > 0 {
+		wpm = fmt.Sprintf(" (%d wpm)", b.TypingWPM)
+	}
+	wpmWidth := lipgloss.Width(wpm)
+	wpmAttached := false
 	for i, line := range wrapped {
 		var head string
 		if i == 0 {
@@ -390,9 +402,24 @@ func (r *Renderer) renderUser(b *Block) []string {
 			head = textStyle.Render(indent)
 		}
 		// Pad the band to full width so it reads as a continuous block rather
-		// than a ragged highlight.
-		pad := max(r.Width-lipgloss.Width(prefix)-lipgloss.Width(line), 0)
-		out = append(out, head+textStyle.Render(line+strings.Repeat(" ", pad)))
+		// than a ragged highlight. The WPM label belongs after the final line;
+		// if that line has no room, it gets a continuation row below it.
+		extra := ""
+		if i == len(wrapped)-1 && wpm != "" &&
+			lipgloss.Width(prefix)+lipgloss.Width(line)+wpmWidth <= r.Width {
+			extra = wpmStyle.Render(wpm)
+			wpmAttached = true
+		}
+		extraWidth := 0
+		if extra != "" {
+			extraWidth = lipgloss.Width(extra)
+		}
+		pad := max(r.Width-lipgloss.Width(prefix)-lipgloss.Width(line)-extraWidth, 0)
+		out = append(out, head+textStyle.Render(line+strings.Repeat(" ", pad))+extra)
+	}
+	if wpm != "" && !wpmAttached {
+		pad := max(r.Width-lipgloss.Width(prefix)-wpmWidth, 0)
+		out = append(out, textStyle.Render(indent)+wpmStyle.Render(wpm+strings.Repeat(" ", pad)))
 	}
 	return out
 }

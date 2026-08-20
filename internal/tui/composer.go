@@ -240,6 +240,7 @@ const (
 type PendingMessage struct {
 	Kind PendingKind
 	Text string
+	WPM  int
 }
 
 // MaxPendingRows is how many staged messages show at once.

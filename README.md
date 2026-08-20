@@ -119,7 +119,10 @@ switching back restores that model's setting. Codex reasoning summaries stay vis
 the answer starts because Codex emits them as compact one-line traces; other providers use
 the collapsible `thought (N lines)` view, and clicking one expands the entire finished
 trace. Closing it keeps the context below anchored while the context above fills the freed
-space. The last model is remembered too; an explicit `-m`, `EVILCODE_MODEL`, or resumed
+space. Typed prompts of five or more words show a dim `(N wpm)` marker after the user
+message. Timing starts with the first keystroke in an empty composer and restarts when
+editing returns to empty; pasted, history-recalled, and other programmatic prompts do not
+claim a typing speed. The last model is remembered too; an explicit `-m`, `EVILCODE_MODEL`, or resumed
 session still takes precedence. The control is translated for Codex, OpenAI-compatible
 providers, DeepSeek, and Ollama; the model picker shows the levels returned by each provider
 when its catalog exposes them.
