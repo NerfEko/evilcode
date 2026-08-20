@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"sort"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -82,7 +83,10 @@ func (m *Model) filterStartRows(rows []SessionRow) []SessionRow {
 // StartPageMaxRows caps the start page so it never grows past a short menu.
 const StartPageMaxRows = 6
 
-// applyStartSessions stores a fetched roster and re-clamps the selection.
+// applyStartSessions stores a fetched roster. It re-sorts the rows so active
+// sessions sit at the front and idle/completed ones fall to the right, and it
+// keeps the selection following the same session across the reorder rather
+// than snapping to whatever lands at the old index.
 func (m *Model) applyStartSessions(msg startSessionsMsg) {
 	m.startLoading = false
 	m.startLoadedAt = time.Now()
@@ -91,13 +95,70 @@ func (m *Model) applyStartSessions(msg startSessionsMsg) {
 		// the start page — a transient daemon hiccup should not erase the menu.
 		return
 	}
-	m.startRows = msg.rows
+
+	// Remember the session under the selection so it can be re-selected after
+	// the roster is replaced and re-sorted.
+	var prevName string
+	if len(m.startRows) > 0 {
+		prevName = m.startRows[clamp(m.startSelected, 0, len(m.startRows)-1)].Info.Name
+	}
+
+	m.startRows = sortStartRows(msg.rows)
+
+	// Re-select the same session if it is still present. If it has dropped off
+	// the roster, drop the active highlight too so a reflexive Enter does not
+	// resume a different session than the one the user had highlighted.
+	m.startSelected = 0
+	m.startActive = false
+	if prevName != "" {
+		for i, r := range m.startRows {
+			if r.Info.Name == prevName {
+				m.startSelected = i
+				m.startActive = true
+				break
+			}
+		}
+	}
 	if m.startSelected >= len(m.startRows) {
 		m.startSelected = max(len(m.startRows)-1, 0)
 	}
+
 	// Load the preview for the now-selected row so the box is populated on the
 	// first frame after the roster arrives, not just after the first arrow.
 	m.loadStartPreview()
+}
+
+// sortStartRows orders the start page: active sessions (a turn in flight or a
+// question waiting on an answer) to the front, then live-but-idle sessions,
+// then completed/stored ones. Within each tier the most recently modified
+// session wins, so a session that just became inactive slides to the head of
+// the inactive group rather than to the very end.
+func sortStartRows(rows []SessionRow) []SessionRow {
+	tier := func(r SessionRow) int {
+		switch {
+		case r.Running || r.Pending > 0:
+			return 0 // active: in flight or waiting on an answer
+		case r.Live:
+			return 1 // ready: hydrated but idle
+		default:
+			return 2 // completed/stored
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		ti, tj := tier(rows[i]), tier(rows[j])
+		if ti != tj {
+			return ti < tj
+		}
+		mi, mj := rows[i].Info.Modified, rows[j].Info.Modified
+		if mi.IsZero() {
+			mi = time.Unix(0, 0)
+		}
+		if mj.IsZero() {
+			mj = time.Unix(0, 0)
+		}
+		return mi.After(mj)
+	})
+	return rows
 }
 
 // startPageVisible reports whether the empty-transcript start page is showing.
@@ -140,19 +201,19 @@ func (m *Model) startPageBounds() (int, int) {
 	return width, height
 }
 
-// loadStartPreview fills the selected row's conversation preview from disk, once.
-// The preview is what makes the start page a live view of the session rather
-// than a name on a list. It reuses the JSONL the daemon persists, so a running
-// session's most recent turns are visible.
+// loadStartPreview fills the selected row's conversation preview from disk and
+// records its real message count. It reuses the JSONL the daemon persists, so a
+// running session's most recent turns are visible. The count is taken from the
+// same read (rather than trusted from the roster) so it is correct even when the
+// daemon is a stale process that does not report Messages — the "0 messages"
+// case. The preview is re-read on each refresh so a running session's preview
+// stays live rather than freezing at first load.
 func (m *Model) loadStartPreview() {
 	if len(m.startRows) == 0 || m.dataDir == "" {
 		return
 	}
 	sel := clamp(m.startSelected, 0, len(m.startRows)-1)
 	row := &m.startRows[sel]
-	if row.Preview != nil {
-		return
-	}
 	msgs, err := session.Messages(filepath.Join(session.Dir(m.dataDir), row.Info.Name+".jsonl"))
 	if err != nil {
 		// Distinguish "loaded and empty" from "not loaded yet", or an empty
@@ -160,10 +221,14 @@ func (m *Model) loadStartPreview() {
 		row.Preview = []Block{}
 		return
 	}
-	if len(msgs) > PreviewMessages {
-		msgs = msgs[len(msgs)-PreviewMessages:]
+	// The count is the full conversation length, before tailing to the preview
+	// window. This is what makes the title say "42 messages" instead of "0".
+	row.Info.Messages = len(msgs)
+	tail := msgs
+	if len(tail) > PreviewMessages {
+		tail = tail[len(tail)-PreviewMessages:]
 	}
-	blocks := BlocksFromMessages(msgs)
+	blocks := BlocksFromMessages(tail)
 	if blocks == nil {
 		blocks = []Block{}
 	}
