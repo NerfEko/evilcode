@@ -45,10 +45,15 @@ type todoGoalArg struct {
 // model's understanding of what the three scores mean, so the description
 // spends its tokens there rather than on the schema, which the schema already
 // covers.
-const todoDesc = `Track the work as a todo list, and record how confident you are in it.
+const todoDesc = `Track genuinely multi-stage work as a todo list, and record how confident you are in it.
+
+Do not call this just to make a plan visible. A todo update is not progress: after
+creating or changing the list, immediately execute the next actionable item. For
+a small task that fits in one or two actions, skip this tool.
 
 Send the COMPLETE list every time; it replaces the stored one. Keep ids stable
-so progress can be tracked across writes.
+so progress can be tracked across writes. Keep exactly one current item
+in_progress, and do not mark an item completed until its result is observed.
 
 Three scores drive the harness's quality gates. Be honest with them — they are
 used to decide whether you get asked to double-check your work, and inflating

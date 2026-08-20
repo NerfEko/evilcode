@@ -10,21 +10,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// SelfdevPrompt opens a session on evilcode's own repository (plan.md §5, the
-// Phase 5 graduation).
-//
-// It names the skill rather than restating it. The loop is long, it changes,
-// and a copy of it embedded in a Go string is a copy that goes stale — the
-// skill file is the one that gets edited.
-const SelfdevPrompt = `You are working on evilcode itself — the program you are running inside.
+// SelfdevPrompt is retained for old callers, but the self-development skill
+// and its plan-first loop are disabled. Normal coding requests use the regular
+// system prompt and execution contract instead.
+const SelfdevPrompt = `Self-development mode is disabled.
 
-Load the ` + "`selfdev`" + ` skill and follow it exactly. It encodes the loop:
-pick the next unchecked task in plan.md, implement it, build and vet and test,
-look at the rendered frame if it is visible in the TUI, update goldens, check
-the task off, commit, and write the LOOPS.md entry.
-
-Start by reading plan.md and telling me which task is next and why. Do not begin
-implementing until you have said what you are about to do.`
+Do not load a self-development skill, wait for plan.md, or invent a plan-first
+loop. If the user explicitly asks for a change in this repository, use the
+normal coding-agent contract: inspect the relevant code, implement the change,
+run focused verification, and report observed evidence. If the user asks only
+for advice, remain read-only.`
 
 // IsEvilcodeRepo reports whether a directory is evilcode's own source.
 //
@@ -45,25 +40,7 @@ func IsEvilcodeRepo(dir string) bool {
 
 // selfdevCommand implements `/selfdev`.
 func (m *Model) selfdevCommand() tea.Cmd {
-	if !IsEvilcodeRepo(m.cwd) {
-		m.notice = "/selfdev only works inside evilcode's own repository " +
-			"(no go.mod naming module evilcode here)"
-		return nil
-	}
-	if m.processing {
-		m.notice = "finish the current turn first"
-		return nil
-	}
-
-	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: strings.Join([]string{
-		"🦇 Self-development mode.",
-		"",
-		"Working on " + m.cwd,
-		"The `selfdev` skill has the loop. /rebuild to build and restart, " +
-			"/reload to restart on the current binary.",
-	}, "\n")})
-	m.scroll.FollowBottom()
-	m.submitHidden(SelfdevPrompt)
+	m.notice = "/selfdev is disabled; send a normal coding request instead"
 	return nil
 }
 

@@ -287,9 +287,9 @@ func (f *FS) readTool() Tool {
 		Name:     "read",
 		Exposure: f.exposure,
 		Desc: "Read an existing file and return its contents with line numbers. Use this " +
-			"before editing; use glob for directory or filename discovery. Use offset and " +
-			"limit to page through a large text file. Image paths are attached only when " +
-			"the active model supports vision.",
+			"before editing; use glob for directory or filename discovery. Keep reads narrow " +
+			"with offset and limit, then act once the target and surrounding pattern are clear. " +
+			"Image paths are attached only when the active model supports vision.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -769,8 +769,9 @@ func (f *FS) writeTool() Tool {
 		Name: "write",
 		Desc: "Create a new file or replace an existing file's entire contents. Read the " +
 			"target first; for a localized change, prefer edit, because write overwrites " +
-			"the complete file. Optionally provide intent, a short reason other agents " +
-			"can see if their copy conflicts.",
+			"the complete file. Use this to perform an intentional mutation, not merely to " +
+			"suggest contents. Optionally provide intent, a short reason other agents can " +
+			"see if their copy conflicts.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -838,7 +839,7 @@ type editArgs struct {
 func (f *FS) editTool() Tool {
 	return Tool{
 		Name: "edit",
-		Desc: "Change a file. Two forms:\n" +
+		Desc: "Change a file; use this to implement the requested mutation, not just describe it. Two forms:\n" +
 			"  anchored — patches: [{anchor, op: replace|insert_after|delete, lines}].\n" +
 			"    The anchor is the short code read prints BEFORE each line, not the line\n" +
 			"    itself: in `a3f2|417| func main() {` the anchor is a3f2. This is the\n" +

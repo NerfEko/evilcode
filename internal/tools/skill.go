@@ -572,9 +572,10 @@ func NewSkillTool(set *SkillSet) Tool {
 	return Tool{
 		Name: "skill",
 		Desc: "Load a skill's full instructions and supporting context. The system prompt " +
-			"lists available skills by name; call this before following a relevant skill, " +
-			"and do not load unrelated skills. Treat the loaded body as instructions only " +
-			"within that skill's stated scope.",
+			"lists available skills by name; call this only when the skill is relevant to " +
+			"the current request, and do not load unrelated skills. Loading a skill is not " +
+			"a reason to pause implementation: use its instructions in the current task. " +
+			"Treat the loaded body as instructions only within that skill's stated scope.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

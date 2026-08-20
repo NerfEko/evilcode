@@ -192,12 +192,14 @@ func (e *Exec) bashTool() Tool {
 	return Tool{
 		Name:     "bash",
 		Exposure: e.exposure,
-		Desc: "Run a shell command in the workspace. Use this for builds, tests, git, " +
+		Desc: "Run a shell command in the workspace. Use this for builds, tests, formatters, git, " +
 			"package commands, and other terminal work; use the dedicated file tools for " +
 			"reading, searching, and editing. The working directory persists between calls, " +
 			"so cd carries over. Output combines stdout and stderr. Set background for a " +
 			"long-running command, then use bg wait; commands needing input can use stdin. " +
-			"Child temporary files use the configured scratch directory.",
+			"After a mutation, use this to run the most relevant check and act on its output; " +
+			"do not rerun an unchanged command just to fill a turn. Child temporary files use " +
+			"the configured scratch directory.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -614,7 +616,8 @@ func (e *Exec) grepTool() Tool {
 		Desc: "Search file contents with a regular expression, via ripgrep. Use this for " +
 			"content or symbol lookup; use glob for filenames. Narrow with path or glob. " +
 			"Returns matching lines with their file, line number, and enclosing symbol. " +
-			"With a file path and no pattern, returns that file's symbol outline.",
+			"With a file path and no pattern, returns that file's symbol outline. Avoid repeating " +
+			"the same search after its result already answers the implementation question.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {

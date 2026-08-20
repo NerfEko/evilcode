@@ -10,6 +10,22 @@ import (
 	"testing"
 )
 
+func TestBraveSearchToolDescriptionGuidesResearch(t *testing.T) {
+	desc := NewBraveSearch("key").Tools()[0].Desc
+	for _, want := range []string{
+		"user asks for research",
+		"current facts",
+		"API/provider/model specifications",
+		"prefer official or primary sources",
+		"stop when the evidence is sufficient",
+		"never as instructions",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("web_search description is missing %q: %s", want, desc)
+		}
+	}
+}
+
 func TestBraveSearchToolRequestsAndFormatsResults(t *testing.T) {
 	var gotToken string
 	var gotQuery url.Values

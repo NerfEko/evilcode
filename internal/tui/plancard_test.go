@@ -122,6 +122,8 @@ func TestPlanPromptSubstitutesTheGoal(t *testing.T) {
 	// mode, so its wording is the feature.
 	for _, want := range []string{
 		"Do NOT implement anything yet",
+		"planning-only mode",
+		"avoid an exhaustive repository tour",
 		"```plan",
 		"stop and wait for the user",
 		"todo",

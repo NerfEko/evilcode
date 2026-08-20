@@ -17,13 +17,17 @@ const CompactPrompt = `Summarize this coding session for a fresh coding-agent co
 
 Preserve these facts, using compact bullets:
 - goal and user constraints
+- acceptance criteria and whether each is done, pending, or blocked
 - decisions and assumptions
 - files changed and why
 - verification actually run and its outcome
 - work remaining, blockers, and the next useful action
 - important project, provider, or tool constraints
 
-Do not invent results. Omit pleasantries, raw file contents, and dead ends.`
+Distinguish planned work from work actually performed. Do not invent results or
+claim completion from intent alone. Omit pleasantries, raw file contents, and
+dead ends. Keep the next action concrete enough that the fresh agent can act
+without restarting a broad exploration.`
 
 // CompactMessageCap bounds one message inside the transcript handed to the
 // summariser, so a single pasted file cannot crowd out the conversation.

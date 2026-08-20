@@ -11,17 +11,17 @@ import (
 // PlanPrompt is the one-shot synthetic user turn `/plan` injects. It is a
 // prompt, not a mode: there is no flag and no permission gate, which is what
 // keeps the plan→execution handoff conversational (plan.md §12.1).
-const PlanPrompt = `You are entering planning mode.
+const PlanPrompt = `You are entering explicit planning-only mode for this request.
 
 Goal: %s
 
-Your job is to produce a clear, concrete, actionable plan. Do NOT implement anything yet: do not edit files, write patches, or change git state. You may freely read, search, run read-only commands, and analyze the codebase so the plan is grounded in how things actually work.
+Your job is to produce a clear, concrete, actionable plan. Do NOT implement anything yet: do not edit files, write patches, run mutating commands, or change git state. Read only the relevant code and project instructions so the plan is grounded in how things actually work; avoid an exhaustive repository tour.
 
 When the plan is ready, present it directly in your reply inside a fenced code block whose language is ` + "`plan`" + ` (` + "```plan ... ```" + `). The UI renders that block as a dedicated plan card. Structure the plan inside the block with these sections: a top-level ` + "`# <short plan title>`" + ` heading, then Goal, Scope / affected areas, Approach (concrete ordered steps), Validation (how each part will be verified), and Open questions / decisions.
 
 Keep it tight and high-signal. Avoid speculative rewrites and busywork. After presenting the plan card, stop and wait for the user. Do not start implementing.
 
-Only once the user approves, use the ` + "`todo`" + ` tool to turn the plan into an executable todo list and then begin the work.`
+Only once the user approves, use the ` + "`todo`" + ` tool if the work is genuinely multi-stage, then immediately begin the first actionable item. Do not treat the plan or todo list as implementation.`
 
 // BarePlanGoal is substituted when `/plan` is called with no argument.
 const BarePlanGoal = "produce a plan for the task or request currently in focus in this session. " +

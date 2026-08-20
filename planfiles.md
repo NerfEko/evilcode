@@ -1,5 +1,10 @@
 # planfiles.md — how to author a plan file
 
+> Runtime note: plan files are project-authoring artifacts. Evilcode's
+> self-development skill and `/selfdev` plan-first loop are disabled; normal
+> coding turns use the execution contract in `internal/agent/prompts.go` and
+> the user's current request as their source of truth.
+
 A plan file is the working spec an agent builds from. It is checked off as it goes
 and pairs with three companion files. This preserves the layout and loop used by the
 completed feature and hardening plans, which remain available in Git history.

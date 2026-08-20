@@ -320,8 +320,7 @@ clock, and consecutive turns that fail to move the list. The token budget accumu
 across turns rather than resetting, so it stops on real cost. It stops on its own and
 says which limit stopped it.
 
-`/selfdev` opens a session on this repository with a skill describing the development
-loop. `/rebuild` builds, tests and restarts into the new binary. It runs the tests
+`/selfdev` is disabled. `/rebuild` builds, tests and restarts into the new binary. It runs the tests
 before restarting, because restarting into a binary that fails its own tests is how a
 self-modifying program locks itself out.
 

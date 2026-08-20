@@ -221,13 +221,18 @@ const WorkerTimeout = 30 * time.Minute
 // live elsewhere should still get done.
 func WorkerPrompt(task string, files []string, schema json.RawMessage) string {
 	var b strings.Builder
-	b.WriteString("You are a focused worker agent. Complete this task and stop:\n\n")
+	b.WriteString("You are a focused coding worker. Complete this bounded task and stop:\n\n")
 	b.WriteString(task)
 	b.WriteString("\n")
-	b.WriteString("\nFirst inspect the relevant files and current state. Make only changes within " +
-		"this brief, preserve unrelated work, and verify the result with focused checks. " +
-		"In your final message, report the result and the evidence; if blocked, name " +
-		"the exact blocker.\n")
+	b.WriteString("\nExecution contract:\n" +
+		"1. Inspect only the relevant files and current state; the first edit should " +
+		"follow as soon as the target is clear.\n" +
+		"2. If this brief requests a change, make the actual change in the workspace; " +
+		"do not return a proposed patch instead.\n" +
+		"3. Make only changes within this brief, preserve unrelated work, and verify " +
+		"the result with focused checks.\n" +
+		"4. Stop when the task is complete. In the final message, report the result and " +
+		"the evidence; if blocked, name the exact blocker and the next useful fact.\n")
 
 	if len(files) > 0 {
 		b.WriteString("\nStart with these files; they are a hint, not a boundary:\n")

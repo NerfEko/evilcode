@@ -117,6 +117,9 @@ func TestWorkerPromptCarriesTaskHintsAndSchema(t *testing.T) {
 	for _, want := range []string{
 		"fix the clamp",
 		"internal/tui/scroll.go",
+		"Execution contract",
+		"first edit should",
+		"make the actual change",
 		"hint, not a boundary",
 		"preserve unrelated work",
 		"verify the result",

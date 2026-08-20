@@ -45,7 +45,7 @@ var Commands = []Command{
 	{Name: "todos", Help: "Toggle the todo card"},
 	{Name: "todo", Help: "Toggle the todo card", Hidden: true},
 	{Name: "poke", Help: "Auto-poke on/off/status"},
-	{Name: "selfdev", Help: "Work on evilcode itself"},
+	{Name: "selfdev", Help: "Disabled self-development mode", Hidden: true},
 	{Name: "rebuild", Help: "Build, test, and restart into the new binary"},
 	{Name: "reload", Help: "Restart, keeping this session"},
 
@@ -187,7 +187,7 @@ var HelpSections = []HelpSection{
 	{"Working", []string{"plan", "review", "bugfix", "describe", "todos", "poke", "memory", "skills"}},
 	{"Swarm", []string{"summon", "agents"}},
 	{"Analysis", []string{"lsp", "advisor", "productivity", "overnight"}},
-	{"Self-development", []string{"selfdev", "rebuild", "reload"}},
+	{"Maintenance", []string{"rebuild", "reload"}},
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "login", "connect", "terminal-setup", "screenshot",

@@ -44,9 +44,10 @@ func (g *Git) overviewTool() Tool {
 	return Tool{
 		Name: "git_overview",
 		Desc: "Summarize the repository: current branch, staged and unstaged file counts, " +
-			"and recent commits. Use this as the first repository check and before committing; " +
+			"and recent commits. Use this once near the start of a repository change and before " +
+			"committing; " +
 			"it exposes existing user changes, which must not be discarded. Use this instead " +
-			"of shelling out to git status.",
+			"of shelling out to git status. Do not repeat it unless the working tree changed.",
 		Schema: json.RawMessage(`{"type": "object", "properties": {}}`),
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			branch, err := g.run(ctx, "rev-parse", "--abbrev-ref", "HEAD")

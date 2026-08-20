@@ -50,7 +50,7 @@ func TestPlanDuringATurnWaitsForItToEnd(t *testing.T) {
 	if m.queuedHidden == "" {
 		t.Fatal("the plan prompt was sent into a running turn rather than queued")
 	}
-	if !strings.Contains(m.queuedHidden, "planning mode") {
+	if !strings.Contains(m.queuedHidden, "planning-only mode") {
 		t.Errorf("queued prompt is not the plan prompt: %q", oneLine(m.queuedHidden))
 	}
 
@@ -61,7 +61,7 @@ func TestPlanDuringATurnWaitsForItToEnd(t *testing.T) {
 	if m.queuedHidden != "" {
 		t.Error("the queued prompt is still waiting after the turn ended")
 	}
-	if !strings.Contains(m.hiddenPrompt, "planning mode") {
+	if !strings.Contains(m.hiddenPrompt, "planning-only mode") {
 		t.Errorf("the queued plan did not start; hidden prompt = %q", oneLine(m.hiddenPrompt))
 	}
 }
