@@ -8,7 +8,7 @@
 
  One decision first.
 
-   ✓ ask · 7 tok
+   ✓ ask · 8 tok
 
  Exponential it is.
  💡 Ctrl+R searches your prompt history

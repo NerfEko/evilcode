@@ -177,17 +177,18 @@ func (r *Renderer) RenderStartPage(rows []SessionRow, selected int, active bool,
 	hint := r.style(theme.RoleDim)
 
 	if len(rows) == 0 {
-		out := []string{
+		// Packed, not bottom-pinned: the greeting hugs the composer and the
+		// rows below stay blank. That blank space is where the slash palette
+		// floats when it opens — the overlay splices in below the composer
+		// instead of being forced above it and covering the status line, which
+		// is what bottom-pinning did (it broke the "palette never moves the
+		// transcript" invariant, plan.md §5.2). With sessions, the preview box
+		// fills the slot for real, so this only shapes the empty greeting.
+		return []string{
 			accent.Render(WelcomeMessage),
 			"",
 			hint.Render("  no other sessions yet — type below to start a new one"),
 		}
-		// Pad to the requested height so the composer stays at the bottom rather
-		// than floating up under a short greeting.
-		for len(out) < height {
-			out = append(out, "")
-		}
-		return out
 	}
 
 	sel := clamp(selected, 0, len(rows)-1)

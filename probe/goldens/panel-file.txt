@@ -1,4 +1,4 @@
- <repo>                               │ testdata/clamp.go
+ <repo>                                          │ testdata/clamp.go
                                                                       │   8 │ // makes every scenario's edit fail with "old string not found
  1› fix the clamp                                                     │   9 │ // goldens then bake in the failure — which is exactly what ha
                                                                       │  10 │ func clamp(offset, max int) int {
