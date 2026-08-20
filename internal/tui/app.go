@@ -1832,18 +1832,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "ctrl+c", "ctrl+d":
-		// While processing this interrupts; idle, it quits — and quitting
-		// takes two presses so a reflexive Ctrl+C does not lose the session.
-		if m.processing {
-			m.interrupt(false)
-			return m, nil
-		}
-		if m.confirmQuit || m.editor.Text == "" {
+		// Ctrl+C never stops the agent — Esc does that. Two presses detach this
+		// window from the server, leaving the session and any running turn on the
+		// daemon. A single press only arms the second; typing or Esc clears it.
+		if m.confirmQuit {
 			m.quitting = true
 			return m, tea.Quit
 		}
 		m.confirmQuit = true
-		m.notice = "Press Ctrl+C again to quit"
+		if m.processing {
+			m.notice = "Press Ctrl+C again to detach (the agent keeps running)"
+		} else {
+			m.notice = "Press Ctrl+C again to detach"
+		}
 		return m, nil
 
 	case "esc":
@@ -3480,7 +3481,7 @@ func helpText() string {
 	for _, k := range [][2]string{
 		{"Enter", "submit, or queue while a turn is running"},
 		{"Esc", "cancel: close overlays, interrupt, or clear input"},
-		{"Ctrl+C", "interrupt; twice when idle to quit"},
+		{"Ctrl+C", "detach this window (twice); the agent keeps running"},
 		{"Ctrl+G", "toggle a scroll bookmark"},
 		{"Alt+R", "cycle reasoning effort"},
 		{"PgUp/PgDn", "scroll a page"},
@@ -3508,6 +3509,9 @@ func terminalSetupText() string {
 
 // escape is the layered cancel of plan.md §6.7.
 func (m *Model) escape() {
+	// Esc cancels a pending two-press detach before anything else, so a reflexive
+	// "never mind" actually disarms Ctrl+C.
+	m.confirmQuit = false
 	switch {
 	case m.quickView != nil:
 		// Closing something you are looking at is what Esc means in every other
