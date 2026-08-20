@@ -240,9 +240,14 @@ type Model struct {
 	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
 	entryAnim EntryAnimation
 
-	// welcomeChip is the focused starter prompt while the transcript is empty.
-	welcomeChip  int
-	welcomeFocus bool
+	// startPage holds the recent/active sessions offered on the empty-transcript
+	// start page, plus the arrow selection. startLoadedAt throttles the roster
+	// round trip so an idle start page does not poll the daemon every frame.
+	startRows     []SessionRow
+	startSelected int
+	startActive   bool
+	startLoadedAt time.Time
+	startLoading  bool
 
 	// keymap resolves chords, and hotkeys drives the rare-chord and near-miss
 	// feedback of §6.8.
@@ -288,17 +293,24 @@ type Model struct {
 	store        *session.Store
 	cwd          string
 
-	// artVariant is chosen once per process so the welcome animation stays the
-	// same one for a session, and decorate gates all decorative animation.
-	artVariant Variant
-	decorate   bool
-
 	// helpOpen and helpScroll drive the full-screen help overlay (§5.5).
 	helpOpen   bool
 	helpScroll int
 
 	// pendingAsk is the slot the ask tool parks its question in.
 	pendingAsk tools.PendingAsk
+
+	// remoteAskAnswer is set for a client whose ask request is owned by the
+	// daemon. The local picker remains the same, but the answer crosses the
+	// socket instead of resolving a local tool goroutine.
+	remoteAskAnswer   func(string, []string) error
+	remoteAskID       string
+	remoteModel       func(string) error
+	remoteModelEffort func(string, provider.ReasoningEffort) error
+	remoteInterrupt   func(bool) error
+	remoteCommand     func(string, string, string) error
+	remoteSessions    func() ([]SessionDescriptor, error)
+	remoteBackground  []BackgroundTask
 
 	// history is the Ctrl+R reverse search, and prompts is the recall source
 	// merged across sessions (plan.md §5.2).
@@ -451,10 +463,10 @@ type Model struct {
 	// user is looking at.
 	lastFrame string
 
-	quitting     bool
-	confirmQuit  bool
-	scrollbarOn  bool
-	cancelTurn   context.CancelFunc
+	quitting    bool
+	confirmQuit bool
+	scrollbarOn bool
+	cancelTurn  context.CancelFunc
 }
 
 // NewModel builds the TUI over an agent.
@@ -521,9 +533,6 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		panelRatio:              50,
 		showHints:               true,
 		overscroll:              Overscroll{Mode: OverscrollPull},
-		welcomeFocus:            true,
-		artVariant:              PickVariant(h.SessionName),
-		decorate:                os.Getenv("SSH_TTY") == "" && os.Getenv("SSH_CONNECTION") == "",
 		drawnImages:             map[int]imagePlacement{},
 	}
 }
@@ -549,6 +558,148 @@ func (m *Model) Asker() tools.Asker {
 			return nil, ctx.Err()
 		}
 	})
+}
+
+// WithRemoteAskAnswer connects the ask picker to the server-owned request
+// broker. It is intentionally separate from Asker, which remains the local
+// tool presenter used by the in-process compatibility path.
+func (m *Model) WithRemoteAskAnswer(answer func(string, []string) error) *Model {
+	m.remoteAskAnswer = answer
+	return m
+}
+
+// WithRemoteModel connects the model picker to the server-owned agent. The
+// picker remains local UI state, but the provider and durable session metadata
+// are changed in the daemon before the next turn.
+func (m *Model) WithRemoteModel(set func(string) error) *Model {
+	m.remoteModel = set
+	return m
+}
+
+// WithRemoteModelEffort lets an attached client submit a model and its chosen
+// reasoning preference as one daemon request. That prevents a rejected model
+// switch from still changing the old session's effort.
+func (m *Model) WithRemoteModelEffort(set func(string, provider.ReasoningEffort) error) *Model {
+	m.remoteModelEffort = set
+	return m
+}
+
+// WithRemoteInterrupt connects the cancel key to the server-owned turn. The
+// local forwarding goroutine returns as soon as it submits a prompt, so
+// canceling that goroutine cannot stop the agent that is actually working.
+func (m *Model) WithRemoteInterrupt(stop func(bool) error) *Model {
+	m.remoteInterrupt = stop
+	return m
+}
+
+// WithRemoteCommand supplies the small command bridge used by slash commands
+// whose state belongs to the daemon rather than this TUI process.
+func (m *Model) WithRemoteCommand(run func(kind, arg, secret string) error) *Model {
+	m.remoteCommand = run
+	return m
+}
+
+// WithRemoteSessions lets the in-TUI picker show the daemon's live roster,
+// including running/client counts, without sharing the streaming connection's
+// scanner with a second request.
+func (m *Model) WithRemoteSessions(list func() ([]SessionDescriptor, error)) *Model {
+	m.remoteSessions = list
+	return m
+}
+
+// SetRemoteAsk queues a server-owned question for the normal TUI picker.
+func (m *Model) SetRemoteAsk(req agent.AskEvent) {
+	m.pendingAsk.Set(&tools.AskRequest{
+		ID:       req.ID,
+		Question: req.Question, Options: req.Options, Multi: req.Multi,
+		Reply: make(chan []string, 1),
+	})
+}
+
+// ClearRemoteAsk converges every attached picker when another client answers
+// or the daemon cancels a pending request.
+func (m *Model) ClearRemoteAsk(id string) {
+	if id == "" {
+		return
+	}
+	m.pendingAsk.RemoveID(id)
+	if m.ask != nil && m.ask.ID == id {
+		m.ask = nil
+		m.askChosen = nil
+		m.askCursor = 0
+	}
+	if m.remoteAskID == id {
+		m.remoteAskID = ""
+	}
+}
+
+// SetRemoteBackground replaces the attached view of detached shell tasks.
+// The daemon remains the owner; this is only the state the widget renders.
+func (m *Model) SetRemoteBackground(states []agent.BackgroundState) {
+	m.remoteBackground = make([]BackgroundTask, 0, len(states))
+	for _, state := range states {
+		m.remoteBackground = append(m.remoteBackground, BackgroundTask{
+			ID: state.ID, Label: state.Label, Done: state.Done,
+			Err: state.Failed, Progress: state.Progress,
+		})
+	}
+}
+
+func (m *Model) applyRemoteBackground(state agent.BackgroundState) {
+	for i := range m.remoteBackground {
+		if m.remoteBackground[i].ID != state.ID {
+			continue
+		}
+		m.remoteBackground[i] = BackgroundTask{
+			ID: state.ID, Label: state.Label, Done: state.Done,
+			Err: state.Failed, Progress: state.Progress,
+		}
+		return
+	}
+	m.remoteBackground = append(m.remoteBackground, BackgroundTask{
+		ID: state.ID, Label: state.Label, Done: state.Done,
+		Err: state.Failed, Progress: state.Progress,
+	})
+}
+
+// ApplyRemoteState replaces the local render mirror after a server-side
+// rewrite such as compact, rewind, or rename. The daemon remains authoritative;
+// this only keeps an attached TUI's conversation and chrome in sync.
+func (m *Model) ApplyRemoteState(sessionName, modelName, providerName string,
+	running bool, msgs []provider.Message, pending []agent.AskEvent,
+	background []agent.BackgroundState) {
+	if sessionName != "" {
+		m.header.SessionName = sessionName
+		if m.todos != nil && m.todos.Session != sessionName {
+			if err := m.todos.Rebind(sessionName); err != nil {
+				m.notice = "could not refresh renamed session plan: " + err.Error()
+			}
+		}
+	}
+	if modelName != "" {
+		m.header.Model = modelName
+		if m.agent != nil {
+			m.agent.Model = modelName
+		}
+	}
+	if providerName != "" {
+		m.header.Provider = providerName
+	}
+	m.processing = running
+	m.streamingIdx, m.reasoningIdx = -1, -1
+	if !running {
+		m.status = StatusState{Phase: PhaseIdle}
+	}
+	if m.agent != nil {
+		m.agent.SetRunning(running)
+	}
+	m.pendingAsk.Cancel()
+	m.remoteAskID = ""
+	for _, req := range pending {
+		m.SetRemoteAsk(req)
+	}
+	m.SetRemoteBackground(background)
+	m.RebuildFrom(msgs)
 }
 
 // WithSessions attaches the session store and data directory, enabling the
@@ -692,7 +843,7 @@ func (m *Model) WithSkills(skills *tools.SkillSet, pc agent.ProjectContext) *Mod
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.waitForEvent(), m.tick())
+	return tea.Batch(m.waitForEvent(), m.tick(), m.refreshStartSessions())
 }
 
 func (m *Model) tick() tea.Cmd {
@@ -704,11 +855,6 @@ func (m *Model) tick() tea.Cmd {
 	interval := IdleTickInterval
 	if m.processing || m.hasRunningBackground() {
 		interval = SpinnerInterval
-	} else if len(m.blocks) == 0 && m.animate() {
-		// The welcome art is decorative and considerably more expensive than a
-		// settled text frame; four frames per second keeps it alive without
-		// making startup burn a core.
-		interval = IdleArtInterval
 	}
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
@@ -718,15 +864,18 @@ func (m *Model) tick() tea.Cmd {
 // completion or an ask prompt while avoiding a needless redraw storm.
 const IdleTickInterval = 500 * time.Millisecond
 
-const IdleArtInterval = 250 * time.Millisecond
-
 func (m *Model) hasRunningBackground() bool {
-	if m.bg == nil {
+	if m.bg != nil {
+		for _, task := range m.bg.Tasks() {
+			done, _, _ := task.Snapshot()
+			if !done {
+				return true
+			}
+		}
 		return false
 	}
-	for _, task := range m.bg.Tasks() {
-		done, _, _ := task.Snapshot()
-		if !done {
+	for _, task := range m.remoteBackground {
+		if !task.Done {
 			return true
 		}
 	}
@@ -926,9 +1075,21 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if req := m.pendingAsk.Get(); req != nil {
 				m.ask, m.askCursor = req, 0
 				m.askChosen = map[int]bool{}
+				m.remoteAskID = req.ID
 			}
 		}
-		return m, m.tick()
+		// The start page polls the roster on a slow cadence so its "currently
+		// running" / "completed 10m ago" labels stay honest while it is showing.
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.tick())
+		if m.needsStartRefresh() {
+			cmds = append(cmds, m.refreshStartSessions())
+		}
+		return m, tea.Batch(cmds...)
+
+	case startSessionsMsg:
+		m.applyStartSessions(msg)
+		return m, nil
 
 	case eventsClosedMsg:
 		return m, nil
@@ -975,7 +1136,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		insert, stored := CollapsePaste(msg.Content)
 		m.editor.Insert(insert)
 		m.resetTypingIfEmpty()
-		m.welcomeFocus = false
 		if stored != nil {
 			m.pastes = append(m.pastes, *stored)
 		}
@@ -1072,7 +1232,9 @@ func (m *Model) applyEvent(e agent.Event) {
 		// auto-poke, overnight — and its full instruction text has no business
 		// in the transcript. Without this check the attach path, which exists
 		// so a client renders prompts it did not type, drew every one of them.
-		if e.Text != "" && e.Text == m.hiddenPrompt {
+		if e.Hidden {
+			m.hiddenPrompt = ""
+		} else if e.Text != "" && e.Text == m.hiddenPrompt {
 			m.hiddenPrompt = ""
 		} else if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
 			m.promptCount++
@@ -1184,6 +1346,9 @@ func (m *Model) applyEvent(e agent.Event) {
 		// delta rides the event rather than a side channel, so it cannot race
 		// the render loop.
 		if e.Call.Name == "todo" && !e.IsError() {
+			if m.todos != nil {
+				_ = m.todos.Reload()
+			}
 			if m.poke != nil {
 				m.poke.Rearm()
 			}
@@ -1225,9 +1390,74 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 
 	case agent.EventReasoningEffort:
-		if e.ReasoningEffort.Valid() {
+		if (e.ReasoningEffortKnown || e.ReasoningEffort.Valid()) && e.ReasoningEffort.Valid() {
 			m.reasoningEffort = e.ReasoningEffort
 			m.header.ReasoningEffort = e.ReasoningEffort
+		}
+
+	case agent.EventAskResolved:
+		m.ClearRemoteAsk(e.RequestID)
+
+	case agent.EventModel:
+		if e.Model != "" {
+			m.header.Model = e.Model
+			if m.agent != nil {
+				m.agent.Model = e.Model
+			}
+		}
+		if e.Provider != "" {
+			m.header.Provider = e.Provider
+			if m.agent != nil {
+				if pc := m.providerConfig(e.Provider); pc != nil {
+					if p, err := pc.Build(); err == nil {
+						m.agent.Provider = p
+					}
+				}
+			}
+		}
+		if (e.ReasoningEffortKnown || e.ReasoningEffort.Valid()) && e.ReasoningEffort.Valid() {
+			m.reasoningEffort = e.ReasoningEffort
+			m.header.ReasoningEffort = e.ReasoningEffort
+		} else if e.ReasoningEffortKnown || e.Model != "" {
+			m.reasoningEffort = ""
+			m.header.ReasoningEffort = ""
+		}
+		if e.ReasoningEffortKnown || e.Model != "" {
+			levels := make([]provider.ReasoningEffort, 0, len(e.ReasoningEfforts))
+			for _, raw := range e.ReasoningEfforts {
+				if level, ok := provider.ParseReasoningEffort(raw); ok {
+					levels = append(levels, level)
+				}
+			}
+			m.WithReasoningEfforts(levels)
+		}
+		if e.VisionKnown {
+			m.vision.Store(e.Vision)
+		}
+		if m.remoteModel != nil && e.Model != "" {
+			if err := m.rememberModel(config.ModelRef(e.Model, e.Provider)); err != nil {
+				m.notice = "model changed, but could not remember it: " + err.Error()
+			}
+		}
+
+	case agent.EventBackground:
+		if e.Background != nil {
+			wasDone := false
+			for _, task := range m.remoteBackground {
+				if task.ID == e.Background.ID {
+					wasDone = task.Done
+					break
+				}
+			}
+			m.applyRemoteBackground(*e.Background)
+			if e.Background.Done && !wasDone {
+				state := "finished"
+				if e.Background.Failed {
+					state = "failed"
+				}
+				m.notice = fmt.Sprintf("▣ Background task %d %s: %s",
+					e.Background.ID, state, e.Background.Label)
+			}
 		}
 
 	case agent.EventNotice:
@@ -1255,6 +1485,16 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.blocks = append(m.blocks, Block{Kind: BlockMemory, Memories: hits})
 			m.followIfPinned()
 		}
+
+	case agent.EventAsk:
+		if e.Ask != nil {
+			m.SetRemoteAsk(*e.Ask)
+		}
+
+	case agent.EventSnapshot:
+		m.ApplyRemoteState(e.SnapshotSession, e.SnapshotModel, e.SnapshotProvider,
+			e.SnapshotRunning, e.SnapshotMessages, e.SnapshotPending,
+			e.SnapshotBackground)
 
 	case agent.EventError:
 		m.finishStreaming()
@@ -1561,45 +1801,50 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// The welcome screen's chips take the arrows and Enter (§7, item 1). The
-	// transcript is empty there, so there is no scroll to conflict with — but a
-	// rebind still gets these chords first, which is why this sits below the
-	// keymap rather than above it.
-	if len(m.blocks) == 0 && m.editor.Text == "" && len(SuggestionChips) > 0 {
+	// The start page's resume buttons take the arrows and Enter (§7, item 1).
+	// The transcript is empty there, so there is no scroll to conflict with — but
+	// a rebind still gets these chords first, which is why this sits below the
+	// keymap rather than above it. Typing any text falls through to the composer.
+	// The button row is horizontal, so ←/→ move the selection. ↑/↓ are kept as
+	// aliases since arrow keys carry no printable text and so never conflict
+	// with typing into the composer.
+	if len(m.blocks) == 0 && m.editor.Text == "" && len(m.startRows) > 0 {
 		switch key {
-		case "up":
-			m.welcomeFocus = true
-			m.welcomeChip = (m.welcomeChip - 1 + len(SuggestionChips)) % len(SuggestionChips)
+		case "left", "up":
+			m.startActive = true
+			m.startSelected = max(m.startSelected-1, 0)
+			m.loadStartPreview()
 			return m, nil
-		case "down":
-			m.welcomeFocus = true
-			m.welcomeChip = (m.welcomeChip + 1) % len(SuggestionChips)
+		case "right", "down":
+			m.startActive = true
+			m.startSelected = min(m.startSelected+1, len(m.startRows)-1)
+			m.loadStartPreview()
 			return m, nil
 		case "enter":
-			// Only when a chip is actually highlighted: with the focus dropped
-			// there is nothing on screen to say which chip Enter would send.
-			if m.welcomeFocus {
-				m.editor.Text = SuggestionChips[m.welcomeChip%len(SuggestionChips)]
-				m.editor.Cursor = len([]rune(m.editor.Text))
-				return m.send()
+			// Only resume once the user has actually picked a row with the
+			// arrows, so a reflexive Enter on a blank start page does not jump
+			// into another session.
+			if m.startActive {
+				return m.resumeStartSelected()
 			}
 		}
 	}
 
 	switch key {
 	case "ctrl+c", "ctrl+d":
-		// While processing this interrupts; idle, it quits — and quitting
-		// takes two presses so a reflexive Ctrl+C does not lose the session.
-		if m.processing {
-			m.interrupt(false)
-			return m, nil
-		}
-		if m.confirmQuit || m.editor.Text == "" {
+		// Ctrl+C never stops the agent — Esc does that. Two presses detach this
+		// window from the server, leaving the session and any running turn on the
+		// daemon. A single press only arms the second; typing or Esc clears it.
+		if m.confirmQuit {
 			m.quitting = true
 			return m, tea.Quit
 		}
 		m.confirmQuit = true
-		m.notice = "Press Ctrl+C again to quit"
+		if m.processing {
+			m.notice = "Press Ctrl+C again to detach (the agent keeps running)"
+		} else {
+			m.notice = "Press Ctrl+C again to detach"
+		}
 		return m, nil
 
 	case "esc":
@@ -1830,7 +2075,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
 		m.insertPromptText(txt)
-		m.welcomeFocus = false
+		m.startActive = false
 		m.confirmQuit = false
 		// Typing normally follows the bottom; the lock keeps the reader where
 		// they were (plan.md §4.5).
@@ -2168,6 +2413,7 @@ func (m *Model) previewHistory() {
 // handleAskKey drives the ask tool's option picker.
 func (m *Model) handleAskKey(key string) (tea.Model, tea.Cmd) {
 	n := len(m.ask.Options)
+	remoteID := m.ask.ID
 	switch key {
 	case "up", "ctrl+k":
 		m.askCursor = MovePaletteSelection(m.askCursor, -1, n)
@@ -2191,12 +2437,28 @@ func (m *Model) handleAskKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			labels = []string{m.ask.Options[clamp(m.askCursor, 0, n-1)].Label}
 		}
-		m.pendingAsk.Answer(labels)
+		if remoteID != "" && m.remoteAskAnswer != nil {
+			if err := m.remoteAskAnswer(remoteID, labels); err != nil {
+				m.notice = "could not answer server request: " + err.Error()
+				return m, nil
+			}
+			m.remoteAskID = ""
+			m.pendingAsk.Answer(nil)
+		} else {
+			m.pendingAsk.Answer(labels)
+		}
 		m.ask = nil
 		return m, nil
 	case "esc", "ctrl+c":
 		// Declining is an answer: the tool reports that nothing was chosen
 		// rather than hanging.
+		if remoteID != "" && m.remoteAskAnswer != nil {
+			if err := m.remoteAskAnswer(remoteID, nil); err != nil {
+				m.notice = "could not answer server request: " + err.Error()
+				return m, nil
+			}
+			m.remoteAskID = ""
+		}
 		m.pendingAsk.Answer(nil)
 		m.ask = nil
 		return m, nil
@@ -2352,14 +2614,66 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 	previousModel := m.header.Model
 	previousProvider := m.header.Provider
 	previousRef := config.ModelRef(previousModel, previousProvider)
-	if sel.Provider != "" && sel.Provider != m.header.Provider {
+	targetProvider := previousProvider
+	if sel.Provider != "" {
+		targetProvider = sel.Provider
+	}
+	targetRef := config.ModelRef(sel.Name, targetProvider)
+	if m.remoteModel != nil || m.remoteModelEffort != nil {
+		// The daemon owns the live provider and may reject a switch because the
+		// session is busy, unavailable, or unauthenticated. Keep this mirror on
+		// the old state until the canonical EventModel arrives.
+		levels := provider.NormalizeReasoningEfforts(sel.ReasoningEfforts)
+		if len(levels) == 0 && targetRef == previousRef {
+			levels = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
+		}
+		if len(levels) == 0 {
+			if pc := m.providerConfig(targetProvider); pc != nil {
+				if p, err := pc.Build(); err == nil {
+					levels = provider.ReasoningEffortLevelsForProvider(p, sel.Name)
+				}
+			}
+		}
+		var next provider.ReasoningEffort
+		if len(levels) > 0 {
+			fallback := provider.DefaultReasoningEffort
+			if targetRef == previousRef {
+				fallback = m.reasoningEffort
+			}
+			want := fallback
+			if explicit && effort.Valid() {
+				want = effort
+			} else {
+				want = m.rememberedEffort(targetRef, fallback)
+			}
+			next = preferredReasoningEffort(levels, want)
+		}
+		var err error
+		if m.remoteModelEffort != nil {
+			err = m.remoteModelEffort(targetRef, next)
+		} else {
+			err = m.remoteModel(targetRef)
+			if err == nil && next.Valid() && m.setReasoningEffort != nil && next != m.reasoningEffort {
+				err = m.setReasoningEffort(next)
+			}
+		}
+		if err != nil {
+			m.notice = "could not switch model: " + err.Error()
+			return
+		}
+		if explicit && next.Valid() {
+			_ = m.rememberEffort(targetRef, next)
+		}
+		return
+	}
+	if targetProvider != m.header.Provider {
 		// Crossing providers rebuilds the live client. The picker lists
 		// models from every configured provider, so a selection can name
 		// one the session did not start on.
-		if pc := m.providerConfig(sel.Provider); pc != nil {
+		if pc := m.providerConfig(targetProvider); pc != nil {
 			if p, err := pc.Build(); err == nil {
 				m.agent.Provider = p
-				m.header.Provider = sel.Provider
+				m.header.Provider = targetProvider
 				if m.compactor != nil {
 					m.compactor.SetEmbeddingProvider(p)
 				}
@@ -2367,10 +2681,9 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 		}
 	}
 	m.header.Model = sel.Name
-	if sel.Provider != "" {
-		m.header.Provider = sel.Provider
+	if targetProvider != "" {
+		m.header.Provider = targetProvider
 	}
-	targetRef := config.ModelRef(m.header.Model, m.header.Provider)
 	m.agent.Model = sel.Name
 	levels := provider.NormalizeReasoningEfforts(sel.ReasoningEfforts)
 	if len(levels) == 0 && m.agent != nil {
@@ -2832,6 +3145,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "poke":
 		if m.poke == nil {
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand("poke", strings.TrimSpace(m.commandArg), ""); err != nil {
+					m.notice = "could not update server auto-poke: " + err.Error()
+				} else {
+					m.notice = "Auto-poke request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "auto-poke is not configured for this session"
 			return m, nil
 		}
@@ -2918,11 +3239,19 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		return m.runSmoothness(arg)
 
 	case "onboarding-sim":
-		for i, frame := range []int{0, 1, 2} {
+		// Demo the start page's resume buttons across the activity states a
+		// roster can show: running, waiting on an answer, ready, completed.
+		sample := []SessionRow{
+			{Info: session.Info{Name: "bat", Emoji: sessionEmoji("bat"), Messages: 42, Model: "claude", Title: "wire the auth flow"}, Live: true, Running: true, Clients: 1},
+			{Info: session.Info{Name: "owl", Emoji: sessionEmoji("owl"), Messages: 18, Model: "gpt", Title: "fix scroll math"}, Live: true, Pending: 1},
+			{Info: session.Info{Name: "fox", Emoji: sessionEmoji("fox"), Messages: 7, Model: "claude"}, Live: true, Clients: 0},
+			{Info: session.Info{Name: "moth", Emoji: sessionEmoji("moth"), Messages: 120, Model: "gpt", Title: "refactor the dock", Modified: time.Now().Add(-10 * time.Minute)}},
+		}
+		for i := range sample {
 			m.blocks = append(m.blocks, Block{
 				Kind: BlockNotice,
-				Text: fmt.Sprintf("— welcome screen %d —\n%s", i+1,
-					strings.Join(plainRows(m.renderer.RenderWelcome(frame, nil)), "\n")),
+				Text: fmt.Sprintf("— start page %d —\n%s", i+1,
+					strings.Join(plainRows(m.renderer.RenderStartPage(sample, i, true, 80, 20)), "\n")),
 			})
 		}
 		m.scroll.FollowBottom()
@@ -2990,6 +3319,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "save", "unsave":
 		if m.store == nil {
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand(name, "", ""); err != nil {
+					m.notice = "could not update server session: " + err.Error()
+				} else {
+					m.notice = "session update sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "no session to pin"
 			return m, nil
 		}
@@ -3004,6 +3341,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "rename":
 		if m.store == nil || arg == "" {
+			if m.store == nil && m.remoteCommand != nil && arg != "" {
+				if err := m.remoteCommand("rename", arg, ""); err != nil {
+					m.notice = "could not rename server session: " + err.Error()
+				} else {
+					m.notice = "rename request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "usage: /rename <new-name>"
 			return m, nil
 		}
@@ -3017,6 +3362,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "fork":
 		if m.store == nil || arg == "" {
+			if m.store == nil && m.remoteCommand != nil && arg != "" {
+				if err := m.remoteCommand("fork", arg, ""); err != nil {
+					m.notice = "could not fork server session: " + err.Error()
+				} else {
+					m.notice = "fork request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "usage: /fork <new-name>"
 			return m, nil
 		}
@@ -3029,6 +3382,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "checkpoint":
 		if m.store == nil {
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand("checkpoint", arg, ""); err != nil {
+					m.notice = "could not checkpoint server session: " + err.Error()
+				} else {
+					m.notice = "checkpoint request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "no session to checkpoint"
 			return m, nil
 		}
@@ -3120,7 +3481,7 @@ func helpText() string {
 	for _, k := range [][2]string{
 		{"Enter", "submit, or queue while a turn is running"},
 		{"Esc", "cancel: close overlays, interrupt, or clear input"},
-		{"Ctrl+C", "interrupt; twice when idle to quit"},
+		{"Ctrl+C", "detach this window (twice); the agent keeps running"},
 		{"Ctrl+G", "toggle a scroll bookmark"},
 		{"Alt+R", "cycle reasoning effort"},
 		{"PgUp/PgDn", "scroll a page"},
@@ -3148,6 +3509,9 @@ func terminalSetupText() string {
 
 // escape is the layered cancel of plan.md §6.7.
 func (m *Model) escape() {
+	// Esc cancels a pending two-press detach before anything else, so a reflexive
+	// "never mind" actually disarms Ctrl+C.
+	m.confirmQuit = false
 	switch {
 	case m.quickView != nil:
 		// Closing something you are looking at is what Esc means in every other
@@ -3169,7 +3533,12 @@ func (m *Model) escape() {
 // here: Esc means "stop", so the harness must not immediately re-poke, while
 // Ctrl+C means "skip this" and leaves the cycle armed (plan.md §6.7).
 func (m *Model) interrupt(disarmPoke bool) {
-	if m.cancelTurn != nil {
+	if m.remoteInterrupt != nil {
+		if err := m.remoteInterrupt(disarmPoke); err != nil {
+			m.notice = "could not interrupt server turn: " + err.Error()
+			return
+		}
+	} else if m.cancelTurn != nil {
 		m.cancelTurn()
 	}
 	// Queued messages stay: they were never delivered, and the interrupted
@@ -3194,6 +3563,13 @@ func (m *Model) send() (tea.Model, tea.Cmd) {
 
 	switch SendActionFor(m.processing, m.editor.Text) {
 	case Queue:
+		// An attached TUI is only a view. The daemon owns the ordered input
+		// queue, so send queued text across the socket immediately; keeping it
+		// only in this window would lose it if the window closed mid-turn.
+		if m.remoteCommand != nil {
+			m.submit(text, wpm)
+			return m, nil
+		}
 		m.pending = append(m.pending, PendingMessage{Kind: PendingQueued, Text: text, WPM: wpm})
 		m.clearEditor()
 		return m, nil
@@ -3343,7 +3719,7 @@ func (m *Model) submitHidden(text string) {
 	m.cancelTurn = cancel
 	go func() {
 		defer cancel()
-		_ = m.agent.Run(ctx, text)
+		_ = m.agent.RunHidden(ctx, text)
 	}()
 }
 
@@ -3438,12 +3814,13 @@ func (m *Model) transcriptLines() Rows {
 	}
 
 	if len(m.blocks) == 0 {
-		welcome := m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt())
-		owner := make([]int, len(welcome))
+		w, h := m.startPageBounds()
+		start := m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, w, h)
+		owner := make([]int, len(start))
 		for i := range owner {
 			owner[i] = -1
 		}
-		rows := Rows{Lines: welcome, Owner: owner}
+		rows := Rows{Lines: start, Owner: owner}
 		if cacheable {
 			m.rememberTranscriptHeight(m.renderer.Width, len(rows.Lines))
 		}
@@ -3602,7 +3979,8 @@ func (m *Model) transcriptHeightOnly() int {
 		}
 	}
 	if len(m.blocks) == 0 {
-		height := len(m.renderer.RenderWelcome(m.welcomeIndex(), m.idleArt()))
+		w, h := m.startPageBounds()
+		height := len(m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, w, h))
 		if !animating {
 			m.rememberTranscriptHeight(m.renderer.Width, height)
 		}
@@ -3811,13 +4189,6 @@ func (m *Model) composerState() ComposerState {
 		PaletteOpen:     m.paletteOpen(),
 		Masked:          m.loginMode,
 	}
-}
-
-func (m *Model) welcomeIndex() int {
-	if !m.welcomeFocus || len(SuggestionChips) == 0 {
-		return -1
-	}
-	return m.welcomeChip % len(SuggestionChips)
 }
 
 func (m *Model) View() tea.View {
@@ -4231,40 +4602,6 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 	return rows
 }
 
-// idleArt renders the welcome art, sized to the space actually available so it
-// never pushes the composer off a short terminal.
-//
-// When decorative animation is gated off the art still draws — frozen at frame
-// zero. What SSH and deterministic mode are protecting against is the repaint
-// cost of animating, not the picture itself; omitting it entirely would remove
-// the welcome screen rather than quiet it (plan.md §10).
-func (m *Model) idleArt() []string {
-	// A demo-only escape hatch, distinct from deterministic mode's "freeze,
-	// don't omit" guarantee above: a screen recording wants a clean, tight
-	// welcome band, not the full art.
-	if os.Getenv("EVILCODE_DEMO_NO_LOGO") != "" {
-		return nil
-	}
-	rows := min(ArtHeight, max(m.height-12, 0))
-	if rows < 6 || m.width < 40 {
-		return nil
-	}
-	width, _ := ContentWidth(m.width, m.centered)
-
-	elapsed := 0.0
-	if m.animate() {
-		elapsed = time.Since(m.started).Seconds()
-	}
-	return RenderArt(SamplerFor(m.artVariant), min(width, 72), rows, elapsed, m.animate())
-}
-
-// animate reports whether decorative animation is on. It is gated by
-// deterministic mode (so golden frames stay reproducible), by SSH (a remote
-// terminal pays for every repaint), and by config (plan.md §10).
-func (m *Model) animate() bool {
-	return m.decorate && !Deterministic()
-}
-
 // factStack gathers the always-true, never-urgent facts (§8.6).
 func (m *Model) factStack() FactStack {
 	return FactStack{
@@ -4332,9 +4669,12 @@ func (m *Model) activeWidgets() []Widget {
 		var tasks []BackgroundTask
 		for _, t := range m.bg.Tasks() {
 			done, failed, _ := t.Snapshot()
-			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed, Progress: t.Progress().String()})
+			tasks = append(tasks, BackgroundTask{ID: t.ID, Label: t.Label, Done: done, Err: failed, Progress: t.Progress().String()})
 		}
 		add(m.renderer.BackgroundTasksWidget(tasks, int(time.Since(m.started)/SpinnerInterval)))
+	} else if len(m.remoteBackground) > 0 {
+		add(m.renderer.BackgroundTasksWidget(m.remoteBackground,
+			int(time.Since(m.started)/SpinnerInterval)))
 	}
 	if m.memory != nil {
 		act := m.memory.Activity()
@@ -4433,6 +4773,15 @@ func (m *Model) widgetUrgency(w Widget) float64 {
 					return 24
 				}
 				if !done {
+					return 12
+				}
+			}
+		} else {
+			for _, task := range m.remoteBackground {
+				if task.Err {
+					return 24
+				}
+				if !task.Done {
 					return 12
 				}
 			}
@@ -4587,7 +4936,10 @@ func paintWidget(rows, lines []string, top, col, limit int) {
 		// rather than trimming is what makes this an overlay: a row longer than
 		// col would otherwise push the box further right, which is the
 		// appending behaviour that used to send boxes past the frame edge.
-		base := truncateCells(rows[row], col)
+		// A transcript/header row may contain a literal tab from formatted
+		// content. Tabs are terminal-position dependent, so carrying one into a
+		// fixed-column overlay can move the widget border between captures.
+		base := truncateCells(strings.ReplaceAll(rows[row], "\t", "    "), col)
 		rows[row] = base + strings.Repeat(" ", max(col-lipgloss.Width(base), 0)) + line
 	}
 }

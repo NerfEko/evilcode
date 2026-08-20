@@ -19,8 +19,37 @@ func Run(args []string) error {
 	model := fs.String("m", "", "default model reference for sessions this daemon creates")
 	socket := fs.String("socket", "", "socket path (default $XDG_RUNTIME_DIR/evilcode.sock)")
 	quiet := fs.Bool("q", false, "do not print the startup line")
+	idle := fs.Duration("idle", daemon.DefaultIdleTimeout, "shutdown after this long with no clients or running agents (0 disables)")
+	status := fs.Bool("status", false, "print daemon status and exit")
+	stop := fs.Bool("stop", false, "request a graceful daemon shutdown and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	path := *socket
+	if path == "" {
+		path = daemon.SocketPath()
+	}
+	if *status || *stop {
+		client, err := daemon.DialPath(path)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		if *stop {
+			if err := client.Stop(); err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stdout, "evilcode server stopping")
+			return nil
+		}
+		info, err := client.Status()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "pid=%d socket=%s sessions=%d clients=%d running=%d idle=%s\n",
+			info.PID, info.Socket, info.Sessions, info.Clients, info.Running, info.IdleTimeout)
+		return nil
 	}
 
 	cfg, err := config.Load()
@@ -37,9 +66,8 @@ func Run(args []string) error {
 	}
 
 	srv := daemon.NewServer(cfg, cwd, *model)
-	if *socket != "" {
-		srv.Path = *socket
-	}
+	srv.Path = path
+	srv.IdleTimeout = *idle
 	if err := srv.Listen(); err != nil {
 		return err
 	}
@@ -58,5 +86,5 @@ func Run(args []string) error {
 
 // Usage prints the subcommand's flags.
 func Usage() string {
-	return "evilcode serve [-m model] [-socket path] [-q]"
+	return "evilcode serve [-m model] [-socket path] [-idle duration] [-q] [-status|-stop]"
 }

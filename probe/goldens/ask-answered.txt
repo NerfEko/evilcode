@@ -1,8 +1,8 @@
- evilcode · v1.0.1                                                                                                  ╭──────────────────────╮
- session: Dracula 🧛                                                                                                │ Context 406/200k     │
- /model to switch · local:mock · mock-large                                                                         │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+ evilcode · v1.1.0                                                                                                  ╭──────────────────────╮
+ server: Dracula 🧛 · client: Spider 🕷                                                                              │ Context 406/200k     │
+ /model to switch · socket:mock · mock-large                                                                        │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯
- <repo> (main)
+ <repo>
 
  1› add a retry gate
 

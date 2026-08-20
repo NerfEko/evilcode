@@ -119,22 +119,36 @@ func (m *Model) ResumeTarget() string { return m.resumeTarget }
 
 // openSessions loads the picker.
 func (m *Model) openSessions() {
-	if m.dataDir == "" {
+	if m.dataDir == "" && m.remoteSessions == nil {
 		m.notice = "session storage is not configured"
 		return
 	}
-	infos, err := session.List(m.dataDir)
-	if err != nil {
-		m.notice = "could not list sessions: " + err.Error()
-		return
-	}
 	m.sessions = SessionPickerState{}
-	for _, info := range infos {
-		m.sessions.Rows = append(m.sessions.Rows, SessionRow{
-			Info:    info,
-			Current: m.store != nil && info.Name == m.store.Name,
-			Here:    info.Cwd != "" && info.Cwd == m.cwd,
-		})
+	if m.remoteSessions != nil {
+		descriptors, err := m.remoteSessions()
+		if err != nil {
+			m.notice = "could not list server sessions: " + err.Error()
+			return
+		}
+		m.sessions.Rows = SessionRows(descriptors)
+		for i := range m.sessions.Rows {
+			m.sessions.Rows[i].Current = m.sessions.Rows[i].Info.Name == m.header.SessionName
+			m.sessions.Rows[i].Here = m.sessions.Rows[i].Info.Cwd != "" &&
+				m.sessions.Rows[i].Info.Cwd == m.cwd
+		}
+	} else {
+		infos, err := session.List(m.dataDir)
+		if err != nil {
+			m.notice = "could not list sessions: " + err.Error()
+			return
+		}
+		for _, info := range infos {
+			m.sessions.Rows = append(m.sessions.Rows, SessionRow{
+				Info:    info,
+				Current: m.store != nil && info.Name == m.store.Name,
+				Here:    info.Cwd != "" && info.Cwd == m.cwd,
+			})
+		}
 	}
 	m.sessionsOpen = true
 	m.loadPreview()
@@ -150,6 +164,14 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.store == nil {
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("rewind", arg, ""); err != nil {
+				m.notice = "could not rewind server session: " + err.Error()
+			} else {
+				m.notice = "rewind request sent to server"
+			}
+			return m, nil
+		}
 		m.notice = "no session to rewind"
 		return m, nil
 	}
@@ -233,6 +255,9 @@ func BlocksFromMessages(msgs []provider.Message) []Block {
 	var out []Block
 	prompts := 0
 	for _, msg := range msgs {
+		if msg.Hidden {
+			continue
+		}
 		switch msg.Role {
 		case provider.RoleUser:
 			// A harness continuation persists as user-role but renders as a

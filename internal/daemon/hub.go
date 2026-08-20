@@ -143,6 +143,12 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 	if err := s.swarm.reserve(spawner); err != nil {
 		return "", err
 	}
+	cwd := s.Cwd
+	s.mu.Lock()
+	if owner, ok := s.sessions[spawner]; ok && owner.Cwd != "" {
+		cwd = owner.Cwd
+	}
+	s.mu.Unlock()
 
 	sess, err := s.spawn(task, files, schema, func(sess *Session) {
 		s.swarm.mu.Lock()
@@ -151,7 +157,7 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 			s.swarm.schemas[sess.Name] = schema
 		}
 		s.swarm.mu.Unlock()
-	})
+	}, cwd)
 	if err != nil && !errors.Is(err, errPublishedWorker) {
 		s.swarm.release(spawner)
 		return "", err
@@ -351,11 +357,3 @@ func (v *agentView) Peers() []tools.Peer { return v.srv.Peers(v.self) }
 func (v *agentView) SpawnWorker(task string, files []string, schema json.RawMessage) (string, error) {
 	return v.srv.SpawnFor(v.self, task, files, schema)
 }
-
-// SwarmTodoNamespace is the todo store every session in one daemon shares.
-//
-// A shared namespace is what makes "the auth flow" mean the same group to a
-// spawner and its worker (plan.md §20). Without it each agent keeps a private
-// list that happens to use the same words, and a worker closing its group tells
-// the spawner nothing.
-const SwarmTodoNamespace = "swarm"

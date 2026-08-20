@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/attachcmd"
+	"evilcode/internal/buildinfo"
 	"evilcode/internal/config"
 	"evilcode/internal/graphics"
 	"evilcode/internal/lsp"
@@ -25,7 +27,7 @@ import (
 )
 
 // Version is the build's version string.
-var Version = "v1.0.1"
+var Version = buildinfo.Version
 
 // Run starts the interactive TUI.
 // Run starts the interactive TUI, and re-enters it for each session switch.
@@ -36,7 +38,7 @@ var Version = "v1.0.1"
 // N switches meant N live sets of every MCP server process and language server,
 // all of them idle and none of them reachable.
 func Run(args []string) error {
-	return runSessions(args, runOnce)
+	return attachcmd.RunDefault(args)
 }
 
 // runSessions drives one session at a time, letting each tear down before the

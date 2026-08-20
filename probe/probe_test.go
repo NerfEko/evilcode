@@ -139,6 +139,10 @@ func runScenario(t *testing.T, root, file string) {
 			runProbe(t, root, append([]string{"attach"}, splitArgs(rest)...)...)
 		case "wait":
 			runProbe(t, root, append([]string{"wait"}, splitArgs(rest)...)...)
+		case "wait-pane":
+			runProbe(t, root, append([]string{"wait-pane"}, splitArgs(rest)...)...)
+		case "sleep":
+			runProbe(t, root, append([]string{"sleep"}, splitArgs(rest)...)...)
 		case "kill":
 			runProbe(t, root, "kill")
 		case "capture":

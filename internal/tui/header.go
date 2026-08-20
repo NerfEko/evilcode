@@ -156,65 +156,232 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 	return out
 }
 
-// WelcomeMessage is the one piece of flavor on the welcome screen (§2.1).
+// WelcomeMessage is the one piece of flavor on the start page (§2.1).
 const WelcomeMessage = "Welcome to evilcode 🦇"
 
-// SuggestionChips are the rotating starter prompts.
-var SuggestionChips = []string{
-	"explain this codebase",
-	"find the bug in the scroll math",
-	"add a test for the parser",
-	"what changed on this branch?",
-}
-
-// RenderWelcome draws the empty-transcript screen with its idle art.
+// RenderStartPage draws the empty-transcript start page: a greeting, a live
+// preview of the selected session's conversation, and a horizontal row of
+// resume buttons you scroll through with ←/→.
 //
-// Widgets are suppressed while this is showing: an empty screen decorated with
-// status boxes is busier than the thing it decorates (plan.md §8.3).
-func (r *Renderer) RenderWelcome(chipIndex int, art []string) []string {
-	out := r.welcomeText(chipIndex)
-	if len(art) == 0 {
-		return out
-	}
-	return append(append(art, ""), out...)
-}
-
-func (r *Renderer) welcomeText(chipIndex int) []string {
+// The eye/black-hole idle art and the rotating starter-prompt chips that used to
+// live here are gone — the start page is for either typing a new prompt or
+// jumping back into a session you already have running.
+//
+// width/height are the transcript slot's size, so the preview box fills the
+// available space and the buttons sit just above the composer. Widgets are
+// suppressed while this is showing: an empty screen decorated with status boxes
+// is busier than the thing it decorates (plan.md §8.3).
+func (r *Renderer) RenderStartPage(rows []SessionRow, selected int, active bool, width, height int) []string {
 	accent := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
-	inactiveCap := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleDim)))
-	inactiveChip := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAIText))).
-		Background(lipgloss.Color(r.Palette.Hex(theme.RoleDim)))
-	selectedCap := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent)))
-	selectedChip := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAIText))).
-		Background(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
+	hint := r.style(theme.RoleDim)
 
-	out := []string{accent.Render(WelcomeMessage), ""}
+	if len(rows) == 0 {
+		out := []string{
+			accent.Render(WelcomeMessage),
+			"",
+			hint.Render("  no other sessions yet — type below to start a new one"),
+		}
+		// Pad to the requested height so the composer stays at the bottom rather
+		// than floating up under a short greeting.
+		for len(out) < height {
+			out = append(out, "")
+		}
+		return out
+	}
 
-	if len(SuggestionChips) > 0 {
-		focused := chipIndex >= 0
-		idx := 0
-		if focused {
-			idx = ((chipIndex % len(SuggestionChips)) + len(SuggestionChips)) % len(SuggestionChips)
-		}
-		// Show a rotating window of chips rather than all of them; the point
-		// is a nudge, not a menu.
-		for i := 0; i < min(3, len(SuggestionChips)); i++ {
-			chip := SuggestionChips[(idx+i)%len(SuggestionChips)]
-			if focused && i == 0 {
-				out = append(out, selectedCap.Render("  ◖")+
-					selectedChip.Render(" "+chip+" ")+
-					selectedCap.Render("◗"))
-			} else {
-				out = append(out, inactiveCap.Render("  ◖")+
-					inactiveChip.Render(" "+chip+" ")+
-					inactiveCap.Render("◗"))
-			}
-		}
+	sel := clamp(selected, 0, len(rows)-1)
+
+	// Fixed chrome: greeting(1) + blank(1) + blank(1) + buttons(1) + hint(1).
+	const chrome = 5
+	boxH := max(height-chrome, 6)
+	if boxH > height {
+		boxH = height
+	}
+
+	out := []string{
+		accent.Render(WelcomeMessage),
+		"",
+	}
+	out = append(out, r.startPreviewBox(rows, sel, width, boxH)...)
+	out = append(out, "")
+	out = append(out, r.startPageButtonRow(rows, sel, active, width))
+	out = append(out, hint.Render("  Type to start a new session  ·  ←/→ pick a session  ·  Enter to resume"))
+
+	// Pad to the requested height so the layout fills and the composer hugs the
+	// bottom rather than floating.
+	for len(out) < height {
+		out = append(out, "")
 	}
 	return out
+}
+
+// startPreviewBox draws a full-width bordered box showing the selected
+// session's recent conversation (rendered the way the transcript renders it),
+// with the session's name and full activity status as the title. It is the live
+// preview of "what is happening" in that session.
+func (r *Renderer) startPreviewBox(rows []SessionRow, sel, width, height int) []string {
+	border := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Hex(theme.RGB(130, 130, 160))))
+	dim := r.style(theme.RoleDim)
+
+	row := rows[sel]
+	status := r.sessionStatus(row)
+	meta := fmt.Sprintf("%d messages", row.Info.Messages)
+	if row.Info.Model != "" {
+		meta += " · " + row.Info.Model
+	}
+	if age := humanAge(row.Info.Modified); age != "" {
+		meta += " · " + age
+	}
+	title := " " + row.Info.Emoji + " " + row.Info.Name + "  " + plainText(status) + "  " + meta + " "
+	titleW := lipgloss.Width(plainText(title))
+	top := "╭" + title + strings.Repeat("─", max(width-titleW-2, 0)) + "╮"
+	out := []string{border.Render(top)}
+
+	closeBox := func() []string {
+		for len(out) < height-1 {
+			out = append(out, border.Render("│"))
+		}
+		return append(out, border.Render("╰"+strings.Repeat("─", max(width-2, 0))+"╯"))
+	}
+
+	inner := max(width-4, 20)
+	sub := r.AtWidth(inner)
+	var convo []string
+	for i := range row.Preview {
+		convo = append(convo, sub.render(&row.Preview[i])...)
+	}
+	// Tail the conversation: the most recent context is what tells you whether
+	// this is the session you meant.
+	body := height - 2 // top + bottom borders
+	if len(convo) > body {
+		convo = convo[len(convo)-body:]
+	}
+	for _, line := range convo {
+		out = append(out, border.Render("│")+" "+truncateCells(line, inner))
+	}
+	_ = dim
+	return closeBox()
+}
+
+// startPageButtonRow draws the horizontal row of resume buttons. Each button is
+// a compact pill (emoji + name + status glyph); the selected one is filled. When
+// the pills do not all fit, the row side-scrolls to keep the selected pill
+// visible, with ‹/› markers when edges are cut off.
+func (r *Renderer) startPageButtonRow(rows []SessionRow, sel int, active bool, width int) string {
+	type pill struct {
+		render string
+		w      int
+	}
+	pills := make([]pill, 0, len(rows))
+	for i, row := range rows {
+		pills = append(pills, pill{render: r.startPagePill(row, i == sel && active), w: lipgloss.Width(plainText(r.startPagePill(row, false)))})
+	}
+
+	sep := "  "
+	sepW := lipgloss.Width(sep)
+	total := 0
+	for i, p := range pills {
+		if i > 0 {
+			total += sepW
+		}
+		total += p.w
+	}
+
+	// Everything fits: lay the pills out left-aligned.
+	if total <= width {
+		var b strings.Builder
+		for i, p := range pills {
+			if i > 0 {
+				b.WriteString(sep)
+			}
+			b.WriteString(p.render)
+		}
+		line := b.String()
+		if pad := width - lipgloss.Width(plainText(line)); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		return line
+	}
+
+	// Side-scroll: grow a window around the selected pill until it would
+	// overflow, preferring to center the selection.
+	lo, hi := sel, sel
+	used := pills[sel].w
+	canLeft := func() bool { return lo > 0 && used+sepW+pills[lo-1].w <= width }
+	canRight := func() bool { return hi < len(pills)-1 && used+sepW+pills[hi+1].w <= width }
+	for {
+		// Alternate expanding left then right so the selection stays near the
+		// middle of the window.
+		if canLeft() {
+			lo--
+			used += sepW + pills[lo].w
+		}
+		if canRight() {
+			hi++
+			used += sepW + pills[hi].w
+		}
+		if !canLeft() && !canRight() {
+			break
+		}
+	}
+
+	var b strings.Builder
+	if lo > 0 {
+		b.WriteString(r.style(theme.RoleDim).Render("‹ "))
+	}
+	for i := lo; i <= hi; i++ {
+		if i > lo {
+			b.WriteString(sep)
+		}
+		b.WriteString(pills[i].render)
+	}
+	if hi < len(pills)-1 {
+		b.WriteString(r.style(theme.RoleDim).Render(" ›"))
+	}
+	line := b.String()
+	if pad := width - lipgloss.Width(plainText(line)); pad > 0 {
+		line += strings.Repeat(" ", pad)
+	}
+	return line
+}
+
+// startPagePill renders one compact horizontal button: emoji + name + a status
+// glyph. The selected pill gets a filled background so it reads as a button.
+func (r *Renderer) startPagePill(row SessionRow, selected bool) string {
+	emoji := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Hex(theme.RGB(110, 210, 255)))).
+		Render(row.Info.Emoji)
+
+	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
+	if selected {
+		nameStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(20, 20, 24)))).
+			Background(lipgloss.Color(theme.Hex(theme.RGB(140, 220, 160)))).Bold(true)
+	}
+
+	return " " + emoji + " " + nameStyle.Render(row.Info.Name) + " " + r.startStatusGlyph(row) + " "
+}
+
+// startStatusGlyph is the one-character activity marker colored by state. The
+// full status text lives in the preview box title; the pill only needs a dot.
+func (r *Renderer) startStatusGlyph(row SessionRow) string {
+	switch {
+	case row.Pending > 0:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Render("◉")
+	case row.Live && row.Running:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Render("◉")
+	case row.Live:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 220, 130)))).Render("●")
+	case row.Info.Crashed:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(220, 100, 100)))).Render("💥")
+	default:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 100, 100)))).Render("✓")
+	}
 }

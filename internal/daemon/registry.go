@@ -515,6 +515,17 @@ func ToolPath(tool string, args json.RawMessage) string {
 	return strings.TrimSpace(a.Path)
 }
 
+// sessionToolPath resolves a tool's relative path against the workspace that
+// owns the session. The daemon process may serve several repositories at once,
+// so filepath.Abs(path) would incorrectly resolve every relative path against
+// the daemon's own launch directory.
+func sessionToolPath(cwd, path string) string {
+	if filepath.IsAbs(path) || cwd == "" {
+		return path
+	}
+	return filepath.Join(cwd, path)
+}
+
 // newRegistryAt builds a registry that reports paths relative to a workspace.
 func newRegistryAt(root string) *Registry {
 	r := NewRegistry()

@@ -480,3 +480,29 @@ func TestSnapshotCarriesRepairs(t *testing.T) {
 		t.Error("snapshot lost the repair metadata; attached clients would see no repair suffix")
 	}
 }
+
+func TestDetachedOvernightReportIsServerOwned(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+	sess, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.overnight.start(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := sess.writeOvernightReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Overnight run", sess.Name, "The complete conversation"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("report is missing %q:\n%s", want, data)
+		}
+	}
+}

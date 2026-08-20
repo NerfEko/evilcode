@@ -5,4 +5,5 @@ scenario background
 boot tui
 keys "build it"
 keys Enter
+sleep 2.3
 capture bg-started

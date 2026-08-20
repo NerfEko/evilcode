@@ -20,6 +20,14 @@ func (m *Model) WithAdvisor(a *agent.Advisor, servers *lsp.Manager) *Model {
 // advisorCommand implements `/advisor on|off|status` (plan.md §21).
 func (m *Model) advisorCommand(arg string) tea.Cmd {
 	if m.advisor == nil {
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("advisor", arg, ""); err != nil {
+				m.notice = "could not update server advisor: " + err.Error()
+			} else {
+				m.notice = "ⓘ Advisor request sent to server"
+			}
+			return nil
+		}
 		m.notice = "the advisor is not configured for this session"
 		return nil
 	}
@@ -39,6 +47,12 @@ func (m *Model) advisorCommand(arg string) tea.Cmd {
 // lspCommand implements `/lsp status`.
 func (m *Model) lspCommand(arg string) tea.Cmd {
 	if m.lsp == nil {
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("lsp", arg, ""); err != nil {
+				m.notice = "could not query server language servers: " + err.Error()
+			}
+			return nil
+		}
 		m.notice = "no language servers are configured for this session"
 		return nil
 	}

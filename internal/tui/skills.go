@@ -39,6 +39,12 @@ func (m *Model) skillsCommand(arg string) tea.Cmd {
 			m.agent.Conv.SetSystemPrompt(agent.BuildSystemPrompt(
 				m.skillContext, skillPromptEntries(m.skills), ""))
 		}
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("skills", "reload", ""); err != nil {
+				m.notice = "skills reloaded locally; server update failed"
+				return nil
+			}
+		}
 		m.notice = fmt.Sprintf("Skills reloaded · %d available", len(m.skills.Index()))
 	default:
 		m.notice = "usage: /skills [reload]"

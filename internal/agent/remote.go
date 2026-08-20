@@ -19,6 +19,14 @@ import "context"
 // keep working, and a parallel implementation of all of that would drift.
 type Remote func(ctx context.Context, userInput string) error
 
+// RemoteImages is the image-aware form of Remote.
+type RemoteImages func(ctx context.Context, userInput string, images [][]byte) error
+
+// RemoteHidden is the image-aware forwarding seam with an explicit frontend
+// visibility marker. Hidden prompts are still real provider messages; the
+// marker only controls how attached clients render them.
+type RemoteHidden func(ctx context.Context, userInput string, images [][]byte, hidden bool) error
+
 // Inject pushes an event into the stream as though the loop had produced it.
 //
 // This is how a remote session's events reach the frontend. It is deliberately

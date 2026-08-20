@@ -177,8 +177,19 @@ func Open(dataDir, name string) (*Store, error) {
 // one log — two conversations interleaved in one file, each store believing it
 // owns it. The daemon spawning workers makes that ordinary rather than exotic.
 func Create(dataDir string) (*Store, error) {
+	cwd, _ := os.Getwd()
+	return CreateWithCwd(dataDir, cwd)
+}
+
+// CreateWithCwd creates a new session and records the workspace that owns it.
+//
+// A persistent daemon may create a session for a client whose cwd is different
+// from the daemon's own process directory. Keeping the cwd at creation time
+// makes the session self-contained and lets a later daemon reopen it with the
+// same repository context.
+func CreateWithCwd(dataDir, cwd string) (*Store, error) {
 	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
-		return CreateNamed(dataDir, "dracula")
+		return CreateNamedAt(dataDir, "dracula", cwd)
 	}
 	taken := takenNames(dataDir)
 	// Bounded: the creature table is finite, and a run of collisions means the
@@ -186,7 +197,7 @@ func Create(dataDir string) (*Store, error) {
 	for attempt := range 64 {
 		name := core.PickName(core.Creatures,
 			core.SeedFrom(fmt.Sprintf("%s/%d", time.Now(), attempt)), taken)
-		st, err := CreateNamed(dataDir, name)
+		st, err := CreateNamedAt(dataDir, name, cwd)
 		if err == nil {
 			return st, nil
 		}
@@ -238,6 +249,12 @@ func PickFreeName(dataDir string) string {
 // is reopened rather than refused — goldens depend on the same session name
 // every run, and refusing would break every replay.
 func CreateNamed(dataDir, name string) (*Store, error) {
+	cwd, _ := os.Getwd()
+	return CreateNamedAt(dataDir, name, cwd)
+}
+
+// CreateNamedAt claims one specific name and records cwd as the workspace.
+func CreateNamedAt(dataDir, name, cwd string) (*Store, error) {
 	path, err := pathFor(dataDir, name)
 	if err != nil {
 		return nil, err
@@ -262,7 +279,6 @@ func CreateNamed(dataDir, name string) (*Store, error) {
 		return nil, err
 	}
 	st := &Store{Name: name, Path: path, file: f, w: bufio.NewWriter(f)}
-	cwd, _ := os.Getwd()
 	if err := st.WriteMeta(Meta{Kind: MetaStart, Cwd: cwd}); err != nil {
 		// A store returned alongside an error is a store nobody closes: the
 		// caller takes the error path and the descriptor, and the claimed name,

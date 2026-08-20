@@ -216,6 +216,12 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content,omitempty"`
 
+	// Hidden marks a daemon-owned harness prompt. Provider adapters deliberately
+	// ignore it, while the session log and daemon snapshot retain it so every
+	// attached client (including one reconnecting later) knows not to draw the
+	// implementation prompt as if a person typed it.
+	Hidden bool `json:"hidden,omitempty"`
+
 	// Reasoning holds thinking-model traces. It is kept separate from Content
 	// so the TUI can render and garbage-collect it independently (§9.7, §4.6).
 	Reasoning string `json:"reasoning,omitempty"`

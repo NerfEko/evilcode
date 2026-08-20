@@ -9,8 +9,9 @@
 A terminal coding agent. Agentic tool-calling loop, a TUI built on the Charm stack,
 and first-class support for Ollama Cloud alongside anything that speaks the OpenAI API.
 
-Single user, no telemetry, no account. Sessions are JSONL files on your own disk; a
-torn append glued to a later record is salvaged and repaired before the next write.
+Single user, no telemetry, no account. A detached per-user daemon owns live agents while
+TUI windows are disposable clients. Sessions are JSONL files on your own disk; a torn
+append glued to a later record is salvaged and repaired before the next write.
 
 ![evilcode auditing a real codebase for panic-shaped bugs](demo/demo-search.gif)
 
@@ -83,16 +84,32 @@ evilcode completions fish > ~/.config/fish/completions/evilcode.fish
 ## Usage
 
 ```sh
-evilcode                      # interactive TUI
-evilcode run "fix the parser" # headless, one shot
-evilcode serve                # daemon hosting sessions
-evilcode attach [session]     # attach a TUI to the daemon
-evilcode run --remote "..."   # submit into a running daemon
+evilcode                         # attach the TUI, starting the server if needed
+evilcode run "fix the parser"    # submit a headless prompt and exit
+evilcode run --wait "..."        # submit and stream that turn until it ends
+evilcode serve                   # daemon hosting persistent sessions
+evilcode serve -status           # inspect the daemon
+evilcode serve -stop             # gracefully stop it
+evilcode attach [session]        # attach a TUI to an already-running daemon
+evilcode attach -l               # list sessions held by the daemon
 evilcode resume --from claude <id-or-path> # import and continue a foreign session
 ```
 
-`evilcode run` writes the model's text to stdout and everything else to stderr, so it
-composes with other tools. It exits 130 on interrupt.
+Plain `evilcode` and `evilcode tui` start the per-user server when necessary, then
+attach a TUI. `evilcode attach` requires a server that is already running; the client
+can be closed and reopened without stopping the live session. `evilcode serve` runs the
+server in the foreground, while an automatically started server is detached from the
+launching terminal.
+
+The ordinary `evilcode run` submits the prompt and returns after the server accepts it;
+the agent, tools, background tasks, and session continue if that shell or terminal
+closes. It does not stream the answer. Use `evilcode run --wait` when a script needs
+the model's text in its own process; the historical `--remote` spelling remains an
+alias for that streaming path. Wait mode writes model text to stdout and everything
+else to stderr, so it composes with other tools. `evilcode run --local` retains the
+old in-process one-shot behavior. Only a waiting or local run can return 130 for an
+interrupt; a submit-only run has already handed cancellation responsibility to the
+daemon.
 
 The filesystem tools are agent-friendly: `read` attaches supported images to vision
 models, truncates oversized individual lines while preserving paging, and suggests
@@ -101,11 +118,11 @@ common argument spellings such as `file_path` are repaired and shown in the tool
 Kitty-compatible terminals draw images inline; sixel terminals use `img2sixel`, and
 other terminals show a captioned placeholder.
 
-Sessions are the source of truth: every message is written as it lands, `/compact` and
-`/rewind` rewrite the log atomically — a backup is written and synced before the
-primary is replaced, and the live session follows the rewrite. Compaction summarizes
-older turns but keeps the ten most recent turns verbatim, including complete tool-call
-pairs, so a task in progress survives both the live rewrite and resume. It also watches
+Sessions are the durable source of truth: every message is written as it lands, `/compact`
+and `/rewind` rewrite the log atomically — a backup is written and synced before the
+primary is replaced, and the live daemon session follows the rewrite. Compaction
+summarizes older turns but keeps the ten most recent turns verbatim, including complete
+tool-call pairs, so a task in progress survives both the live rewrite and resume. It also watches
 recent context growth and recent assistant-turn embeddings: a detected topic shift can
 compact at a natural boundary, while growth still projects ahead of the fixed 85% limit.
 A bounded background relevance pass can also move the cutoff back before an older message
@@ -113,8 +130,10 @@ that matches the current goal; if it is unavailable or not ready, compaction use
 ordinary recency cutoff. Embedding is best-effort and asynchronous, so an unavailable or
 slow provider leaves the predictive path in charge rather than delaying a turn.
 A turn that could not be fully written says so rather than leaving a session that comes
-back short on resume. Closing a session waits for its in-flight turn to finish, so a
-shutdown or a closed terminal does not drop the messages the turn was still writing.
+back short on resume. A daemon shutdown waits for its in-flight turn to finish, so an
+explicit stop or idle shutdown does not drop the messages the turn was still writing.
+Closing a TUI window is only a client disconnect; it does not close the session or run
+the daemon's shutdown consolidation.
 
 The `session_search` tool finds earlier native sessions by transcript phrase, with a
 role filter and dated excerpt. `evilcode resume --from claude|codex|opencode
@@ -221,7 +240,11 @@ root. Provider credentials are deliberately not overridable that way: checking o
 repository must not be able to redirect your API keys.
 
 State lives in `~/.local/share/evilcode/` as `sessions/*.jsonl`,
-`prompt-history.jsonl` and `memory.jsonl`.
+`prompt-history.jsonl`, `memory.jsonl`, content-addressed session blobs, and detached
+`overnight-reports/*.html` files. The default daemon socket is
+`$XDG_RUNTIME_DIR/evilcode.sock`; when that variable is absent it is placed under a
+private per-user directory in the system temporary directory. Use `-socket` to override
+it, especially in tests.
 
 ### Environment
 
@@ -272,8 +295,9 @@ transcript as a tile listing exactly what was injected. An injection you cannot 
 one you cannot correct.
 
 Ambient extraction mines facts every eight turns through the `smol` role, and a session
-summary is written on exit, which is what makes the session picker searchable by what a
-session was about rather than by its name. A dead embedder degrades recall to lexical
+summary is written when the daemon actually tears a session down, which is what makes
+the session picker searchable by what a session was about rather than by its name. A
+dead embedder degrades recall to lexical
 BM25 matching rather than switching it off. Memories are project-scoped by the detected
 workspace root and recall also includes global memories; `/memory list project` and
 `/memory list global` can inspect either side of that view. The `remember` tool accepts
@@ -281,10 +305,23 @@ workspace root and recall also includes global memories; `/memory list project` 
 
 ### Daemon and swarms
 
-`evilcode serve` holds any number of sessions in one process and speaks NDJSON over a
-unix socket. `attach` is the ordinary TUI with the socket as its event source, so two
-terminals can follow one conversation and a closed terminal loses nothing. Per-session
-ring buffers cover reconnects.
+`evilcode serve` holds any number of sessions in one persistent background process and
+speaks versioned NDJSON over a private unix socket. The daemon owns the real provider,
+agent, tools, MCP connections, ask broker, background tasks, overnight loop, and swarm
+coordination. `evilcode` and `attach` are TUI clients with the socket as their event
+source: two terminals can follow one conversation, a closed terminal loses nothing,
+and a later window reconnects to the same live agent rather than creating a second one.
+
+The client receives a durable conversation snapshot plus the current live event tail.
+Per-session sequence-numbered ring buffers cover reconnect gaps; the JSONL session log
+is the durable source of truth. Session working directory and last model are restored
+from that log, so resuming from another directory does not retarget file tools.
+
+The server stays up until `evilcode serve -stop`; pass `-idle 1h` (or another duration)
+if you want automatic shutdown after the last client and running agent go away. A daemon
+process crash does not preserve an in-flight provider request or in-memory background
+task, but already-flushed session history, model metadata, and workspace metadata remain
+available for a later resume.
 
 Agents inside the daemon coordinate. A shared file registry tells an agent when another
 rewrote a file it had read, delivered between turns rather than mid-thought. Notices name
@@ -299,10 +336,11 @@ forever for a result.
 The shared plan and todo list span the swarm: one store per namespace, held by
 reference, so every worker sees the same items rather than a private half that the
 last writer overwrites. A session runs one turn at a time — a second client that
-arrives mid-turn interleaves into the running turn rather than launching a second run
-against one conversation — and worker counts stay within their caps under concurrent
-`/summon`. Repo overrides are applied to a per-build copy of the config, so one
-repository's pinned model or roles never leak into another session's.
+arrives mid-turn is queued by the daemon rather than launching a second run against
+one conversation. Explicit interrupts still reach the active turn at its safe points.
+Worker counts stay within their caps under concurrent `/summon`. Repo overrides are
+applied to a per-build copy of the config, so one repository's pinned model or roles
+never leak into another session's.
 
 ### Tools
 
@@ -313,9 +351,10 @@ size. Set `BRAVE_SEARCH_API_KEY` or use `/connect brave` to enable web search.
 
 `bash` adopts a command that exceeds its timeout into the background instead of
 starting it over. Use `bg status`, `bg output`/`tail`, `bg wait`, or `bg cancel`; long
-commands can also be started with `background: true`. Commands that need input accept
-`stdin`, and children receive a durable `TMPDIR`/`EVILCODE_SCRATCH_DIR` under the data
-directory. Long commands can report `EVILCODE_PROGRESS {json}` (the compatible
+commands can also be started with `background: true`. These tasks belong to the daemon,
+so their output and completion remain available after every TUI disconnects. Commands
+that need input accept `stdin`, and children receive a durable `TMPDIR`/`EVILCODE_SCRATCH_DIR`
+under the data directory. Long commands can report `EVILCODE_PROGRESS {json}` (the compatible
 `JCODE_PROGRESS` and `JCODE_CHECKPOINT` forms are accepted too); those control lines
 are parsed for the background widget and omitted from captured output.
 
@@ -350,9 +389,11 @@ between pictures and placeholders.
 ### Unattended and self-hosted work
 
 `/overnight` works the todo list with nobody watching, bounded by turns, tokens, wall
-clock, and consecutive turns that fail to move the list. The token budget accumulates
-across turns rather than resetting, so it stops on real cost. It stops on its own and
-says which limit stopped it.
+clock, and consecutive turns that fail to move the list. Its loop is daemon-owned, so
+closing every TUI does not stop the next continuation turn. The token budget accumulates
+across turns rather than resetting, so it stops on real cost. It stops on its own, says
+which limit stopped it, and writes a detached report while the full conversation remains
+in the session log.
 
 `/selfdev` is disabled. `/rebuild` builds, tests and restarts into the new binary. It runs the tests
 before restarting, because restarting into a binary that fails its own tests is how a
@@ -379,6 +420,8 @@ Readline bindings (`Ctrl+U/K/W/A/E/B/F/Z/S`) work in the composer. Run
 
 ```sh
 go test ./...                                     # unit tests
+go test -race ./...                               # shared daemon/client state
+go vet ./...                                      # static checks
 go test -tags probe ./probe/...                   # golden frame tests, needs tmux
 UPDATE_GOLDENS=1 go test -tags probe ./probe/...  # rewrite goldens
 ```
@@ -401,10 +444,15 @@ has not changed, never that it is right.
 
 ```
 internal/agent       loop, events, hooks — never imports the TUI
-internal/tui         everything on screen
+internal/tui         everything on screen, including the attach mirror
+internal/attachcmd   socket client and remote TUI wiring
+internal/tuicmd      default TUI entrypoint
+internal/runcmd      local and daemon-backed headless runs
+internal/servecmd    foreground daemon entrypoint
 internal/provider    ollama, openai, mock
 internal/tools       the tool set
-internal/daemon      serve, attach, swarm coordination
+internal/daemon      server, protocol, sessions, reconnects, swarm coordination
+internal/wiring      shared provider/tool/session construction
 internal/memory      the semantic memory bank
 internal/lsp         language server client
 internal/ansirender  ANSI to PNG, for the probe rig
@@ -412,7 +460,9 @@ probe/               tmux driver, scenarios, goldens
 ```
 
 `internal/agent` does not import bubbletea, and a test enforces it. That separation is
-what lets the headless runner, the daemon and the probe rig share one implementation.
+what lets the headless runner, daemon sessions, attached TUIs and the probe rig share
+one event and agent implementation. The client is a view and command bridge; the
+daemon is the owner of live work.
 
 ## License
 

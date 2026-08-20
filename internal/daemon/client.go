@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -56,6 +57,9 @@ func (c *Client) SetDeadline(d time.Duration) error {
 
 // Send writes one frame. It is safe to call from any goroutine.
 func (c *Client) Send(msg ClientMsg) error {
+	if msg.Version == 0 {
+		msg.Version = ProtocolVersion
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.enc.Encode(msg)
@@ -72,6 +76,9 @@ func (c *Client) Recv() (ServerMsg, error) {
 	var msg ServerMsg
 	if err := json.Unmarshal(c.sc.Bytes(), &msg); err != nil {
 		return ServerMsg{}, err
+	}
+	if msg.Version != 0 && msg.Version != ProtocolVersion {
+		return ServerMsg{}, fmt.Errorf("unsupported daemon protocol version %d (want %d)", msg.Version, ProtocolVersion)
 	}
 	return msg, nil
 }
@@ -103,7 +110,21 @@ func (c *Client) List() ([]SessionInfo, error) {
 // Attach subscribes to a session and returns its snapshot. An empty name
 // creates a new session.
 func (c *Client) Attach(name string, since int) (*Snapshot, error) {
-	if err := c.Send(ClientMsg{Kind: MsgAttach, Session: name, Since: since}); err != nil {
+	return c.AttachAt(name, since, "", "")
+}
+
+// AttachAt attaches to a session, supplying the client's workspace/model when
+// the session does not exist yet.
+func (c *Client) AttachAt(name string, since int, cwd, model string) (*Snapshot, error) {
+	return c.AttachWithOptions(name, since, cwd, model, false)
+}
+
+// AttachWithOptions attaches while preserving headless options for a new
+// session, such as -no-tools.
+func (c *Client) AttachWithOptions(name string, since int, cwd, model string, noTools bool) (*Snapshot, error) {
+	if err := c.Send(ClientMsg{
+		Kind: MsgAttach, Session: name, Since: since, Cwd: cwd, Model: model, NoTools: noTools,
+	}); err != nil {
 		return nil, err
 	}
 	for {
@@ -119,6 +140,52 @@ func (c *Client) Attach(name string, since int) (*Snapshot, error) {
 			return msg.Snapshot, nil
 		case MsgError:
 			return nil, fmt.Errorf("%s", msg.Err)
+		}
+	}
+}
+
+// Status asks the daemon for lifecycle information.
+func (c *Client) Status() (*ServerStatus, error) {
+	if err := c.Send(ClientMsg{Kind: MsgStatus}); err != nil {
+		return nil, err
+	}
+	for {
+		msg, err := c.Recv()
+		if err != nil {
+			return nil, err
+		}
+		switch msg.Kind {
+		case MsgStatus:
+			if msg.Status == nil {
+				return nil, fmt.Errorf("daemon sent an empty status")
+			}
+			return msg.Status, nil
+		case MsgError:
+			return nil, fmt.Errorf("%s", msg.Err)
+		}
+	}
+}
+
+// Stop requests a graceful daemon shutdown.
+func (c *Client) Stop() error {
+	if err := c.Send(ClientMsg{Kind: MsgStop}); err != nil {
+		return err
+	}
+	for {
+		msg, err := c.Recv()
+		if err != nil {
+			// A successful stop closes the socket immediately after replying in
+			// some runtimes, so EOF is also an acceptable completion.
+			if errors.Is(err, ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		if msg.Kind == MsgError {
+			return fmt.Errorf("%s", msg.Err)
+		}
+		if msg.Kind == MsgStatus {
+			return nil
 		}
 	}
 }

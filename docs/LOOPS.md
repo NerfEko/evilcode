@@ -6183,3 +6183,50 @@ complete finished-trace expansion, manual-collapse anchoring, timer restart, the
 five-word cutoff, direct and queued prompt WPM, and rendering.
 
 Verified: `go test ./...`, `go vet ./...`, and `git diff --check`.
+
+## 2026-08-20 P4.5 — persistent daemon and disposable TUI
+
+The lifecycle boundary is now explicit: `evilcode serve` owns live sessions in a
+detached per-user daemon, while `evilcode`/`evilcode tui` and `evilcode attach` are
+disposable socket clients. Closing a terminal unsubscribes a client; it does not close
+the session, cancel its provider request, discard its queue, or stop its tools.
+`evilcode run` submits and exits, `run --wait` streams one request's turn, historical
+`run --remote` remains the streaming spelling, and `run --local` retains the old
+in-process path. The server remains up by default until `serve -stop`; `-idle` is opt-in.
+
+The daemon is the sole owner of the real agent, provider, filesystem and shell tools,
+MCP connections, ask broker, background registry, overnight loop, memory consolidation,
+and swarm coordination. An attached TUI creates only a provider-free render mirror:
+input, model changes, interrupts, answers, slash commands, and worker requests cross
+the socket; the daemon's event stream is injected back into the existing TUI pipeline.
+`internal/wiring` is the shared construction path so daemon, headless, and local flows
+keep the same provider/tool/compaction/memory behavior.
+
+Sessions now record their owning workspace and current model durably. A live session is
+hydrated once, with an opening barrier preventing two simultaneous attaches from
+building two agents over one JSONL log. Every message is flushed as it lands. Memory,
+todo, background, ask, overnight, and worker state stay daemon-owned while the process
+lives; the session transcript and metadata remain resumable after a daemon restart.
+
+The protocol is versioned NDJSON. Each session has a monotonic event sequence and a
+4096-event reconnect ring. Attach subscribes before taking its snapshot, sends the
+completed conversation plus only the active turn tail, then relays live events. A slow
+client cannot block the agent; it reconnects with its last sequence. Multiple clients
+therefore see one ordered logical conversation, while their viewport and display
+preferences remain independent.
+
+Concurrency is server-side: one turn reservation per session, FIFO input queue, request
+IDs on `TurnStart` for headless waiters, and server-routed cancellation/interjection.
+Model switches, reasoning effort, compaction, rewind, rename, fork, checkpoint, memory,
+skills, LSP, credentials, advisor, poke, overnight, ask answers, background status, and
+swarm commands all route to the owning session so a client cannot become the only place
+where a feature works.
+
+Verification: `go test ./... -count=1 -timeout=240s`, `go test -race ./... -count=1
+-timeout=360s`, `go vet ./...`, and `git diff --check` pass. A mock-provider smoke run
+proved detached submission, `serve -status`, `run --wait`, and graceful `serve -stop`.
+The remaining boundary is recorded in `DEVIATIONS.md`: a daemon process crash cannot
+resume an in-flight provider request or in-memory runtime registry, although flushed
+session history, model metadata, workspace metadata, and later resume remain intact.
+
+commit: the `server-tui-separation` implementation and documentation commit on this branch

@@ -44,7 +44,19 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 		m.notice = "⏳ Finish or interrupt the current turn first"
 		return m, nil
 	}
-	if m.compactor == nil || !m.compactor.Enabled() {
+	if m.compactor == nil {
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("compact", "", ""); err != nil {
+				m.notice = "could not request compaction: " + err.Error()
+			} else {
+				m.notice = "📦 Compaction requested from server…"
+			}
+			return m, nil
+		}
+		m.notice = "compaction is not configured for this session"
+		return m, nil
+	}
+	if !m.compactor.Enabled() {
 		m.notice = "compaction is not configured for this session"
 		return m, nil
 	}
@@ -397,16 +409,24 @@ func (m *Model) contextCommand() tea.Cmd {
 		fmt.Fprintf(&b, " · %d%%", used*100/window)
 	}
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "%d messages · epoch %d\n", m.agent.Conv.Len(), m.agent.Conv.Epoch())
-
-	if n := m.compactor.Count(); n > 0 {
-		fmt.Fprintf(&b, "compacted %d %s this session\n", n, timeNoun(n))
+	messageCount, epoch := 0, 0
+	if m.agent != nil && m.agent.Conv != nil {
+		messageCount, epoch = m.agent.Conv.Len(), m.agent.Conv.Epoch()
 	}
-	if m.compactor.Enabled() {
-		fmt.Fprintf(&b, "\nAuto-compacts at %d%% or on projected growth · /compact to do it now",
-			int(agent.CompactThreshold*100))
+	fmt.Fprintf(&b, "%d messages · epoch %d\n", messageCount, epoch)
+
+	if m.compactor == nil {
+		b.WriteString("\nCompaction is owned by the daemon · /compact to do it there")
 	} else {
-		b.WriteString("\nCompaction is not configured")
+		if n := m.compactor.Count(); n > 0 {
+			fmt.Fprintf(&b, "compacted %d %s this session\n", n, timeNoun(n))
+		}
+		if m.compactor.Enabled() {
+			fmt.Fprintf(&b, "\nAuto-compacts at %d%% or on projected growth · /compact to do it now",
+				int(agent.CompactThreshold*100))
+		} else {
+			b.WriteString("\nCompaction is not configured")
+		}
 	}
 
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: strings.TrimRight(b.String(), "\n")})
@@ -681,6 +701,12 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 			if m.braveSearch != nil {
 				m.braveSearch.APIKey = activeKey
 			}
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand("connect", "brave", activeKey); err != nil {
+					m.notice = "Brave Search key saved locally but server update failed"
+					return m, nil
+				}
+			}
 			if envKey != "" {
 				m.notice = "Brave Search API key saved · environment key remains active"
 			} else {
@@ -696,6 +722,12 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 		// key saved here must reach it too — otherwise the catalog stays empty
 		// until restart even though the turn now works.
 		m.updateProviderAPIKey(target, keyText)
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("credential", target, keyText); err != nil {
+				m.notice = target + " key saved locally but server update failed"
+				return m, nil
+			}
+		}
 		m.notice = target + " API key saved"
 		if m.agent != nil && !m.processing {
 			// Only while nothing is in flight: the request goroutine reads this

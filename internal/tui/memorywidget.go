@@ -214,6 +214,14 @@ func plural(n int, noun string) string {
 // you know", not "flip a switch I then have to check".
 func (m *Model) memoryCommand(arg string) tea.Cmd {
 	if m.memory == nil || m.memory.Store == nil {
+		if m.remoteCommand != nil {
+			if err := m.remoteCommand("memory", arg, ""); err != nil {
+				m.notice = "could not update server memory: " + err.Error()
+			} else {
+				m.notice = "🧠 Memory request sent to server"
+			}
+			return nil
+		}
 		m.notice = "memory is not configured for this session"
 		return nil
 	}

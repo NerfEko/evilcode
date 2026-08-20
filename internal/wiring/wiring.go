@@ -49,21 +49,28 @@ type Options struct {
 	// side-call per invocation for nothing (plan.md §19).
 	Extract bool
 
-	// TodoNamespace is the todo store every session in a swarm shares. Left
-	// empty a session gets its own, which is what a solo run wants; set to one
-	// name across a daemon it becomes the shared plan of §20, where a group a
-	// worker closes is the same group its spawner is watching.
+	// TodoNamespace optionally selects an explicit todo store. Daemon sessions
+	// leave it empty so Build uses the durable session name; callers that truly
+	// need a shared plan must opt into one deliberately.
 	TodoNamespace string
 
 	// Todos and Bank are stores the caller already owns, shared by reference.
 	//
 	// A namespace names a set of files, and two stores over one set of files are
 	// two divergent copies of it — each reading its own snapshot and writing the
-	// whole file back. Sharing the *store* is what makes a namespace mean one
-	// plan rather than one filename. The build does not close what it did not
-	// open.
+	// whole file back. The build does not close what it did not open.
 	Todos *todo.Store
 	Bank  *memory.Store
+
+	// Asker is supplied by the owning runtime. A daemon keeps unanswered
+	// requests alive while clients disconnect; local callers may continue to
+	// provide the TUI asker.
+	Asker tools.Asker
+
+	// ExtraTools and ExtraClosers let the owning runtime add capabilities whose
+	// lifecycle belongs to the server, such as MCP connections.
+	ExtraTools   tools.Set
+	ExtraClosers []func()
 }
 
 // modelRefForResume returns the model reference to resolve for this build: an
@@ -94,10 +101,16 @@ func containsEffort(levels []provider.ReasoningEffort, want provider.ReasoningEf
 
 // Session is everything a caller has to hold onto and close.
 type Session struct {
-	Agent  *agent.Agent
-	Store  *session.Store
-	Memory *memory.Manager
-	Config *config.Config
+	Agent   *agent.Agent
+	Store   *session.Store
+	Memory  *memory.Manager
+	Config  *config.Config
+	Skills  *tools.SkillSet
+	Project agent.ProjectContext
+	FS      *tools.FS
+	Exec    *tools.Exec
+	LSP     *lsp.Manager
+	Brave   *tools.BraveSearch
 
 	// Todos is the session's plan state.
 	Todos *todo.Store
@@ -164,8 +177,9 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		return nil, err
 	}
 
-	out := &Session{Config: cfg, Model: modelName}
+	out := &Session{Config: cfg, Model: modelName, Project: pc}
 	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
+	out.Skills = skills
 	var promptSkills []agent.Skill
 	for _, skill := range skills.Index() {
 		promptSkills = append(promptSkills, agent.Skill{Name: skill.Name, Desc: skill.Desc, Path: skill.Path})
@@ -183,17 +197,18 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 		store, prior = st, msgs
 	default:
-		if store, err = session.Create(dataDir); err != nil {
+		if store, err = session.CreateWithCwd(dataDir, cwd); err != nil {
 			return nil, err
 		}
 	}
 	out.Store, out.Prior = store, len(prior)
 	out.closers = append(out.closers, func() { store.Close() })
+	out.closers = append(out.closers, opts.ExtraClosers...)
 
 	// Record the model this build is on, so the session remembers it for a later
 	// resume (§18). Matches the TUI and headless paths; last-write-wins on read.
 	if err := store.WriteModel(config.ModelRef(modelName, prov.Name())); err != nil {
-		store.Close()
+		out.Close()
 		return nil, err
 	}
 
@@ -208,6 +223,9 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	overrides := cfg.ModelOverrides(config.ModelRef(modelName, prov.Name()))
 	exposure := tools.NewExposure()
 	var lsps *lsp.Manager
+	var fsTools *tools.FS
+	var execTools *tools.Exec
+	var brave *tools.BraveSearch
 	if !opts.NoTools {
 		// Search can use the same lazy language-server manager as the interactive
 		// path, even though headless sessions do not expose the standalone lsp
@@ -225,29 +243,41 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 			// model side of this; this is the same idea for tools).
 			ts = tools.Canned(canned)
 		} else {
-			execTools := tools.NewExec(cwd).
+			execTools = tools.NewExec(cwd).
 				WithExposure(exposure).
 				WithScratchDir(filepath.Join(dataDir, "scratch")).
 				WithRiskPaths(config.ConfigDir(), dataDir)
 			if lsps != nil {
 				execTools.WithLSP(lsps)
 			}
-			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
+			fsTools = tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
 				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
-				WithExposure(exposure).Tools(),
+				WithExposure(exposure)
+			ts = append(fsTools.Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)
-			ts = append(ts, tools.NewSessionSearch(dataDir, store.Name))
-			if key := cfg.BraveSearchAPIKey(); key != "" {
-				ts = append(ts, tools.NewBraveSearch(key).Tools()...)
+			ts = append(ts, tools.NewSessionSearchWithCurrentName(dataDir, store.CurrentName))
+			brave = tools.NewBraveSearch(cfg.BraveSearchAPIKey())
+			ts = append(ts, brave.Tools()...)
+			if lsps != nil {
+				ts = append(ts, tools.NewLSP(lsps))
 			}
 		}
 		// No `ask` tool: a headless session has nobody to ask, and a tool that
-		// is present and always fails is worse than one that is absent.
+		// is present and always fails is worse than one that is absent. A runtime
+		// with an explicit asker (the daemon or an interactive local caller) is
+		// the exception.
+		if opts.Asker != nil {
+			ts = append(ts, tools.NewAsk(opts.Asker))
+		}
 		ts = append(ts, tools.NewSkillTool(skills))
+	}
+	if !opts.NoTools && len(opts.ExtraTools) > 0 {
+		ts = append(ts, opts.ExtraTools...)
 	}
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
+	out.FS, out.Exec, out.LSP, out.Brave = fsTools, execTools, lsps, brave
 	if effort := cfg.ReasoningEffortFor(config.ModelRef(modelName, prov.Name())); effort.Valid() && provider.SupportsReasoningEffort(prov) {
 		levels := provider.NormalizeReasoningEfforts(
 			provider.ReasoningEffortLevelsForProvider(prov, modelName))
@@ -281,9 +311,8 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)
 
-	// The todo store is shared across a swarm when a namespace is named, so
-	// "the auth flow" means one group to every agent rather than N private
-	// lists that happen to share a word (plan.md §20).
+	// Todo state is private to the durable session by default. A caller may pass
+	// an explicit namespace/store when it intentionally wants coordination.
 	todoName := opts.TodoNamespace
 	if todoName == "" {
 		todoName = store.Name

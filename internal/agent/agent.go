@@ -48,6 +48,15 @@ type Agent struct {
 	// for an attached client (plan.md §20). See remote.go.
 	Forward Remote
 
+	// ForwardImages is the image-aware remote seam. It preserves the exact
+	// attachment semantics of a local turn while keeping image bytes inside the
+	// server-owned session rather than silently dropping them at the TUI edge.
+	ForwardImages RemoteImages
+
+	// ForwardHidden is the same remote seam with a transport-safe marker for
+	// harness-authored prompts such as /plan and /overnight.
+	ForwardHidden RemoteHidden
+
 	// OnInterject observes a queued interrupt. An attached client returns true
 	// to say it sent the interrupt onward, so it is not also queued locally
 	// where nothing would ever drain it.
@@ -282,8 +291,23 @@ func (a *Agent) SetReasoningEffort(effort provider.ReasoningEffort) error {
 	if changed && a.events != nil {
 		e := a.newEvent(EventReasoningEffort)
 		e.ReasoningEffort = parsed
+		e.ReasoningEffortKnown = true
 		a.emit(e)
 	}
+	return nil
+}
+
+// SetReasoningEffortQuiet updates the live setting without emitting a UI
+// event. Session-level model switches use it to normalize a preference before
+// publishing one canonical EventModel, keeping all attached clients in order.
+func (a *Agent) SetReasoningEffortQuiet(effort provider.ReasoningEffort) error {
+	parsed, ok := provider.ParseReasoningEffort(string(effort))
+	if !ok {
+		return fmt.Errorf("unsupported reasoning effort %q", effort)
+	}
+	a.mu.Lock()
+	a.reasoningEffort = parsed
+	a.mu.Unlock()
 	return nil
 }
 
@@ -352,9 +376,34 @@ func (a *Agent) DrainInterrupts(urgentOnly bool) []provider.Message {
 // Run executes one turn: append the user's message, then loop until the model
 // stops asking for tools and no hook appends anything further.
 func (a *Agent) Run(ctx context.Context, userInput string) error {
+	return a.run(ctx, userInput, false)
+}
+
+// RunHidden executes a harness-authored turn. Local frontends use their own
+// hiddenPrompt marker, while remote clients send the marker to the daemon so
+// every attached window applies the same rendering rule.
+func (a *Agent) RunHidden(ctx context.Context, userInput string) error {
+	return a.run(ctx, userInput, true)
+}
+
+func (a *Agent) run(ctx context.Context, userInput string, hidden bool) error {
 	// An attached client forwards the turn instead of running it. The check is
 	// first because everything below — the conversation append, recall, the
 	// loop — belongs to whichever process actually owns the session (§20).
+	if a.ForwardHidden != nil {
+		a.mu.Lock()
+		images := a.pendingImages
+		a.pendingImages = nil
+		a.mu.Unlock()
+		return a.ForwardHidden(ctx, userInput, images, hidden)
+	}
+	if a.ForwardImages != nil {
+		a.mu.Lock()
+		images := a.pendingImages
+		a.pendingImages = nil
+		a.mu.Unlock()
+		return a.ForwardImages(ctx, userInput, images)
+	}
 	if a.Forward != nil {
 		return a.Forward(ctx, userInput)
 	}
@@ -369,7 +418,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 	defer a.endRun(gen)
 
 	if strings.TrimSpace(userInput) != "" {
-		msg := provider.Message{Role: provider.RoleUser, Content: userInput}
+		msg := provider.Message{Role: provider.RoleUser, Content: userInput, Hidden: hidden}
 		a.mu.Lock()
 		a.prompt = userInput
 		// Attach writes pendingImages under the lock; the swap has to take it

@@ -167,14 +167,14 @@ func TestTranscriptLinesOwnerCoversEveryKind(t *testing.T) {
 }
 
 // TestTranscriptLinesWelcomeOwnerIsChrome covers the empty-transcript path: the
-// welcome art is chrome, so every line is owned by -1.
+// start page is chrome, so every line is owned by -1.
 func TestTranscriptLinesWelcomeOwnerIsChrome(t *testing.T) {
 	m := &Model{
 		renderer: NewRenderer(theme.Dracula(), 80),
 	}
 	rows := m.transcriptLines()
 	if len(rows.Lines) == 0 {
-		t.Fatal("welcome rendered no lines")
+		t.Fatal("start page rendered no lines")
 	}
 	if len(rows.Lines) != len(rows.Owner) {
 		t.Fatalf("len(Lines)=%d != len(Owner)=%d", len(rows.Lines), len(rows.Owner))

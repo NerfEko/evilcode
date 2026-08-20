@@ -57,3 +57,45 @@ func TestAFailedWriteLeavesMemoryMatchingDisk(t *testing.T) {
 		}
 	}
 }
+
+func TestRenameMovesStateWithoutChangingAnotherNamespace(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewStore(dir, "bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Apply(Write{
+		Items: []Item{{ID: "1", Content: "keep this plan", Status: StatusPending}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewStore(dir, "wolf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Apply(Write{
+		Items: []Item{{ID: "2", Content: "do not inherit this", Status: StatusPending}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.Rename("raven"); err != nil {
+		t.Fatal(err)
+	}
+	if first.Session != "raven" {
+		t.Fatalf("renamed store session = %q", first.Session)
+	}
+	reopened, err := NewStore(dir, "raven")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Items(); len(got) != 1 || got[0].Content != "keep this plan" {
+		t.Fatalf("renamed state = %v", got)
+	}
+	if got := second.Items(); len(got) != 1 || got[0].Content != "do not inherit this" {
+		t.Fatalf("other namespace changed = %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "todos", "bat.json")); !os.IsNotExist(err) {
+		t.Fatalf("old namespace still exists: %v", err)
+	}
+}
