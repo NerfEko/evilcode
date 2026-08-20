@@ -669,7 +669,8 @@ const DefaultThinkingLines = 6
 // renderReasoning draws a thinking trace (plan.md §9.7).
 //
 // A live trace shows its tail rather than its head: the interesting part of
-// thinking is where it has got to, not where it began.
+// thinking is where it has got to, not where it began. A finished trace that
+// the reader expands is a deliberate inspection, so it renders in full.
 func (r *Renderer) renderReasoning(b *Block) []string {
 	style := rgbStyle(0x64, 0x64, 0x64).Italic(true)
 	if b.Collapsed {
@@ -684,6 +685,13 @@ func (r *Renderer) renderReasoning(b *Block) []string {
 	// TrimRight, or a trace ending in a newline spends one of its few rows on
 	// an empty line.
 	wrapped := wrapPlain(strings.TrimRight(b.Text, "\n"), max(r.Width-2, 8))
+	if !b.Streaming {
+		out := make([]string, 0, len(wrapped))
+		for _, line := range wrapped {
+			out = append(out, "  "+style.Render(line))
+		}
+		return out
+	}
 	window := r.ThinkingLines
 	if window <= 0 {
 		window = DefaultThinkingLines

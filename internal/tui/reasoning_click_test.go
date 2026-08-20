@@ -40,6 +40,43 @@ func TestClickCollapsedReasoningExpandsThenCollapses(t *testing.T) {
 	}
 }
 
+func TestManualReasoningCollapseDropsAutomaticSlack(t *testing.T) {
+	blocks := make([]Block, 0, 22)
+	for i := 0; i < 20; i++ {
+		blocks = append(blocks, Block{Kind: BlockAssistant, Text: "context"})
+	}
+	reasoningIndex := len(blocks)
+	blocks = append(blocks, Block{Kind: BlockReasoning, Text: "line one\nline two"})
+	m := &Model{
+		renderer: NewRenderer(theme.Dracula(), 79),
+		width:    80,
+		height:   100,
+		blocks:   blocks,
+		cwd:      t.TempDir(), panelRatio: 50,
+	}
+	// Simulate the slack left by an automatic answer-start collapse, then
+	// manually close the finished thought. The click must restore the natural
+	// bottom anchor rather than preserve a gap that makes the following context
+	// climb upward.
+	m.scroll.Observe(100, 40)
+	m.scroll.Observe(90, 40)
+	if m.scroll.Slack() == 0 {
+		t.Fatal("test setup did not create automatic-collapse slack")
+	}
+
+	rows := m.transcriptLines()
+	res := m.stackFor(len(rows.Lines)).Resolve()
+	start := clamp(len(rows.Lines)+m.scroll.Slack()-res.Transcript-m.scroll.Offset,
+		0, len(rows.Lines))
+	row := ownerRow(t, m, reasoningIndex) - start
+	if !m.toggleReasoningAt(tea.Mouse{X: 2, Y: row}) {
+		t.Fatal("click did not collapse the finished thought")
+	}
+	if got := m.scroll.Slack(); got != 0 {
+		t.Errorf("manual collapse left %d lines of automatic slack, want 0", got)
+	}
+}
+
 // TestClickStreamingReasoningDoesNotToggle guards the live path: finishReasoning
 // re-asserts the collapsed state at turn end, so a manual fold mid-stream would
 // be undone a moment later. A streaming trace ignores the click.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -129,6 +130,27 @@ func TestLiveThinkingIsCappedAndSaysWhatItHid(t *testing.T) {
 	// The tail, not the head: where thinking has got to is the interesting part.
 	if !strings.Contains(rows[len(rows)-1], "a line of reasoning") {
 		t.Errorf("last row = %q", rows[len(rows)-1])
+	}
+}
+
+func TestExpandedFinishedThinkingShowsTheEntireTrace(t *testing.T) {
+	r := testRenderer(60)
+	r.ThinkingLines = 4
+	var text strings.Builder
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&text, "reasoning line %d\n", i+1)
+	}
+
+	rows := plainLines(r.Lines(&Block{Kind: BlockReasoning, Text: text.String()}))
+	if len(rows) != 12 {
+		t.Fatalf("expanded finished trace rendered %d rows, want all 12", len(rows))
+	}
+	if strings.Contains(strings.Join(rows, "\n"), "earlier lines") {
+		t.Fatal("finished expanded trace still used the live thinking window")
+	}
+	if !strings.Contains(rows[0], "reasoning line 1") ||
+		!strings.Contains(rows[len(rows)-1], "reasoning line 12") {
+		t.Fatalf("expanded trace did not include both ends: %q ... %q", rows[0], rows[len(rows)-1])
 	}
 }
 

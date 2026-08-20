@@ -117,10 +117,12 @@ model's advertised levels. The selected effort appears after the model in the co
 footer (for example, `gpt-5.6-luna max`) and is remembered per model in the config, so
 switching back restores that model's setting. Codex reasoning summaries stay visible after
 the answer starts because Codex emits them as compact one-line traces; other providers use
-the collapsible `thought (N lines)` view. The last model is remembered too; an explicit
-`-m`, `EVILCODE_MODEL`, or resumed session still takes precedence. The control is
-translated for Codex, OpenAI-compatible providers, DeepSeek, and Ollama; the model picker
-shows the levels returned by each provider when its catalog exposes them.
+the collapsible `thought (N lines)` view, and clicking one expands the entire finished
+trace. Closing it keeps the context below anchored while the context above fills the freed
+space. The last model is remembered too; an explicit `-m`, `EVILCODE_MODEL`, or resumed
+session still takes precedence. The control is translated for Codex, OpenAI-compatible
+providers, DeepSeek, and Ollama; the model picker shows the levels returned by each provider
+when its catalog exposes them.
 
 Optional service credentials use `/connect`, with masked input. `/connect brave` saves a
 Brave Search API key in the user-only `[web]` config block, activates `web_search` for the

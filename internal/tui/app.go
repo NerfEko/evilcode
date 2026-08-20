@@ -4543,8 +4543,16 @@ func (m *Model) toggleReasoningAt(mouse tea.Mouse) bool {
 	if b.Kind != BlockReasoning || b.Streaming {
 		return false
 	}
+	wasCollapsed := b.Collapsed
 	b.Collapsed = !b.Collapsed
 	b.dropCache()
+	if !wasCollapsed && b.Collapsed {
+		// Automatic answer-start collapse uses slack to keep the old viewport
+		// stable while new text arrives. A manual close is an explicit reading
+		// choice: let the bottom stay anchored so context above the thought moves
+		// down into the freed space instead of context below moving up.
+		m.scroll.ClearSlack()
+	}
 	m.invalidateTranscriptCache()
 	return true
 }

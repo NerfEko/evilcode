@@ -114,7 +114,8 @@ func (s *Scroll) Observe(contentHeight, viewportHeight int) {
 func (s *Scroll) Slack() int { return s.slack }
 
 // ClearSlack drops the gap outright, for anything that repaints from scratch —
-// a clear, a compaction, a theme change.
+// a clear, a compaction, a theme change, or a manual reasoning collapse whose
+// natural bottom anchor should keep the context below the thought in place.
 func (s *Scroll) ClearSlack() { s.slack, s.lastHeight = 0, 0 }
 
 // Max is the largest valid offset for the given content and viewport heights.
