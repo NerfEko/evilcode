@@ -56,7 +56,11 @@ func (b *askBroker) Ask(ctx context.Context, req *tools.AskRequest) ([]string, e
 		b.mu.Lock()
 		delete(b.pending, id)
 		delete(b.requests, id)
+		publish := b.publish
 		b.mu.Unlock()
+		if publish != nil {
+			publish(agent.Event{Kind: agent.EventAskResolved, RequestID: id})
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -68,16 +72,24 @@ func (b *askBroker) Answer(id string, labels []string) error {
 		delete(b.pending, id)
 		delete(b.requests, id)
 	}
+	publish := b.publish
 	b.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("pending request %q was not found", id)
 	}
+	sent := false
 	select {
 	case req.Reply <- labels:
-		return nil
+		sent = true
 	default:
+	}
+	if publish != nil {
+		publish(agent.Event{Kind: agent.EventAskResolved, RequestID: id})
+	}
+	if !sent {
 		return fmt.Errorf("pending request %q is no longer accepting an answer", id)
 	}
+	return nil
 }
 
 func (b *askBroker) Snapshot() []agent.AskEvent {

@@ -183,6 +183,34 @@ func (p *PendingAsk) Remove(req *AskRequest) {
 	reply(req, nil)
 }
 
+// RemoveID clears one server-owned request wherever it sits in the local
+// display queue. Another attached client may have answered it first, so the
+// picker must be able to converge without pretending the local window answered.
+func (p *PendingAsk) RemoveID(id string) {
+	if id == "" {
+		return
+	}
+	p.mu.Lock()
+	var removed *AskRequest
+	if p.req != nil && p.req.ID == id {
+		removed = p.req
+		p.req = nil
+		if len(p.queued) > 0 {
+			p.req, p.queued = p.queued[0], p.queued[1:]
+		}
+	} else {
+		for i, req := range p.queued {
+			if req.ID == id {
+				removed = req
+				p.queued = append(p.queued[:i], p.queued[i+1:]...)
+				break
+			}
+		}
+	}
+	p.mu.Unlock()
+	reply(removed, nil)
+}
+
 // Cancel resolves every outstanding question with no answer.
 func (p *PendingAsk) Cancel() {
 	p.mu.Lock()

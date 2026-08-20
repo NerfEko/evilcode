@@ -219,10 +219,8 @@ type Store struct {
 
 // NewStore opens (or creates) a session's todo state.
 func NewStore(dataDir, session string) (*Store, error) {
-	if session == "" || session == "." || session == ".." ||
-		filepath.Base(session) != session || strings.ContainsAny(session, `/\\`) ||
-		strings.ContainsRune(session, 0) || filepath.IsAbs(session) {
-		return nil, fmt.Errorf("invalid todo namespace %q", session)
+	if err := validSession(session); err != nil {
+		return nil, err
 	}
 	s := &Store{Dir: filepath.Join(dataDir, "todos"), Session: session}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
@@ -232,6 +230,15 @@ func NewStore(dataDir, session string) (*Store, error) {
 		return nil, err
 	}
 	return s, s.load()
+}
+
+func validSession(session string) error {
+	if session == "" || session == "." || session == ".." ||
+		filepath.Base(session) != session || strings.ContainsAny(session, `/\\`) ||
+		strings.ContainsRune(session, 0) || filepath.IsAbs(session) {
+		return fmt.Errorf("invalid todo namespace %q", session)
+	}
+	return nil
 }
 
 func (s *Store) path(suffix string) string {
@@ -248,8 +255,8 @@ func (s *Store) load() error {
 }
 
 // Reload refreshes a store from disk. A daemon owns writes for attached TUIs;
-// the client uses this to keep its read-only card current after another
-// process or session changes the shared plan.
+// the client uses this to keep its read-only card current after daemon-owned
+// state changes for the current session.
 func (s *Store) Reload() error {
 	if s == nil {
 		return nil
@@ -269,6 +276,88 @@ func (s *Store) Reload() error {
 		return err
 	}
 	s.items, s.goals, s.plan, s.obs = items, goals, plan, obs
+	return nil
+}
+
+// Rebind changes the read-only view to another session namespace. The daemon
+// uses Rename to move the files first; an attached TUI then rebinds its local
+// mirror when the rename snapshot arrives. No files are moved here because a
+// client must never become a second writer for the daemon's state.
+func (s *Store) Rebind(session string) error {
+	if s == nil {
+		return nil
+	}
+	if err := validSession(session); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Session == session {
+		return nil
+	}
+	oldSession := s.Session
+	oldItems, oldGoals, oldPlan, oldObs := s.items, s.goals, s.plan, s.obs
+	s.Session = session
+	if err := s.load(); err != nil {
+		s.Session = oldSession
+		s.items, s.goals, s.plan, s.obs = oldItems, oldGoals, oldPlan, oldObs
+		return err
+	}
+	return nil
+}
+
+// Rename moves this namespace's state files as one logical session change and
+// updates the live store only after every move succeeds. Existing destination
+// files are rejected so a session rename can never overwrite another
+// session's plan.
+func (s *Store) Rename(session string) error {
+	if s == nil {
+		return nil
+	}
+	if err := validSession(session); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Session == session {
+		return nil
+	}
+
+	suffixes := []string{"", "-goals", "-plan", "-gates"}
+	type move struct{ src, dst string }
+	moves := make([]move, 0, len(suffixes))
+	for _, suffix := range suffixes {
+		src := filepath.Join(s.Dir, s.Session+suffix+".json")
+		dst := filepath.Join(s.Dir, session+suffix+".json")
+		if _, err := os.Lstat(dst); err == nil {
+			return fmt.Errorf("todo namespace %q already exists", session)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if _, err := os.Lstat(src); err == nil {
+			moves = append(moves, move{src: src, dst: dst})
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	completed := 0
+	rollback := func() error {
+		var rollbackErr error
+		for i := completed - 1; i >= 0; i-- {
+			if err := os.Rename(moves[i].dst, moves[i].src); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		return rollbackErr
+	}
+	for _, item := range moves {
+		if err := os.Rename(item.src, item.dst); err != nil {
+			return errors.Join(err, rollback())
+		}
+		completed++
+	}
+	s.Session = session
 	return nil
 }
 

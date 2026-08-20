@@ -245,18 +245,59 @@ func (sess *Session) setCredential(target, key string) error {
 	if target == "" || key == "" {
 		return fmt.Errorf("provider and key are required")
 	}
+	sess.controlMu.Lock()
+	defer sess.controlMu.Unlock()
+	if sess.busy() {
+		return fmt.Errorf("finish or interrupt the current turn before changing credentials")
+	}
 	if err := config.SaveProviderAPIKey(target, key); err != nil {
 		return err
 	}
-	if sess.built.Agent.Provider != nil && sess.built.Agent.Provider.Name() == target {
-		switch p := sess.built.Agent.Provider.(type) {
-		case *provider.Ollama:
-			p.APIKey = key
-		case *provider.OpenAI:
-			p.APIKey = key
+	sess.srv.mu.Lock()
+	if sess.srv.Cfg != nil {
+		for i := range sess.srv.Cfg.Providers {
+			if sess.srv.Cfg.Providers[i].Name == target {
+				sess.srv.Cfg.Providers[i].APIKey = key
+			}
 		}
 	}
+	for _, live := range sess.srv.sessions {
+		live.mu.Lock()
+		for i := range live.built.Config.Providers {
+			if live.built.Config.Providers[i].Name == target {
+				live.built.Config.Providers[i].APIKey = key
+			}
+		}
+		if !live.running && !live.built.Agent.Running() &&
+			live.built.Agent.Provider != nil && live.built.Agent.Provider.Name() == target {
+			if pc := providerConfig(live.built.Config, target); pc != nil {
+				if rebuilt, buildErr := pc.Build(); buildErr == nil {
+					live.built.Agent.Provider = rebuilt
+					if live.built.Memory != nil {
+						live.built.Memory.Embedder = rebuilt
+					}
+					if live.built.Agent.Compactor != nil {
+						live.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
+					}
+				}
+			}
+		}
+		live.mu.Unlock()
+	}
+	sess.srv.mu.Unlock()
 	sess.notice(target + " API key saved")
+	return nil
+}
+
+func providerConfig(cfg *config.Config, name string) *config.ProviderConfig {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Name == name {
+			return &cfg.Providers[i]
+		}
+	}
 	return nil
 }
 

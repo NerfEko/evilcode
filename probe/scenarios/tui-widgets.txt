@@ -6,4 +6,5 @@ scenario todos
 boot tui
 keys "wire the auth flow"
 keys Enter
+wait-pane "Tracked. Working through the refresh path next."
 capture widgets-docked

@@ -49,19 +49,16 @@ type Options struct {
 	// side-call per invocation for nothing (plan.md §19).
 	Extract bool
 
-	// TodoNamespace is the todo store every session in a swarm shares. Left
-	// empty a session gets its own, which is what a solo run wants; set to one
-	// name across a daemon it becomes the shared plan of §20, where a group a
-	// worker closes is the same group its spawner is watching.
+	// TodoNamespace optionally selects an explicit todo store. Daemon sessions
+	// leave it empty so Build uses the durable session name; callers that truly
+	// need a shared plan must opt into one deliberately.
 	TodoNamespace string
 
 	// Todos and Bank are stores the caller already owns, shared by reference.
 	//
 	// A namespace names a set of files, and two stores over one set of files are
 	// two divergent copies of it — each reading its own snapshot and writing the
-	// whole file back. Sharing the *store* is what makes a namespace mean one
-	// plan rather than one filename. The build does not close what it did not
-	// open.
+	// whole file back. The build does not close what it did not open.
 	Todos *todo.Store
 	Bank  *memory.Store
 
@@ -314,9 +311,8 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)
 
-	// The todo store is shared across a swarm when a namespace is named, so
-	// "the auth flow" means one group to every agent rather than N private
-	// lists that happen to share a word (plan.md §20).
+	// Todo state is private to the durable session by default. A caller may pass
+	// an explicit namespace/store when it intentionally wants coordination.
 	todoName := opts.TodoNamespace
 	if todoName == "" {
 		todoName = store.Name

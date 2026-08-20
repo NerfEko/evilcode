@@ -1,8 +1,8 @@
- evilcode · v1.0.0
- session: Dracula 🧛
- /model to switch · local:mock · mock-large
+ evilcode · v1.1.0
+ server: Dracula 🧛 · client: Spider 🕷
+ /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
- <repo> (main)
+ <repo>
 
  1› look at the screenshot
 

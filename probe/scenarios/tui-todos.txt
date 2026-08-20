@@ -5,6 +5,7 @@ scenario todos
 boot tui
 keys "wire the auth flow"
 keys Enter
+wait-pane "refresh path next."
 capture todos-delta
 
 keys "/todos"

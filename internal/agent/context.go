@@ -142,6 +142,18 @@ func (c *Conversation) Reset(msgs []provider.Message) {
 	c.epoch++
 }
 
+// Sync replaces a remote conversation mirror without changing its compaction
+// epoch or persisting anything. The daemon is the owner of the transcript; an
+// attached client only needs a current read model for /context and diagnostics.
+func (c *Conversation) Sync(msgs []provider.Message, epoch ...int) {
+	c.mu.Lock()
+	c.messages = append([]provider.Message(nil), msgs...)
+	if len(epoch) > 0 {
+		c.epoch = epoch[0]
+	}
+	c.mu.Unlock()
+}
+
 // CompactedPrefix marks the synthetic message a compaction leaves behind.
 const CompactedPrefix = "[conversation compacted]\n\n"
 

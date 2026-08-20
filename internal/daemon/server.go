@@ -21,7 +21,6 @@ import (
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
-	"evilcode/internal/todo"
 	"evilcode/internal/tools"
 	"evilcode/internal/wiring"
 )
@@ -81,27 +80,22 @@ type Server struct {
 	// already-closed server.
 	builds sync.WaitGroup
 
-	// todos and bank are the swarm's shared state, owned here and handed to
-	// every session by reference. Opened per session they were N copies of one
-	// set of files, each writing the whole file back over the others.
-	todos *todo.Store
-	bank  *memory.Store
+	// bank is one file handle shared by the daemon, while each memory manager
+	// scopes its records to the appropriate project/global view. Todo stores
+	// are deliberately not held here: todo state belongs to one session.
+	bank *memory.Store
 }
 
-// shared returns the swarm's todo store and memory bank, opening them once.
-//
-// A failure to open is not fatal — both are coordination and enhancement, and
-// a session builds without them the same way a solo one does.
-func (s *Server) shared() (*todo.Store, *memory.Store) {
+// memoryBank returns the daemon's shared memory file handle. Memory records are
+// scoped by the manager; this sharing is only to serialize concurrent appends
+// to one durable bank. Todo state is intentionally per-session.
+func (s *Server) memoryBank() *memory.Store {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.todos == nil {
-		s.todos, _ = todo.NewStore(config.DataDir(), SwarmTodoNamespace)
-	}
 	if s.bank == nil {
 		s.bank, _ = memory.Open(config.DataDir())
 	}
-	return s.todos, s.bank
+	return s.bank
 }
 
 // Session is one live conversation inside the daemon.
@@ -111,6 +105,7 @@ type Session struct {
 	Cwd     string
 	Task    string
 	Worker  bool
+	NoTools bool
 	Started time.Time
 
 	built *wiring.Session
@@ -149,6 +144,9 @@ type Session struct {
 	failureNotified bool
 
 	mu sync.Mutex
+	// controlMu serializes runtime configuration changes that must be observed
+	// as one session-wide state transition by every attached client.
+	controlMu sync.Mutex
 
 	// pending holds conflicts waiting for this session's next safe point. It
 	// lives on the reader, not the writer: a conflict queued on the writer
@@ -169,9 +167,10 @@ type Session struct {
 	// session cancels the turn and then waits on this: a cancelled turn still
 	// writes — the partial answer, the stubs for the tools it abandoned — and
 	// closing the store first sends all of it nowhere.
-	turnDone  chan struct{}
-	queued    []queuedInput
-	requestID string
+	turnDone      chan struct{}
+	queued        []queuedInput
+	requestID     string
+	requestHidden bool
 
 	// closing refuses new turns once close has begun. Without it a turn
 	// starting while close waits replaces the channel close is waiting on, and
@@ -189,6 +188,7 @@ type queuedInput struct {
 	requestID string
 	text      string
 	images    [][]byte
+	hidden    bool
 }
 
 func (sess *Session) busy() bool {
@@ -668,6 +668,14 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		}
 		if sess, ok := s.sessions[name]; ok {
 			s.mu.Unlock()
+			if opts.NoTools && !sess.NoTools {
+				return nil, fmt.Errorf("session %q already has tools; --no-tools only applies when creating a new session", name)
+			}
+			if opts.Model != "" {
+				if err := sess.SetModel(opts.Model); err != nil {
+					return nil, err
+				}
+			}
 			return sess, nil
 		}
 		if wait, building := s.opening[name]; building {
@@ -723,12 +731,8 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 	if cfg == nil {
 		return nil, fmt.Errorf("daemon: no configuration")
 	}
-	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
-	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
-		return nil, err
-	}
 	cfg.AddDiscoveredCodex()
-	todos, bank := s.shared()
+	bank := s.memoryBank()
 	asks := newAskBroker()
 	var mcpClient *mcp.Client
 	var extraTools tools.Set
@@ -748,7 +752,7 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 	}
 	built, err := wiring.Build(cfg, wiring.Options{
 		Model: opts.Model, Resume: name, Cwd: cwd, Extract: true, NoTools: opts.NoTools,
-		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank, Asker: asks,
+		Bank: bank, Asker: asks,
 		ExtraTools: extraTools, ExtraClosers: extraClosers,
 	})
 	if err != nil {
@@ -796,6 +800,7 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		overnight: newOvernightState(),
 		subs:      map[chan ServerMsg]struct{}{},
 	}
+	sess.NoTools = opts.NoTools
 	if built.Exec != nil && built.Exec.Bg != nil {
 		built.Exec.Bg.OnDone = func(task *tools.BackgroundTask) {
 			done, failed, _ := task.Snapshot()
@@ -834,8 +839,10 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 	asks.SetPublisher(sess.publishEvent)
 
 	// Coordination tools exist only inside the daemon, where there is something
-	// to coordinate with.
-	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
+	// to coordinate with. A --no-tools session must not receive these either.
+	if !opts.NoTools {
+		sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
+	}
 
 	go sess.pump()
 	return sess, nil
@@ -863,21 +870,35 @@ func (sess *Session) pump() {
 // reconnects cannot miss an ask request that arrived between snapshot and
 // subscription.
 func (sess *Session) publishEvent(e agent.Event) {
+	turnEnd := e.Kind == agent.EventTurnEnd
 	sess.mu.Lock()
 	if e.Session == "" {
 		e.Session = sess.Name
 	}
 	if e.Kind == agent.EventTurnStart {
 		e.RequestID = sess.requestID
-		if isOvernightRequest(e.RequestID) {
+		e.Hidden = sess.requestHidden || isOvernightRequest(e.RequestID)
+		if e.Hidden {
 			// The unattended prompt remains in the durable conversation, but it
 			// is an implementation detail rather than a fake user message for
 			// every attached window.
 			e.Text = ""
 		}
 		sess.requestID = ""
+		sess.requestHidden = false
 	}
 	sess.mu.Unlock()
+	if turnEnd {
+		// A remote Agent is a render mirror, not a second conversation owner.
+		// Include the authoritative post-turn history so /context and a client
+		// that stays attached after a memory/compaction hook do not drift.
+		history := sess.built.Agent.Conv.Messages()
+		if len(history) > 0 && history[0].Role == provider.RoleSystem {
+			history = history[1:]
+		}
+		e.SnapshotMessages = history
+		e.SnapshotEpoch = sess.built.Agent.Conv.Epoch()
+	}
 	e.Seq = sess.ring.Add(e)
 	sess.broadcast(ServerMsg{Kind: MsgEvent, Event: &e})
 }
@@ -890,8 +911,8 @@ func (sess *Session) publishSnapshot() {
 	sess.broadcast(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot()})
 }
 
-// renameSession changes the live map key and the durable store together. The
-// server lock is acquired before the session lock, matching Sessions and
+// renameSession changes the live map key and the durable stores together. The
+// server lock is acquired before the session locks, matching Sessions and
 // Status, so a picker cannot observe a half-renamed live entry.
 func (s *Server) renameSession(sess *Session, name string) error {
 	name = strings.TrimSpace(name)
@@ -917,6 +938,18 @@ func (s *Server) renameSession(sess *Session, name string) error {
 	}
 	if err := sess.built.Store.Rename(config.DataDir(), name); err != nil {
 		return err
+	}
+	if sess.built.Todos != nil {
+		if err := sess.built.Todos.Rename(name); err != nil {
+			// Keep the conversation and its plan together. The todo rename is
+			// all-or-nothing; if it cannot move, put the session log back before
+			// publishing any new identity to the server.
+			rollbackErr := sess.built.Store.Rename(config.DataDir(), old)
+			if rollbackErr != nil {
+				return errors.Join(err, fmt.Errorf("rolling back session rename: %w", rollbackErr))
+			}
+			return err
+		}
 	}
 	delete(s.sessions, old)
 	s.sessions[name] = sess
@@ -1213,11 +1246,14 @@ const turnUnwindTimeout = 5 * time.Second
 
 // snapshot describes the session to a client that has just attached.
 func (sess *Session) snapshot(_ ...string) *Snapshot {
+	sess.controlMu.Lock()
+	defer sess.controlMu.Unlock()
 	sess.mu.Lock()
 	name, model, cwd := sess.Name, sess.Model, sess.Cwd
 	reserved := sess.running
 	prov := sess.built.Agent.Provider
 	agentModel := sess.built.Agent.Model
+	cfg := sess.built.Config.Clone()
 	sess.mu.Unlock()
 	msgs := sess.built.Agent.Conv.Messages()
 	out := make([]Message, 0, len(msgs))
@@ -1236,7 +1272,7 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 			IsError:       m.IsError,
 			Held:          m.Held,
 			Images:        m.Images,
-			Hidden:        m.Role == provider.RoleUser && m.Content == overnightPrompt,
+			Hidden:        m.Hidden,
 			Repairs:       m.Repairs,
 		})
 	}
@@ -1285,10 +1321,12 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 		Cwd:              cwd,
 		ReasoningEffort:  effort,
 		ReasoningEfforts: levelNames,
+		Vision:           cfg != nil && cfg.ModelOverrides(config.ModelRef(agentModel, prov.Name())).Vision,
 		Skills:           skillNames,
 		MCP:              mcpStatus,
 		Running:          reserved || sess.built.Agent.Running(),
 		Seq:              sess.ring.Seq(),
+		Epoch:            sess.built.Agent.Conv.Epoch(),
 		Messages:         out,
 		Pending:          pending,
 		Background:       background,
@@ -1315,6 +1353,17 @@ func (sess *Session) Input(text string, images ...[][]byte) {
 // TurnStart. Headless waiters use that id to distinguish their queued turn from
 // an older turn already running in the same session.
 func (sess *Session) InputRequest(requestID, text string, images ...[][]byte) {
+	sess.inputRequest(requestID, text, false, images...)
+}
+
+// InputRequestHidden carries the render-only visibility marker for prompts
+// authored by a frontend harness. The provider still receives the full text.
+func (sess *Session) InputRequestHidden(requestID, text string, hidden bool, images ...[][]byte) {
+	sess.inputRequest(requestID, text, hidden, images...)
+}
+
+func (sess *Session) inputRequest(requestID, text string, hidden bool, images ...[][]byte) {
+	hidden = hidden || isOvernightRequest(requestID)
 	if sess.overnight != nil && !isOvernightRequest(requestID) && sess.overnight.isActive() {
 		if sess.overnight.stop("you stopped it by sending a prompt") {
 			sess.cancelTurn()
@@ -1334,7 +1383,7 @@ func (sess *Session) InputRequest(requestID, text string, images ...[][]byte) {
 				attached = images[0]
 			}
 			sess.queued = append(sess.queued, queuedInput{
-				requestID: requestID, text: text, images: attached,
+				requestID: requestID, text: text, images: attached, hidden: hidden,
 			})
 		}
 		position := len(sess.queued)
@@ -1346,15 +1395,16 @@ func (sess *Session) InputRequest(requestID, text string, images ...[][]byte) {
 	}
 	sess.mu.Lock()
 	sess.requestID = requestID
+	sess.requestHidden = hidden
 	sess.mu.Unlock()
 	var attached [][]byte
 	if len(images) > 0 {
 		attached = images[0]
 	}
-	sess.launchTurn(text, attached, ctx, cancel, done)
+	sess.launchTurn(text, attached, hidden, ctx, cancel, done)
 }
 
-func (sess *Session) launchTurn(text string, images [][]byte, ctx context.Context, cancel context.CancelFunc, done chan struct{}) {
+func (sess *Session) launchTurn(text string, images [][]byte, hidden bool, ctx context.Context, cancel context.CancelFunc, done chan struct{}) {
 	go func() {
 		defer close(done)
 		defer sess.endTurn()
@@ -1362,7 +1412,11 @@ func (sess *Session) launchTurn(text string, images [][]byte, ctx context.Contex
 		if len(images) > 0 {
 			sess.built.Agent.Attach(images)
 		}
-		_ = sess.built.Agent.Run(ctx, text)
+		if hidden {
+			_ = sess.built.Agent.RunHidden(ctx, text)
+		} else {
+			_ = sess.built.Agent.Run(ctx, text)
+		}
 	}()
 }
 
@@ -1395,10 +1449,23 @@ func (sess *Session) overnightTurns() int {
 // runtime operation, not a TUI preference: every attached client must observe
 // the same provider, conversation limits, and durable model metadata.
 func (sess *Session) SetModel(ref string) error {
+	return sess.setModel(ref, "")
+}
+
+// SetModelWithEffort applies a model switch and an optional reasoning choice as
+// one transition. An attached client may have a stale catalog, so validating
+// the effort after changing the model would leave the session half-switched.
+func (sess *Session) SetModelWithEffort(ref string, effort provider.ReasoningEffort) error {
+	return sess.setModel(ref, effort)
+}
+
+func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) error {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return fmt.Errorf("model reference is required")
 	}
+	sess.controlMu.Lock()
+	defer sess.controlMu.Unlock()
 	sess.mu.Lock()
 	if sess.closing {
 		sess.mu.Unlock()
@@ -1410,20 +1477,43 @@ func (sess *Session) SetModel(ref string) error {
 	}
 	sess.mu.Unlock()
 
+	sess.mu.Lock()
 	cfg := sess.built.Config.Clone()
+	sess.mu.Unlock()
 	prov, model, err := cfg.Resolve(ref)
 	if err != nil {
 		return err
 	}
-	overrides := cfg.ModelOverrides(model)
-	if err := sess.built.Store.WriteModel(config.ModelRef(model, prov.Name())); err != nil {
-		return err
+	modelRef := config.ModelRef(model, prov.Name())
+	overrides := cfg.ModelOverrides(modelRef)
+	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
+	levelNames := make([]string, 0, len(levels))
+	for _, level := range levels {
+		levelNames = append(levelNames, string(level))
 	}
-
+	effortKnown := len(levels) > 0 && provider.SupportsReasoningEffort(prov)
+	effort := provider.ReasoningEffort("")
+	if requested != "" && (!effortKnown || !containsReasoningEffort(levels, requested)) {
+		return fmt.Errorf("reasoning effort %q is not supported by %s", requested, model)
+	}
+	if effortKnown {
+		effort = sess.built.Agent.ReasoningEffort()
+		if requested != "" {
+			effort = requested
+		} else if saved := cfg.ReasoningEffortFor(modelRef); saved.Valid() && containsReasoningEffort(levels, saved) {
+			effort = saved
+		} else if !containsReasoningEffort(levels, effort) {
+			effort = levels[0]
+		}
+	}
 	sess.mu.Lock()
 	if sess.closing || sess.running {
 		sess.mu.Unlock()
 		return fmt.Errorf("session became busy while switching models")
+	}
+	if err := sess.built.Store.WriteModel(modelRef); err != nil {
+		sess.mu.Unlock()
+		return err
 	}
 	sess.Model = model
 	sess.built.Config = cfg
@@ -1443,18 +1533,79 @@ func (sess *Session) SetModel(ref string) error {
 	}
 	sess.mu.Unlock()
 
-	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
-	levelNames := make([]string, 0, len(levels))
-	for _, level := range levels {
-		levelNames = append(levelNames, string(level))
+	if effortKnown {
+		if err := sess.built.Agent.SetReasoningEffortQuiet(effort); err != nil {
+			return err
+		}
+	}
+	var preferenceErr error
+	if requested != "" {
+		if err := config.SaveReasoningEffort(modelRef, requested); err != nil {
+			preferenceErr = fmt.Errorf("could not remember reasoning effort: %w", err)
+		} else {
+			sess.mu.Lock()
+			if sess.built.Config.ReasoningEfforts == nil {
+				sess.built.Config.ReasoningEfforts = map[string]string{}
+			}
+			sess.built.Config.ReasoningEfforts[modelRef] = string(requested)
+			sess.mu.Unlock()
+			sess.srv.mu.Lock()
+			if sess.srv.Cfg != nil {
+				if sess.srv.Cfg.ReasoningEfforts == nil {
+					sess.srv.Cfg.ReasoningEfforts = map[string]string{}
+				}
+				sess.srv.Cfg.ReasoningEfforts[modelRef] = string(requested)
+			}
+			sess.srv.mu.Unlock()
+		}
 	}
 	sess.publishEvent(agent.Event{
-		Kind:             agent.EventModel,
-		Model:            model,
-		Provider:         prov.Name(),
-		ReasoningEffort:  sess.built.Agent.ReasoningEffort(),
-		ReasoningEfforts: levelNames,
+		Kind:                 agent.EventModel,
+		Model:                model,
+		Provider:             prov.Name(),
+		ReasoningEffort:      effort,
+		ReasoningEfforts:     levelNames,
+		ReasoningEffortKnown: effortKnown,
+		Vision:               overrides.Vision,
+		VisionKnown:          true,
 	})
+	return preferenceErr
+}
+
+// SetReasoningEffort applies one session-wide effort setting. The agent emits
+// the canonical event, so every attached client converges to the same value.
+func (sess *Session) SetReasoningEffort(effort provider.ReasoningEffort) error {
+	sess.controlMu.Lock()
+	defer sess.controlMu.Unlock()
+	sess.mu.Lock()
+	prov := sess.built.Agent.Provider
+	model := sess.built.Agent.Model
+	sess.mu.Unlock()
+	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
+	if len(levels) == 0 || !provider.SupportsReasoningEffort(prov) || !containsReasoningEffort(levels, effort) {
+		return fmt.Errorf("reasoning effort %q is not supported by %s", effort, model)
+	}
+	if err := sess.built.Agent.SetReasoningEffort(effort); err != nil {
+		return err
+	}
+	ref := config.ModelRef(model, prov.Name())
+	if err := config.SaveReasoningEffort(ref, effort); err != nil {
+		return fmt.Errorf("could not remember reasoning effort: %w", err)
+	}
+	sess.mu.Lock()
+	if sess.built.Config.ReasoningEfforts == nil {
+		sess.built.Config.ReasoningEfforts = map[string]string{}
+	}
+	sess.built.Config.ReasoningEfforts[ref] = string(effort)
+	sess.mu.Unlock()
+	sess.srv.mu.Lock()
+	if sess.srv.Cfg != nil {
+		if sess.srv.Cfg.ReasoningEfforts == nil {
+			sess.srv.Cfg.ReasoningEfforts = map[string]string{}
+		}
+		sess.srv.Cfg.ReasoningEfforts[ref] = string(effort)
+	}
+	sess.srv.mu.Unlock()
 	return nil
 }
 
@@ -1516,10 +1667,11 @@ func (sess *Session) endTurn() {
 		sess.running = true
 		sess.cancel, sess.turnDone = cancel, done
 		sess.requestID = item.requestID
+		sess.requestHidden = item.hidden
 	}
 	sess.mu.Unlock()
 	if next != nil {
-		sess.launchTurn(next.text, next.images, ctx, cancel, done)
+		sess.launchTurn(next.text, next.images, next.hidden, ctx, cancel, done)
 	}
 }
 
@@ -1686,7 +1838,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: "input before attach"})
 				continue
 			}
-			sess.InputRequest(msg.RequestID, msg.Text, msg.Images)
+			sess.InputRequestHidden(msg.RequestID, msg.Text, msg.Hidden, msg.Images)
 
 		case MsgInterrupt:
 			if sess == nil {
@@ -1709,7 +1861,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: "model switch before attach"})
 				continue
 			}
-			if err := sess.SetModel(msg.Model); err != nil {
+			if err := sess.SetModelWithEffort(msg.Model, provider.ReasoningEffort(msg.ReasoningEffort)); err != nil {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 			}
 
@@ -1728,25 +1880,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				continue
 			}
 			effort := provider.ReasoningEffort(msg.ReasoningEffort)
-			if err := sess.built.Agent.SetReasoningEffort(effort); err != nil {
+			if err := sess.SetReasoningEffort(effort); err != nil {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
-				continue
 			}
-			ref := config.ModelRef(sess.built.Agent.Model, sess.built.Agent.Provider.Name())
-			if err := config.SaveReasoningEffort(ref, effort); err != nil {
-				send(ServerMsg{Kind: MsgError, Err: "could not remember reasoning effort: " + err.Error()})
-				continue
-			}
-			s.mu.Lock()
-			if s.Cfg.ReasoningEfforts == nil {
-				s.Cfg.ReasoningEfforts = map[string]string{}
-			}
-			s.Cfg.ReasoningEfforts[ref] = string(effort)
-			s.mu.Unlock()
-			sess.publishEvent(agent.Event{
-				Kind:            agent.EventReasoningEffort,
-				ReasoningEffort: effort,
-			})
 
 		case MsgSpawn:
 			// Attributed to the attached session, not spawned free-floating:

@@ -67,7 +67,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		return nil, err
 	}
 
-	todos, bank := s.shared()
+	bank := s.memoryBank()
 	tasks := newAskBroker()
 	var mcpClient *mcp.Client
 	var extraTools tools.Set
@@ -79,12 +79,6 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		return nil, fmt.Errorf("daemon: no configuration")
 	}
 	workerCfg = workerCfg.Clone()
-	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
-	if err := workerCfg.LoadRepoOverrides(pc.Root); err != nil {
-		store.Close()
-		s.releaseName(store.Name)
-		return nil, err
-	}
 	workerCfg.AddDiscoveredCodex()
 	if workerCfg != nil && len(workerCfg.MCP) > 0 {
 		mcpClient = mcp.New()
@@ -101,7 +95,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	}
 	built, err := wiring.Build(workerCfg, wiring.Options{
 		Model: s.Model, Cwd: cwd, Store: store, Extract: true,
-		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
+		Bank:  bank,
 		Asker: tasks, ExtraTools: extraTools, ExtraClosers: extraClosers,
 	})
 	if err != nil {

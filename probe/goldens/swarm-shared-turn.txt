@@ -1,4 +1,4 @@
- evilcode · v1.0.0
+ evilcode · v1.1.0
  server: Dracula 🧛 · client: Bat 🦇
  /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
@@ -39,7 +39,7 @@
 
 
 --- pane 1 ---
- evilcode · v1.0.0
+ evilcode · v1.1.0
  server: Dracula 🧛 · client: Serpent 🐉
  /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock

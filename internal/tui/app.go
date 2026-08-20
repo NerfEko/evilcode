@@ -303,13 +303,14 @@ type Model struct {
 	// remoteAskAnswer is set for a client whose ask request is owned by the
 	// daemon. The local picker remains the same, but the answer crosses the
 	// socket instead of resolving a local tool goroutine.
-	remoteAskAnswer  func(string, []string) error
-	remoteAskID      string
-	remoteModel      func(string) error
-	remoteInterrupt  func(bool) error
-	remoteCommand    func(string, string, string) error
-	remoteSessions   func() ([]SessionDescriptor, error)
-	remoteBackground []BackgroundTask
+	remoteAskAnswer   func(string, []string) error
+	remoteAskID       string
+	remoteModel       func(string) error
+	remoteModelEffort func(string, provider.ReasoningEffort) error
+	remoteInterrupt   func(bool) error
+	remoteCommand     func(string, string, string) error
+	remoteSessions    func() ([]SessionDescriptor, error)
+	remoteBackground  []BackgroundTask
 
 	// history is the Ctrl+R reverse search, and prompts is the recall source
 	// merged across sessions (plan.md §5.2).
@@ -462,10 +463,10 @@ type Model struct {
 	// user is looking at.
 	lastFrame string
 
-	quitting     bool
-	confirmQuit  bool
-	scrollbarOn  bool
-	cancelTurn   context.CancelFunc
+	quitting    bool
+	confirmQuit bool
+	scrollbarOn bool
+	cancelTurn  context.CancelFunc
 }
 
 // NewModel builds the TUI over an agent.
@@ -578,6 +579,14 @@ func (m *Model) WithRemoteModel(set func(string) error) *Model {
 	return m
 }
 
+// WithRemoteModelEffort lets an attached client submit a model and its chosen
+// reasoning preference as one daemon request. That prevents a rejected model
+// switch from still changing the old session's effort.
+func (m *Model) WithRemoteModelEffort(set func(string, provider.ReasoningEffort) error) *Model {
+	m.remoteModelEffort = set
+	return m
+}
+
 // WithRemoteInterrupt connects the cancel key to the server-owned turn. The
 // local forwarding goroutine returns as soon as it submits a prompt, so
 // canceling that goroutine cannot stop the agent that is actually working.
@@ -603,12 +612,28 @@ func (m *Model) WithRemoteSessions(list func() ([]SessionDescriptor, error)) *Mo
 
 // SetRemoteAsk queues a server-owned question for the normal TUI picker.
 func (m *Model) SetRemoteAsk(req agent.AskEvent) {
-	m.remoteAskID = req.ID
 	m.pendingAsk.Set(&tools.AskRequest{
 		ID:       req.ID,
 		Question: req.Question, Options: req.Options, Multi: req.Multi,
 		Reply: make(chan []string, 1),
 	})
+}
+
+// ClearRemoteAsk converges every attached picker when another client answers
+// or the daemon cancels a pending request.
+func (m *Model) ClearRemoteAsk(id string) {
+	if id == "" {
+		return
+	}
+	m.pendingAsk.RemoveID(id)
+	if m.ask != nil && m.ask.ID == id {
+		m.ask = nil
+		m.askChosen = nil
+		m.askCursor = 0
+	}
+	if m.remoteAskID == id {
+		m.remoteAskID = ""
+	}
 }
 
 // SetRemoteBackground replaces the attached view of detached shell tasks.
@@ -648,6 +673,11 @@ func (m *Model) ApplyRemoteState(sessionName, modelName, providerName string,
 	background []agent.BackgroundState) {
 	if sessionName != "" {
 		m.header.SessionName = sessionName
+		if m.todos != nil && m.todos.Session != sessionName {
+			if err := m.todos.Rebind(sessionName); err != nil {
+				m.notice = "could not refresh renamed session plan: " + err.Error()
+			}
+		}
 	}
 	if modelName != "" {
 		m.header.Model = modelName
@@ -1055,6 +1085,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if req := m.pendingAsk.Get(); req != nil {
 				m.ask, m.askCursor = req, 0
 				m.askChosen = map[int]bool{}
+				m.remoteAskID = req.ID
 			}
 		}
 		return m, m.tick()
@@ -1201,7 +1232,9 @@ func (m *Model) applyEvent(e agent.Event) {
 		// auto-poke, overnight — and its full instruction text has no business
 		// in the transcript. Without this check the attach path, which exists
 		// so a client renders prompts it did not type, drew every one of them.
-		if e.Text != "" && e.Text == m.hiddenPrompt {
+		if e.Hidden {
+			m.hiddenPrompt = ""
+		} else if e.Text != "" && e.Text == m.hiddenPrompt {
 			m.hiddenPrompt = ""
 		} else if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
 			m.promptCount++
@@ -1357,10 +1390,13 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 
 	case agent.EventReasoningEffort:
-		if e.ReasoningEffort.Valid() {
+		if (e.ReasoningEffortKnown || e.ReasoningEffort.Valid()) && e.ReasoningEffort.Valid() {
 			m.reasoningEffort = e.ReasoningEffort
 			m.header.ReasoningEffort = e.ReasoningEffort
 		}
+
+	case agent.EventAskResolved:
+		m.ClearRemoteAsk(e.RequestID)
 
 	case agent.EventModel:
 		if e.Model != "" {
@@ -1371,12 +1407,22 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 		if e.Provider != "" {
 			m.header.Provider = e.Provider
+			if m.agent != nil {
+				if pc := m.providerConfig(e.Provider); pc != nil {
+					if p, err := pc.Build(); err == nil {
+						m.agent.Provider = p
+					}
+				}
+			}
 		}
-		if e.ReasoningEffort.Valid() {
+		if (e.ReasoningEffortKnown || e.ReasoningEffort.Valid()) && e.ReasoningEffort.Valid() {
 			m.reasoningEffort = e.ReasoningEffort
 			m.header.ReasoningEffort = e.ReasoningEffort
+		} else if e.ReasoningEffortKnown || e.Model != "" {
+			m.reasoningEffort = ""
+			m.header.ReasoningEffort = ""
 		}
-		if len(e.ReasoningEfforts) > 0 {
+		if e.ReasoningEffortKnown || e.Model != "" {
 			levels := make([]provider.ReasoningEffort, 0, len(e.ReasoningEfforts))
 			for _, raw := range e.ReasoningEfforts {
 				if level, ok := provider.ParseReasoningEffort(raw); ok {
@@ -1384,6 +1430,14 @@ func (m *Model) applyEvent(e agent.Event) {
 				}
 			}
 			m.WithReasoningEfforts(levels)
+		}
+		if e.VisionKnown {
+			m.vision.Store(e.Vision)
+		}
+		if m.remoteModel != nil && e.Model != "" {
+			if err := m.rememberModel(config.ModelRef(e.Model, e.Provider)); err != nil {
+				m.notice = "model changed, but could not remember it: " + err.Error()
+			}
 		}
 
 	case agent.EventBackground:
@@ -2560,11 +2614,52 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 		targetProvider = sel.Provider
 	}
 	targetRef := config.ModelRef(sel.Name, targetProvider)
-	if m.remoteModel != nil {
-		if err := m.remoteModel(targetRef); err != nil {
+	if m.remoteModel != nil || m.remoteModelEffort != nil {
+		// The daemon owns the live provider and may reject a switch because the
+		// session is busy, unavailable, or unauthenticated. Keep this mirror on
+		// the old state until the canonical EventModel arrives.
+		levels := provider.NormalizeReasoningEfforts(sel.ReasoningEfforts)
+		if len(levels) == 0 && targetRef == previousRef {
+			levels = append([]provider.ReasoningEffort(nil), m.reasoningLevels...)
+		}
+		if len(levels) == 0 {
+			if pc := m.providerConfig(targetProvider); pc != nil {
+				if p, err := pc.Build(); err == nil {
+					levels = provider.ReasoningEffortLevelsForProvider(p, sel.Name)
+				}
+			}
+		}
+		var next provider.ReasoningEffort
+		if len(levels) > 0 {
+			fallback := provider.DefaultReasoningEffort
+			if targetRef == previousRef {
+				fallback = m.reasoningEffort
+			}
+			want := fallback
+			if explicit && effort.Valid() {
+				want = effort
+			} else {
+				want = m.rememberedEffort(targetRef, fallback)
+			}
+			next = preferredReasoningEffort(levels, want)
+		}
+		var err error
+		if m.remoteModelEffort != nil {
+			err = m.remoteModelEffort(targetRef, next)
+		} else {
+			err = m.remoteModel(targetRef)
+			if err == nil && next.Valid() && m.setReasoningEffort != nil && next != m.reasoningEffort {
+				err = m.setReasoningEffort(next)
+			}
+		}
+		if err != nil {
 			m.notice = "could not switch model: " + err.Error()
 			return
 		}
+		if explicit && next.Valid() {
+			_ = m.rememberEffort(targetRef, next)
+		}
+		return
 	}
 	if targetProvider != m.header.Provider {
 		// Crossing providers rebuilds the live client. The picker lists
@@ -3608,7 +3703,7 @@ func (m *Model) submitHidden(text string) {
 	m.cancelTurn = cancel
 	go func() {
 		defer cancel()
-		_ = m.agent.Run(ctx, text)
+		_ = m.agent.RunHidden(ctx, text)
 	}()
 }
 

@@ -1,4 +1,4 @@
- <repo> (main)                                   │ testdata/big.go
+ <repo>                               │ testdata/big.go
                                                                       │ ┌─ diff
  1› renumber them                                                     │ │  package testdata
                                                                       │ │

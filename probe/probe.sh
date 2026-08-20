@@ -131,6 +131,7 @@ cmd_boot() {
              XDG_CONFIG_HOME='$FAKEHOME/.config' \
              XDG_CACHE_HOME='$FAKEHOME/.cache' \
              XDG_STATE_HOME='$FAKEHOME/.local/state' \
+             XDG_RUNTIME_DIR='$TMUX_TMPDIR' \
              TERM=xterm-256color COLORTERM=truecolor \
              EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock \
              EVILCODE_SKILL_DIRS= \
@@ -153,6 +154,7 @@ cmd_keys() {
 # The daemon runs outside tmux: it has no terminal to own, and putting it in a
 # pane would mean its startup line and any stderr landed in a golden.
 SOCKET_PATH="$TMUX_TMPDIR/e.sock"
+AUTO_SOCKET="$TMUX_TMPDIR/evilcode.sock"
 SERVE_PID="$TMUX_TMPDIR/serve.pid"
 
 probe_env() {
@@ -162,6 +164,16 @@ probe_env() {
         "$FAKEHOME" "$FAKEHOME"
     printf "XDG_RUNTIME_DIR='%s' TERM=xterm-256color COLORTERM=truecolor " "$TMUX_TMPDIR"
     printf "EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock EVILCODE_SKILL_DIRS= "
+}
+
+stop_auto() {
+    env HOME="$FAKEHOME" \
+        XDG_DATA_HOME="$FAKEHOME/.local/share" \
+        XDG_CONFIG_HOME="$FAKEHOME/.config" \
+        XDG_CACHE_HOME="$FAKEHOME/.cache" \
+        XDG_STATE_HOME="$FAKEHOME/.local/state" \
+        XDG_RUNTIME_DIR="$TMUX_TMPDIR" \
+        "$BIN" serve -stop -socket "$AUTO_SOCKET" >/dev/null 2>&1 || true
 }
 
 cmd_serve() {
@@ -175,6 +187,7 @@ cmd_serve() {
     # up in this run's golden.
     tm kill-session -t evil 2>/dev/null || true
     cmd_unserve
+    stop_auto
     reset_fixtures
     mkdir -p "$FAKEHOME"
 
@@ -183,6 +196,7 @@ cmd_serve() {
         XDG_CONFIG_HOME="$FAKEHOME/.config" \
         XDG_CACHE_HOME="$FAKEHOME/.cache" \
         XDG_STATE_HOME="$FAKEHOME/.local/state" \
+        XDG_RUNTIME_DIR="$TMUX_TMPDIR" \
         EVILCODE_DETERMINISTIC=1 EVILCODE_PROVIDER=mock EVILCODE_SKILL_DIRS= \
         EVILCODE_SCENARIO="$scenario" \
         "$BIN" serve -socket "$SOCKET_PATH" -q >"$TMUX_TMPDIR/serve.log" 2>&1 &
@@ -277,9 +291,34 @@ cmd_wait() {
     exit 1
 }
 
+# cmd_wait_pane blocks until the visible transcript contains a pattern. A pane
+# can be stable while the remote event stream is still draining, so scenarios
+# that care about a particular streamed sentence should wait for that sentence
+# rather than relying on a short quiet window.
+cmd_wait_pane() {
+    local pattern="${1:?usage: probe.sh wait-pane <pattern>}"
+    local i frame
+    for ((i = 0; i < 200; i++)); do
+        frame="$(tm capture-pane -p -t evil 2>/dev/null || true)"
+        if grep -Fq -- "$pattern" <<<"$frame"; then
+            settle
+            return 0
+        fi
+        sleep 0.05
+    done
+    echo "probe: pane never matched $pattern" >&2
+    exit 1
+}
+
+cmd_sleep() {
+    sleep "${1:?usage: probe.sh sleep <seconds>}"
+    settle
+}
+
 cmd_kill() {
     tm kill-session -t evil 2>/dev/null || true
     cmd_unserve
+    stop_auto
 }
 
 case "${1:-}" in
@@ -290,6 +329,8 @@ case "${1:-}" in
     frame) shift; cmd_frame "$@" ;;
     png)   shift; cmd_png "$@" ;;
     wait)   shift; cmd_wait "$@" ;;
+    wait-pane) shift; cmd_wait_pane "$@" ;;
+    sleep)  shift; cmd_sleep "$@" ;;
     kill)  shift; cmd_kill ;;
     *)
         sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

@@ -1,4 +1,4 @@
- evilcode · v1.0.0
+ evilcode · v1.1.0
  server: Dracula 🧛 · client: Bat 🦇
  /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
@@ -19,12 +19,12 @@
 
  2› anything else?
 
- Understood — I will re-read it before editing.
+ Understood — I will re-read it before editing.Done.
 
    ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
    Re-read it before you edit it — what you have is stale. Intent:
    editing testdata/clamp.go.                 ╭──────────────────────╮
-   Diff preview:                              │ Context 428/200k     │
+   Diff preview:                              │ Context 122/200k     │
    --- a/testdata/clamp.go                    │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
    +++ b/testdata/clamp.go                    ╰──────────────────────╯
    @@ -8,7 +8,7 @@
@@ -36,10 +36,10 @@
    …
  💡 Ctrl+R searches your prompt history
  3>
-   mock-large · 428/200k ctx · dracula
+   mock-large · 122/200k ctx · dracula
 
 --- pane 1 ---
- evilcode · v1.0.0
+ evilcode · v1.1.0
  server: Dracula 🧛 · client: Serpent 🐉
  /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
@@ -55,12 +55,12 @@
 
  2› anything else?
 
- Understood — I will re-read it before editing.
+ Understood — I will re-read it before editing.Done.
 
    ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
    Re-read it before you edit it — what you have is stale. Intent:
    editing testdata/clamp.go.                ╭──────────────────────╮
-   Diff preview:                             │ Context 428/200k     │
+   Diff preview:                             │ Context 122/200k     │
    --- a/testdata/clamp.go                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
    +++ b/testdata/clamp.go                   ╰──────────────────────╯
    @@ -8,7 +8,7 @@
@@ -72,4 +72,4 @@
    …
  💡 Ctrl+R searches your prompt history
  3>
-   mock-large · 428/200k ctx · dracula
+   mock-large · 122/200k ctx · dracula

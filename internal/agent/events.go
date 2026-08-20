@@ -24,6 +24,7 @@ const (
 	EventNotice          EventKind = "notice"
 	EventMemoryRecall    EventKind = "memory_recall"
 	EventAsk             EventKind = "ask"
+	EventAskResolved     EventKind = "ask_resolved"
 	EventModel           EventKind = "model"
 	EventBackground      EventKind = "background"
 	EventSnapshot        EventKind = "snapshot"
@@ -136,14 +137,22 @@ type Event struct {
 	// Reason is set on TurnEnd.
 	Reason EndReason `json:"reason,omitempty"`
 
+	// Hidden marks a harness-authored turn start. It is explicit on the event
+	// because an empty Text is also used for a prompt that was deliberately
+	// withheld from every attached client.
+	Hidden bool `json:"hidden,omitempty"`
+
 	// ReasoningEffort is set when the live effort control changes.
 	ReasoningEffort provider.ReasoningEffort `json:"reasoning_effort,omitempty"`
 
 	// Model and Provider describe a server-owned model switch. They travel as
 	// one event so every attached TUI updates the same live session state.
-	Model            string   `json:"model,omitempty"`
-	Provider         string   `json:"provider,omitempty"`
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	Provider             string   `json:"provider,omitempty"`
+	ReasoningEfforts     []string `json:"reasoning_efforts,omitempty"`
+	ReasoningEffortKnown bool     `json:"reasoning_effort_known,omitempty"`
+	Vision               bool     `json:"vision,omitempty"`
+	VisionKnown          bool     `json:"vision_known,omitempty"`
 
 	// Snapshot fields are used by an attached frontend when the daemon rewrites
 	// history or renames a session. They travel through the same event queue as
@@ -153,6 +162,7 @@ type Event struct {
 	SnapshotModel      string             `json:"snapshot_model,omitempty"`
 	SnapshotProvider   string             `json:"snapshot_provider,omitempty"`
 	SnapshotRunning    bool               `json:"snapshot_running,omitempty"`
+	SnapshotEpoch      int                `json:"snapshot_epoch,omitempty"`
 	SnapshotMessages   []provider.Message `json:"snapshot_messages,omitempty"`
 	SnapshotPending    []AskEvent         `json:"snapshot_pending,omitempty"`
 	SnapshotBackground []BackgroundState  `json:"snapshot_background,omitempty"`

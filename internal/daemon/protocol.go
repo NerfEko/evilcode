@@ -122,6 +122,9 @@ type ClientMsg struct {
 	// Text is the prompt for input, or the interjection for interrupt.
 	Text   string   `json:"text,omitempty"`
 	Images [][]byte `json:"images,omitempty"`
+	// Hidden marks a harness-authored prompt. It is still sent to the provider,
+	// but attached clients must not render it as a user-typed message.
+	Hidden bool `json:"hidden,omitempty"`
 
 	// ReasoningEffort changes the effort used by the next provider request.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -196,6 +199,7 @@ type Snapshot struct {
 
 	// ReasoningEffort is the session's current live effort setting.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Vision          bool   `json:"vision"`
 
 	// ReasoningEfforts is the active model's ordered capability list. It lets an
 	// attached TUI render the same provider-specific picker as a local client.
@@ -209,6 +213,10 @@ type Snapshot struct {
 
 	// Seq is the newest sequence number in the ring at snapshot time.
 	Seq int `json:"seq"`
+
+	// Epoch is the conversation rewrite generation, incremented by compact and
+	// rewind. Attached /context mirrors it alongside the message count.
+	Epoch int `json:"epoch"`
 
 	// Messages is the conversation so far, which is how an attaching client
 	// gets history without replaying every delta that produced it.

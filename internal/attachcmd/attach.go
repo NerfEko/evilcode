@@ -103,6 +103,10 @@ func run(args []string, autoStart bool) error {
 	if err != nil {
 		return err
 	}
+	pc := agent.LoadProjectContext(snap.Cwd, config.ConfigDir())
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		return err
+	}
 	// The attached session is served by the daemon, but the client still
 	// renders provider readiness. Keep a locally logged-in Codex account visible
 	// here as it is in the standalone TUI and headless paths.
@@ -112,19 +116,14 @@ func run(args []string, autoStart bool) error {
 	// real one, but Forward sends turns down the socket and the receive loop
 	// pushes the daemon's events back into the same stream (invariant 1).
 	conv := agent.NewConversation("")
-	conv.Append(snapshotMessages(snap)...)
+	conv.Sync(snapshotMessages(snap), snap.Epoch)
 	a := agent.New(snap.Session, nil, snap.Model, nil, conv)
 	var inputSeq atomic.Uint64
 	inputID := func() string { return fmt.Sprintf("attach-%d", inputSeq.Add(1)) }
-	a.Forward = func(_ context.Context, text string) error {
-		return client.Send(daemon.ClientMsg{
-			Kind: daemon.MsgInput, Session: snap.Session, Text: text, RequestID: inputID(),
-		})
-	}
-	a.ForwardImages = func(_ context.Context, text string, images [][]byte) error {
+	a.ForwardHidden = func(_ context.Context, text string, images [][]byte, hidden bool) error {
 		return client.Send(daemon.ClientMsg{
 			Kind: daemon.MsgInput, Session: snap.Session, Text: text,
-			RequestID: inputID(), Images: images,
+			RequestID: inputID(), Images: images, Hidden: hidden,
 		})
 	}
 	a.OnInterject = func(in agent.Interrupt) bool {
@@ -149,13 +148,12 @@ func run(args []string, autoStart bool) error {
 	// push channel would mean a second stream to keep ordered against the
 	// event one.
 	swarm := &tui.SwarmState{}
-	m := tui.NewModel(a, header(cfg, snap, path))
+	m := tui.NewModel(a, header(cfg, snap, path)).WithVision(snap.Vision)
 	dataDir := config.DataDir()
-	pc := agent.LoadProjectContext(snap.Cwd, config.ConfigDir())
 	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
 	var todos *todo.Store
-	if sharedTodos, todoErr := todo.NewStore(dataDir, daemon.SwarmTodoNamespace); todoErr == nil {
-		todos = sharedTodos
+	if sessionTodos, todoErr := todo.NewStore(dataDir, snap.Session); todoErr == nil {
+		todos = sessionTodos
 	}
 	prompts, _ := session.OpenHistory(dataDir)
 	keymap, keymapProblems := tui.NewKeymap(cfg.Keybindings)
@@ -164,7 +162,7 @@ func run(args []string, autoStart bool) error {
 	}
 	fsTools := tools.NewFS(snap.Cwd).
 		WithConfine(cfg.Features.ConfineToWorkspace).
-		WithVision(cfg.ModelOverrides(snap.Model).Vision)
+		WithVision(cfg.ModelOverrides(config.ModelRef(snap.Model, snap.Provider)).Vision)
 	braveSearch := tools.NewBraveSearch(cfg.BraveSearchAPIKey())
 	m.WithSkills(skills, pc).
 		WithTodos(todos, nil).
@@ -209,9 +207,10 @@ func run(args []string, autoStart bool) error {
 	m.WithSwarm(swarm, func(task string) (string, error) {
 		return summon(path, snap.Session, task)
 	}).
-		WithRemoteModel(func(ref string) error {
+		WithRemoteModelEffort(func(ref string, effort provider.ReasoningEffort) error {
 			return client.Send(daemon.ClientMsg{
 				Kind: daemon.MsgModel, Session: snap.Session, Model: ref,
+				ReasoningEffort: string(effort),
 			})
 		}).
 		WithRemoteInterrupt(func(_ bool) error {
@@ -256,6 +255,9 @@ func run(args []string, autoStart bool) error {
 			switch msg.Kind {
 			case daemon.MsgEvent:
 				if msg.Event != nil {
+					if msg.Event.Kind == agent.EventTurnEnd && msg.Event.SnapshotMessages != nil {
+						a.Conv.Sync(msg.Event.SnapshotMessages, msg.Event.SnapshotEpoch)
+					}
 					a.Inject(*msg.Event)
 					switch msg.Event.Kind {
 					case agent.EventTurnStart:
@@ -266,6 +268,7 @@ func run(args []string, autoStart bool) error {
 				}
 			case daemon.MsgSnapshot:
 				if msg.Snapshot != nil {
+					a.Conv.Sync(snapshotMessages(msg.Snapshot), msg.Snapshot.Epoch)
 					a.Inject(agent.Event{
 						Kind:               agent.EventSnapshot,
 						Session:            msg.Snapshot.Session,
