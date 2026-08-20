@@ -16,7 +16,7 @@ torn append glued to a later record is salvaged and repaired before the next wri
 
 ## Requirements
 
-Go 1.26 or newer. Linux only.
+Linux only.
 
 At runtime: `rg` for the `grep` tool, `tmux` for the probe rig. Optional extras are
 used if present — `gopls` for the `lsp` tool, `mmdc` for mermaid diagrams, `img2sixel`
@@ -62,7 +62,7 @@ atomically swaps it over the running executable.
 ### Build from source
 
 For an arch without a release binary (e.g. arm64 once built) or to run from a
-checkout:
+checkout. Requires Go 1.26 or newer:
 
 ```sh
 git clone https://git.evileko.dev/evileko/evilcode
