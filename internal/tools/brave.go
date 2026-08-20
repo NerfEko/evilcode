@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -26,6 +27,11 @@ const (
 	// Brave normally returns a small JSON response. Keep a malformed or
 	// unexpectedly large upstream response from becoming a context-budget bug.
 	braveMaxResponseBytes = 2 * 1024 * 1024
+
+	// Brave's API allows one request per second. Space consecutive searches
+	// by a little more than that so a burst of web_search calls from a single
+	// turn cannot trip the upstream limit and start returning 429s.
+	braveMinInterval = 1200 * time.Millisecond
 
 	braveDefaultResults = 6
 	braveMaxResults     = 10
@@ -44,6 +50,13 @@ type BraveSearch struct {
 	APIKey  string
 	BaseURL string
 	HTTP    *http.Client
+
+	// minInterval is the minimum spacing enforced between consecutive Brave
+	// requests. It defaults to braveMinInterval to stay below Brave's one
+	// request per second limit. lastCall and mu serialize those waits.
+	minInterval time.Duration
+	mu          sync.Mutex
+	lastCall    time.Time
 }
 
 // NewBraveSearch builds a Brave Search client. An empty key is accepted so the
@@ -51,9 +64,10 @@ type BraveSearch struct {
 // expose the resulting tool set.
 func NewBraveSearch(apiKey string) *BraveSearch {
 	return &BraveSearch{
-		APIKey:  apiKey,
-		BaseURL: braveSearchBaseURL,
-		HTTP:    &http.Client{Timeout: braveSearchTimeout},
+		APIKey:      apiKey,
+		BaseURL:     braveSearchBaseURL,
+		HTTP:        &http.Client{Timeout: braveSearchTimeout},
+		minInterval: braveMinInterval,
 	}
 }
 
@@ -72,6 +86,14 @@ func (b *BraveSearch) WithHTTP(client *http.Client) *BraveSearch {
 	if client != nil {
 		b.HTTP = client
 	}
+	return b
+}
+
+// WithMinInterval overrides the minimum spacing between consecutive Brave
+// requests. A zero or negative value disables the guard. It exists for tests
+// that need to assert the spacing without waiting the full production interval.
+func (b *BraveSearch) WithMinInterval(d time.Duration) *BraveSearch {
+	b.minInterval = d
 	return b
 }
 
@@ -174,6 +196,9 @@ func (b *BraveSearch) searchTool() Tool {
 }
 
 func (b *BraveSearch) search(ctx context.Context, query string, args braveSearchArgs) (string, string, error) {
+	if err := b.throttle(ctx); err != nil {
+		return "", "", err
+	}
 	base := strings.TrimRight(strings.TrimSpace(b.BaseURL), "/")
 	if base == "" {
 		base = braveSearchBaseURL
@@ -247,6 +272,33 @@ func (b *BraveSearch) search(ctx context.Context, query string, args braveSearch
 		searched = altered
 	}
 	return formatBraveResults(searched, decoded.Web.Results), searched, nil
+}
+
+// throttle blocks until enough time has passed since the last Brave request to
+// satisfy Brave's one-request-per-second limit. The wait respects ctx so an
+// interrupt cancels it instead of stalling the turn. The lock serializes
+// concurrent searches: each waits its own turn against the shared lastCall.
+func (b *BraveSearch) throttle(ctx context.Context) error {
+	interval := b.minInterval
+	if interval <= 0 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.lastCall.IsZero() {
+		remaining := interval - time.Since(b.lastCall)
+		if remaining > 0 {
+			timer := time.NewTimer(remaining)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
+		}
+	}
+	b.lastCall = time.Now()
+	return nil
 }
 
 func formatBraveResults(query string, results []braveWebResult) string {

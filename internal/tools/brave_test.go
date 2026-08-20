@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBraveSearchToolDescriptionGuidesResearch(t *testing.T) {
@@ -176,5 +177,70 @@ func TestBraveSearchToolHonorsCancellation(t *testing.T) {
 	})
 	if out.Err == nil {
 		t.Fatal("a cancelled search must return an error")
+	}
+}
+
+func TestBraveSearchSpacesConsecutiveRequestsByMinInterval(t *testing.T) {
+	// A tiny interval keeps the test fast while still proving the guard waits
+	// between calls and never stalls the first one.
+	const interval = 80 * time.Millisecond
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"query":{"original":"x"},"web":{"results":[]}}`))
+	}))
+	defer server.Close()
+
+	search := NewBraveSearch("key").WithBaseURL(server.URL).WithMinInterval(interval)
+	tools := search.Tools()
+
+	start := time.Now()
+	if _, err := run(t, tools, "web_search", map[string]any{"query": "a"}); err != nil {
+		t.Fatal(err)
+	}
+	firstElapsed := time.Since(start)
+	if firstElapsed >= interval {
+		t.Errorf("first search waited %v; it must not be throttled", firstElapsed)
+	}
+
+	if _, err := run(t, tools, "web_search", map[string]any{"query": "b"}); err != nil {
+		t.Fatal(err)
+	}
+	secondElapsed := time.Since(start)
+	if secondElapsed < interval {
+		t.Errorf("second search returned after only %v; want at least %v spacing", secondElapsed, interval)
+	}
+}
+
+func TestBraveSearchThrottleRespectsCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"query":{"original":"x"},"web":{"results":[]}}`))
+	}))
+	defer server.Close()
+
+	search := NewBraveSearch("key").WithBaseURL(server.URL).WithMinInterval(5 * time.Second)
+	tools := search.Tools()
+
+	// Prime the limiter so the next call must wait.
+	if _, err := run(t, tools, "web_search", map[string]any{"query": "prime"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	raw, err := json.Marshal(map[string]any{"query": "blocked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := tools.RunOne(ctx, Call{ID: "c1", Name: "web_search", Args: raw})
+	elapsed := time.Since(start)
+	if out.Err == nil {
+		t.Fatal("a throttled search cancelled mid-wait must return an error")
+	}
+	if elapsed >= time.Second {
+		t.Errorf("cancellation took %v to take effect; the wait must abort promptly", elapsed)
 	}
 }
