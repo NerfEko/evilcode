@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"evilcode/internal/agent"
 )
@@ -41,6 +43,55 @@ func TestSendWhileProcessingQueues(t *testing.T) {
 	}
 	if len(m.pending) != 0 {
 		t.Errorf("pending = %+v, want cleared after flush", m.pending)
+	}
+}
+
+// An attached window sends queued input to the daemon immediately. Keeping it
+// in the TUI's pending slice would make closing the window discard text the
+// daemon had never received.
+func TestRemoteSendWhileProcessingUsesServerQueue(t *testing.T) {
+	m := newTestModel(t)
+	m.processing = true
+	m.remoteCommand = func(string, string, string) error { return nil }
+	received := make(chan string, 1)
+	m.agent.Forward = func(_ context.Context, text string) error {
+		received <- text
+		return nil
+	}
+	m.editor.Text = "keep working"
+	m.editor.Cursor = len([]rune(m.editor.Text))
+
+	m.send()
+
+	select {
+	case got := <-received:
+		if got != "keep working" {
+			t.Fatalf("forwarded text = %q, want queued prompt", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("remote queue was not sent to the daemon")
+	}
+	if len(m.pending) != 0 {
+		t.Fatalf("remote pending = %+v, want the daemon to own the queue", m.pending)
+	}
+}
+
+func TestRemoteInterruptUsesServerBridge(t *testing.T) {
+	m := newTestModel(t)
+	m.processing = true
+	called := false
+	m.remoteInterrupt = func(disarm bool) error {
+		called = disarm
+		return nil
+	}
+
+	m.interrupt(true)
+
+	if !called {
+		t.Fatal("remote interrupt bridge was not called")
+	}
+	if m.notice != "Interrupting..." {
+		t.Fatalf("notice = %q, want interrupt status", m.notice)
 	}
 }
 

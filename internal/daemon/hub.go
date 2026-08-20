@@ -143,6 +143,12 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 	if err := s.swarm.reserve(spawner); err != nil {
 		return "", err
 	}
+	cwd := s.Cwd
+	s.mu.Lock()
+	if owner, ok := s.sessions[spawner]; ok && owner.Cwd != "" {
+		cwd = owner.Cwd
+	}
+	s.mu.Unlock()
 
 	sess, err := s.spawn(task, files, schema, func(sess *Session) {
 		s.swarm.mu.Lock()
@@ -151,7 +157,7 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 			s.swarm.schemas[sess.Name] = schema
 		}
 		s.swarm.mu.Unlock()
-	})
+	}, cwd)
 	if err != nil && !errors.Is(err, errPublishedWorker) {
 		s.swarm.release(spawner)
 		return "", err

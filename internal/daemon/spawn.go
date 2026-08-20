@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/mcp"
 	"evilcode/internal/session"
+	"evilcode/internal/tools"
 	"evilcode/internal/wiring"
 )
 
@@ -28,7 +31,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 	if err := s.swarm.reserve(""); err != nil {
 		return nil, err
 	}
-	sess, err := s.spawn(task, files, schema, nil)
+	sess, err := s.spawn(task, files, schema, nil, s.Cwd)
 	if err != nil && !errors.Is(err, errPublishedWorker) {
 		s.swarm.release("")
 	}
@@ -43,7 +46,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 // could end before the spawner was known, and the result was dropped on the
 // floor. Anything the report path needs has to be in place before the goroutine
 // starts.
-func (s *Server) spawn(task string, files []string, schema json.RawMessage, register func(*Session)) (*Session, error) {
+func (s *Server) spawn(task string, files []string, schema json.RawMessage, register func(*Session), cwd string) (*Session, error) {
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return nil, fmt.Errorf("a worker needs a task")
@@ -59,34 +62,109 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	defer s.builds.Done()
 
 	// The name and its log are settled before anything is built under them.
-	store, err := s.claimName()
+	store, err := s.claimName(cwd)
 	if err != nil {
 		return nil, err
 	}
 
 	todos, bank := s.shared()
-	built, err := wiring.Build(s.Cfg, wiring.Options{
-		Model: s.Model, Cwd: s.Cwd, Store: store,
+	tasks := newAskBroker()
+	var mcpClient *mcp.Client
+	var extraTools tools.Set
+	var extraClosers []func()
+	workerCfg := s.Cfg
+	if workerCfg == nil {
+		store.Close()
+		s.releaseName(store.Name)
+		return nil, fmt.Errorf("daemon: no configuration")
+	}
+	workerCfg = workerCfg.Clone()
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	if err := workerCfg.LoadRepoOverrides(pc.Root); err != nil {
+		store.Close()
+		s.releaseName(store.Name)
+		return nil, err
+	}
+	workerCfg.AddDiscoveredCodex()
+	if workerCfg != nil && len(workerCfg.MCP) > 0 {
+		mcpClient = mcp.New()
+		var servers []mcp.ServerConfig
+		for _, srv := range workerCfg.MCP {
+			servers = append(servers, mcp.ServerConfig{
+				Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env,
+			})
+		}
+		for _, mcpErr := range mcpClient.Connect(context.Background(), servers) {
+			fmt.Fprintln(os.Stderr, "evilcode:", mcpErr)
+		}
+		extraTools, extraClosers = mcpClient.Tools(), []func(){mcpClient.Close}
+	}
+	built, err := wiring.Build(workerCfg, wiring.Options{
+		Model: s.Model, Cwd: cwd, Store: store, Extract: true,
 		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
+		Asker: tasks, ExtraTools: extraTools, ExtraClosers: extraClosers,
 	})
 	if err != nil {
 		store.Close()
 		s.releaseName(store.Name)
 		return nil, err
 	}
+	var hooks agent.Chain
+	if existing, ok := built.Agent.Hooks.(agent.Chain); ok {
+		hooks = append(hooks, existing...)
+	} else if built.Agent.Hooks != nil {
+		hooks = append(hooks, built.Agent.Hooks)
+	}
+	var poke *agent.PokeHook
+	if built.Todos != nil {
+		poke = agent.NewPokeHook(built.Todos, built.Config.Features.AutoPoke)
+		hooks = append(hooks, poke)
+	}
+	advisor := agent.NewAdvisor(func(ctx context.Context, system, user string) (string, error) {
+		return built.Config.Router().SideCall(ctx, config.RoleSmol, system, user)
+	}, built.Config.Features.Advisor)
+	if built.Todos != nil {
+		advisor.TodoState = built.Todos.Summary
+	}
+	hooks = append(hooks, advisor)
+	built.Agent.Hooks = hooks
 
 	sess := &Session{
 		Name:          store.Name,
 		Model:         built.Model,
 		Task:          task,
 		Worker:        true,
+		Cwd:           cwd,
 		Started:       time.Now(),
 		built:         built,
 		ring:          NewRing(),
 		srv:           s,
+		asks:          tasks,
+		mcp:           mcpClient,
+		poke:          poke,
+		advisor:       advisor,
+		overnight:     newOvernightState(),
 		done:          make(chan struct{}),
 		subs:          map[chan ServerMsg]struct{}{},
 		lastHeartbeat: time.Now(),
+	}
+	if built.Exec != nil && built.Exec.Bg != nil {
+		built.Exec.Bg.OnDone = func(task *tools.BackgroundTask) {
+			done, failed, _ := task.Snapshot()
+			if !done {
+				return
+			}
+			sess.publishEvent(agent.Event{
+				Kind: agent.EventBackground,
+				Background: &agent.BackgroundState{
+					ID: task.ID, Label: task.Label, Done: done,
+					Failed: failed, Progress: task.Progress().String(),
+				},
+			})
+			if failed {
+				sess.notice(fmt.Sprintf("▣ Background task %d failed: %s", task.ID, task.Label))
+			}
+		}
 	}
 
 	// A worker can message and spawn like any other session. Bounded, though:
@@ -109,6 +187,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	s.sessions[sess.Name] = sess
 	delete(s.reserved, sess.Name)
 	s.mu.Unlock()
+	tasks.SetPublisher(sess.publishEvent)
 
 	if register != nil {
 		register(sess)
@@ -149,7 +228,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 // to clients; the O_EXCL create decides what it means on disk. Allocating the
 // name after the store existed left a renamed worker holding the log — and the
 // identity its own swarm tools spoke with — of whatever it collided with.
-func (s *Server) claimName() (*session.Store, error) {
+func (s *Server) claimName(cwd string) (*session.Store, error) {
 	base := session.PickFreeName(config.DataDir())
 	for range 64 {
 		s.mu.Lock()
@@ -164,7 +243,7 @@ func (s *Server) claimName() (*session.Store, error) {
 		s.reserved[name] = true
 		s.mu.Unlock()
 
-		st, err := session.CreateNamed(config.DataDir(), name)
+		st, err := session.CreateNamedAt(config.DataDir(), name, cwd)
 		if err == nil {
 			return st, nil
 		}

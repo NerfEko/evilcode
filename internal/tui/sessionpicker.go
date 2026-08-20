@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/core"
 	"evilcode/internal/session"
 	"evilcode/internal/theme"
 )
@@ -25,6 +26,13 @@ const (
 type SessionRow struct {
 	Info session.Info
 
+	// Live is true when the session is currently hydrated by the background
+	// server. It is separate from Crashed: a live idle session is still ready.
+	Live    bool
+	Running bool
+	Clients int
+	Task    string
+
 	// Marked is the multi-select state.
 	Marked bool
 
@@ -42,6 +50,43 @@ type SessionRow struct {
 	// Recalled is the remembered summary that matched, set when this row came
 	// from semantic search rather than from the literal filter.
 	Recalled string
+}
+
+// SessionDescriptor is the transport-neutral session summary used by the
+// client-side picker. The daemon converts its protocol rows into this type;
+// the renderer never needs to import the daemon package.
+type SessionDescriptor struct {
+	Name     string
+	Model    string
+	Cwd      string
+	Title    string
+	Messages int
+	Modified time.Time
+	Crashed  bool
+	Live     bool
+	Running  bool
+	Clients  int
+	Task     string
+}
+
+// SessionRows converts durable/server summaries into picker rows.
+func SessionRows(descriptors []SessionDescriptor) []SessionRow {
+	rows := make([]SessionRow, 0, len(descriptors))
+	for _, d := range descriptors {
+		rows = append(rows, SessionRow{
+			Info: session.Info{
+				Name: d.Name, Emoji: sessionEmoji(d.Name), Messages: d.Messages,
+				Modified: d.Modified, Title: d.Title, Cwd: d.Cwd,
+				Crashed: d.Crashed, Model: d.Model,
+			},
+			Live: d.Live, Running: d.Running, Clients: d.Clients, Task: d.Task,
+		})
+	}
+	return rows
+}
+
+func sessionEmoji(name string) string {
+	return core.CreatureEmoji(name)
 }
 
 // SessionPickerState is the picker's state.
@@ -233,6 +278,14 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 func (r *Renderer) sessionStatus(row SessionRow) string {
 	dim := r.style(theme.RoleDim)
 	switch {
+	case row.Live && row.Running:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Render("◉") +
+			dim.Render(fmt.Sprintf(" running · %d client%s", row.Clients, pluralSuffix(row.Clients)))
+	case row.Live:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 220, 130)))).Render("●") +
+			dim.Render(fmt.Sprintf(" ready · %d client%s", row.Clients, pluralSuffix(row.Clients)))
 	case row.Info.Crashed:
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(220, 100, 100)))).Render("💥") +
@@ -246,6 +299,13 @@ func (r *Renderer) sessionStatus(row SessionRow) string {
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 100, 100)))).Render("✓") +
 			dim.Render(" closed "+humanAge(row.Info.Modified))
 	}
+}
+
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // humanAge renders a duration the way someone would say it.

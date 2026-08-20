@@ -11,8 +11,8 @@ import (
 
 // MemoryDisplay is the payload the recall tile renders from (plan.md §9.5).
 type MemoryDisplay struct {
-	Hits   []memory.Hit
-	Tokens int
+	Hits   []memory.Hit `json:"hits"`
+	Tokens int          `json:"tokens"`
 }
 
 // NewMemory returns the remember, recall, and reflect tools (plan.md §19).

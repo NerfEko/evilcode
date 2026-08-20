@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
+
+	"evilcode/internal/memory"
 	"evilcode/internal/provider"
+	"evilcode/internal/todo"
 	"evilcode/internal/tools"
 )
 
@@ -19,6 +23,10 @@ const (
 	EventReasoningEffort EventKind = "reasoning_effort"
 	EventNotice          EventKind = "notice"
 	EventMemoryRecall    EventKind = "memory_recall"
+	EventAsk             EventKind = "ask"
+	EventModel           EventKind = "model"
+	EventBackground      EventKind = "background"
+	EventSnapshot        EventKind = "snapshot"
 	EventTurnEnd         EventKind = "turn_end"
 	EventError           EventKind = "error"
 )
@@ -72,9 +80,10 @@ type Usage struct {
 // (plan.md invariant 1) — and it is why this package must never import
 // bubbletea.
 type Event struct {
-	Kind    EventKind `json:"kind"`
-	Session string    `json:"session"`
-	Seq     int       `json:"seq"`
+	Kind      EventKind `json:"kind"`
+	Session   string    `json:"session"`
+	Seq       int       `json:"seq"`
+	RequestID string    `json:"request_id,omitempty"`
 
 	// Text carries a delta for the streaming kinds and the message for Notice.
 	Text string `json:"text,omitempty"`
@@ -95,19 +104,20 @@ type Event struct {
 	Held bool `json:"held,omitempty"`
 
 	// Display is a tool-specific render payload, carried on the event so the
-	// UI never has to read it from a side channel.
-	Display any `json:"-"`
+	// UI never has to read it from a side channel. It is deliberately part of
+	// the wire contract: a remote client must not silently lose memory tiles,
+	// todo deltas, or other rich tool output.
+	Display any `json:"display,omitempty"`
 
-	// Images are raw image bytes a tool result attached for the vision path,
-	// carried so the UI can render them inline. Not serialized: a remote
-	// attach sees the text result and a placeholder, which is enough — the
-	// bytes are display-only, the model already received them on the turn.
-	Images [][]byte `json:"-"`
+	// Images are raw image bytes a tool result attached for the vision path.
+	// JSON encodes []byte as base64, preserving the same renderable payload for
+	// an attached client and a reconnecting client.
+	Images [][]byte `json:"images,omitempty"`
 
 	// NoWrite is set by a write-capable tool that did not actually write, so the
 	// daemon's swarm coordination does not queue a stale-file notice for a file
 	// that never changed (a fully-failed multiedit).
-	NoWrite bool `json:"-"`
+	NoWrite bool `json:"no_write,omitempty"`
 
 	// Repairs names the argument rewrites RunOne applied (an aliased field, a
 	// string-wrapped number coerced). Silent to the model, shown in the tool row
@@ -128,6 +138,93 @@ type Event struct {
 
 	// ReasoningEffort is set when the live effort control changes.
 	ReasoningEffort provider.ReasoningEffort `json:"reasoning_effort,omitempty"`
+
+	// Model and Provider describe a server-owned model switch. They travel as
+	// one event so every attached TUI updates the same live session state.
+	Model            string   `json:"model,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+
+	// Snapshot fields are used by an attached frontend when the daemon rewrites
+	// history or renames a session. They travel through the same event queue as
+	// ordinary UI updates so Bubble Tea, not a socket goroutine, owns model
+	// mutation.
+	SnapshotSession    string             `json:"snapshot_session,omitempty"`
+	SnapshotModel      string             `json:"snapshot_model,omitempty"`
+	SnapshotProvider   string             `json:"snapshot_provider,omitempty"`
+	SnapshotRunning    bool               `json:"snapshot_running,omitempty"`
+	SnapshotMessages   []provider.Message `json:"snapshot_messages,omitempty"`
+	SnapshotPending    []AskEvent         `json:"snapshot_pending,omitempty"`
+	SnapshotBackground []BackgroundState  `json:"snapshot_background,omitempty"`
+
+	// Ask carries a persisted interactive request owned by the server. It is
+	// separate from Display because a disconnected client must be able to
+	// reconstruct and answer the question later.
+	Ask *AskEvent `json:"ask,omitempty"`
+
+	// Background carries a detached shell task update owned by the daemon.
+	Background *BackgroundState `json:"background,omitempty"`
+}
+
+// AskEvent is the transport-safe form of tools.AskRequest.
+type AskEvent struct {
+	ID       string            `json:"id"`
+	Question string            `json:"question"`
+	Options  []tools.AskOption `json:"options"`
+	Multi    bool              `json:"multi,omitempty"`
+}
+
+// BackgroundState is the transport-safe state of one detached shell task.
+// The daemon owns the process; clients only render this view.
+type BackgroundState struct {
+	ID       int    `json:"id"`
+	Label    string `json:"label"`
+	Done     bool   `json:"done"`
+	Failed   bool   `json:"failed,omitempty"`
+	Progress string `json:"progress,omitempty"`
+}
+
+// UnmarshalJSON restores the typed display payloads used by the TUI. A plain
+// interface field would otherwise decode arrays into []any and objects into
+// map[string]any, making a reconnect silently lose todo deltas and memory
+// tiles even though the bytes crossed the socket successfully.
+func (e *Event) UnmarshalJSON(data []byte) error {
+	type plain Event
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*e = Event(decoded)
+	var raw struct {
+		Display json.RawMessage `json:"display"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Display) == 0 || string(raw.Display) == "null" {
+		return nil
+	}
+	if e.Kind == EventMemoryRecall {
+		var hits []memory.Hit
+		if err := json.Unmarshal(raw.Display, &hits); err == nil {
+			e.Display = hits
+		}
+		return nil
+	}
+	if e.Kind == EventToolResult && e.Call != nil && e.Call.Name == "todo" {
+		var delta todo.Delta
+		if err := json.Unmarshal(raw.Display, &delta); err == nil {
+			e.Display = delta
+		}
+		return nil
+	}
+	if e.Kind == EventToolResult && e.Call != nil && e.Call.Name == "recall" {
+		var display tools.MemoryDisplay
+		if err := json.Unmarshal(raw.Display, &display); err == nil {
+			e.Display = display
+		}
+	}
+	return nil
 }
 
 // IsError reports whether a tool-result event represents a failure.

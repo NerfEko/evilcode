@@ -15,10 +15,15 @@ import (
 	"time"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/provider"
 )
 
 // SocketName is the daemon's socket under $XDG_RUNTIME_DIR.
 const SocketName = "evilcode.sock"
+
+// ProtocolVersion changes whenever the transport shape changes in a way that
+// an older client cannot safely interpret.
+const ProtocolVersion = 2
 
 // SocketPath returns the socket path.
 //
@@ -98,18 +103,25 @@ const (
 	MsgSpawn           = "spawn"
 	MsgList            = "list"
 	MsgDetach          = "detach"
+	MsgStatus          = "status"
+	MsgStop            = "stop"
+	MsgAnswer          = "answer"
+	MsgModel           = "model"
+	MsgCommand         = "command"
 )
 
 // ClientMsg is one frame from a client.
 type ClientMsg struct {
-	Kind string `json:"kind"`
+	Version int    `json:"version,omitempty"`
+	Kind    string `json:"kind"`
 
 	// Session names the target. On attach an empty name creates a new session;
 	// on every other kind it is required.
 	Session string `json:"session,omitempty"`
 
 	// Text is the prompt for input, or the interjection for interrupt.
-	Text string `json:"text,omitempty"`
+	Text   string   `json:"text,omitempty"`
+	Images [][]byte `json:"images,omitempty"`
 
 	// ReasoningEffort changes the effort used by the next provider request.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
@@ -128,6 +140,17 @@ type ClientMsg struct {
 	Task   string          `json:"task,omitempty"`
 	Files  []string        `json:"files,omitempty"`
 	Schema json.RawMessage `json:"schema,omitempty"`
+
+	// Cwd and Model are used when attaching without an existing session. They
+	// make creation independent of the daemon process directory.
+	Cwd     string `json:"cwd,omitempty"`
+	Model   string `json:"model,omitempty"`
+	NoTools bool   `json:"no_tools,omitempty"`
+
+	RequestID string   `json:"request_id,omitempty"`
+	Answers   []string `json:"answers,omitempty"`
+	Arg       string   `json:"arg,omitempty"`
+	Secret    string   `json:"secret,omitempty"`
 }
 
 // Server message kinds (server → client).
@@ -140,11 +163,12 @@ const (
 
 // ServerMsg is one frame to a client.
 type ServerMsg struct {
-	Kind string `json:"kind"`
+	Version int    `json:"version"`
+	Kind    string `json:"kind"`
 
-	// Event carries a serialized agent event. Event.Display does not cross the
-	// socket — it is an in-process render payload with no wire form — so a
-	// remote client renders the plain row rather than the tool's rich tile.
+	// Event carries a fully serialized agent event, including display payloads
+	// and image bytes. The client must not need to reconstruct tool state from
+	// a side channel.
 	Event *agent.Event `json:"event,omitempty"`
 
 	// Snapshot is the attached session's state, sent once before replay.
@@ -156,6 +180,8 @@ type ServerMsg struct {
 	// Err is set on MsgError. A protocol error names what the client asked for,
 	// because the alternative is a silent no-op that looks like a hang.
 	Err string `json:"error,omitempty"`
+
+	Status *ServerStatus `json:"status,omitempty"`
 }
 
 // Snapshot is what a client needs to render a session it has just attached to.
@@ -173,7 +199,9 @@ type Snapshot struct {
 
 	// ReasoningEfforts is the active model's ordered capability list. It lets an
 	// attached TUI render the same provider-specific picker as a local client.
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ReasoningEfforts []string    `json:"reasoning_efforts,omitempty"`
+	Skills           []string    `json:"skills,omitempty"`
+	MCP              []MCPStatus `json:"mcp,omitempty"`
 
 	// Running says whether a turn is in flight, so a client that attaches
 	// mid-turn shows the spinner instead of an idle composer.
@@ -185,15 +213,47 @@ type Snapshot struct {
 	// Messages is the conversation so far, which is how an attaching client
 	// gets history without replaying every delta that produced it.
 	Messages []Message `json:"messages,omitempty"`
+
+	// Pending contains interactive requests that are waiting in the server,
+	// including when no TUI was attached when they were created.
+	Pending []agent.AskEvent `json:"pending,omitempty"`
+
+	// Background contains detached shell tasks that outlive their originating
+	// tool call and therefore need to be visible after a reconnect.
+	Background []BackgroundTask `json:"background,omitempty"`
+}
+
+// MCPStatus describes a server connected by the daemon for this session.
+type MCPStatus struct {
+	Name  string `json:"name"`
+	Tools int    `json:"tools"`
+}
+
+// BackgroundTask is the wire form of a detached shell task.
+type BackgroundTask struct {
+	ID       int    `json:"id"`
+	Label    string `json:"label"`
+	Done     bool   `json:"done"`
+	Failed   bool   `json:"failed,omitempty"`
+	Progress string `json:"progress,omitempty"`
 }
 
 // Message is one conversation entry in a snapshot. It is the provider message
 // flattened to what a renderer needs, so the wire format does not have to track
 // the provider package.
 type Message struct {
-	Role    string   `json:"role"`
-	Content string   `json:"content"`
-	Repairs []string `json:"repairs,omitempty"`
+	Role          string              `json:"role"`
+	Content       string              `json:"content"`
+	Reasoning     string              `json:"reasoning,omitempty"`
+	ToolCalls     []provider.ToolCall `json:"tool_calls,omitempty"`
+	ProviderItems []json.RawMessage   `json:"provider_items,omitempty"`
+	ToolCallID    string              `json:"tool_call_id,omitempty"`
+	ToolName      string              `json:"tool_name,omitempty"`
+	IsError       bool                `json:"is_error,omitempty"`
+	Held          bool                `json:"held,omitempty"`
+	Images        [][]byte            `json:"images,omitempty"`
+	Hidden        bool                `json:"hidden,omitempty"`
+	Repairs       []string            `json:"repairs,omitempty"`
 }
 
 // SessionInfo is one row of a list response.
@@ -209,4 +269,22 @@ type SessionInfo struct {
 	// Task is a spawned worker's assignment, so `list` explains why a session
 	// nobody started is running.
 	Task string `json:"task,omitempty"`
+
+	Cwd      string    `json:"cwd,omitempty"`
+	Title    string    `json:"title,omitempty"`
+	Modified time.Time `json:"modified,omitempty"`
+	Crashed  bool      `json:"crashed,omitempty"`
+	Stored   bool      `json:"stored,omitempty"`
+	Live     bool      `json:"live,omitempty"`
+}
+
+// ServerStatus is the stable response used by lifecycle commands.
+type ServerStatus struct {
+	PID          int           `json:"pid"`
+	Socket       string        `json:"socket"`
+	Sessions     int           `json:"sessions"`
+	Clients      int           `json:"clients"`
+	Running      int           `json:"running"`
+	IdleTimeout  time.Duration `json:"idle_timeout"`
+	LastActivity time.Time     `json:"last_activity"`
 }

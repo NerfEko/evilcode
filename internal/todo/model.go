@@ -189,6 +189,31 @@ func (s *Store) load() error {
 	)
 }
 
+// Reload refreshes a store from disk. A daemon owns writes for attached TUIs;
+// the client uses this to keep its read-only card current after another
+// process or session changes the shared plan.
+func (s *Store) Reload() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var items []Item
+	var goals []Goal
+	var plan Plan
+	var obs []Observation
+	if err := errors.Join(
+		readJSON(s.path(""), &items),
+		readJSON(s.path("-goals"), &goals),
+		readJSON(s.path("-plan"), &plan),
+		readJSON(s.path("-gates"), &obs),
+	); err != nil {
+		return err
+	}
+	s.items, s.goals, s.plan, s.obs = items, goals, plan, obs
+	return nil
+}
+
 // readJSON loads a file if present. A missing file is a fresh session's
 // legitimate empty state; anything else — a permissions error, a corrupt
 // file — is real trouble and must not be mistaken for the same thing.

@@ -20,9 +20,11 @@ LOOPS.md + README.md → next problem** — and a fix plan wraps that spine in
 
 1. Pick the next unchecked `[ ]` task in the current phase.
 2. Implement. Reuse existing packages before writing new.
-3. `go build ./... && go vet ./... && go test ./...` green.
+3. `go build ./... && go vet ./... && go test ./...` green; shared-state changes also
+   require `go test -race ./...`.
 4. TUI-visible: boot the probe rig, drive the scenario, render to PNG, **look at the
-   image**. Compare against the spec § the task references.
+   image**. If the feature is daemon-backed, drive the real server plus one or more
+   attach clients and compare the client frame against the spec § the task references.
 5. Mark `[x]` in the plan file. Commit — one task per commit, always green.
 6. Kick off a background codex review of the commit. Don't block; fold findings into
    the next iteration. Fix real findings before unrelated new work; log dismissed
@@ -44,6 +46,26 @@ could not break; you cannot construct the test → say so, mark `[~]`, name whic
 caller before editing; fix once where all callers route through), fix, run the
 reproduction again — it must now pass — then the same probe/commit/codex/LOOPS/README
 steps. **A fix without a fail-then-pass pair is not done.**
+
+**Server/client loop** (lifecycle or persistence changes): the loop has one extra
+invariant — the window is not the owner of live work. Before editing, write down which
+state belongs to the daemon, which state is durable, and which state is deliberately
+per-client display state. Then prove all of these round-trips:
+
+1. start or attach a session from a client;
+2. run a turn, tool call, background task, question, or queued prompt;
+3. disconnect every client while work is active;
+4. reconnect one client and verify snapshot plus live-tail replay;
+5. attach a second client and verify identical logical events;
+6. reopen the durable session after daemon restart and verify model, workspace, and
+   transcript recovery;
+7. run the headless submit and wait paths against the same server.
+
+The server owns the real agent and command side effects. A client may mirror and render
+them, but it must not become the only place that drains a queue, answers a question,
+tracks background work, or advances an unattended loop. Any state that cannot survive a
+daemon process crash must be named explicitly in `DEVIATIONS.md`; "persistent" means
+at minimum that closing a TUI is a disconnect, not a session shutdown.
 
 ## Layout
 
@@ -86,13 +108,16 @@ steps. **A fix without a fail-then-pass pair is not done.**
   and drift; the symbol does not. `⟨both⟩` = two reviewers found it independently;
   `⟨codex⟩`/`⟨fable⟩` = one only — not weaker as a bug, weaker as evidence.
 - **One task per commit, always green.** `go build ./... && go vet ./... && go test
-  ./...` is the real gate; codex review is advisory, never blocking.
+  ./...` is the real gate; `go test -race ./...` is required for shared daemon/client
+  state. Codex review is advisory, never blocking.
 - **`LOOPS.md` is append-only.** Never edit old entries. Heading `## <date> <task-id>`.
   Name the failing test that proved the bug was real; for `[~]`, name the test that
   refused to fail.
 - **`README.md`** changes in the same commit as the behavior it describes.
 - **`DEVIATIONS.md`** is append-only: what the spec said, what was built instead, why,
   and when it would need revisiting.
+- **Daemon-backed behavior** documents the client/server ownership boundary and the
+  daemon-crash limit separately from the TUI-disconnect guarantee.
 - **Phases end daily-drivable.** Each phase's last task is a `Verify` task listing the
   concrete round-trips to check, and tags the commit (`phase-1`, `harden-1`).
 - **A golden only proves a frame hasn't changed, never that it's right.** The PNG is

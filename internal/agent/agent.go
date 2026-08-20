@@ -48,6 +48,11 @@ type Agent struct {
 	// for an attached client (plan.md §20). See remote.go.
 	Forward Remote
 
+	// ForwardImages is the image-aware remote seam. It preserves the exact
+	// attachment semantics of a local turn while keeping image bytes inside the
+	// server-owned session rather than silently dropping them at the TUI edge.
+	ForwardImages RemoteImages
+
 	// OnInterject observes a queued interrupt. An attached client returns true
 	// to say it sent the interrupt onward, so it is not also queued locally
 	// where nothing would ever drain it.
@@ -355,6 +360,13 @@ func (a *Agent) Run(ctx context.Context, userInput string) error {
 	// An attached client forwards the turn instead of running it. The check is
 	// first because everything below — the conversation append, recall, the
 	// loop — belongs to whichever process actually owns the session (§20).
+	if a.ForwardImages != nil {
+		a.mu.Lock()
+		images := a.pendingImages
+		a.pendingImages = nil
+		a.mu.Unlock()
+		return a.ForwardImages(ctx, userInput, images)
+	}
 	if a.Forward != nil {
 		return a.Forward(ctx, userInput)
 	}

@@ -300,6 +300,17 @@ type Model struct {
 	// pendingAsk is the slot the ask tool parks its question in.
 	pendingAsk tools.PendingAsk
 
+	// remoteAskAnswer is set for a client whose ask request is owned by the
+	// daemon. The local picker remains the same, but the answer crosses the
+	// socket instead of resolving a local tool goroutine.
+	remoteAskAnswer  func(string, []string) error
+	remoteAskID      string
+	remoteModel      func(string) error
+	remoteInterrupt  func(bool) error
+	remoteCommand    func(string, string, string) error
+	remoteSessions   func() ([]SessionDescriptor, error)
+	remoteBackground []BackgroundTask
+
 	// history is the Ctrl+R reverse search, and prompts is the recall source
 	// merged across sessions (plan.md §5.2).
 	history HistorySearch
@@ -552,6 +563,119 @@ func (m *Model) Asker() tools.Asker {
 	})
 }
 
+// WithRemoteAskAnswer connects the ask picker to the server-owned request
+// broker. It is intentionally separate from Asker, which remains the local
+// tool presenter used by the in-process compatibility path.
+func (m *Model) WithRemoteAskAnswer(answer func(string, []string) error) *Model {
+	m.remoteAskAnswer = answer
+	return m
+}
+
+// WithRemoteModel connects the model picker to the server-owned agent. The
+// picker remains local UI state, but the provider and durable session metadata
+// are changed in the daemon before the next turn.
+func (m *Model) WithRemoteModel(set func(string) error) *Model {
+	m.remoteModel = set
+	return m
+}
+
+// WithRemoteInterrupt connects the cancel key to the server-owned turn. The
+// local forwarding goroutine returns as soon as it submits a prompt, so
+// canceling that goroutine cannot stop the agent that is actually working.
+func (m *Model) WithRemoteInterrupt(stop func(bool) error) *Model {
+	m.remoteInterrupt = stop
+	return m
+}
+
+// WithRemoteCommand supplies the small command bridge used by slash commands
+// whose state belongs to the daemon rather than this TUI process.
+func (m *Model) WithRemoteCommand(run func(kind, arg, secret string) error) *Model {
+	m.remoteCommand = run
+	return m
+}
+
+// WithRemoteSessions lets the in-TUI picker show the daemon's live roster,
+// including running/client counts, without sharing the streaming connection's
+// scanner with a second request.
+func (m *Model) WithRemoteSessions(list func() ([]SessionDescriptor, error)) *Model {
+	m.remoteSessions = list
+	return m
+}
+
+// SetRemoteAsk queues a server-owned question for the normal TUI picker.
+func (m *Model) SetRemoteAsk(req agent.AskEvent) {
+	m.remoteAskID = req.ID
+	m.pendingAsk.Set(&tools.AskRequest{
+		ID:       req.ID,
+		Question: req.Question, Options: req.Options, Multi: req.Multi,
+		Reply: make(chan []string, 1),
+	})
+}
+
+// SetRemoteBackground replaces the attached view of detached shell tasks.
+// The daemon remains the owner; this is only the state the widget renders.
+func (m *Model) SetRemoteBackground(states []agent.BackgroundState) {
+	m.remoteBackground = make([]BackgroundTask, 0, len(states))
+	for _, state := range states {
+		m.remoteBackground = append(m.remoteBackground, BackgroundTask{
+			ID: state.ID, Label: state.Label, Done: state.Done,
+			Err: state.Failed, Progress: state.Progress,
+		})
+	}
+}
+
+func (m *Model) applyRemoteBackground(state agent.BackgroundState) {
+	for i := range m.remoteBackground {
+		if m.remoteBackground[i].ID != state.ID {
+			continue
+		}
+		m.remoteBackground[i] = BackgroundTask{
+			ID: state.ID, Label: state.Label, Done: state.Done,
+			Err: state.Failed, Progress: state.Progress,
+		}
+		return
+	}
+	m.remoteBackground = append(m.remoteBackground, BackgroundTask{
+		ID: state.ID, Label: state.Label, Done: state.Done,
+		Err: state.Failed, Progress: state.Progress,
+	})
+}
+
+// ApplyRemoteState replaces the local render mirror after a server-side
+// rewrite such as compact, rewind, or rename. The daemon remains authoritative;
+// this only keeps an attached TUI's conversation and chrome in sync.
+func (m *Model) ApplyRemoteState(sessionName, modelName, providerName string,
+	running bool, msgs []provider.Message, pending []agent.AskEvent,
+	background []agent.BackgroundState) {
+	if sessionName != "" {
+		m.header.SessionName = sessionName
+	}
+	if modelName != "" {
+		m.header.Model = modelName
+		if m.agent != nil {
+			m.agent.Model = modelName
+		}
+	}
+	if providerName != "" {
+		m.header.Provider = providerName
+	}
+	m.processing = running
+	m.streamingIdx, m.reasoningIdx = -1, -1
+	if !running {
+		m.status = StatusState{Phase: PhaseIdle}
+	}
+	if m.agent != nil {
+		m.agent.SetRunning(running)
+	}
+	m.pendingAsk.Cancel()
+	m.remoteAskID = ""
+	for _, req := range pending {
+		m.SetRemoteAsk(req)
+	}
+	m.SetRemoteBackground(background)
+	m.RebuildFrom(msgs)
+}
+
 // WithSessions attaches the session store and data directory, enabling the
 // picker and the session commands.
 func (m *Model) WithSessions(dataDir, cwd string, store *session.Store) *Model {
@@ -722,12 +846,17 @@ const IdleTickInterval = 500 * time.Millisecond
 const IdleArtInterval = 250 * time.Millisecond
 
 func (m *Model) hasRunningBackground() bool {
-	if m.bg == nil {
+	if m.bg != nil {
+		for _, task := range m.bg.Tasks() {
+			done, _, _ := task.Snapshot()
+			if !done {
+				return true
+			}
+		}
 		return false
 	}
-	for _, task := range m.bg.Tasks() {
-		done, _, _ := task.Snapshot()
-		if !done {
+	for _, task := range m.remoteBackground {
+		if !task.Done {
 			return true
 		}
 	}
@@ -1185,6 +1314,9 @@ func (m *Model) applyEvent(e agent.Event) {
 		// delta rides the event rather than a side channel, so it cannot race
 		// the render loop.
 		if e.Call.Name == "todo" && !e.IsError() {
+			if m.todos != nil {
+				_ = m.todos.Reload()
+			}
 			if m.poke != nil {
 				m.poke.Rearm()
 			}
@@ -1231,6 +1363,50 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.header.ReasoningEffort = e.ReasoningEffort
 		}
 
+	case agent.EventModel:
+		if e.Model != "" {
+			m.header.Model = e.Model
+			if m.agent != nil {
+				m.agent.Model = e.Model
+			}
+		}
+		if e.Provider != "" {
+			m.header.Provider = e.Provider
+		}
+		if e.ReasoningEffort.Valid() {
+			m.reasoningEffort = e.ReasoningEffort
+			m.header.ReasoningEffort = e.ReasoningEffort
+		}
+		if len(e.ReasoningEfforts) > 0 {
+			levels := make([]provider.ReasoningEffort, 0, len(e.ReasoningEfforts))
+			for _, raw := range e.ReasoningEfforts {
+				if level, ok := provider.ParseReasoningEffort(raw); ok {
+					levels = append(levels, level)
+				}
+			}
+			m.WithReasoningEfforts(levels)
+		}
+
+	case agent.EventBackground:
+		if e.Background != nil {
+			wasDone := false
+			for _, task := range m.remoteBackground {
+				if task.ID == e.Background.ID {
+					wasDone = task.Done
+					break
+				}
+			}
+			m.applyRemoteBackground(*e.Background)
+			if e.Background.Done && !wasDone {
+				state := "finished"
+				if e.Background.Failed {
+					state = "failed"
+				}
+				m.notice = fmt.Sprintf("▣ Background task %d %s: %s",
+					e.Background.ID, state, e.Background.Label)
+			}
+		}
+
 	case agent.EventNotice:
 		// A notice marks a boundary between two things the model said. Without
 		// closing the streaming block here, an auto-poked turn renders as one
@@ -1256,6 +1432,16 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.blocks = append(m.blocks, Block{Kind: BlockMemory, Memories: hits})
 			m.followIfPinned()
 		}
+
+	case agent.EventAsk:
+		if e.Ask != nil {
+			m.SetRemoteAsk(*e.Ask)
+		}
+
+	case agent.EventSnapshot:
+		m.ApplyRemoteState(e.SnapshotSession, e.SnapshotModel, e.SnapshotProvider,
+			e.SnapshotRunning, e.SnapshotMessages, e.SnapshotPending,
+			e.SnapshotBackground)
 
 	case agent.EventError:
 		m.finishStreaming()
@@ -2163,6 +2349,7 @@ func (m *Model) previewHistory() {
 // handleAskKey drives the ask tool's option picker.
 func (m *Model) handleAskKey(key string) (tea.Model, tea.Cmd) {
 	n := len(m.ask.Options)
+	remoteID := m.ask.ID
 	switch key {
 	case "up", "ctrl+k":
 		m.askCursor = MovePaletteSelection(m.askCursor, -1, n)
@@ -2186,12 +2373,28 @@ func (m *Model) handleAskKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			labels = []string{m.ask.Options[clamp(m.askCursor, 0, n-1)].Label}
 		}
-		m.pendingAsk.Answer(labels)
+		if remoteID != "" && m.remoteAskAnswer != nil {
+			if err := m.remoteAskAnswer(remoteID, labels); err != nil {
+				m.notice = "could not answer server request: " + err.Error()
+				return m, nil
+			}
+			m.remoteAskID = ""
+			m.pendingAsk.Answer(nil)
+		} else {
+			m.pendingAsk.Answer(labels)
+		}
 		m.ask = nil
 		return m, nil
 	case "esc", "ctrl+c":
 		// Declining is an answer: the tool reports that nothing was chosen
 		// rather than hanging.
+		if remoteID != "" && m.remoteAskAnswer != nil {
+			if err := m.remoteAskAnswer(remoteID, nil); err != nil {
+				m.notice = "could not answer server request: " + err.Error()
+				return m, nil
+			}
+			m.remoteAskID = ""
+		}
 		m.pendingAsk.Answer(nil)
 		m.ask = nil
 		return m, nil
@@ -2347,14 +2550,25 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 	previousModel := m.header.Model
 	previousProvider := m.header.Provider
 	previousRef := config.ModelRef(previousModel, previousProvider)
-	if sel.Provider != "" && sel.Provider != m.header.Provider {
+	targetProvider := previousProvider
+	if sel.Provider != "" {
+		targetProvider = sel.Provider
+	}
+	targetRef := config.ModelRef(sel.Name, targetProvider)
+	if m.remoteModel != nil {
+		if err := m.remoteModel(targetRef); err != nil {
+			m.notice = "could not switch model: " + err.Error()
+			return
+		}
+	}
+	if targetProvider != m.header.Provider {
 		// Crossing providers rebuilds the live client. The picker lists
 		// models from every configured provider, so a selection can name
 		// one the session did not start on.
-		if pc := m.providerConfig(sel.Provider); pc != nil {
+		if pc := m.providerConfig(targetProvider); pc != nil {
 			if p, err := pc.Build(); err == nil {
 				m.agent.Provider = p
-				m.header.Provider = sel.Provider
+				m.header.Provider = targetProvider
 				if m.compactor != nil {
 					m.compactor.SetEmbeddingProvider(p)
 				}
@@ -2362,10 +2576,9 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 		}
 	}
 	m.header.Model = sel.Name
-	if sel.Provider != "" {
-		m.header.Provider = sel.Provider
+	if targetProvider != "" {
+		m.header.Provider = targetProvider
 	}
-	targetRef := config.ModelRef(m.header.Model, m.header.Provider)
 	m.agent.Model = sel.Name
 	levels := provider.NormalizeReasoningEfforts(sel.ReasoningEfforts)
 	if len(levels) == 0 && m.agent != nil {
@@ -2827,6 +3040,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "poke":
 		if m.poke == nil {
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand("poke", strings.TrimSpace(m.commandArg), ""); err != nil {
+					m.notice = "could not update server auto-poke: " + err.Error()
+				} else {
+					m.notice = "Auto-poke request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "auto-poke is not configured for this session"
 			return m, nil
 		}
@@ -2985,6 +3206,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "save", "unsave":
 		if m.store == nil {
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand(name, "", ""); err != nil {
+					m.notice = "could not update server session: " + err.Error()
+				} else {
+					m.notice = "session update sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "no session to pin"
 			return m, nil
 		}
@@ -2999,6 +3228,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "rename":
 		if m.store == nil || arg == "" {
+			if m.store == nil && m.remoteCommand != nil && arg != "" {
+				if err := m.remoteCommand("rename", arg, ""); err != nil {
+					m.notice = "could not rename server session: " + err.Error()
+				} else {
+					m.notice = "rename request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "usage: /rename <new-name>"
 			return m, nil
 		}
@@ -3012,6 +3249,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "fork":
 		if m.store == nil || arg == "" {
+			if m.store == nil && m.remoteCommand != nil && arg != "" {
+				if err := m.remoteCommand("fork", arg, ""); err != nil {
+					m.notice = "could not fork server session: " + err.Error()
+				} else {
+					m.notice = "fork request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "usage: /fork <new-name>"
 			return m, nil
 		}
@@ -3024,6 +3269,14 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "checkpoint":
 		if m.store == nil {
+			if m.remoteCommand != nil {
+				if err := m.remoteCommand("checkpoint", arg, ""); err != nil {
+					m.notice = "could not checkpoint server session: " + err.Error()
+				} else {
+					m.notice = "checkpoint request sent to server"
+				}
+				return m, nil
+			}
 			m.notice = "no session to checkpoint"
 			return m, nil
 		}
@@ -3164,7 +3417,12 @@ func (m *Model) escape() {
 // here: Esc means "stop", so the harness must not immediately re-poke, while
 // Ctrl+C means "skip this" and leaves the cycle armed (plan.md §6.7).
 func (m *Model) interrupt(disarmPoke bool) {
-	if m.cancelTurn != nil {
+	if m.remoteInterrupt != nil {
+		if err := m.remoteInterrupt(disarmPoke); err != nil {
+			m.notice = "could not interrupt server turn: " + err.Error()
+			return
+		}
+	} else if m.cancelTurn != nil {
 		m.cancelTurn()
 	}
 	// Queued messages stay: they were never delivered, and the interrupted
@@ -3189,6 +3447,13 @@ func (m *Model) send() (tea.Model, tea.Cmd) {
 
 	switch SendActionFor(m.processing, m.editor.Text) {
 	case Queue:
+		// An attached TUI is only a view. The daemon owns the ordered input
+		// queue, so send queued text across the socket immediately; keeping it
+		// only in this window would lose it if the window closed mid-turn.
+		if m.remoteCommand != nil {
+			m.submit(text, wpm)
+			return m, nil
+		}
 		m.pending = append(m.pending, PendingMessage{Kind: PendingQueued, Text: text, WPM: wpm})
 		m.clearEditor()
 		return m, nil
@@ -4324,9 +4589,12 @@ func (m *Model) activeWidgets() []Widget {
 		var tasks []BackgroundTask
 		for _, t := range m.bg.Tasks() {
 			done, failed, _ := t.Snapshot()
-			tasks = append(tasks, BackgroundTask{Label: t.Label, Done: done, Err: failed, Progress: t.Progress().String()})
+			tasks = append(tasks, BackgroundTask{ID: t.ID, Label: t.Label, Done: done, Err: failed, Progress: t.Progress().String()})
 		}
 		add(m.renderer.BackgroundTasksWidget(tasks, int(time.Since(m.started)/SpinnerInterval)))
+	} else if len(m.remoteBackground) > 0 {
+		add(m.renderer.BackgroundTasksWidget(m.remoteBackground,
+			int(time.Since(m.started)/SpinnerInterval)))
 	}
 	if m.memory != nil {
 		act := m.memory.Activity()
@@ -4425,6 +4693,15 @@ func (m *Model) widgetUrgency(w Widget) float64 {
 					return 24
 				}
 				if !done {
+					return 12
+				}
+			}
+		} else {
+			for _, task := range m.remoteBackground {
+				if task.Err {
+					return 24
+				}
+				if !task.Done {
 					return 12
 				}
 			}

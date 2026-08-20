@@ -30,6 +30,27 @@ the next iteration of the agent loop carries it with the cache prefix intact.
 The loop already re-requests between iterations — after tool results, and after
 a stream ends. Those boundaries are the injection points.
 
+## Attached mode
+
+When the TUI is attached to the daemon, the daemon remains the owner of the live
+turn. The client does not keep a second queue or try to cancel a local provider
+request:
+
+- A prompt submitted while the session is busy crosses the socket as `input` and is
+  queued by the server behind the active turn. The queue is shared by every attached
+  TUI, so closing the window cannot strand a staged prompt.
+- A user interleave crosses as `interrupt` with text and urgency. The daemon injects
+  it into the real agent, which applies the same B/C/D safe-point rules below.
+- `Esc` and `Ctrl+C` send an empty `interrupt`, which cancels the server-owned context.
+  The local TUI immediately reflects the requested state, but the daemon's turn-end
+  event is the authority for the final result.
+- The resulting events are broadcast to every attached client. A second window sees
+  the same interjection, cancellation, partial assistant message, and turn boundary.
+
+This distinction is what makes a closed terminal harmless: a TUI may disappear between
+the input and the safe point, but the agent loop and its durable conversation remain in
+the daemon.
+
 ## Safe points
 
     ┌─ stream ends, no tool calls ──────────────── B: always safe
@@ -103,6 +124,11 @@ been reading at the moment they pressed the key.
 
 - `internal/agent/agent.go` — `Interject`, `DrainInterrupts`, and the safe-point
   calls inside `Loop` and `runTools`.
-- `internal/tui/composer.go` — `SendActionFor`, the Submit/Queue/Interleave
-  decision.
-- `internal/tui/app.go` — staging, the pending rows, and `Ctrl+Up` retrieval.
+- `internal/daemon/server.go` — the one-turn reservation, server-side queue,
+  cancellation context, and safe-point conflict delivery.
+- `internal/attachcmd/attach.go` — the socket bridges for input, interleave, and
+  cancellation.
+- `internal/tui/composer.go` — the local Submit/Queue/Interleave decision and key
+  semantics; attached mode forwards the resulting action instead of owning execution.
+- `internal/tui/app.go` — rendering, local-only staging preferences, and `Ctrl+Up`
+  retrieval.

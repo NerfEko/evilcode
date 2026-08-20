@@ -211,6 +211,12 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content,omitempty"`
 
+	// Hidden is a frontend-only marker for daemon-owned harness prompts. It is
+	// never sent to providers or persisted in the session log; it lets a remote
+	// TUI keep the full conversation mirror without drawing an unattended prompt
+	// as if a person typed it.
+	Hidden bool `json:"-"`
+
 	// Reasoning holds thinking-model traces. It is kept separate from Content
 	// so the TUI can render and garbage-collect it independently (§9.7, §4.6).
 	Reasoning string `json:"reasoning,omitempty"`

@@ -238,6 +238,14 @@ verify it, leave it in progress and say what is missing.`
 
 // overnightCommand implements `/overnight`.
 func (m *Model) overnightCommand(arg string) tea.Cmd {
+	if m.remoteCommand != nil {
+		if err := m.remoteCommand("overnight", strings.ToLower(strings.TrimSpace(arg)), ""); err != nil {
+			m.notice = "could not update server overnight: " + err.Error()
+		} else {
+			m.notice = "⏳ Overnight request sent to server"
+		}
+		return nil
+	}
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "off", "stop":
 		if m.overnightPreflightPending {

@@ -41,7 +41,9 @@ func Run(args []string) (int, error) {
 	quiet := fs.Bool("q", false, "print only the model's text, no tool or usage lines")
 	noTools := fs.Bool("no-tools", false, "run without any tools")
 	remote := fs.Bool("remote", false, "submit into a running daemon instead of executing locally")
-	socket := fs.String("socket", "", "daemon socket path, with -remote")
+	wait := fs.Bool("wait", false, "wait for the submitted turn and stream its output")
+	local := fs.Bool("local", false, "run in this process instead of using the daemon")
+	socket := fs.String("socket", "", "daemon socket path")
 	if err := fs.Parse(args); err != nil {
 		return ExitError, err
 	}
@@ -58,8 +60,14 @@ func Run(args []string) (int, error) {
 		return ExitError, fmt.Errorf(`usage: evilcode run [-m model] [-q] "prompt"`)
 	}
 
-	if *remote {
-		return runRemote(*socket, *resume, prompt, *quiet)
+	// The server is now the only owner of live agent state. Ordinary `run`
+	// submits and returns; -wait and the historical -remote spelling retain the
+	// streamed headless mode for scripts that need the answer in this process.
+	if *remote || *wait {
+		return runRemote(*socket, *resume, *model, prompt, *quiet, *noTools)
+	}
+	if !*local {
+		return submitRemote(*socket, *resume, *model, prompt, *quiet, *noTools)
 	}
 
 	cfg, err := config.Load()

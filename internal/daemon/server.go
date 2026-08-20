@@ -17,9 +17,12 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/mcp"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
+	"evilcode/internal/session"
 	"evilcode/internal/todo"
+	"evilcode/internal/tools"
 	"evilcode/internal/wiring"
 )
 
@@ -28,6 +31,10 @@ type Server struct {
 	Cfg  *config.Config
 	Cwd  string
 	Path string
+
+	// IdleTimeout controls automatic shutdown after all clients disconnect and
+	// all sessions become idle. Zero disables automatic shutdown.
+	IdleTimeout time.Duration
 
 	// Model is the default model reference for sessions this server creates.
 	Model string
@@ -52,6 +59,10 @@ type Server struct {
 	workerWatchMu   sync.Mutex
 	workerWatchStop chan struct{}
 	workerWatchDone chan struct{}
+
+	idleStop     chan struct{}
+	idleDone     chan struct{}
+	lastActivity time.Time
 
 	// reserved holds names claimed by a session still being built, so a
 	// concurrent spawn does not settle on the same one.
@@ -97,6 +108,7 @@ func (s *Server) shared() (*todo.Store, *memory.Store) {
 type Session struct {
 	Name    string
 	Model   string
+	Cwd     string
 	Task    string
 	Worker  bool
 	Started time.Time
@@ -142,7 +154,12 @@ type Session struct {
 	// lives on the reader, not the writer: a conflict queued on the writer
 	// would wait for the writer's safe point and reach the wrong conversation.
 	// Written by whichever session did the writing, so it is under mu.
-	pending []Conflict
+	pending   []Conflict
+	asks      *askBroker
+	mcp       *mcp.Client
+	poke      *agent.PokeHook
+	advisor   *agent.Advisor
+	overnight *overnightState
 
 	subs map[chan ServerMsg]struct{}
 
@@ -152,7 +169,9 @@ type Session struct {
 	// session cancels the turn and then waits on this: a cancelled turn still
 	// writes — the partial answer, the stubs for the tools it abandoned — and
 	// closing the store first sends all of it nowhere.
-	turnDone chan struct{}
+	turnDone  chan struct{}
+	queued    []queuedInput
+	requestID string
 
 	// closing refuses new turns once close has begun. Without it a turn
 	// starting while close waits replaces the channel close is waiting on, and
@@ -166,18 +185,37 @@ type Session struct {
 	running bool
 }
 
+type queuedInput struct {
+	requestID string
+	text      string
+	images    [][]byte
+}
+
+func (sess *Session) busy() bool {
+	sess.mu.Lock()
+	reserved := sess.running
+	sess.mu.Unlock()
+	return reserved || sess.built.Agent.Running()
+}
+
 // NewServer builds a server. It does not listen until Serve is called.
 func NewServer(cfg *config.Config, cwd, model string) *Server {
 	return &Server{
-		Cfg:      cfg,
-		Cwd:      cwd,
-		Model:    model,
-		Path:     SocketPath(),
-		Files:    newRegistryAt(cwd),
-		swarm:    newSwarmState(),
-		sessions: map[string]*Session{},
+		Cfg:          cfg,
+		Cwd:          cwd,
+		Model:        model,
+		Path:         SocketPath(),
+		IdleTimeout:  DefaultIdleTimeout,
+		lastActivity: time.Now(),
+		Files:        newRegistryAt(cwd),
+		swarm:        newSwarmState(),
+		sessions:     map[string]*Session{},
 	}
 }
+
+// DefaultIdleTimeout keeps the persistent server alive until it is explicitly
+// stopped. Operators that want automatic cleanup can opt in with `serve -idle`.
+const DefaultIdleTimeout time.Duration = 0
 
 // WorkerHeartbeatInterval controls how often the daemon checks workers that
 // have stopped producing events. The check is cheap; the longer threshold
@@ -220,6 +258,78 @@ func (s *Server) stopWorkerWatchdog() {
 	stop, done := s.workerWatchStop, s.workerWatchDone
 	s.workerWatchStop, s.workerWatchDone = nil, nil
 	s.workerWatchMu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+	<-done
+}
+
+func (s *Server) touch() {
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *Server) startIdleWatchdog() {
+	if s.IdleTimeout <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.idleStop != nil || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.idleStop, s.idleDone = stop, done
+	s.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case now := <-ticker.C:
+				s.mu.Lock()
+				last := s.lastActivity
+				timeout := s.IdleTimeout
+				closed := s.closed
+				clients, running := 0, 0
+				for _, sess := range s.sessions {
+					sess.mu.Lock()
+					clients += len(sess.subs)
+					reserved := sess.running
+					sess.mu.Unlock()
+					if reserved || (sess.built != nil && sess.built.Agent.Running()) {
+						running++
+					}
+				}
+				idle := !closed && clients == 0 && running == 0 && timeout > 0 &&
+					now.Sub(last) >= timeout
+				s.mu.Unlock()
+				if idle {
+					s.mu.Lock()
+					// This goroutine is the watchdog; clear its handles before
+					// Close so shutdown does not wait on itself.
+					s.idleStop, s.idleDone = nil, nil
+					s.mu.Unlock()
+					s.Close()
+					return
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) stopIdleWatchdog() {
+	s.mu.Lock()
+	stop, done := s.idleStop, s.idleDone
+	s.idleStop, s.idleDone = nil, nil
+	s.mu.Unlock()
 	if stop == nil {
 		return
 	}
@@ -351,6 +461,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		}
 	}
+	s.startIdleWatchdog()
 	go func() {
 		<-ctx.Done()
 		s.Close()
@@ -393,6 +504,7 @@ func (s *Server) Close() {
 	}
 	s.sessions = map[string]*Session{}
 	s.mu.Unlock()
+	s.stopIdleWatchdog()
 	s.stopWorkerWatchdog()
 
 	if ln != nil {
@@ -416,26 +528,64 @@ func (s *Server) Close() {
 // Sessions lists what the server is holding.
 func (s *Server) Sessions() []SessionInfo {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	out := make([]SessionInfo, 0, len(s.sessions))
+	seen := make(map[string]bool, len(s.sessions))
 	for _, sess := range s.sessions {
 		sess.mu.Lock()
+		name, model, task, cwd := sess.Name, sess.Model, sess.Task, sess.Cwd
+		worker, started := sess.Worker, sess.Started
 		clients := len(sess.subs)
-		stale := sess.Worker && sess.stale && !sess.closedDone
+		running := sess.running
+		stale := worker && sess.stale && !sess.closedDone
 		sess.mu.Unlock()
+		seen[name] = true
 		out = append(out, SessionInfo{
-			Name:    sess.Name,
-			Model:   sess.Model,
-			Running: sess.built.Agent.Running(),
+			Name:    name,
+			Model:   model,
+			Running: running || sess.built.Agent.Running(),
 			Clients: clients,
-			Worker:  sess.Worker,
-			Task:    sess.Task,
-			Started: sess.Started,
+			Worker:  worker,
+			Task:    task,
+			Started: started,
 			Stale:   stale,
+			Cwd:     cwd,
+			Stored:  true,
+			Live:    true,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Started.Before(out[j].Started) })
+	s.mu.Unlock()
+
+	// The daemon may restart independently of every TUI. Include durable
+	// sessions that are not hydrated so a picker can offer them and a later
+	// attach can reopen them in their recorded workspace.
+	if stored, err := session.List(config.DataDir()); err == nil {
+		for _, info := range stored {
+			if seen[info.Name] {
+				continue
+			}
+			out = append(out, SessionInfo{
+				Name: info.Name, Model: info.Model, Cwd: info.Cwd,
+				Started: info.Modified, Modified: info.Modified,
+				Title: info.Title, Crashed: info.Crashed, Stored: true,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Live != out[j].Live {
+			return out[i].Live
+		}
+		if out[i].Running != out[j].Running {
+			return out[i].Running
+		}
+		left, right := out[i].Modified, out[j].Modified
+		if left.IsZero() {
+			left = out[i].Started
+		}
+		if right.IsZero() {
+			right = out[j].Started
+		}
+		return left.After(right)
+	})
 	return out
 }
 
@@ -449,11 +599,53 @@ func (s *Server) sessionInfo(name string) []SessionInfo {
 	return nil
 }
 
+// Status reports the live server without hydrating stored sessions.
+func (s *Server) Status() *ServerStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := &ServerStatus{
+		PID: s.processID(), Socket: s.Path, IdleTimeout: s.IdleTimeout,
+		LastActivity: s.lastActivity,
+	}
+	status.Sessions = len(s.sessions)
+	for _, sess := range s.sessions {
+		sess.mu.Lock()
+		status.Clients += len(sess.subs)
+		reserved := sess.running
+		sess.mu.Unlock()
+		if reserved || (sess.built != nil && sess.built.Agent.Running()) {
+			status.Running++
+		}
+	}
+	return status
+}
+
+func (s *Server) processID() int { return os.Getpid() }
+
 // Open returns a session, building it if the name is new.
 //
 // An empty name creates a fresh session, which is what a client attaching
 // without arguments wants.
 func (s *Server) Open(name string) (*Session, error) {
+	return s.OpenWithOptions(name, OpenOptions{Cwd: s.Cwd, Model: s.Model})
+}
+
+// OpenAt returns or builds a session in cwd. Existing sessions recover their
+// original workspace from durable metadata when the caller omits it.
+func (s *Server) OpenAt(name, cwd, model string) (*Session, error) {
+	return s.OpenWithOptions(name, OpenOptions{Cwd: cwd, Model: model})
+}
+
+// OpenOptions describes how a new session should be built.
+type OpenOptions struct {
+	Cwd     string
+	Model   string
+	NoTools bool
+}
+
+// OpenWithOptions returns or builds a session with explicit creation options.
+func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error) {
+	s.touch()
 	for {
 		s.mu.Lock()
 		if s.closed {
@@ -495,31 +687,125 @@ func (s *Server) Open(name string) (*Session, error) {
 		break
 	}
 
+	cwd := opts.Cwd
+	if name != "" {
+		if info, err := session.Describe(config.DataDir(), name); err == nil {
+			// A durable session owns its workspace. The directory of the
+			// window that happens to resume it must not silently retarget file
+			// tools after a restart.
+			if info.Cwd != "" {
+				cwd = info.Cwd
+			}
+		}
+	}
+	if cwd == "" {
+		cwd = s.Cwd
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+
 	// Built outside the lock: resolving a model can touch the network, and
 	// holding the server lock across that would stall `list` for every client.
 	s.mu.Lock()
-	cfg := s.Cfg.Clone()
+	var cfg *config.Config
+	if s.Cfg != nil {
+		cfg = s.Cfg.Clone()
+	}
 	s.mu.Unlock()
 	if cfg == nil {
 		return nil, fmt.Errorf("daemon: no configuration")
 	}
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		return nil, err
+	}
+	cfg.AddDiscoveredCodex()
 	todos, bank := s.shared()
+	asks := newAskBroker()
+	var mcpClient *mcp.Client
+	var extraTools tools.Set
+	var extraClosers []func()
+	if !opts.NoTools && len(cfg.MCP) > 0 {
+		mcpClient = mcp.New()
+		var servers []mcp.ServerConfig
+		for _, srv := range cfg.MCP {
+			servers = append(servers, mcp.ServerConfig{
+				Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env,
+			})
+		}
+		for _, mcpErr := range mcpClient.Connect(context.Background(), servers) {
+			fmt.Fprintln(os.Stderr, "evilcode:", mcpErr)
+		}
+		extraTools, extraClosers = mcpClient.Tools(), []func(){mcpClient.Close}
+	}
 	built, err := wiring.Build(cfg, wiring.Options{
-		Model: s.Model, Resume: name, Cwd: s.Cwd, Extract: true,
-		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank,
+		Model: opts.Model, Resume: name, Cwd: cwd, Extract: true, NoTools: opts.NoTools,
+		TodoNamespace: SwarmTodoNamespace, Todos: todos, Bank: bank, Asker: asks,
+		ExtraTools: extraTools, ExtraClosers: extraClosers,
 	})
 	if err != nil {
 		return nil, err
 	}
+	// These hooks used to exist only in the local TUI wiring. They belong to
+	// the agent runtime, so keeping them here preserves auto-poke and advisor
+	// behavior while every client is disconnected.
+	var hooks agent.Chain
+	if built.Agent.Hooks != nil {
+		if existing, ok := built.Agent.Hooks.(agent.Chain); ok {
+			hooks = append(hooks, existing...)
+		} else {
+			hooks = append(hooks, built.Agent.Hooks)
+		}
+	}
+	var poke *agent.PokeHook
+	if built.Todos != nil {
+		poke = agent.NewPokeHook(built.Todos, built.Config.Features.AutoPoke)
+		hooks = append(hooks, poke)
+	}
+	advisor := agent.NewAdvisor(func(ctx context.Context, system, user string) (string, error) {
+		return built.Config.Router().SideCall(ctx, config.RoleSmol, system, user)
+	}, built.Config.Features.Advisor)
+	if built.Todos != nil {
+		advisor.TodoState = built.Todos.Summary
+	}
+	hooks = append(hooks, advisor)
+	if len(hooks) > 0 {
+		built.Agent.Hooks = hooks
+	}
 
 	sess := &Session{
-		Name:    built.Store.Name,
-		Model:   built.Model,
-		Started: time.Now(),
-		built:   built,
-		ring:    NewRing(),
-		srv:     s,
-		subs:    map[chan ServerMsg]struct{}{},
+		Name:      built.Store.Name,
+		Model:     built.Model,
+		Cwd:       cwd,
+		Started:   time.Now(),
+		built:     built,
+		ring:      NewRing(),
+		srv:       s,
+		asks:      asks,
+		mcp:       mcpClient,
+		poke:      poke,
+		advisor:   advisor,
+		overnight: newOvernightState(),
+		subs:      map[chan ServerMsg]struct{}{},
+	}
+	if built.Exec != nil && built.Exec.Bg != nil {
+		built.Exec.Bg.OnDone = func(task *tools.BackgroundTask) {
+			done, failed, _ := task.Snapshot()
+			if !done {
+				return
+			}
+			sess.publishEvent(agent.Event{
+				Kind: agent.EventBackground,
+				Background: &agent.BackgroundState{
+					ID: task.ID, Label: task.Label, Done: done,
+					Failed: failed, Progress: task.Progress().String(),
+				},
+			})
+			if failed {
+				sess.notice(fmt.Sprintf("▣ Background task %d failed: %s", task.ID, task.Label))
+			}
+		}
 	}
 
 	s.mu.Lock()
@@ -538,6 +824,7 @@ func (s *Server) Open(name string) (*Session, error) {
 	}
 	s.sessions[sess.Name] = sess
 	s.mu.Unlock()
+	asks.SetPublisher(sess.publishEvent)
 
 	// Coordination tools exist only inside the daemon, where there is something
 	// to coordinate with.
@@ -560,9 +847,75 @@ func (sess *Session) pump() {
 			return
 		}
 		sess.observe(e)
-		sess.ring.Add(e)
-		sess.broadcast(ServerMsg{Kind: MsgEvent, Event: &e})
+		sess.publishEvent(e)
 	}
+}
+
+// publishEvent is shared by the agent pump and server-owned interaction
+// brokers. Every event follows the same ring/broadcast path, so a client that
+// reconnects cannot miss an ask request that arrived between snapshot and
+// subscription.
+func (sess *Session) publishEvent(e agent.Event) {
+	sess.mu.Lock()
+	if e.Session == "" {
+		e.Session = sess.Name
+	}
+	if e.Kind == agent.EventTurnStart {
+		e.RequestID = sess.requestID
+		if isOvernightRequest(e.RequestID) {
+			// The unattended prompt remains in the durable conversation, but it
+			// is an implementation detail rather than a fake user message for
+			// every attached window.
+			e.Text = ""
+		}
+		sess.requestID = ""
+	}
+	sess.mu.Unlock()
+	e.Seq = sess.ring.Add(e)
+	sess.broadcast(ServerMsg{Kind: MsgEvent, Event: &e})
+}
+
+// publishSnapshot broadcasts durable state after a command that rewrites or
+// renames the conversation. Attached clients use it to replace their local
+// render/conversation mirror; the server remains the sole owner of the live
+// runtime.
+func (sess *Session) publishSnapshot() {
+	sess.broadcast(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot()})
+}
+
+// renameSession changes the live map key and the durable store together. The
+// server lock is acquired before the session lock, matching Sessions and
+// Status, so a picker cannot observe a half-renamed live entry.
+func (s *Server) renameSession(sess *Session, name string) error {
+	name = strings.TrimSpace(name)
+	if err := session.ValidName(name); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.sessions[name]; ok && existing != sess {
+		return fmt.Errorf("session %q already exists", name)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.closing {
+		return fmt.Errorf("session is closing")
+	}
+	if sess.running || sess.built.Agent.Running() {
+		return fmt.Errorf("finish or interrupt the current turn first")
+	}
+	old := sess.Name
+	if old == name {
+		return nil
+	}
+	if err := sess.built.Store.Rename(config.DataDir(), name); err != nil {
+		return err
+	}
+	delete(s.sessions, old)
+	s.sessions[name] = sess
+	sess.Name = name
+	sess.built.Agent.Session = name
+	return nil
 }
 
 // observe feeds the shared file registry from the event stream.
@@ -575,38 +928,57 @@ func (sess *Session) pump() {
 // single-threaded is a field that stops being safe the first time something
 // else touches it.
 func (sess *Session) observe(e agent.Event) {
+	if sess.srv != nil {
+		sess.srv.touch()
+	}
 	if sess.Worker {
 		sess.heartbeat(time.Now())
 	}
-	if sess.srv == nil || sess.srv.Files == nil {
+	if sess.srv == nil {
 		return
 	}
 	sess.mu.Lock()
 	if sess.turn == 0 {
 		sess.turn = 1
 	}
-	turn := sess.turn
+	turn, name, cwd := sess.turn, sess.Name, sess.Cwd
 	sess.mu.Unlock()
 	switch e.Kind {
+	case agent.EventTokenUsage:
+		if e.Usage != nil && sess.overnight != nil {
+			sess.overnight.addTokens(e.Usage.In + e.Usage.Out)
+		}
+	case agent.EventAsk:
+		if sess.overnight != nil && sess.overnight.isActive() {
+			if sess.overnight.stop("the unattended run asked a question") {
+				sess.cancelTurn()
+				sess.notice("⏳ Overnight stopped: the agent asked a question")
+			}
+		}
+
 	case agent.EventToolResult:
-		if e.Call == nil || e.IsError() {
+		if sess.srv.Files == nil || e.Call == nil || e.IsError() {
 			return
 		}
 		path := ToolPath(e.Call.Name, e.Call.Args)
 		if path == "" {
 			return
 		}
+		path = sessionToolPath(cwd, path)
 		if WritesFiles(e.Call.Name) && !e.NoWrite {
 			// Queued on the *readers*, not on the writer. Keeping them here was
 			// the bug: the writer then filtered out every conflict as belonging
 			// to someone else and dropped it, so nobody was ever told.
 			sess.srv.queueConflicts(sess.srv.Files.WriteWithDetails(
-				sess.Name, path, turn, e.Intent, DiffPreview(e.Diff)))
+				name, path, turn, e.Intent, DiffPreview(e.Diff)))
 			return
 		}
-		sess.srv.Files.Read(sess.Name, path, turn)
+		sess.srv.Files.Read(name, path, turn)
 
 	case agent.EventTurnEnd:
+		if sess.overnight != nil {
+			sess.overnightTurnEnd()
+		}
 		// Safe point D: everything the turn asked for has come back, so a
 		// notice now lands between turns rather than mid-thought (§6.3).
 		sess.deliverConflicts()
@@ -693,6 +1065,9 @@ func (sess *Session) markFinished() {
 	// holds against MaxLiveWorkers is what lets the next one start.
 	if first && sess.Worker && sess.srv != nil {
 		sess.srv.swarm.finished()
+	}
+	if first && sess.srv != nil {
+		sess.srv.touch()
 	}
 }
 
@@ -791,7 +1166,38 @@ func (sess *Session) close() {
 			// reached only when something is already stuck.
 		}
 	}
+	if sess.asks != nil {
+		sess.asks.Cancel()
+	}
+	sess.consolidateMemory()
 	sess.built.Close()
+}
+
+// consolidateMemory preserves the old TUI's exit behavior at the new
+// lifecycle boundary. Closing a window is not session exit anymore; the
+// daemon performs the summary only when its session is actually being torn
+// down, such as an explicit stop or idle shutdown.
+func (sess *Session) consolidateMemory() {
+	if sess.built == nil || sess.built.Memory == nil ||
+		!sess.built.Memory.Enabled() || sess.built.Agent == nil ||
+		sess.built.Agent.Conv == nil || sess.built.Agent.Conv.Len() < 4 {
+		return
+	}
+	var transcript strings.Builder
+	for _, msg := range sess.built.Agent.Conv.Messages() {
+		if text := strings.TrimSpace(msg.Content); text != "" {
+			transcript.WriteString(string(msg.Role))
+			transcript.WriteString(": ")
+			transcript.WriteString(text)
+			transcript.WriteByte('\n')
+		}
+	}
+	if strings.TrimSpace(transcript.String()) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, _ = sess.built.Memory.Consolidate(ctx, memory.Truncate(transcript.String(), 24000))
 }
 
 // turnUnwindTimeout bounds how long closing a session waits for a cancelled
@@ -799,39 +1205,86 @@ func (sess *Session) close() {
 const turnUnwindTimeout = 5 * time.Second
 
 // snapshot describes the session to a client that has just attached.
-func (sess *Session) snapshot(cwd string) *Snapshot {
+func (sess *Session) snapshot(_ ...string) *Snapshot {
+	sess.mu.Lock()
+	name, model, cwd := sess.Name, sess.Model, sess.Cwd
+	reserved := sess.running
+	prov := sess.built.Agent.Provider
+	agentModel := sess.built.Agent.Model
+	sess.mu.Unlock()
 	msgs := sess.built.Agent.Conv.Messages()
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role == provider.RoleSystem || m.Content == "" {
+		if m.Role == provider.RoleSystem || (m.Content == "" && len(m.ToolCalls) == 0 && m.ToolName == "") {
 			continue
 		}
-		out = append(out, Message{Role: string(m.Role), Content: m.Content, Repairs: m.Repairs})
+		out = append(out, Message{
+			Role:          string(m.Role),
+			Content:       m.Content,
+			Reasoning:     m.Reasoning,
+			ToolCalls:     m.ToolCalls,
+			ProviderItems: m.ProviderItems,
+			ToolCallID:    m.ToolCallID,
+			ToolName:      m.ToolName,
+			IsError:       m.IsError,
+			Held:          m.Held,
+			Images:        m.Images,
+			Hidden:        m.Role == provider.RoleUser && m.Content == overnightPrompt,
+			Repairs:       m.Repairs,
+		})
 	}
 	levels := provider.ReasoningEffortLevelsForProvider(
-		sess.built.Agent.Provider, sess.built.Agent.Model)
+		prov, agentModel)
 	levelNames := make([]string, 0, len(levels))
 	for _, level := range levels {
 		levelNames = append(levelNames, string(level))
 	}
 	effort := ""
-	if len(levels) > 0 && provider.SupportsReasoningEffort(sess.built.Agent.Provider) {
+	if len(levels) > 0 && provider.SupportsReasoningEffort(prov) {
 		active := sess.built.Agent.ReasoningEffort()
 		if !containsReasoningEffort(levels, active) {
 			active = levels[0]
 		}
 		effort = string(active)
 	}
+	var pending []agent.AskEvent
+	if sess.asks != nil {
+		pending = sess.asks.Snapshot()
+	}
+	var mcpStatus []MCPStatus
+	if sess.mcp != nil {
+		for _, summary := range sess.mcp.Summaries() {
+			mcpStatus = append(mcpStatus, MCPStatus{Name: summary.Name, Tools: summary.Tools})
+		}
+	}
+	var skillNames []string
+	if sess.built.Skills != nil {
+		skillNames = sess.built.Skills.Names()
+	}
+	var background []BackgroundTask
+	if sess.built.Exec != nil && sess.built.Exec.Bg != nil {
+		for _, task := range sess.built.Exec.Bg.Tasks() {
+			done, failed, _ := task.Snapshot()
+			background = append(background, BackgroundTask{
+				ID: task.ID, Label: task.Label, Done: done,
+				Failed: failed, Progress: task.Progress().String(),
+			})
+		}
+	}
 	return &Snapshot{
-		Session:          sess.Name,
-		Model:            sess.Model,
-		Provider:         sess.built.Agent.Provider.Name(),
+		Session:          name,
+		Model:            model,
+		Provider:         prov.Name(),
 		Cwd:              cwd,
 		ReasoningEffort:  effort,
 		ReasoningEfforts: levelNames,
-		Running:          sess.built.Agent.Running(),
+		Skills:           skillNames,
+		MCP:              mcpStatus,
+		Running:          reserved || sess.built.Agent.Running(),
 		Seq:              sess.ring.Seq(),
 		Messages:         out,
+		Pending:          pending,
+		Background:       background,
 	}
 }
 
@@ -844,27 +1297,158 @@ func containsReasoningEffort(levels []provider.ReasoningEffort, want provider.Re
 	return false
 }
 
-// Input starts a turn. A turn already in flight is interjected into instead,
-// which is what makes two attached clients usable at once rather than a race.
-func (sess *Session) Input(text string) {
+// Input starts a turn. A turn already in flight is queued, which gives every
+// attached client one ordered input stream instead of letting two windows race
+// to mutate the same provider conversation.
+func (sess *Session) Input(text string, images ...[][]byte) {
+	sess.InputRequest("", text, images...)
+}
+
+// InputRequest starts or queues a prompt and carries a caller request id into
+// TurnStart. Headless waiters use that id to distinguish their queued turn from
+// an older turn already running in the same session.
+func (sess *Session) InputRequest(requestID, text string, images ...[][]byte) {
+	if sess.overnight != nil && !isOvernightRequest(requestID) && sess.overnight.isActive() {
+		if sess.overnight.stop("you stopped it by sending a prompt") {
+			sess.cancelTurn()
+			sess.notice("⏳ Overnight stopped: you sent a prompt")
+		}
+	}
 	a := sess.built.Agent
 	ctx, cancel := context.WithCancel(context.Background())
 	done, ok := sess.beginTurn(cancel)
 	if !ok {
 		cancel()
-		// Busy, closing, or beaten to it: the text becomes an interjection into
-		// the turn that is running rather than a second turn. Reserving and
-		// checking were two operations before, so two clients could both see an
-		// idle session and both launch against one conversation.
-		a.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
+		sess.mu.Lock()
+		closing := sess.closing
+		if !closing {
+			var attached [][]byte
+			if len(images) > 0 {
+				attached = images[0]
+			}
+			sess.queued = append(sess.queued, queuedInput{
+				requestID: requestID, text: text, images: attached,
+			})
+		}
+		position := len(sess.queued)
+		sess.mu.Unlock()
+		if !closing {
+			a.Notice(agent.LevelInfo, "queued prompt %d until the current turn ends", position)
+		}
 		return
 	}
+	sess.mu.Lock()
+	sess.requestID = requestID
+	sess.mu.Unlock()
+	var attached [][]byte
+	if len(images) > 0 {
+		attached = images[0]
+	}
+	sess.launchTurn(text, attached, ctx, cancel, done)
+}
+
+func (sess *Session) launchTurn(text string, images [][]byte, ctx context.Context, cancel context.CancelFunc, done chan struct{}) {
 	go func() {
 		defer close(done)
 		defer sess.endTurn()
 		defer cancel()
-		_ = a.Run(ctx, text)
+		if len(images) > 0 {
+			sess.built.Agent.Attach(images)
+		}
+		_ = sess.built.Agent.Run(ctx, text)
 	}()
+}
+
+func (sess *Session) overnightTurnEnd() {
+	if sess.overnight == nil {
+		return
+	}
+	if !sess.overnight.isActive() {
+		return
+	}
+	state := ""
+	if sess.built.Todos != nil {
+		state = sess.built.Todos.Summary()
+	}
+	if ok, reason := sess.overnight.afterTurn(time.Now(), state); ok {
+		sess.InputRequest(fmt.Sprintf("overnight-%d", sess.overnightTurns()), overnightPrompt)
+	} else {
+		_, _ = sess.writeOvernightReport()
+		sess.notice(reason)
+	}
+}
+
+func (sess *Session) overnightTurns() int {
+	sess.overnight.mu.Lock()
+	defer sess.overnight.mu.Unlock()
+	return sess.overnight.turns + 1
+}
+
+// SetModel switches the provider behind a live session. Model selection is a
+// runtime operation, not a TUI preference: every attached client must observe
+// the same provider, conversation limits, and durable model metadata.
+func (sess *Session) SetModel(ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("model reference is required")
+	}
+	sess.mu.Lock()
+	if sess.closing {
+		sess.mu.Unlock()
+		return fmt.Errorf("session is closing")
+	}
+	if sess.running {
+		sess.mu.Unlock()
+		return fmt.Errorf("finish or interrupt the current turn first")
+	}
+	sess.mu.Unlock()
+
+	cfg := sess.built.Config.Clone()
+	prov, model, err := cfg.Resolve(ref)
+	if err != nil {
+		return err
+	}
+	overrides := cfg.ModelOverrides(model)
+	if err := sess.built.Store.WriteModel(config.ModelRef(model, prov.Name())); err != nil {
+		return err
+	}
+
+	sess.mu.Lock()
+	if sess.closing || sess.running {
+		sess.mu.Unlock()
+		return fmt.Errorf("session became busy while switching models")
+	}
+	sess.Model = model
+	sess.built.Config = cfg
+	sess.built.Agent.Provider = prov
+	sess.built.Agent.Model = model
+	sess.built.Agent.NumCtx = config.ContextWindowFor(prov, model, overrides.ContextWindow)
+	sess.built.Agent.MaxSteps = cfg.Features.MaxSteps
+	if sess.built.FS != nil {
+		sess.built.FS.WithAnchors(overrides.AnchorEdits).WithVision(overrides.Vision)
+	}
+	if sess.built.Memory != nil {
+		sess.built.Memory.Embedder = prov
+		sess.built.Memory.SetEmbeddingModel(prov.Name() + "::embedding")
+	}
+	if sess.built.Agent.Compactor != nil {
+		sess.built.Agent.Compactor.SetEmbeddingProvider(prov)
+	}
+	sess.mu.Unlock()
+
+	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
+	levelNames := make([]string, 0, len(levels))
+	for _, level := range levels {
+		levelNames = append(levelNames, string(level))
+	}
+	sess.publishEvent(agent.Event{
+		Kind:             agent.EventModel,
+		Model:            model,
+		Provider:         prov.Name(),
+		ReasoningEffort:  sess.built.Agent.ReasoningEffort(),
+		ReasoningEfforts: levelNames,
+	})
+	return nil
 }
 
 // beginTurn records a turn's cancel and completion channel under the session
@@ -911,7 +1495,25 @@ func (sess *Session) beginRetryTurn(cancel context.CancelFunc) (chan struct{}, b
 func (sess *Session) endTurn() {
 	sess.mu.Lock()
 	sess.running = false
+	var next *queuedInput
+	var ctx context.Context
+	var cancel context.CancelFunc
+	var done chan struct{}
+	if !sess.closing && len(sess.queued) > 0 {
+		item := sess.queued[0]
+		sess.queued = sess.queued[1:]
+		copyItem := item
+		next = &copyItem
+		ctx, cancel = context.WithCancel(context.Background())
+		done = make(chan struct{})
+		sess.running = true
+		sess.cancel, sess.turnDone = cancel, done
+		sess.requestID = item.requestID
+	}
 	sess.mu.Unlock()
+	if next != nil {
+		sess.launchTurn(next.text, next.images, ctx, cancel, done)
+	}
 }
 
 // cancelTurn stops the current turn, if there is one.
@@ -938,6 +1540,7 @@ func (sess *Session) Interrupt(text string, urgent bool) {
 // handle serves one client connection.
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+	s.touch()
 
 	enc := json.NewEncoder(conn)
 	var (
@@ -958,6 +1561,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 	}
 	defer func() {
+		s.touch()
 		stopRelay()
 		close(done)
 		if sess != nil && sub != nil {
@@ -978,6 +1582,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		for {
 			select {
 			case msg := <-out:
+				if msg.Version == 0 {
+					msg.Version = ProtocolVersion
+				}
 				if err := enc.Encode(msg); err != nil {
 					drop()
 					return
@@ -1002,18 +1609,33 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
+		s.touch()
 		var msg ClientMsg
 		if err := json.Unmarshal(sc.Bytes(), &msg); err != nil {
 			send(ServerMsg{Kind: MsgError, Err: "malformed frame: " + err.Error()})
 			continue
 		}
+		if msg.Version != 0 && msg.Version != ProtocolVersion {
+			send(ServerMsg{Kind: MsgError, Err: fmt.Sprintf(
+				"unsupported client protocol version %d (want %d)", msg.Version, ProtocolVersion)})
+			continue
+		}
 
 		switch msg.Kind {
+		case MsgStatus:
+			send(ServerMsg{Kind: MsgStatus, Status: s.Status()})
+
+		case MsgStop:
+			send(ServerMsg{Kind: MsgStatus, Status: s.Status()})
+			go s.Close()
+
 		case MsgList:
 			send(ServerMsg{Kind: MsgSessions, Sessions: s.Sessions()})
 
 		case MsgAttach:
-			opened, err := s.Open(msg.Session)
+			opened, err := s.OpenWithOptions(msg.Session, OpenOptions{
+				Cwd: msg.Cwd, Model: msg.Model, NoTools: msg.NoTools,
+			})
 			if err != nil {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 				continue
@@ -1026,7 +1648,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			// Subscribe before replaying, so an event arriving mid-replay is
 			// queued rather than dropped into the gap between the two.
 			sub = sess.subscribe()
-			send(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot(s.Cwd)})
+			send(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot()})
 			// A fresh attach replays only the turn in flight: the snapshot
 			// already holds every completed message, so replaying their deltas
 			// too would draw the conversation twice. A reconnecting client
@@ -1057,7 +1679,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: "input before attach"})
 				continue
 			}
-			sess.Input(msg.Text)
+			sess.InputRequest(msg.RequestID, msg.Text, msg.Images)
 
 		case MsgInterrupt:
 			if sess == nil {
@@ -1065,6 +1687,33 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				continue
 			}
 			sess.Interrupt(msg.Text, msg.Urgent)
+
+		case MsgAnswer:
+			if sess == nil || sess.asks == nil {
+				send(ServerMsg{Kind: MsgError, Err: "answer before attach"})
+				continue
+			}
+			if err := sess.asks.Answer(msg.RequestID, msg.Answers); err != nil {
+				send(ServerMsg{Kind: MsgError, Err: err.Error()})
+			}
+
+		case MsgModel:
+			if sess == nil {
+				send(ServerMsg{Kind: MsgError, Err: "model switch before attach"})
+				continue
+			}
+			if err := sess.SetModel(msg.Model); err != nil {
+				send(ServerMsg{Kind: MsgError, Err: err.Error()})
+			}
+
+		case MsgCommand:
+			if sess == nil {
+				send(ServerMsg{Kind: MsgError, Err: "command before attach"})
+				continue
+			}
+			if err := sess.Command(msg.Text, msg.Arg, msg.Secret); err != nil {
+				send(ServerMsg{Kind: MsgError, Err: err.Error()})
+			}
 
 		case MsgReasoningEffort:
 			if sess == nil {
@@ -1087,6 +1736,10 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			}
 			s.Cfg.ReasoningEfforts[ref] = string(effort)
 			s.mu.Unlock()
+			sess.publishEvent(agent.Event{
+				Kind:            agent.EventReasoningEffort,
+				ReasoningEffort: effort,
+			})
 
 		case MsgSpawn:
 			// Attributed to the attached session, not spawned free-floating:

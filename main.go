@@ -23,7 +23,7 @@ usage: evilcode [subcommand] [flags]
 
 subcommands:
   tui        interactive terminal UI (default when no subcommand is given)
-  run        headless one-shot: evilcode run "prompt"
+  run        submit a headless prompt to the background server
   serve      background daemon hosting sessions
   attach     attach a TUI to a running daemon session
   resume     import and resume a Claude, Codex, or OpenCode session

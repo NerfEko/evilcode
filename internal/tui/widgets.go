@@ -234,6 +234,7 @@ func (r *Renderer) GitStatusWidget(branch string, staged, unstaged, untracked in
 
 // BackgroundTask is one entry in the background-task widget.
 type BackgroundTask struct {
+	ID       int
 	Label    string
 	Done     bool
 	Err      bool

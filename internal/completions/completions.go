@@ -24,9 +24,9 @@ var Subcommands = []string{
 // shell pressing Tab.
 var Flags = map[string][]string{
 	"tui":    {"-m", "-resume"},
-	"run":    {"-m", "-q", "-resume", "-no-tools", "-remote", "-socket"},
-	"serve":  {"-m", "-q", "-socket"},
-	"attach": {"-l", "-socket"},
+	"run":    {"-m", "-q", "-resume", "-no-tools", "-remote", "-wait", "-local", "-socket"},
+	"serve":  {"-m", "-q", "-socket", "-idle", "-status", "-stop"},
+	"attach": {"-l", "-m", "-resume", "-socket"},
 	"probe":  {"-size"},
 }
 

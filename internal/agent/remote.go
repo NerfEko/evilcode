@@ -19,6 +19,9 @@ import "context"
 // keep working, and a parallel implementation of all of that would drift.
 type Remote func(ctx context.Context, userInput string) error
 
+// RemoteImages is the image-aware form of Remote.
+type RemoteImages func(ctx context.Context, userInput string, images [][]byte) error
+
 // Inject pushes an event into the stream as though the loop had produced it.
 //
 // This is how a remote session's events reach the frontend. It is deliberately

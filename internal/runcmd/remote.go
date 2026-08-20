@@ -1,9 +1,11 @@
 package runcmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/daemon"
@@ -14,26 +16,31 @@ import (
 //
 // It prints the same thing a local run does, because it is watching the same
 // event stream — the socket only changes where the loop happens to live.
-func runRemote(socket, session, prompt string, quiet bool) (int, error) {
+func runRemote(socket, session, model, prompt string, quiet, noTools bool) (int, error) {
 	path := socket
 	if path == "" {
 		path = daemon.SocketPath()
 	}
-	client, err := daemon.DialPath(path)
+	client, err := daemon.EnsureRunningPath(context.Background(), path)
 	if err != nil {
 		return ExitError, err
 	}
 	defer client.Close()
 
-	snap, err := client.Attach(session, 0)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ExitError, err
+	}
+	snap, err := client.AttachWithOptions(session, 0, cwd, model, noTools)
 	if err != nil {
 		return ExitError, err
 	}
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "submitted into %s on %s\n", snap.Session, path)
 	}
+	requestID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	if err := client.Send(daemon.ClientMsg{
-		Kind: daemon.MsgInput, Session: snap.Session, Text: prompt,
+		Kind: daemon.MsgInput, Session: snap.Session, Text: prompt, RequestID: requestID,
 	}); err != nil {
 		return ExitError, err
 	}
@@ -59,6 +66,9 @@ func runRemote(socket, session, prompt string, quiet bool) (int, error) {
 				continue
 			}
 			if msg.Event.Kind == agent.EventTurnStart {
+				if msg.Event.RequestID != requestID {
+					continue
+				}
 				started = true
 				continue
 			}
@@ -72,4 +82,36 @@ func runRemote(socket, session, prompt string, quiet bool) (int, error) {
 			}
 		}
 	}
+}
+
+// submitRemote sends a prompt and closes the client immediately. The daemon
+// keeps the session, tool calls, pending questions, and eventual answer alive
+// after this process exits; a later `evilcode` attaches to the same session.
+func submitRemote(socket, session, model, prompt string, quiet, noTools bool) (int, error) {
+	path := socket
+	if path == "" {
+		path = daemon.SocketPath()
+	}
+	client, err := daemon.EnsureRunningPath(context.Background(), path)
+	if err != nil {
+		return ExitError, err
+	}
+	defer client.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ExitError, err
+	}
+	snap, err := client.AttachWithOptions(session, 0, cwd, model, noTools)
+	if err != nil {
+		return ExitError, err
+	}
+	if err := client.Send(daemon.ClientMsg{
+		Kind: daemon.MsgInput, Session: snap.Session, Text: prompt,
+	}); err != nil {
+		return ExitError, err
+	}
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "submitted into %s on %s\n", snap.Session, path)
+	}
+	return ExitOK, nil
 }

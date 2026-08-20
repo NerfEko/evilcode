@@ -38,6 +38,7 @@ func (r *Ring) Add(e agent.Event) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
+	e.Seq = r.seq
 	r.buf[r.next] = e
 	r.seqs[r.next] = r.seq
 	r.next = (r.next + 1) % len(r.buf)

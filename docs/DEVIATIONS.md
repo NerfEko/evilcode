@@ -532,3 +532,36 @@ comparing only `tuicmd.Version` to the release tag means a dev build carrying
 the default `v0.1.0` reports "already up to date" against the real v0.1.0
 release; a separate build-stamp (e.g. a release commit SHA) would let `update`
 distinguish a dev build from the matching release.
+
+## 2026-08-20 — daemon lifetime versus durable session lifetime
+
+**Goal:** closing a TUI window must not stop an agent, lose queued work, hide a pending
+question, terminate a background command, or reset an unattended loop. Multiple clients
+must be able to reconnect to the same live session.
+
+**Built:** the daemon is now the owner of live agents, providers, tools, MCP clients,
+background tasks, pending asks, overnight state, and swarm coordination. A TUI owns only
+its socket connection and display mirror. The JSONL session log remains durable and
+records conversation messages, model metadata, and the session's original workspace.
+Attach sends a snapshot and the relevant event tail; the daemon broadcasts later events
+to every client. The ordinary headless `run` path submits and exits, while `run --wait`
+streams a daemon-owned turn.
+
+**Boundary:** the window-close guarantee is complete, but an unexpected daemon process
+crash cannot resume an in-flight provider request, an in-memory background-task registry,
+an unanswered ask, or the overnight counters halfway through their current turn. Already
+flushed transcript and metadata remain resumable. The daemon is detached from its
+launching terminal, not a reboot-proof system service.
+
+**When this would need revisiting:** journal runtime jobs and pending asks, or hand the
+daemon to a supervisor, if process-crash or machine-reboot continuation becomes a
+requirement rather than TUI-disconnect continuation.
+
+## 2026-08-20 — supersede the historical attachment-persistence note
+
+The older §14 entry says attachments are never persisted. That was true for the first
+vision implementation, but is no longer the current behavior: later J1.1/J6 work moved
+image bytes into content-addressed sidecar blobs referenced by session messages. Images
+therefore survive native session resume and daemon attach without being placed inline in
+the JSONL record. The old entry remains in place as historical provenance because this
+file is append-only; this entry is the current statement.

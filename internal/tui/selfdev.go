@@ -97,6 +97,11 @@ func trimOutput(out []byte) string {
 // the keyboard.
 func (m *Model) reloadCommand() tea.Cmd {
 	if m.store == nil {
+		if m.remoteCommand != nil && m.header.SessionName != "" {
+			return tea.Sequence(tea.Quit, func() tea.Msg {
+				return reloadRequest{session: m.header.SessionName}
+			})
+		}
 		m.notice = "no session to resume across a reload"
 		return nil
 	}

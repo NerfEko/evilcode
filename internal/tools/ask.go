@@ -16,6 +16,8 @@ type AskOption struct {
 
 // AskRequest is a pending question for the user.
 type AskRequest struct {
+	// ID is set by a remote runtime. Local TUI requests leave it empty.
+	ID       string
 	Question string
 	Options  []AskOption
 	Multi    bool
