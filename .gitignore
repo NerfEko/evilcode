@@ -4,3 +4,12 @@ probe/frames/
 shots/
 *.png
 !testdata/**/*.png
+
+# Dev-process logs and scratch notes: kept locally, not shipped with the repo.
+DEVIATIONS.md
+LOOPS.md
+planfiles.md
+lazy.md
+new.md
+looks.md
+lorem.md
