@@ -88,6 +88,15 @@ func TestToolHoverUsesJaggedUnderline(t *testing.T) {
 	}
 }
 
+func TestViewEnablesUnpressedMouseMotionForHover(t *testing.T) {
+	m := clickModel([]Block{{
+		Kind: BlockTool, ToolName: "read", ToolTarget: "main.go", ToolPath: "main.go",
+	}}, t.TempDir())
+	if got := m.View().MouseMode; got != tea.MouseModeAllMotion {
+		t.Fatalf("mouse mode = %v, want all-motion hover events", got)
+	}
+}
+
 func TestShellCommandForClipboardDropsCommentsAndTrailingWhitespace(t *testing.T) {
 	source := "  # section note\n" +
 		"sudo -ll                 # more verbose list\n" +

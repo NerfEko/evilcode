@@ -4489,9 +4489,10 @@ func (m *Model) View() tea.View {
 	v := tea.NewView(frame)
 	// These are view properties in Bubble Tea v2, not program options.
 	v.AltScreen = true
-	// Cell motion is enough for hover hit-testing and the wheel, and is better
-	// supported than all motion, which would flood the loop with every pixel.
-	v.MouseMode = tea.MouseModeCellMotion
+	// Hover affordances need motion events even when no button is pressed.
+	// All-motion still reports cell coordinates (not pixel noise), and the
+	// update path is a no-op while the pointer remains over the same target.
+	v.MouseMode = tea.MouseModeAllMotion
 	// Shift+Enter needs the kitty keyboard protocol to be distinguishable from
 	// a plain Enter. Terminals without it fall back to Alt+Enter or the
 	// trailing backslash (plan.md §6.2).
