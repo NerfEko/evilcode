@@ -6,7 +6,7 @@ captures each frame twice: plain text for goldens, ANSI for PNGs. For daemon-bac
 scenarios the server runs outside tmux; the pane is only an attach client, which is
 the same process boundary a user gets when a terminal closes and reconnects.
 
-    go build -o evilcode ./
+    go build -o evilcode ./cmd/evilcode
     probe/probe.sh boot                 # 140x40 pane, deterministic mode
     probe/probe.sh keys "/help" Enter   # tmux send-keys syntax
     probe/probe.sh frame welcome        # -> frames/welcome.{txt,ansi}

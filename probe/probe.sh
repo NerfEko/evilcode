@@ -10,7 +10,7 @@
 #   probe.sh png <name> [size] capture, then render probe/frames/<name>.png
 #   probe.sh kill              tear the session down
 #
-# The binary is built by the caller: go build -o evilcode ./
+# The binary is built by the caller: go build -o evilcode ./cmd/evilcode
 
 set -euo pipefail
 
@@ -96,7 +96,7 @@ reset_fixtures() {
 
 cmd_boot() {
     [[ -x "$BIN" ]] || {
-        echo "probe: $BIN missing; run: go build -o evilcode ./" >&2
+        echo "probe: $BIN missing; run: go build -o evilcode ./cmd/evilcode" >&2
         exit 1
     }
     cmd_kill

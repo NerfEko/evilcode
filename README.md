@@ -65,7 +65,7 @@ You need Go 1.26 or newer:
 ```sh
 git clone https://git.evileko.dev/evileko/evilcode
 cd evilcode
-go build -o evilcode ./
+go build -o evilcode ./cmd/evilcode
 ln -sf "$PWD/evilcode" ~/.local/bin/evilcode
 ln -sf "$PWD/evilcode" ~/.local/bin/ec
 ```
@@ -257,7 +257,7 @@ go vet ./...
 The probe rig can exercise a real binary in a tmux pane and capture PNG frames:
 
 ```sh
-go build -o evilcode ./
+go build -o evilcode ./cmd/evilcode
 go test -tags probe ./probe/...
 probe/probe.sh boot
 probe/probe.sh keys "/help" Enter
@@ -268,6 +268,7 @@ probe/probe.sh kill
 ## Project layout
 
 ```text
+cmd/evilcode        executable entrypoint and updater
 internal/agent       model loop, events, and hooks
 internal/tui         terminal UI and attach mirror
 internal/attachcmd   socket client and remote TUI wiring

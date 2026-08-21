@@ -127,20 +127,21 @@ func TestUnknownShellIsNamedBack(t *testing.T) {
 func TestEverySubcommandInMainIsCompleted(t *testing.T) {
 	// The two lists drift the first time a subcommand is added, and the failure
 	// is silent: completion simply stops offering the new one.
-	src, err := os.ReadFile(filepath.Join("..", "..", "main.go"))
+	mainPath := filepath.Join("..", "..", "cmd", "evilcode", "main.go")
+	src, err := os.ReadFile(mainPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read %s: %v", mainPath, err)
 	}
 	text := string(src)
 	for _, sub := range Subcommands {
 		if !strings.Contains(text, `case "`+sub+`"`) {
-			t.Errorf("completions offer %q, which main.go does not handle", sub)
+			t.Errorf("completions offer %q, which cmd/evilcode/main.go does not handle", sub)
 		}
 	}
-	// And the reverse: anything main.go handles and a person would type.
+	// And the reverse: anything cmd/evilcode/main.go handles and a person would type.
 	for _, sub := range []string{"tui", "run", "serve", "attach", "resume", "update", "probe", "dictate", "completions", "help"} {
 		if !contains(Subcommands, sub) {
-			t.Errorf("main.go handles %q, which completions never offer", sub)
+			t.Errorf("cmd/evilcode/main.go handles %q, which completions never offer", sub)
 		}
 	}
 }

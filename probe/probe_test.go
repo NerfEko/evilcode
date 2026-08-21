@@ -7,7 +7,7 @@
 // It is behind the `probe` build tag because it needs tmux and a built binary,
 // which a plain `go test ./...` should not require:
 //
-//	go build -o evilcode ./
+//	go build -o evilcode ./cmd/evilcode
 //	go test -tags probe ./probe/...
 //	UPDATE_GOLDENS=1 go test -tags probe ./probe/...
 package probe
@@ -72,7 +72,7 @@ func TestScenarios(t *testing.T) {
 		t.Skip("tmux not installed; probe scenarios need it")
 	}
 	if _, err := os.Stat(probeBinary(root)); err != nil {
-		t.Skip("no evilcode binary; run: go build -o evilcode ./ or set EVILCODE_BIN")
+		t.Skip("no evilcode binary; run: go build -o evilcode ./cmd/evilcode or set EVILCODE_BIN")
 	}
 
 	files, err := filepath.Glob(filepath.Join(root, "probe", "scenarios", "*.txt"))
