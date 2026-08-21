@@ -173,7 +173,11 @@ func (m *Model) startPageVisible() bool {
 
 // needsStartRefresh reports whether the start page should poll the roster now.
 func (m *Model) needsStartRefresh() bool {
-	return m.startPageVisible() && !m.startLoading &&
+	// Once the composer has text, the user has chosen a new prompt rather than
+	// browsing the resume menu. Pause roster I/O until the editor is empty again;
+	// reading and previewing a JSONL session on the typing path is avoidable
+	// latency, and a refresh cannot change anything the user can currently use.
+	return m.startPageVisible() && m.editor.Text == "" && !m.startLoading &&
 		time.Since(m.startLoadedAt) >= StartPageRefresh
 }
 

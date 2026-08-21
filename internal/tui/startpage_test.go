@@ -126,6 +126,16 @@ func TestStartPageRefreshDoesNotReactivateWhileTyping(t *testing.T) {
 	}
 }
 
+func TestStartPageRefreshPausesWhileTyping(t *testing.T) {
+	m := NewModel(nil, HeaderState{SessionName: "current", Model: "mock"})
+	m.startLoadedAt = time.Now().Add(-StartPageRefresh)
+	m.editor.Text = "typed prompt"
+
+	if m.needsStartRefresh() {
+		t.Fatal("start-page roster refresh stayed on the typing path")
+	}
+}
+
 func TestStartPageRenderCacheSurvivesComposerEdits(t *testing.T) {
 	m := NewModel(nil, HeaderState{SessionName: "current", Model: "mock"})
 	m.width, m.height = 90, 24
