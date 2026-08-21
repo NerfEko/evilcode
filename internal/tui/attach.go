@@ -80,6 +80,16 @@ var ClipboardImageCommands = [][]string{
 	{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"},
 }
 
+// ClipboardTextCommands are tried in order to write a command selected from a
+// shell code fence. They receive the command on stdin, never through a shell,
+// so quoting in a model-generated command cannot become a second command in
+// the clipboard helper itself.
+var ClipboardTextCommands = [][]string{
+	{"wl-copy", "--type", "text/plain"},
+	{"xclip", "-selection", "clipboard"},
+	{"xsel", "--clipboard", "--input"},
+}
+
 // ClipboardTimeout bounds one clipboard read. A clipboard tool that blocks —
 // waiting on a selection owner that never answers is the usual way — would
 // otherwise freeze the interface for as long as it felt like.
@@ -122,6 +132,71 @@ func readClipboardImage(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("no clipboard tool found — install wl-clipboard or xclip")
 	}
 	return nil, fmt.Errorf("no image on the clipboard")
+}
+
+// writeClipboardText writes text with an installed native clipboard helper.
+// It is bounded for the same reason image reads are: a clipboard process can
+// wait forever for a display or selection owner, and Update must stay live.
+func writeClipboardText(ctx context.Context, text string) error {
+	var tried []string
+	var lastErr error
+	for _, argv := range ClipboardTextCommands {
+		if len(argv) == 0 {
+			continue
+		}
+		if _, err := exec.LookPath(argv[0]); err != nil {
+			continue
+		}
+		tried = append(tried, argv[0])
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.WaitDelay = time.Second
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s did not answer within %s", argv[0], ClipboardWriteTimeout)
+		}
+	}
+	if len(tried) == 0 {
+		return fmt.Errorf("no clipboard tool found — install wl-clipboard, xclip, or xsel")
+	}
+	if lastErr != nil {
+		return fmt.Errorf("could not copy to the clipboard: %w", lastErr)
+	}
+	return fmt.Errorf("could not copy to the clipboard")
+}
+
+// ClipboardWriteTimeout bounds one clipboard write.
+const ClipboardWriteTimeout = 2 * time.Second
+
+// clipboardText carries a finished clipboard write back into the update loop.
+type clipboardText struct {
+	Err error
+}
+
+// clipboardTextWriter is a narrow seam for tests; production uses the native
+// helper above. Keeping the seam at the command boundary also makes it easy to
+// verify that a click never executes the command through a shell.
+var clipboardTextWriter = writeClipboardText
+
+func (m *Model) copyTextToClipboard(text string) tea.Cmd {
+	m.notice = "Copying command to clipboard…"
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), ClipboardWriteTimeout)
+		defer cancel()
+		return clipboardText{Err: clipboardTextWriter(ctx, text)}
+	}
+}
+
+func (m *Model) applyClipboardText(msg clipboardText) {
+	if msg.Err != nil {
+		m.notice = msg.Err.Error()
+		return
+	}
+	m.notice = "Command copied to clipboard"
 }
 
 // clipboardImage carries a finished clipboard read back into the update loop.

@@ -59,6 +59,25 @@ type transcriptHeightEntry struct {
 	height int
 }
 
+type hoverKind uint8
+
+const (
+	hoverNone hoverKind = iota
+	hoverReasoning
+	hoverTool
+	hoverShellCode
+)
+
+// hoverTarget is intentionally small and transient. A mouse motion only
+// repaints when this target changes, so terminals that report every cell move
+// do not turn hovering into a full transcript render loop.
+type hoverTarget struct {
+	valid   bool
+	block   int
+	kind    hoverKind
+	segment int
+}
+
 // Model is the bubbletea model.
 type Model struct {
 	agent    *agent.Agent
@@ -68,6 +87,11 @@ type Model struct {
 
 	blocks []Block
 	scroll Scroll
+
+	// hover is the currently actionable transcript text under the mouse. The
+	// block itself stays unchanged; transcriptLines paints a transient clone so
+	// settled block caches remain useful when the pointer leaves.
+	hover hoverTarget
 
 	// transcriptCache is the assembled current-width transcript. A tick changes
 	// status widgets, not settled history, so retaining this one frame-sized
@@ -236,11 +260,6 @@ type Model struct {
 
 	// typingLock keeps the view where it is while typing (Alt+S, §4.5).
 	typingLock bool
-
-	// selectionMode turns off mouse tracking so the terminal's native
-	// highlight-and-copy takes over the screen (Alt+O). The app's click/wheel
-	// handlers are inert while it is on; Esc or Alt+O leaves the mode.
-	selectionMode bool
 
 	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
 	entryAnim EntryAnimation
@@ -1001,6 +1020,12 @@ func (r rawFlush) String() string {
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, motion := msg.(tea.MouseMotionMsg); !motion {
+		// Hover paint is only meaningful while the pointer is stationary over
+		// the transcript. Any other event can change the layout underneath it;
+		// clear the transient affordance before handling that event.
+		m.clearHover()
+	}
 	// Most key/paste/mouse messages only change the composer or viewport. They
 	// still trigger a frame, but rebuilding a settled transcript for every
 	// character typed is exactly the long-session input lag users feel. Keep the
@@ -1026,6 +1051,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clipboardImage:
 		m.applyClipboardImage(msg)
+		return m, nil
+
+	case clipboardText:
+		m.applyClipboardText(msg)
 		return m, nil
 
 	case modelsLoaded:
@@ -1118,6 +1147,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dismissWidgetAt(mouse) {
 			return m, nil
 		}
+		if cmd := m.copyShellAt(mouse); cmd != nil {
+			return m, cmd
+		}
 		// A click on a finished thinking trace toggles it open or shut (§9.7).
 		// Reasoning and tool blocks are disjoint by row, so this and the tool
 		// quick-view below never both apply to one click; the early return just
@@ -1126,6 +1158,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.openQuickViewAt(mouse)
+
+	case tea.MouseMotionMsg:
+		m.updateHover(msg.Mouse())
 
 	case tea.MouseWheelMsg:
 		return m.handleWheel(msg)
@@ -1705,25 +1740,6 @@ func (m *Model) flushPending() {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-	// Selection mode is modal: the terminal owns the mouse for native text
-	// selection, so the only keys that do anything are the ones that leave the
-	// mode. Everything else is swallowed so a keystroke does not edit the
-	// composer while the user is dragging to select.
-	if m.selectionMode {
-		if key == "esc" {
-			m.selectionMode = false
-			m.notice = "Selection mode off — mouse tracking restored"
-			return m, nil
-		}
-		if m.keymap != nil {
-			if b, ok := m.keymap.Lookup(key); ok && b.Action == ActionSelectionMode {
-				m.selectionMode = false
-				m.notice = "Selection mode off — mouse tracking restored"
-				return m, nil
-			}
-		}
-		return m, nil
-	}
 	if m.loginMode {
 		return m.handleLoginKey(key, msg)
 	}
@@ -2238,13 +2254,6 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 		m.notice = "Thinking display: " + string(m.thinking)
 	case ActionReasoningEffort:
 		m.cycleReasoningEffort()
-	case ActionSelectionMode:
-		m.selectionMode = !m.selectionMode
-		if m.selectionMode {
-			m.notice = "Selection mode: highlight with the mouse and copy with your terminal — Esc to exit"
-		} else {
-			m.notice = "Selection mode off — mouse tracking restored"
-		}
 	case ActionRetrievePending:
 		return m.retrievePending()
 	default:
@@ -3882,7 +3891,22 @@ func (m *Model) transcriptLines() Rows {
 	addChrome(m.renderer.RenderHeader(m.header))
 	addChrome([]string{""})
 	for i := range m.blocks {
-		lines := m.renderer.Lines(&m.blocks[i])
+		block := &m.blocks[i]
+		var lines []string
+		if m.hover.valid && m.hover.block == i {
+			// Do not poison the settled block cache with transient mouse state.
+			// The hovered block is one small copy; every other block keeps its
+			// normal cached render.
+			hovered := *block
+			hovered.Hovered = true
+			hovered.HoverCodeSegment = -1
+			if m.hover.kind == hoverShellCode {
+				hovered.HoverCodeSegment = m.hover.segment
+			}
+			lines = m.renderer.Lines(&hovered)
+		} else {
+			lines = m.renderer.Lines(block)
+		}
 		if animating && i == m.entryAnim.Block {
 			lines = m.renderer.animateEntry(lines, animT)
 		}
@@ -4441,11 +4465,6 @@ func (m *Model) View() tea.View {
 
 	rows = m.debugOverlay(rows, res.Transcript)
 
-	// Selection mode overlays a banner on the top row and, by itself, does not
-	// touch the transcript cache — but it does change what the frame shows, so
-	// it is applied here on the finished rows.
-	rows = m.selectionBanner(rows)
-
 	// The anchor recorder runs on the finished frame, so what it measures is
 	// exactly what the reader saw (plan.md §13).
 	// Only the transcript is measured. The composer and status line move down
@@ -4469,35 +4488,14 @@ func (m *Model) View() tea.View {
 	v := tea.NewView(frame)
 	// These are view properties in Bubble Tea v2, not program options.
 	v.AltScreen = true
-	// Cell motion is enough for the wheel and is better supported than all
-	// motion, which would flood the loop with movement events we ignore. In
-	// selection mode mouse tracking is off entirely so the terminal's native
-	// text highlight-and-copy takes over the screen.
-	if m.selectionMode {
-		v.MouseMode = tea.MouseModeNone
-	} else {
-		v.MouseMode = tea.MouseModeCellMotion
-	}
+	// Cell motion is enough for hover hit-testing and the wheel, and is better
+	// supported than all motion, which would flood the loop with every pixel.
+	v.MouseMode = tea.MouseModeCellMotion
 	// Shift+Enter needs the kitty keyboard protocol to be distinguishable from
 	// a plain Enter. Terminals without it fall back to Alt+Enter or the
 	// trailing backslash (plan.md §6.2).
 	v.KeyboardEnhancements = tea.KeyboardEnhancements{ReportAlternateKeys: true}
 	return v
-}
-
-// selectionBanner overlays a one-line mode indicator on the top row of the
-// frame while selection mode is on. Mouse tracking is off in this mode, so the
-// terminal's native highlight-and-copy takes over; the banner tells the user
-// how to leave. Replacing row 0 (the header) keeps the layout height fixed.
-func (m *Model) selectionBanner(rows []string) []string {
-	if !m.selectionMode || len(rows) == 0 {
-		return rows
-	}
-	st := m.renderer.style(theme.RoleAccent).Reverse(true).Bold(true)
-	msg := " Selection mode: highlight with the mouse, copy with your terminal — Esc to exit "
-	pad := max(m.width-lipgloss.Width(msg), 0)
-	rows[0] = st.Render(msg + strings.Repeat(" ", pad))
-	return rows
 }
 
 // overlayHistory splices the reverse search over the finished frame. It is
@@ -5233,25 +5231,159 @@ func (m *Model) dismissWidgetAt(mouse tea.Mouse) bool {
 // View uses. Rows.Owner is the source of truth; re-rendering or guessing from
 // block heights would drift as wrapping, scrolling, and slack change.
 func (m *Model) transcriptBlockAt(mouse tea.Mouse) int {
+	_, _, owner := m.transcriptLineAt(mouse)
+	return owner
+}
+
+// transcriptLineAt returns the rendered transcript, its absolute line, and
+// the owning block for a screen coordinate. The line is in transcript space,
+// while mouse.Y is in the visible window; keeping the conversion in one place
+// makes click and hover hit-testing agree even with slack and scrolling.
+func (m *Model) transcriptLineAt(mouse tea.Mouse) (Rows, int, int) {
 	_, pad := ContentWidth(m.width, m.centered)
 	x := mouse.X - pad
 	chat, _ := Horizontal{
 		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.sidePaneOpen(),
 	}.Split()
 	if x < 0 || x >= chat || (m.scrollbarOn && x >= chat-ScrollbarReserve) || mouse.Y < 0 {
-		return -1
+		return Rows{}, -1, -1
 	}
 
 	rows := m.transcriptLines()
 	res := m.stackFor(len(rows.Lines)).Resolve()
 	if mouse.Y >= res.Transcript {
-		return -1
+		return rows, -1, -1
 	}
 	start := clamp(len(rows.Lines)+m.scroll.Slack()-res.Transcript-m.scroll.Offset,
 		0, len(rows.Lines))
 	line := start + mouse.Y
 	if line < 0 || line >= len(rows.Owner) {
+		return rows, -1, -1
+	}
+	return rows, line, rows.Owner[line]
+}
+
+func shellLanguage(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "bash", "fish":
+		return true
+	default:
+		return false
+	}
+}
+
+// codeBlockLineCount mirrors renderCodeBlock's chrome without doing syntax
+// highlighting. It is used on mouse motion, where doing a full highlight just
+// to find the fence under one cell would make pointer movement expensive.
+func codeBlockLineCount(seg Segment) int {
+	body := strings.Split(seg.Text, "\n")
+	for len(body) > 0 && strings.TrimSpace(body[len(body)-1]) == "" {
+		body = body[:len(body)-1]
+	}
+	count := 2 + len(body) // header, body, footer
+	if seg.Open {
+		count++ // live cursor row
+	}
+	return count
+}
+
+// shellSegmentAtLine identifies the fenced bash/fish segment containing a
+// rendered assistant row. Plan cards are a separate layout surface; their
+// internal rows are not shell fences and therefore are intentionally skipped.
+func (m *Model) shellSegmentAtLine(b *Block, line int) int {
+	if line < 0 || len(FindPlanSegments(b.Text)) > 0 {
 		return -1
 	}
-	return rows.Owner[line]
+	offset := 0
+	for i, seg := range SplitSegments(b.Text) {
+		var count int
+		if seg.Code {
+			if seg.Lang == "mermaid" && !seg.Open {
+				count = codeBlockLineCount(seg) + 1 // source plus mermaid hint
+			} else {
+				count = codeBlockLineCount(seg)
+			}
+			if shellLanguage(seg.Lang) && strings.TrimSpace(seg.Text) != "" &&
+				line >= offset && line < offset+count {
+				return i
+			}
+		} else {
+			rendered := m.renderer.Markdown.Render(seg.Text, !b.Streaming)
+			count = len(strings.Split(rendered, "\n"))
+		}
+		offset += count
+	}
+	return -1
+}
+
+func (m *Model) hoverAt(mouse tea.Mouse) hoverTarget {
+	// A docked widget owns its cells. Do not advertise a transcript action
+	// through a box that would consume the click itself.
+	if m.widgetsOn && m.dock != nil && len(m.placements) > 0 {
+		_, pad := ContentWidth(m.width, m.centered)
+		if _, ok := m.dock.Hit(m.placements, mouse.X-pad, mouse.Y); ok {
+			return hoverTarget{}
+		}
+	}
+	rows, line, idx := m.transcriptLineAt(mouse)
+	if idx < 0 || idx >= len(m.blocks) || idx >= len(rows.First) || rows.First[idx] < 0 {
+		return hoverTarget{}
+	}
+	relative := line - int(rows.First[idx])
+	b := &m.blocks[idx]
+	switch b.Kind {
+	case BlockReasoning:
+		if !b.Streaming {
+			return hoverTarget{valid: true, block: idx, kind: hoverReasoning}
+		}
+	case BlockTool:
+		switch strings.ToLower(b.ToolName) {
+		case "read", "write", "edit", "multiedit", "bash":
+			return hoverTarget{valid: true, block: idx, kind: hoverTool}
+		}
+	case BlockAssistant:
+		if segment := m.shellSegmentAtLine(b, relative); segment >= 0 {
+			return hoverTarget{valid: true, block: idx, kind: hoverShellCode, segment: segment}
+		}
+	}
+	return hoverTarget{}
+}
+
+func (m *Model) updateHover(mouse tea.Mouse) bool {
+	want := m.hoverAt(mouse)
+	if want == m.hover {
+		return false
+	}
+	m.hover = want
+	m.invalidateTranscriptCache()
+	return true
+}
+
+func (m *Model) clearHover() {
+	if !m.hover.valid {
+		return
+	}
+	m.hover = hoverTarget{}
+	m.invalidateTranscriptCache()
+}
+
+// copyShellAt returns a command for a bash/fish fence click, or nil when the
+// coordinate is not an actionable shell block. The clipboard write itself is
+// deliberately asynchronous so a clipboard owner that stalls cannot freeze
+// the event loop.
+func (m *Model) copyShellAt(mouse tea.Mouse) tea.Cmd {
+	target := m.hoverAt(mouse)
+	if !target.valid || target.kind != hoverShellCode ||
+		target.block < 0 || target.block >= len(m.blocks) {
+		return nil
+	}
+	segments := SplitSegments(m.blocks[target.block].Text)
+	if target.segment < 0 || target.segment >= len(segments) {
+		return nil
+	}
+	command := strings.Trim(core.SanitizeTerminal(segments[target.segment].Text), "\r\n")
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	return m.copyTextToClipboard(command)
 }

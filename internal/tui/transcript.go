@@ -92,6 +92,13 @@ type Block struct {
 	// the transcript — the text is retained so a future expand can restore it.
 	Collapsed bool
 
+	// Hovered and HoverCodeSegment are transient paint state. The model supplies
+	// them for the block under the mouse; they are not persisted with a session.
+	// Keeping the state on the block lets the normal renderer add hover
+	// affordances without a second transcript rendering path.
+	Hovered          bool
+	HoverCodeSegment int
+
 	// cache holds rendered lines for up to two wrap widths: the one the
 	// transcript is laid out at, and the one the scrollbar hysteresis probes
 	// every frame (contentHeightAtWidth). With a single slot the probe evicted
@@ -157,6 +164,8 @@ type blockCacheKey struct {
 	imagePath                                                          string
 	imageCols, imageRows, imageID                                      int
 	imageBytes                                                         int
+	hovered                                                            bool
+	hoverCodeSegment                                                   int
 }
 
 // Rows is a rendered transcript plus the provenance of every line. Owner[i] is
@@ -239,6 +248,21 @@ func rgbStyle(r, g, b uint8) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(r, g, b))))
 }
 
+// jaggedUnderline uses the terminal's extended underline SGR. 4:3 is the
+// curly/wavy variant supported by modern terminals; unlike a plain underline
+// it reads as a hover affordance without competing with the normal link color.
+func jaggedUnderline(s string) string {
+	if s == "" {
+		return s
+	}
+	// Syntax highlighting and lipgloss styles reset SGR between colored runs.
+	// Re-arm the underline after those resets so a multi-token command stays
+	// wavy from its first character to its last.
+	s = strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m\x1b[4:3m")
+	s = strings.ReplaceAll(s, "\x1b[m", "\x1b[m\x1b[4:3m")
+	return "\x1b[4:3m" + s + "\x1b[24m"
+}
+
 // Lines renders a block, using its settled cache when the width has not
 // changed and a short-lived paint cache for a live streaming tail.
 func (r *Renderer) Lines(b *Block) []string {
@@ -298,6 +322,7 @@ func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
 		toolDetails: r.ToolDetails, diffMode: r.DiffMode,
 		imagePath: b.Image.Path, imageCols: b.Image.Cols, imageRows: b.Image.Rows,
 		imageID: b.Image.ID, imageBytes: len(b.Image.PNG),
+		hovered: b.Hovered, hoverCodeSegment: b.HoverCodeSegment,
 	}
 }
 
@@ -442,20 +467,28 @@ func (r *Renderer) renderWithPlanCards(b *Block, plans []PlanSegment) []string {
 	cursor := 0
 	for _, p := range plans {
 		if before := b.Text[cursor:p.Start]; strings.TrimSpace(before) != "" {
-			out = append(out, r.renderProse(b, before)...)
+			out = append(out, r.renderProseAt(b, before, len(SplitSegments(b.Text[:cursor])))...)
 		}
 		out = append(out, r.RenderPlanCard(p)...)
 		cursor = p.End
 	}
 	if after := b.Text[cursor:]; strings.TrimSpace(after) != "" {
-		out = append(out, r.renderProse(b, after)...)
+		out = append(out, r.renderProseAt(b, after, len(SplitSegments(b.Text[:cursor])))...)
 	}
 	return out
 }
 
 func (r *Renderer) renderProse(b *Block, text string) []string {
+	return r.renderProseAt(b, text, 0)
+}
+
+// renderProseAt is renderProse with the segment number in the original
+// assistant message. Plan cards splice prose into several calls, so retaining
+// that offset keeps the hovered shell fence lined up with the block that was
+// actually painted.
+func (r *Renderer) renderProseAt(b *Block, text string, segmentBase int) []string {
 	var out []string
-	for _, seg := range SplitSegments(text) {
+	for i, seg := range SplitSegments(text) {
 		if seg.Code {
 			// A mermaid fence is a diagram, not code. With mmdc absent it comes
 			// back as its own source plus a line saying what would render it,
@@ -464,7 +497,8 @@ func (r *Renderer) renderProse(b *Block, text string) []string {
 				out = append(out, r.RenderMermaidSource(seg.Text)...)
 				continue
 			}
-			out = append(out, r.renderCodeBlock(seg)...)
+			hovered := b.Hovered && b.HoverCodeSegment == segmentBase+i
+			out = append(out, r.renderCodeBlock(seg, hovered)...)
 			continue
 		}
 		rendered := r.Markdown.Render(seg.Text, !b.Streaming)
@@ -478,7 +512,8 @@ func (r *Renderer) renderProse(b *Block, text string) []string {
 
 // renderCodeBlock draws the §9.2 chrome. It is always left-aligned, even in
 // centered mode, because code with a shifting left edge is unreadable.
-func (r *Renderer) renderCodeBlock(seg Segment) []string {
+func (r *Renderer) renderCodeBlock(seg Segment, hover ...bool) []string {
+	hovered := len(hover) > 0 && hover[0]
 	chrome := rgbStyle(0x64, 0x64, 0x64)
 
 	header := "┌─ " + seg.Lang
@@ -504,6 +539,9 @@ func (r *Renderer) renderCodeBlock(seg Segment) []string {
 		text := body[i]
 		if i < len(highlighted) {
 			text = highlighted[i]
+		}
+		if hovered && strings.TrimSpace(body[i]) != "" {
+			text = jaggedUnderline(text)
 		}
 		out = append(out, chrome.Render("│ ")+text)
 	}
@@ -535,9 +573,17 @@ func (r *Renderer) renderTool(b *Block) []string {
 	}
 
 	var b2 strings.Builder
-	b2.WriteString("  " + iconStyle.Render(icon) + " " + toolStyle.Render(b.ToolName))
+	toolName := toolStyle.Render(b.ToolName)
+	if b.Hovered {
+		toolName = jaggedUnderline(toolName)
+	}
+	b2.WriteString("  " + iconStyle.Render(icon) + " " + toolName)
 	if b.ToolTarget != "" {
-		b2.WriteString(" " + link.Render(b.ToolTarget))
+		target := link.Render(b.ToolTarget)
+		if b.Hovered {
+			target = jaggedUnderline(target)
+		}
+		b2.WriteString(" " + target)
 	}
 	if b.ToolIntent != "" {
 		b2.WriteString(dim.Render(" · ") + dim.Render(b.ToolIntent))
@@ -707,7 +753,11 @@ func (r *Renderer) renderReasoning(b *Block) []string {
 		if lines == 1 {
 			noun = "line"
 		}
-		return []string{"  " + style.Render(fmt.Sprintf("▸ thought (%d %s)", lines, noun))}
+		line := style.Render(fmt.Sprintf("▸ thought (%d %s)", lines, noun))
+		if b.Hovered {
+			line = jaggedUnderline(line)
+		}
+		return []string{"  " + line}
 	}
 
 	// TrimRight, or a trace ending in a newline spends one of its few rows on
@@ -716,7 +766,11 @@ func (r *Renderer) renderReasoning(b *Block) []string {
 	if !b.Streaming {
 		out := make([]string, 0, len(wrapped))
 		for _, line := range wrapped {
-			out = append(out, "  "+style.Render(line))
+			line = style.Render(line)
+			if b.Hovered {
+				line = jaggedUnderline(line)
+			}
+			out = append(out, "  "+line)
 		}
 		return out
 	}
@@ -729,11 +783,19 @@ func (r *Renderer) renderReasoning(b *Block) []string {
 	if hidden := len(wrapped) - window; hidden > 0 {
 		// Say how much scrolled past rather than silently dropping it, or a
 		// truncated trace reads as a model that thought very little.
-		out = append(out, "  "+style.Render(fmt.Sprintf("⋯ %d earlier lines", hidden)))
+		line := style.Render(fmt.Sprintf("⋯ %d earlier lines", hidden))
+		if b.Hovered {
+			line = jaggedUnderline(line)
+		}
+		out = append(out, "  "+line)
 		wrapped = wrapped[len(wrapped)-window:]
 	}
 	for _, line := range wrapped {
-		out = append(out, "  "+style.Render(line))
+		line = style.Render(line)
+		if b.Hovered {
+			line = jaggedUnderline(line)
+		}
+		out = append(out, "  "+line)
 	}
 	return out
 }
