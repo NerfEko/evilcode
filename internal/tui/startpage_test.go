@@ -158,6 +158,29 @@ func TestStartPageRenderCacheSurvivesComposerEdits(t *testing.T) {
 	}
 }
 
+func TestStartPageWaveUpdatesWithoutRebuildingPreview(t *testing.T) {
+	m := NewModel(nil, HeaderState{SessionName: "current", Model: "mock"})
+	m.width, m.height = 90, 24
+	m.startRows = []SessionRow{{Info: session.Info{Name: "bat"}}}
+
+	m.View()
+	lines := m.startPageCache.Lines
+	wordmark := lines[0]
+	preview := lines[startPageWordmarkRows+1]
+	m.startWaveFrame = 1
+	m.View()
+
+	if &m.startPageCache.Lines[0] != &lines[0] {
+		t.Fatal("animating the wave rebuilt the cached start page")
+	}
+	if m.startPageCache.Lines[0] == wordmark {
+		t.Fatal("animating the wave did not update the wordmark")
+	}
+	if m.startPageCache.Lines[startPageWordmarkRows+1] != preview {
+		t.Fatal("animating the wave rebuilt the session preview")
+	}
+}
+
 // keyPressRight builds a right-arrow KeyPressMsg.
 func keyPressRight() tea.KeyPressMsg { return tea.KeyPressMsg{Code: tea.KeyRight} }
 

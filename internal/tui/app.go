@@ -121,6 +121,7 @@ type Model struct {
 	startPageCache      Rows
 	startPageCacheKey   startPageCacheKey
 	startPageCacheValid bool
+	startPageCacheWave  int
 	startPageVersion    uint64
 
 	// transcriptHeightCache stores the line count for the current and the
@@ -288,11 +289,12 @@ type Model struct {
 	// startPage holds the recent/active sessions offered on the empty-transcript
 	// start page, plus the arrow selection. startLoadedAt throttles the roster
 	// round trip so an idle start page does not poll the daemon every frame.
-	startRows     []SessionRow
-	startSelected int
-	startActive   bool
-	startLoadedAt time.Time
-	startLoading  bool
+	startRows      []SessionRow
+	startSelected  int
+	startActive    bool
+	startWaveFrame int
+	startLoadedAt  time.Time
+	startLoading   bool
 
 	// keymap resolves chords, and hotkeys drives the rare-chord and near-miss
 	// feedback of §6.8.
@@ -1108,6 +1110,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		if m.startPageVisible() && !Deterministic() {
+			m.startWaveFrame = (m.startWaveFrame + 1) % startPageWaveCycle
+		}
 		if m.processing {
 			// Deterministic mode has no wall-clock text (invariant 5). Without
 			// this a golden of any in-flight state — a running tool, a pending
@@ -3853,6 +3858,7 @@ func (m *Model) invalidateStartPageCache() {
 	m.startPageVersion++
 	m.startPageCache = Rows{}
 	m.startPageCacheValid = false
+	m.startPageCacheWave = 0
 }
 
 func (m *Model) renderStartPageRows(width, height int) Rows {
@@ -3864,9 +3870,14 @@ func (m *Model) renderStartPageRows(width, height int) Rows {
 		active:   m.startActive,
 	}
 	if m.startPageCacheValid && m.startPageCacheKey == key {
+		if m.startPageCacheWave != m.startWaveFrame && len(m.startPageCache.Lines) >= startPageWordmarkRows {
+			wordmark := m.renderer.startPageWordmark(width, m.startWaveFrame)
+			copy(m.startPageCache.Lines[:startPageWordmarkRows], wordmark)
+			m.startPageCacheWave = m.startWaveFrame
+		}
 		return m.startPageCache
 	}
-	lines := m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, width, height)
+	lines := m.renderer.renderStartPage(m.startRows, m.startSelected, m.startActive, width, height, m.startWaveFrame)
 	owner := make([]int, len(lines))
 	for i := range owner {
 		owner[i] = -1
@@ -3874,6 +3885,7 @@ func (m *Model) renderStartPageRows(width, height int) Rows {
 	m.startPageCache = Rows{Lines: lines, Owner: owner}
 	m.startPageCacheKey = key
 	m.startPageCacheValid = true
+	m.startPageCacheWave = m.startWaveFrame
 	return m.startPageCache
 }
 

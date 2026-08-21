@@ -156,12 +156,90 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 	return out
 }
 
-// WelcomeMessage is the one piece of flavor on the start page (§2.1).
+// WelcomeMessage is kept for compatibility with callers that used the old
+// start-page copy. The start page now renders the EvilCode wordmark instead.
 const WelcomeMessage = "Welcome to evilcode 🦇"
 
-// RenderStartPage draws the empty-transcript start page: a greeting, a live
-// preview of the selected session's conversation, and a horizontal row of
-// resume buttons you scroll through with ←/→.
+// evilCodeTitleGlyphs is a compact five-row block alphabet. It stays under
+// normal terminal widths while still reading as a real wordmark rather than a
+// plain heading. Each glyph is five cells wide so composing the title is cheap
+// and deterministic.
+var evilCodeTitleGlyphs = map[byte][5]string{
+	'E': {"#####", "#    ", "#### ", "#    ", "#####"},
+	'V': {"#   #", "#   #", "#   #", " # # ", "  #  "},
+	'I': {"#####", "  #  ", "  #  ", "  #  ", "#####"},
+	'L': {"#    ", "#    ", "#    ", "#    ", "#####"},
+	'C': {"#####", "#    ", "#    ", "#    ", "#####"},
+	'O': {" ### ", "#   #", "#   #", "#   #", " ### "},
+	'D': {"#### ", "#   #", "#   #", "#   #", "#### "},
+}
+
+const startPageWordmarkRows = 5
+
+const startPageWaveCycle = 32
+
+func evilCodeTitleLines(width int) []string {
+	const title = "EVILCODE"
+	lines := make([]string, startPageWordmarkRows)
+	for _, ch := range []byte(title) {
+		glyph := evilCodeTitleGlyphs[ch]
+		for row := range lines {
+			if lines[row] != "" {
+				lines[row] += " "
+			}
+			lines[row] += glyph[row]
+		}
+	}
+	for i, line := range lines {
+		lines[i] = centerStartPageLine(line, width)
+	}
+	return lines
+}
+
+func centerStartPageLine(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	if lipgloss.Width(line) > width {
+		return truncateCells(line, width)
+	}
+	return strings.Repeat(" ", (width-lipgloss.Width(line))/2) + line
+}
+
+func (r *Renderer) startPageWordmark(width, frame int) []string {
+	lines := evilCodeTitleLines(width)
+	mauve := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUser))).Bold(true)
+	white := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUserText))).Bold(true)
+	base := (frame*3 + width/2) % (width + 16)
+	rowOffsets := [...]int{-2, -1, 0, 1, 2}
+	for row, line := range lines {
+		var styled strings.Builder
+		for col, ch := range []rune(line) {
+			if ch == ' ' {
+				styled.WriteRune(ch)
+				continue
+			}
+			center := base - 8 + rowOffsets[row]
+			distance := col - center
+			if distance < 0 {
+				distance = -distance
+			}
+			if distance <= 1 {
+				styled.WriteString(white.Render(string(ch)))
+			} else {
+				styled.WriteString(mauve.Render(string(ch)))
+			}
+		}
+		lines[row] = styled.String()
+	}
+	return lines
+}
+
+// RenderStartPage draws the empty-transcript start page: an EvilCode wordmark,
+// a live preview of the selected session's conversation, and a horizontal row
+// of resume buttons you scroll through with ←/→.
 //
 // The eye/black-hole idle art and the rotating starter-prompt chips that used to
 // live here are gone — the start page is for either typing a new prompt or
@@ -172,38 +250,37 @@ const WelcomeMessage = "Welcome to evilcode 🦇"
 // suppressed while this is showing: an empty screen decorated with status boxes
 // is busier than the thing it decorates (plan.md §8.3).
 func (r *Renderer) RenderStartPage(rows []SessionRow, selected int, active bool, width, height int) []string {
-	accent := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
+	return r.renderStartPage(rows, selected, active, width, height, 0)
+}
+
+func (r *Renderer) renderStartPage(rows []SessionRow, selected int, active bool, width, height, waveFrame int) []string {
 	hint := r.style(theme.RoleDim)
+	title := r.startPageWordmark(width, waveFrame)
 
 	if len(rows) == 0 {
-		// Packed, not bottom-pinned: the greeting hugs the composer and the
+		// Packed, not bottom-pinned: the wordmark hugs the composer and the
 		// rows below stay blank. That blank space is where the slash palette
 		// floats when it opens — the overlay splices in below the composer
 		// instead of being forced above it and covering the status line, which
 		// is what bottom-pinning did (it broke the "palette never moves the
 		// transcript" invariant, plan.md §5.2). With sessions, the preview box
 		// fills the slot for real, so this only shapes the empty greeting.
-		return []string{
-			accent.Render(WelcomeMessage),
-			"",
-			hint.Render("  no other sessions yet — type below to start a new one"),
-		}
+		out := append([]string(nil), title...)
+		out = append(out, "", hint.Render("  no other sessions yet — type below to start a new one"))
+		return out
 	}
 
 	sel := clamp(selected, 0, len(rows)-1)
 
-	// Fixed chrome: greeting(1) + blank(1) + blank(1) + buttons(1) + hint(1).
-	const chrome = 5
+	// Fixed chrome: wordmark/wave + gap + blank + buttons + hint.
+	chrome := len(title) + 4
 	boxH := max(height-chrome, 6)
 	if boxH > height {
 		boxH = height
 	}
 
-	out := []string{
-		accent.Render(WelcomeMessage),
-		"",
-	}
+	out := append([]string(nil), title...)
+	out = append(out, "")
 	out = append(out, r.startPreviewBox(rows, sel, width, boxH)...)
 	out = append(out, "")
 	out = append(out, r.startPageButtonRow(rows, sel, active, width))

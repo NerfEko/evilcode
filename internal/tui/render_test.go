@@ -525,8 +525,11 @@ func TestStartPage(t *testing.T) {
 		{Info: session.Info{Name: "moth", Emoji: "🦋", Messages: 3, Modified: time.Now().Add(-10 * time.Minute)}},
 	}
 	joined := strings.Join(plainLines(r.RenderStartPage(rows, 0, true, 80, 20)), "\n")
-	if !strings.Contains(joined, WelcomeMessage) {
-		t.Errorf("start page missing its greeting:\n%s", joined)
+	if strings.Contains(joined, WelcomeMessage) {
+		t.Errorf("start page still renders the old welcome message:\n%s", joined)
+	}
+	if !strings.Contains(joined, "##### #   # #####") {
+		t.Errorf("start page missing the EvilCode ASCII wordmark:\n%s", joined)
 	}
 	// Every session appears as a horizontal button.
 	for _, n := range []string{"bat", "owl", "moth"} {
@@ -549,6 +552,22 @@ func TestStartPage(t *testing.T) {
 		if !strings.Contains(got, c.want) {
 			t.Errorf("selecting %d: start page missing %q:\n%s", c.sel, c.want, got)
 		}
+	}
+}
+
+func TestStartPageWordmarkWaveAnimatesAndUsesMauveWhite(t *testing.T) {
+	r := testRenderer(80)
+	rows := []SessionRow{{Info: session.Info{Name: "bat", Messages: 1}}}
+	frame0 := r.renderStartPage(rows, 0, false, 80, 20, 0)
+	frame1 := r.renderStartPage(rows, 0, false, 80, 20, 1)
+	if strings.Join(frame0, "\n") == strings.Join(frame1, "\n") {
+		t.Fatal("start-page white wave did not animate across the mauve wordmark")
+	}
+	if !strings.Contains(strings.Join(frame0, "\n"), "38;2;189;147;249") {
+		t.Fatal("wordmark is not mauve")
+	}
+	if !strings.Contains(strings.Join(frame0, "\n"), "38;2;248;248;242") {
+		t.Fatal("wave is not white")
 	}
 }
 
