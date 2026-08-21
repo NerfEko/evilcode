@@ -1320,11 +1320,21 @@ func (sess *Session) unsubscribe(ch chan ServerMsg) {
 	sess.mu.Unlock()
 }
 
+// close tears down one live runtime. A session that is between turns gets the
+// normal clean-exit marker; one that still owns a turn reservation is closed
+// without that marker so resume can report the interrupted run as crashed.
 func (sess *Session) close() {
 	sess.mu.Lock()
 	sess.closing = true
+	// The reservation is the daemon's authoritative view of a turn. It stays
+	// held through the event tail and queued-input handoff, even after the
+	// provider has released its own running flag.
+	active := sess.running
 	cancel, done := sess.cancel, sess.turnDone
 	sess.mu.Unlock()
+	if sess.built != nil && sess.built.Agent != nil && sess.built.Agent.Running() {
+		active = true
+	}
 
 	if cancel != nil {
 		cancel()
@@ -1340,6 +1350,12 @@ func (sess *Session) close() {
 	}
 	if sess.asks != nil {
 		sess.asks.Cancel()
+	}
+	if active && sess.built != nil && sess.built.Store != nil {
+		// Keep the normal wiring close order while suppressing only the clean
+		// lifecycle marker. A provider turn interrupted by daemon shutdown must
+		// be recoverable as a crash on the next resume.
+		sess.built.Store.MarkUnclean()
 	}
 	sess.consolidateMemory()
 	sess.built.Close()

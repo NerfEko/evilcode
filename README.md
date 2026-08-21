@@ -130,8 +130,9 @@ that matches the current goal; if it is unavailable or not ready, compaction use
 ordinary recency cutoff. Embedding is best-effort and asynchronous, so an unavailable or
 slow provider leaves the predictive path in charge rather than delaying a turn.
 A turn that could not be fully written says so rather than leaving a session that comes
-back short on resume. A daemon shutdown waits for its in-flight turn to finish, so an
-explicit stop or idle shutdown does not drop the messages the turn was still writing.
+back short on resume. During daemon shutdown, idle sessions get a clean-exit marker;
+sessions with an in-flight turn are allowed a brief unwind and remain crash-detectable
+so a restart does not mistake an interrupted turn for a completed one.
 Closing a TUI window is only a client disconnect at first: an in-flight turn is allowed
 to finish, and the hydrated session stays available for ten minutes. Once it has no
 window for that interval and no turn in flight, the daemon writes a clean exit,

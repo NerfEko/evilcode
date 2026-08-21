@@ -81,6 +81,7 @@ type Store struct {
 	closeOnce sync.Once
 	closeErr  error
 	closed    bool
+	unclean   bool
 }
 
 // Dir returns the sessions directory under the data directory.
@@ -497,19 +498,26 @@ func (s *Store) reopenLocked() error {
 }
 
 // Close flushes and marks a clean exit, which is how crash detection tells a
-// killed session from a finished one (plan.md §18).
+// killed session from a finished one (plan.md §18). MarkUnclean can be called
+// first when the owner was interrupted during an active turn.
 //
 // The descriptor is released even if the marker write fails: an early return
 // here used to skip closeFile entirely, leaking the fd for the life of the
 // process on top of whatever the meta-write error already reported (H5.12).
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
-		data, dataErr := json.Marshal(Meta{Kind: MetaCleanExit})
-		line, lineErr := json.Marshal(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
-
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.closed = true
+		if s.unclean {
+			// An active turn was interrupted by daemon shutdown. Release the
+			// descriptor and flush what it managed to write, but leave the
+			// lifecycle open so the next resume reports this run as crashed.
+			s.closeErr = s.closeFileLocked()
+			return
+		}
+		data, dataErr := json.Marshal(Meta{Kind: MetaCleanExit})
+		line, lineErr := json.Marshal(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
 		metaErr := errors.Join(dataErr, lineErr)
 		if metaErr == nil {
 			metaErr = s.appendLocked(line)
@@ -517,6 +525,17 @@ func (s *Store) Close() error {
 		s.closeErr = errors.Join(metaErr, s.closeFileLocked())
 	})
 	return s.closeErr
+}
+
+// MarkUnclean tells the next Close to release the store without appending a
+// clean-exit marker. Daemon shutdown uses this for sessions that still had an
+// active turn; a later resume should surface that interrupted run as crashed.
+// The marker is set separately from Close so the wiring layer can still close
+// the rest of the session in its normal reverse-acquisition order.
+func (s *Store) MarkUnclean() {
+	s.mu.Lock()
+	s.unclean = true
+	s.mu.Unlock()
 }
 
 // closeFile flushes and releases the descriptor without a lifecycle marker.

@@ -138,6 +138,32 @@ func TestCrashDetection(t *testing.T) {
 	}
 }
 
+func TestMarkUncleanPreservesCrashDetection(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "interrupted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "mid-turn"}); err != nil {
+		t.Fatal(err)
+	}
+	st.MarkUnclean()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := Describe(dir, "interrupted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Crashed {
+		t.Fatal("an unclean close was reported as clean")
+	}
+	if got, err := Messages(st.Path); err != nil || len(got) != 1 {
+		t.Fatalf("unclean close lost the flushed message: got %d, err %v", len(got), err)
+	}
+}
+
 func TestCrashAfterResumeIsDetected(t *testing.T) {
 	dir := t.TempDir()
 

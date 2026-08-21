@@ -124,3 +124,45 @@ func TestAttachedOrRunningSessionDoesNotExpire(t *testing.T) {
 	sess.running = false
 	sess.mu.Unlock()
 }
+
+func TestShutdownMarksIdleSessionsDoneButActiveTurnsCrashed(t *testing.T) {
+	srv, _ := testServer(t)
+
+	idle, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A turn reservation is enough to model the shutdown boundary without
+	// involving a provider: the daemon must classify this session as active,
+	// even if the provider's own running bit is between event rounds.
+	active.mu.Lock()
+	active.running = true
+	active.mu.Unlock()
+
+	idleName, activeName := idle.Name, active.Name
+	idlePath, activePath := idle.built.Store.Path, active.built.Store.Path
+	srv.Close()
+
+	idleInfo, err := session.Describe(config.DataDir(), idleName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idleInfo.Crashed {
+		t.Fatal("an idle session was reported as crashed after daemon shutdown")
+	}
+	activeInfo, err := session.Describe(config.DataDir(), activeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activeInfo.Crashed {
+		t.Fatal("a session with an active turn was reported as clean after daemon shutdown")
+	}
+	if idlePath == activePath {
+		t.Fatal("the two shutdown lifecycle checks used the same session log")
+	}
+}
