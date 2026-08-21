@@ -147,6 +147,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		done:          make(chan struct{}),
 		subs:          map[chan ServerMsg]struct{}{},
 		lastHeartbeat: time.Now(),
+		idleSince:     time.Now(),
 	}
 	if built.Exec != nil && built.Exec.Bg != nil {
 		built.Exec.Bg.OnDone = func(task *tools.BackgroundTask) {

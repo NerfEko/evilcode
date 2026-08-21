@@ -132,8 +132,11 @@ slow provider leaves the predictive path in charge rather than delaying a turn.
 A turn that could not be fully written says so rather than leaving a session that comes
 back short on resume. A daemon shutdown waits for its in-flight turn to finish, so an
 explicit stop or idle shutdown does not drop the messages the turn was still writing.
-Closing a TUI window is only a client disconnect; it does not close the session or run
-the daemon's shutdown consolidation.
+Closing a TUI window is only a client disconnect at first: an in-flight turn is allowed
+to finish, and the hydrated session stays available for ten minutes. Once it has no
+window for that interval and no turn in flight, the daemon writes a clean exit,
+consolidates memory, and unloads the runtime; the durable log remains available when a
+later window resumes it.
 
 The `session_search` tool finds earlier native sessions by transcript phrase, with a
 role filter and dated excerpt. `evilcode resume --from claude|codex|opencode

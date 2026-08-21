@@ -77,7 +77,8 @@ type Server struct {
 	// builds keeps shared stores alive while a session is being assembled. A
 	// close racing a slow provider resolve used to close the shared memory bank
 	// underneath the build, then let the finished session publish into the
-	// already-closed server.
+	// already-closed server. Idle session teardown uses the same barrier: its
+	// final memory consolidation must finish before the daemon closes the bank.
 	builds sync.WaitGroup
 
 	// bank is one file handle shared by the daemon, while each memory manager
@@ -182,6 +183,13 @@ type Session struct {
 	// two clients both see an idle session and both launch against one
 	// conversation. Taken here, before the goroutine exists.
 	running bool
+
+	// idleSince is when the last attached window left (or when the session was
+	// first created with no window). It is guarded by mu. The timestamp survives
+	// a detached turn: the sweep separately checks that the turn has finished,
+	// so a long-running background turn can be unloaded as soon as it ends if
+	// its window has already been gone for the full timeout.
+	idleSince time.Time
 }
 
 type queuedInput struct {
@@ -218,9 +226,15 @@ func NewServer(cfg *config.Config, cwd, model string) *Server {
 const DefaultIdleTimeout time.Duration = 0
 
 // WorkerHeartbeatInterval controls how often the daemon checks workers that
-// have stopped producing events. The check is cheap; the longer threshold
-// below is what prevents normal provider/tool gaps from looking like failure.
+// have stopped producing events and unloads sessions that have been idle with
+// no attached window. The check is cheap; the longer thresholds below are what
+// prevent normal provider/tool gaps from looking like failure.
 const WorkerHeartbeatInterval = 5 * time.Second
+
+// SessionIdleTimeout is how long a session may have no attached window and no
+// turn in flight before the daemon marks it cleanly finished and unloads its
+// live runtime. Its durable log remains available for a later resume.
+const SessionIdleTimeout = 10 * time.Minute
 
 // WorkerStaleAfter is the silence window after which a live worker is shown as
 // stale to its peers and its spawner receives one warning.
@@ -245,7 +259,9 @@ func (s *Server) startWorkerWatchdog() {
 		for {
 			select {
 			case <-ticker.C:
-				s.refreshWorkerStaleness(time.Now())
+				now := time.Now()
+				s.refreshWorkerStaleness(now)
+				s.expireIdleSessions(now)
 			case <-stop:
 				return
 			}
@@ -374,6 +390,65 @@ func (s *Server) refreshWorkerStaleness(now time.Time) {
 		if becameStale {
 			s.notifyWorkerStale(name, task, age)
 		}
+	}
+}
+
+// expireIdleSessions unloads hydrated sessions whose last window detached at
+// least SessionIdleTimeout ago and whose turn is now idle. The live map entry
+// is removed before closing the runtime so a new opener waits on opening[name]
+// rather than receiving a session whose store is already being torn down.
+//
+// The server's builds wait group also covers this teardown. Close waits on it
+// before closing the shared memory bank, so an idle sweep racing daemon
+// shutdown cannot consolidate against a bank that has already been closed.
+func (s *Server) expireIdleSessions(now time.Time) {
+	type candidate struct {
+		name string
+		sess *Session
+		gate chan struct{}
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	var expired []candidate
+	for name, sess := range s.sessions {
+		sess.mu.Lock()
+		idleSince := sess.idleSince
+		agentRunning := sess.built != nil && sess.built.Agent != nil && sess.built.Agent.Running()
+		idle := !sess.closing && len(sess.subs) == 0 && !sess.running && !agentRunning &&
+			!idleSince.IsZero() && now.Sub(idleSince) >= SessionIdleTimeout
+		if idle {
+			// Recheck and mark under the session lock while the server lock is
+			// held. subscribe and beginTurn therefore cannot sneak in between
+			// the test and the removal from the live map.
+			sess.closing = true
+			gate := make(chan struct{})
+			if s.opening == nil {
+				s.opening = map[string]chan struct{}{}
+			}
+			s.opening[name] = gate
+			delete(s.sessions, name)
+			s.builds.Add(1)
+			expired = append(expired, candidate{name: name, sess: sess, gate: gate})
+		}
+		sess.mu.Unlock()
+	}
+	s.mu.Unlock()
+
+	for _, item := range expired {
+		func() {
+			defer s.builds.Done()
+			item.sess.close()
+			s.mu.Lock()
+			if wait, ok := s.opening[item.name]; ok && wait == item.gate {
+				delete(s.opening, item.name)
+				close(item.gate)
+			}
+			s.mu.Unlock()
+		}()
 	}
 }
 
@@ -844,6 +919,7 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		advisor:   advisor,
 		overnight: newOvernightState(),
 		subs:      map[chan ServerMsg]struct{}{},
+		idleSince: time.Now(),
 	}
 	sess.NoTools = opts.NoTools
 	if built.Exec != nil && built.Exec.Bg != nil {
@@ -1223,6 +1299,9 @@ func (sess *Session) subscribe() chan ServerMsg {
 	ch := make(chan ServerMsg, 256)
 	sess.mu.Lock()
 	sess.subs[ch] = struct{}{}
+	// An attached window keeps the hydrated runtime alive regardless of when
+	// the last turn ended.
+	sess.idleSince = time.Time{}
 	sess.mu.Unlock()
 	return ch
 }
@@ -1230,6 +1309,14 @@ func (sess *Session) subscribe() chan ServerMsg {
 func (sess *Session) unsubscribe(ch chan ServerMsg) {
 	sess.mu.Lock()
 	delete(sess.subs, ch)
+	if len(sess.subs) == 0 && !sess.closing {
+		// Start the countdown when the last window leaves. A turn that is still
+		// running is allowed to finish, but it does not reset the windowless
+		// interval.
+		sess.idleSince = time.Now()
+	} else if len(sess.subs) > 0 {
+		sess.idleSince = time.Time{}
+	}
 	sess.mu.Unlock()
 }
 
@@ -1713,6 +1800,13 @@ func (sess *Session) endTurn() {
 		sess.cancel, sess.turnDone = cancel, done
 		sess.requestID = item.requestID
 		sess.requestHidden = item.hidden
+		if len(sess.subs) == 0 && sess.idleSince.IsZero() {
+			sess.idleSince = time.Now()
+		}
+	} else if len(sess.subs) == 0 && sess.idleSince.IsZero() && !sess.closing {
+		// A defensive fallback for sessions assembled by older callers that did
+		// not initialize idleSince before their first detached turn.
+		sess.idleSince = time.Now()
 	}
 	sess.mu.Unlock()
 	if next != nil {
