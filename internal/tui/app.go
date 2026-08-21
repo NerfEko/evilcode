@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -5272,6 +5273,79 @@ func shellLanguage(lang string) bool {
 	}
 }
 
+// shellCommandForClipboard turns a displayed shell fence into a pasteable
+// command. Model replies commonly annotate every command with a trailing
+// "# explanation"; those annotations are useful on screen but surprising in
+// a shell paste. Comments are recognized only outside quotes and after a word
+// boundary, so URLs, hashes in arguments, and quoted examples remain intact.
+func shellCommandForClipboard(source string) string {
+	source = core.SanitizeTerminal(source)
+	lines := strings.Split(source, "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimRight(line, " \t\r")
+		if strings.TrimSpace(line) == "" {
+			// Preserve intentional blank lines in the middle of a multiline
+			// command (for example a here-document), then trim fence padding at
+			// the end below.
+			cleaned = append(cleaned, "")
+			continue
+		}
+		line = stripShellComment(line)
+		line = strings.TrimRight(line, " \t")
+		if strings.TrimSpace(line) == "" {
+			// A line that contained only a comment is not part of the command.
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	for len(cleaned) > 0 && cleaned[0] == "" {
+		cleaned = cleaned[1:]
+	}
+	for len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
+		cleaned = cleaned[:len(cleaned)-1]
+	}
+	return strings.Join(cleaned, "\n")
+}
+
+// stripShellComment removes a bash/fish comment without touching # characters
+// inside single/double quotes or escaped with a backslash. Both shells use the
+// same comment form for the command shapes rendered by the transcript.
+func stripShellComment(line string) string {
+	var quote rune
+	escaped := false
+	var previous rune
+	for i, r := range line {
+		if escaped {
+			escaped = false
+			previous = r
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			escaped = true
+			previous = r
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			previous = r
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case '#':
+			if i == 0 || unicode.IsSpace(previous) {
+				return line[:i]
+			}
+		}
+		previous = r
+	}
+	return line
+}
+
 // codeBlockLineCount mirrors renderCodeBlock's chrome without doing syntax
 // highlighting. It is used on mouse motion, where doing a full highlight just
 // to find the fence under one cell would make pointer movement expensive.
@@ -5381,7 +5455,7 @@ func (m *Model) copyShellAt(mouse tea.Mouse) tea.Cmd {
 	if target.segment < 0 || target.segment >= len(segments) {
 		return nil
 	}
-	command := strings.Trim(core.SanitizeTerminal(segments[target.segment].Text), "\r\n")
+	command := shellCommandForClipboard(segments[target.segment].Text)
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}

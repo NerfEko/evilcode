@@ -87,3 +87,26 @@ func TestToolHoverUsesJaggedUnderline(t *testing.T) {
 		t.Fatalf("hovered tool target lacks jagged underline: %q", rows.Lines[row])
 	}
 }
+
+func TestShellCommandForClipboardDropsCommentsAndTrailingWhitespace(t *testing.T) {
+	source := "  # section note\n" +
+		"sudo -ll                 # more verbose list\n" +
+		"sudo -k\t# reset the cached timestamp\n" +
+		"sudo -v                 # refreshes the timestamp\n" +
+		"\n"
+	got := shellCommandForClipboard(source)
+	want := "sudo -ll\nsudo -k\nsudo -v"
+	if got != want {
+		t.Fatalf("cleaned command = %q, want %q", got, want)
+	}
+}
+
+func TestShellCommandForClipboardPreservesQuotedHashes(t *testing.T) {
+	source := "printf '%s\\n' '# keep this' # display note\n" +
+		"echo \"# also keep this\" # display note\n" +
+		"echo \\#literal # display note"
+	want := "printf '%s\\n' '# keep this'\necho \"# also keep this\"\necho \\#literal"
+	if got := shellCommandForClipboard(source); got != want {
+		t.Fatalf("quoted hash handling = %q, want %q", got, want)
+	}
+}
