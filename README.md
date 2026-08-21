@@ -6,64 +6,61 @@
 ![Ollama](https://img.shields.io/badge/ollama-cloud%20%26%20local-000000?style=for-the-badge&logo=ollama&logoColor=white)
 ![Linux](https://img.shields.io/badge/linux-only-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 
-A terminal coding agent. Agentic tool-calling loop, a TUI built on the Charm stack,
-and first-class support for Ollama Cloud alongside anything that speaks the OpenAI API.
+> **A note before you use it:** evilcode was built with AI. I have extensively
+> cross-verified it against other open-source coding agents wherever the features
+> overlap, but it is still an active personal project and should be treated that way.
+> Pull requests and feature requests are welcome.
 
-Single user, no telemetry, no account. A detached per-user daemon owns live agents while
-TUI windows are disposable clients. Sessions are JSONL files on your own disk; a torn
-append glued to a later record is salvaged and repaired before the next write.
+evilcode is a coding agent for the terminal. It gives a model a real tool set — files,
+shell commands, git, LSP, memory, and more — and puts the conversation in a fast,
+keyboard-first TUI.
+
+I originally built evilcode for myself, so it has opinions. Some of them may not match
+how you would design a coding agent, and the project is not especially extensible yet.
+That is part of the current state of the project, not a promise that every edge case has
+been solved. If you want it to work differently, open an issue or send a PR.
 
 ![evilcode auditing a real codebase for panic-shaped bugs](demo/demo-search.gif)
 
-## Requirements
+## What it feels like
 
-Linux only.
+evilcode is single-user and local by default. There is no account, telemetry, or hosted
+workspace. A small per-user daemon owns the live sessions, while terminal windows are
+just clients that can connect, disconnect, and reconnect. Conversations are stored as
+JSONL files on your machine so a session can be resumed later.
 
-At runtime: `rg` for the `grep` tool, `tmux` for the probe rig. Optional extras are
-used if present — `gopls` for the `lsp` tool, `mmdc` for mermaid diagrams, `img2sixel`
-for images on terminals without the kitty graphics protocol.
+The main command opens the TUI and starts the daemon when needed:
+
+```sh
+evilcode
+```
+
+From there you can type a prompt, resume a session, inspect files, run commands, review
+diffs, switch models, and keep working while tools run in the background.
 
 ## Install
 
-One line — downloads the prebuilt linux/amd64 binary from the latest release
-and installs it to `~/.local/bin/evilcode` plus an `ec` symlink. No Go
-toolchain, no clone, no build:
+The quickest install is the latest Linux/amd64 release:
 
 ```sh
 curl -fsSL https://evileko.dev/evilcode | sh
 ```
 
-The script prints each step (retrieve version, download, install) and a few
-tips. If `~/.local/bin` is not on your `PATH` it warns and prints the
-`export PATH=…` line to add to your shell rc.
+This installs `evilcode` and an `ec` symlink in `~/.local/bin`. The installer prints what
+it is doing and warns if that directory is not on your `PATH`.
 
-If evilcode is already installed, the script asks what to do instead of
-silently reinstalling:
-
-```
-1) Check for updates   — runs 'evilcode update' (compares versions, swaps in
-                         the latest or reports 'already up to date')
-2) Reinstall latest    — fresh download + atomic install over the existing
-3) Remove evilcode     — deletes the binary + ec symlink; optional second
-                         confirm removes config and session data
-4) Reset config        — backs up ~/.config/evilcode to .bak.<timestamp> and
-                         removes it so defaults apply
-5) Exit
-```
-
-You can also self-update directly at any time:
+Already installed? Update in place with:
 
 ```sh
 evilcode update
 ```
 
-`update` fetches the latest release binary (`evilcode-<os>-<arch>`) and
-atomically swaps it over the running executable.
+The installer also offers update, reinstall, removal, and config reset options instead
+of silently replacing an existing install.
 
 ### Build from source
 
-For an arch without a release binary (e.g. arm64 once built) or to run from a
-checkout. Requires Go 1.26 or newer:
+You need Go 1.26 or newer:
 
 ```sh
 git clone https://git.evileko.dev/evileko/evilcode
@@ -84,324 +81,134 @@ evilcode completions fish > ~/.config/fish/completions/evilcode.fish
 ## Usage
 
 ```sh
-evilcode                         # attach the TUI, starting the server if needed
-evilcode run "fix the parser"    # submit a headless prompt and exit
-evilcode run --wait "..."        # submit and stream that turn until it ends
-evilcode serve                   # daemon hosting persistent sessions
-evilcode serve -status           # inspect the daemon
-evilcode serve -stop             # gracefully stop it
-evilcode attach [session]        # attach a TUI to an already-running daemon
-evilcode attach -l               # list sessions held by the daemon
-evilcode resume --from claude <id-or-path> # import and continue a foreign session
+evilcode                              # open the TUI
+evilcode run "fix the parser"         # submit a prompt and return
+evilcode run --wait "explain this"    # submit and stream the answer
+evilcode serve                        # run the daemon in the foreground
+evilcode serve -status                # inspect the daemon
+evilcode serve -stop                  # stop it cleanly
+evilcode attach [session]             # attach to an existing daemon session
+evilcode attach -l                    # list sessions
+evilcode resume --from claude <id-or-path>
 ```
 
-Plain `evilcode` and `evilcode tui` start the per-user server when necessary, then
-attach a TUI. `evilcode attach` requires a server that is already running; the client
-can be closed and reopened without stopping the live session. `evilcode serve` runs the
-server in the foreground, while an automatically started server is detached from the
-launching terminal.
+`evilcode run` hands the prompt to the daemon and exits. The agent, tools, background
+tasks, and session can keep working after that shell closes. Use `--wait` when you need
+the answer streamed back, or `--local` when you want the old in-process one-shot mode.
 
-The ordinary `evilcode run` submits the prompt and returns after the server accepts it;
-the agent, tools, background tasks, and session continue if that shell or terminal
-closes. It does not stream the answer. Use `evilcode run --wait` when a script needs
-the model's text in its own process; the historical `--remote` spelling remains an
-alias for that streaming path. Wait mode writes model text to stdout and everything
-else to stderr, so it composes with other tools. `evilcode run --local` retains the
-old in-process one-shot behavior. Only a waiting or local run can return 130 for an
-interrupt; a submit-only run has already handed cancellation responsibility to the
-daemon.
+`evilcode attach` needs a daemon that is already running. A TUI window can close without
+ending the session; another window can reconnect to it later. A session with no window
+is kept hydrated for ten minutes after its last turn/window activity, then it is cleanly
+closed and unloaded. Its transcript remains available for resume.
 
-The filesystem tools are agent-friendly: `read` attaches supported images to vision
-models, truncates oversized individual lines while preserving paging, and suggests
-nearby names for a missing path. `multiedit` applies ordered edits with one atomic write;
-common argument spellings such as `file_path` are repaired and shown in the tool row.
-Kitty-compatible terminals draw images inline; sixel terminals use `img2sixel`, and
-other terminals show a captioned placeholder.
+## Requirements
 
-Sessions are the durable source of truth: every message is written as it lands, `/compact`
-and `/rewind` rewrite the log atomically — a backup is written and synced before the
-primary is replaced, and the live daemon session follows the rewrite. Compaction
-summarizes older turns but keeps the ten most recent turns verbatim, including complete
-tool-call pairs, so a task in progress survives both the live rewrite and resume. It also watches
-recent context growth and recent assistant-turn embeddings: a detected topic shift can
-compact at a natural boundary, while growth still projects ahead of the fixed 85% limit.
-A bounded background relevance pass can also move the cutoff back before an older message
-that matches the current goal; if it is unavailable or not ready, compaction uses the
-ordinary recency cutoff. Embedding is best-effort and asynchronous, so an unavailable or
-slow provider leaves the predictive path in charge rather than delaying a turn.
-A turn that could not be fully written says so rather than leaving a session that comes
-back short on resume. During daemon shutdown, idle sessions get a clean-exit marker;
-sessions with an in-flight turn are allowed a brief unwind and remain crash-detectable
-so a restart does not mistake an interrupted turn for a completed one.
-Closing a TUI window is only a client disconnect at first: an in-flight turn is allowed
-to finish, and the hydrated session stays available for ten minutes. Once it has no
-window for that interval and no turn in flight, the daemon writes a clean exit,
-consolidates memory, and unloads the runtime; the durable log remains available when a
-later window resumes it.
+Linux only.
 
-The `session_search` tool finds earlier native sessions by transcript phrase, with a
-role filter and dated excerpt. `evilcode resume --from claude|codex|opencode
-<id-or-path>` converts a foreign transcript into a native JSONL session and enters the
-ordinary resume path; repeated imports reuse the existing native continuation.
+At runtime, `rg` powers the `grep` tool and `tmux` is used by the probe rig. These are
+optional when you do not use the features that need them:
 
-## Configuration
+- `gopls` for LSP features
+- `mmdc` for Mermaid diagrams
+- `img2sixel` for terminals without Kitty graphics support
 
-`~/.config/evilcode/config.toml`, or wherever `$EVILCODE_CONFIG` points. Every key has
-a default and a missing file is a working setup.
+## Models and configuration
 
-`default_model` is the one key you usually do not have to set. Left out, the route is
-picked from whether an Ollama Cloud key can be resolved — from `$OLLAMA_API_KEY` or from
-the config file, so a key entered with `/login` counts. With a key you get
-`glm-5.2:cloud@ollama-cloud`; without one, ollama.com is unreachable directly, so the same
-model is routed through the local daemon that proxies it. Setting `default_model`
-yourself always wins.
+The config file is `~/.config/evilcode/config.toml`, unless `EVILCODE_CONFIG` points
+somewhere else. A missing config is okay; evilcode starts with sensible defaults.
 
-If the Codex CLI is installed and you have run `codex login`, ec automatically discovers
-that ChatGPT OAuth account from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). Select a
-Codex model in `/model`, or choose one explicitly, for example:
+Ollama Cloud is the easiest route to try. With `OLLAMA_API_KEY`, the default model is
+`glm-5.2:cloud@ollama-cloud`; without a key, the local Ollama route is used when it is
+available. You can also use OpenAI-compatible providers, DeepSeek, Codex, Ollama Local,
+or the deterministic mock provider used by tests.
 
-```sh
-ec -m gpt-5.3-codex@codex
-```
-
-The Codex access token is used in memory and refreshed through the same OAuth endpoint as
-the Codex CLI; rotated credentials are saved back to its auth file. ec never prints the
-token. `/login status codex` reports whether the account is available; use `codex login` to
-sign in or change accounts.
-
-Reasoning-capable models expose a `/reasoning` control, with `Alt+R` cycling the active
-model's advertised levels. The selected effort appears after the model in the composer
-footer (for example, `gpt-5.6-luna max`) and is remembered per model in the config, so
-switching back restores that model's setting. Codex reasoning summaries stay visible after
-the answer starts because Codex emits them as compact one-line traces; other providers use
-the collapsible `thought (N lines)` view, and clicking one expands the entire finished
-trace. Closing it keeps the context below anchored while the context above fills the freed
-space. Typed prompts of five or more words show a dim `(N wpm)` marker after the user
-message. Timing starts with the first keystroke in an empty composer and restarts when
-editing returns to empty; pasted, history-recalled, and other programmatic prompts do not
-claim a typing speed. The last model is remembered too; an explicit `-m`, `EVILCODE_MODEL`, or resumed
-session still takes precedence. The control is translated for Codex, OpenAI-compatible
-providers, DeepSeek, and Ollama; the model picker shows the levels returned by each provider
-when its catalog exposes them.
-
-Optional service credentials use `/connect`, with masked input. `/connect brave` saves a
-Brave Search API key in the user-only `[web]` config block, activates `web_search` for the
-current session, and survives the next launch. `/connect brave status` reports presence
-without printing the key. The `BRAVE_SEARCH_API_KEY` environment variable (or its
-`BRAVE_API_KEY` alias) takes precedence over the saved value.
-
-`context_window` is likewise optional: the window and capabilities of every Ollama model,
-local or cloud, are read from the provider, so the meter and auto-compaction are right
-without a `[[model]]` block per model. Set one only to correct what the provider claims.
+For example:
 
 ```toml
 default_model = "glm-5.2:cloud@ollama-cloud"
 
 [[provider]]
 name = "ollama-cloud"
-kind = "ollama"                  # ollama | openai | deepseek | codex | mock
+kind = "ollama"
 base_url = "https://ollama.com"
 api_key_env = "OLLAMA_API_KEY"
 
 [[model]]
 name = "glm-5.2:cloud"
-context_window = 262144          # override what the provider reports
-anchor_edits = true              # hash-anchored edit mode
-
-[roles]
-smol = ["qwen3:8b@ollama-local"] # every internal side-call routes here
+context_window = 262144
 
 [display]
-theme = "dracula"                # dracula | nosferatu | gloom | daywalker
-thinking_lines = 6               # height of a live reasoning trace
-keep_thinking = false            # leave finished traces expanded
+theme = "dracula"       # dracula | nosferatu | gloom | daywalker
 inline_diffs = true
 centered = false
 
 [features]
-auto_poke = true
 memory = true
 advisor = false
-skill_retrieval = false          # embed skill summaries and surface strong matches
-confine_to_workspace = false     # restrict file tools to the launch directory
-max_steps = 0                    # tool rounds per turn; 0 is unlimited
-
-[lsp]
-go = ["gopls"]
+max_steps = 0            # 0 means unlimited tool rounds
 ```
 
-Declaring any `[[provider]]` replaces the built-in set entirely, so a provider can be
-removed. Everything else merges over the defaults.
+If the Codex CLI is installed and logged in, evilcode can discover its OAuth account
+from the normal Codex auth file. `/model` and `-m` select a model; `/reasoning` changes
+the advertised reasoning effort when a provider supports it.
 
-Skills are discovered from the repository overlay, the config directory, and the
-user skill libraries (`~/.agents/skills` and `~/.claude/skills`). `/skills` lists their
-source directories; `/skills reload` refreshes the index and changed bodies. Set
-`skill_retrieval = true` only when the extra embedding call is worth surfacing a
-relevant skill automatically.
+Use `/connect brave` to enable the optional Brave-backed `web_search` tool. Credentials
+are masked and stored in the user-only config, or can be supplied through
+`BRAVE_SEARCH_API_KEY` / `BRAVE_API_KEY`.
 
-A repository can pin its own `default_model` and `[roles]` in `.evilcode.toml` at its
-root. Provider credentials are deliberately not overridable that way: checking out a
-repository must not be able to redirect your API keys.
+Repository-specific defaults can live in `.evilcode.toml` at the repository root. Model
+and role overrides are supported there; credentials are deliberately not.
 
-State lives in `~/.local/share/evilcode/` as `sessions/*.jsonl`,
-`prompt-history.jsonl`, `memory.jsonl`, content-addressed session blobs, and detached
-`overnight-reports/*.html` files. The default daemon socket is
-`$XDG_RUNTIME_DIR/evilcode.sock`; when that variable is absent it is placed under a
-private per-user directory in the system temporary directory. Use `-socket` to override
-it, especially in tests.
-
-### Environment
-
-| Variable | Effect |
-|---|---|
-| `EVILCODE_CONFIG` | config file path |
-| `EVILCODE_PROVIDER=mock` | use the deterministic canned provider |
-| `EVILCODE_DETERMINISTIC=1` | fixed session name, frozen animation, no wall-clock text |
-| `EVILCODE_GRAPHICS` | force `kitty`, `sixel` or `none` |
-| `EVILCODE_DICTATE` | speech-to-text command for `evilcode dictate` |
-| `BRAVE_SEARCH_API_KEY` | expose the live Brave-backed `web_search` tool |
-| `BRAVE_API_KEY` | alias accepted for `BRAVE_SEARCH_API_KEY` |
-
-## Features
+## The useful bits
 
 ### Terminal UI
 
-The transcript hugs the composer while the conversation is short and becomes a
-scrolling viewport when it overflows. Widgets dock into the blank margin beside the
-text at no layout cost, anchored to a transcript line so they scroll with the content
-rather than skittering as it moves.
+The TUI is built on the Charm stack and is designed for a real terminal rather than a
+browser imitation. It includes:
 
-Markdown prose, syntax-highlighted code blocks with streaming chrome, and inline diffs
-tinted toward add and delete while keeping their highlighting. `/diff` cycles a side
-panel between an inline diff, a pinned one, and a whole-file view with change gutters.
+- streaming Markdown and syntax-highlighted code
+- clickable shell code blocks that copy clean commands to the clipboard
+- inline diffs, a pinned diff view, and whole-file change gutters
+- model and reasoning pickers
+- `/help`, `/theme`, `/diff`, `/compact`, `/rewind`, and history search with `Ctrl+R`
+- Kitty and sixel image display when the terminal supports it
 
-Overlays cost zero layout height: the slash palette, `Ctrl+R` history search across
-every session, an inline model picker, and a full-screen help. Four palettes ship, with
-Oklab harmony scoring and generation from a seed color behind `/theme`.
-
-### Planning and follow-through
-
-`/plan` runs a planning turn and renders the answer as a plan card. The `todo` tool
-records confidence, intent and feedback-loop scores per item, and their histories are
-tool-owned, so a model cannot author its own evidence trail.
-
-When work is marked finished with nothing to show for it, the harness says so and asks
-again. Every path that can re-prompt has a circuit breaker, because the ones that did
-not have looped in production. A todo write is atomic: it stages every file and commits
-them together, so a failure leaves the prior state on disk and in memory rather than
-half of each.
-
-### Memory
-
-Durable facts outlive the session. Incoming messages are embedded and matched against
-the bank; anything close enough goes in as a single `<memories>` note, shown in the
-transcript as a tile listing exactly what was injected. An injection you cannot see is
-one you cannot correct.
-
-Ambient extraction mines facts every eight turns through the `smol` role, and a session
-summary is written when the daemon actually tears a session down, which is what makes
-the session picker searchable by what a session was about rather than by its name. A
-dead embedder degrades recall to lexical
-BM25 matching rather than switching it off. Memories are project-scoped by the detected
-workspace root and recall also includes global memories; `/memory list project` and
-`/memory list global` can inspect either side of that view. The `remember` tool accepts
-`scope: "global"` for facts that should follow the user across repositories.
-
-### Daemon and swarms
-
-`evilcode serve` holds any number of sessions in one persistent background process and
-speaks versioned NDJSON over a private unix socket. The daemon owns the real provider,
-agent, tools, MCP connections, ask broker, background tasks, overnight loop, and swarm
-coordination. `evilcode` and `attach` are TUI clients with the socket as their event
-source: two terminals can follow one conversation, a closed terminal loses nothing,
-and a later window reconnects to the same live agent rather than creating a second one.
-
-The client receives a durable conversation snapshot plus the current live event tail.
-Per-session sequence-numbered ring buffers cover reconnect gaps; the JSONL session log
-is the durable source of truth. Session working directory and last model are restored
-from that log, so resuming from another directory does not retarget file tools.
-
-The server stays up until `evilcode serve -stop`; pass `-idle 1h` (or another duration)
-if you want automatic shutdown after the last client and running agent go away. A daemon
-process crash does not preserve an in-flight provider request or in-memory background
-task, but already-flushed session history, model metadata, and workspace metadata remain
-available for a later resume.
-
-Agents inside the daemon coordinate. A shared file registry tells an agent when another
-rewrote a file it had read, delivered between turns rather than mid-thought. Notices name
-the writer's optional intent and the first lines of its diff; overlapping writers are told
-about each other, while old reads expire instead of firing days later.
-`send_message`, `broadcast` and `peers` route through the daemon. `spawn_worker` and
-`/summon` start headless workers whose results are validated against a JSON Schema the
-spawner supplies, so nobody has to parse prose. Worker heartbeats make a silent worker
-appear as `stale` in `peers`, and its spawner receives one warning instead of waiting
-forever for a result.
-
-The shared plan and todo list span the swarm: one store per namespace, held by
-reference, so every worker sees the same items rather than a private half that the
-last writer overwrites. A session runs one turn at a time — a second client that
-arrives mid-turn is queued by the daemon rather than launching a second run against
-one conversation. Explicit interrupts still reach the active turn at its safe points.
-Worker counts stay within their caps under concurrent `/summon`. Repo overrides are
-applied to a per-build copy of the config, so one repository's pinned model or roles
-never leak into another session's.
+The start page shows existing sessions and a live preview so resuming one does not feel
+like guessing which creature name you meant.
 
 ### Tools
 
-`read`, `write`, `edit`, `glob`, `grep`, `bash`, `bg`, `ask`, `todo`, git helpers, the
-optional Brave-backed `web_search`, and MCP servers are adapted into the same interface.
-Batches dispatch through a fixed worker pool with a cap on both concurrency and total
-size. Set `BRAVE_SEARCH_API_KEY` or use `/connect brave` to enable web search.
+The built-in tools include `read`, `write`, `edit`, `glob`, `grep`, `bash`, `bg`, `ask`,
+`todo`, git helpers, optional web search, LSP, and MCP servers.
 
-`bash` adopts a command that exceeds its timeout into the background instead of
-starting it over. Use `bg status`, `bg output`/`tail`, `bg wait`, or `bg cancel`; long
-commands can also be started with `background: true`. These tasks belong to the daemon,
-so their output and completion remain available after every TUI disconnects. Commands
-that need input accept `stdin`, and children receive a durable `TMPDIR`/`EVILCODE_SCRATCH_DIR`
-under the data directory. Long commands can report `EVILCODE_PROGRESS {json}` (the compatible
-`JCODE_PROGRESS` and `JCODE_CHECKPOINT` forms are accepted too); those control lines
-are parsed for the background widget and omitted from captured output.
+Long shell commands can move into the daemon's background task manager. Use `bg status`,
+`bg output`, `bg wait`, or `bg cancel` to manage them. A command copied from a `bash` or
+`fish` code block is cleaned of comments and trailing whitespace before it reaches the
+clipboard.
 
-`grep` includes the enclosing function, method, or type beside every hit. It asks the
-configured language server for that structure and falls back to a small declaration scan
-when the repository has no server or the server is unavailable. Give it a file path without
-a pattern to get a numbered symbol outline instead of reading the whole file.
-The session remembers source ranges already shown by `read`, `grep`, or file/line
-diagnostics in `bash`, and later matching hits collapse to `shown above`; compaction
-clears that ledger for the fresh context.
+`grep` can include the surrounding function, method, or type. `edit` supports hash-
+anchored changes so stale context is refused instead of being applied fuzzily.
 
-`edit` has a hash-anchored mode: `read` prints a short content hash beside each line,
-and an edit names the anchor instead of reproducing surrounding context. Stale anchors
-are refused rather than fuzzily matched.
+### Sessions and memory
 
-The `lsp` tool covers diagnostics, definition, references, hover, symbols and rename,
-with gopls preconfigured. One server is launched per language and shared by every
-caller, so concurrent calls do not spawn duplicates. A rename computes every touched
-file in memory before anything reaches disk, so it cannot half-apply.
+Every message is written as it arrives. `/compact` and `/rewind` rewrite logs atomically,
+and resumed sessions restore their working directory and last model. The daemon marks
+idle shutdowns cleanly; if it is stopped while a turn is genuinely active, that run is
+left crash-detectable so it cannot be mistaken for a completed answer.
 
-`write` and `edit` replace a file through a same-directory temp file and a rename, so
-nothing else ever reads a half-written version, and two edits to one file in the same
-batch are serialized rather than both computing against the original.
+Memory is optional and best-effort. Relevant facts can be recalled into a turn, and a
+summary is written when a session is actually torn down. If the embedding provider is
+unavailable, lexical matching remains available.
 
-### Graphics
+### Unattended work and swarms
 
-Mermaid fences render through `mmdc` and display inline via the kitty graphics protocol
-on kitty, ghostty and WezTerm, or `img2sixel` elsewhere. Without a renderer the source
-is shown with highlighting and a line naming what is missing. `Alt+Shift+I` switches
-between pictures and placeholders.
+`/overnight` works through a todo list without a window attached. It is bounded by turns,
+tokens, wall clock, and stalled progress, and writes a small report when it stops.
 
-### Unattended and self-hosted work
-
-`/overnight` works the todo list with nobody watching, bounded by turns, tokens, wall
-clock, and consecutive turns that fail to move the list. Its loop is daemon-owned, so
-closing every TUI does not stop the next continuation turn. The token budget accumulates
-across turns rather than resetting, so it stops on real cost. It stops on its own, says
-which limit stopped it, and writes a detached report while the full conversation remains
-in the session log.
-
-`/selfdev` is disabled. `/rebuild` builds, tests and restarts into the new binary. It runs the tests
-before restarting, because restarting into a binary that fails its own tests is how a
-self-modifying program locks itself out.
+Sessions can spawn headless workers through `spawn_worker` or `/summon`. Worker results
+are checked against the schema supplied by the parent, and heartbeats make a silent
+worker visible as stale instead of leaving everyone waiting forever. Shared file and todo
+state lets a small swarm coordinate without each worker keeping a private copy.
 
 ## Keys
 
@@ -409,65 +216,70 @@ self-modifying program locks itself out.
 |---|---|
 | `Enter` | send; queue while a turn is running |
 | `Shift+Enter`, `Alt+Enter`, trailing `\` | newline |
-| `Esc` | layered cancel: overlays, then interrupt, then clear input |
-| `Ctrl+C` | interrupt; twice when idle to quit |
-| `Ctrl+R` | history search |
-| `Ctrl+G` | toggle scroll bookmark |
+| `Esc` | cancel overlays, interrupt, then clear input |
+| `Ctrl+C` | interrupt; press twice while idle to quit |
+| `Ctrl+R` | search prompt history |
+| `Ctrl+G` | toggle a scroll bookmark |
 | `Alt+B` | send a running tool to the background |
-| `PgUp`, `PgDn` | scroll a page |
-| `↑`, `↓` on empty input | scroll a line |
+| `PgUp`, `PgDn` | scroll one page |
+| `↑`, `↓` on empty input | scroll one line |
 
-Readline bindings (`Ctrl+U/K/W/A/E/B/F/Z/S`) work in the composer. Run
-`/terminal-setup` for help making `Shift+Enter` distinguishable in your terminal.
+Run `/terminal-setup` if your terminal does not distinguish `Shift+Enter` from Enter.
 
-## Testing
+## Data and privacy
+
+evilcode does not send telemetry and does not require an evilcode account. Local state
+lives under `~/.local/share/evilcode/`:
+
+- `sessions/*.jsonl` — conversations and tool history
+- `prompt-history.jsonl` — local prompt history
+- `memory.jsonl` — optional durable memory
+- session blobs and detached overnight reports
+
+Treat those files like private work logs. They can contain prompts, code, command output,
+and anything a model was shown.
+
+## Contributing
+
+This project began as a tool for one person, so the edges are opinionated and some seams
+are tighter than they should be. That is exactly why outside feedback is useful.
+
+Feature requests, bug reports, documentation fixes, and pull requests are welcome. If
+you are changing behavior, please include a focused test where practical. Before opening
+a PR, run:
 
 ```sh
-go test ./...                                     # unit tests
-go test -race ./...                               # shared daemon/client state
-go vet ./...                                      # static checks
-go test -tags probe ./probe/...                   # golden frame tests, needs tmux
-UPDATE_GOLDENS=1 go test -tags probe ./probe/...  # rewrite goldens
+go test ./...
+go test -race ./...
+go vet ./...
 ```
 
-The probe rig drives a real binary in a tmux pane, captures frames and renders them to
-PNG, so changes to the interface can be checked without a person watching:
+The probe rig can exercise a real binary in a tmux pane and capture PNG frames:
 
 ```sh
 go build -o evilcode ./
-probe/probe.sh boot                 # 140x40 pane
+go test -tags probe ./probe/...
+probe/probe.sh boot
 probe/probe.sh keys "/help" Enter
-probe/probe.sh png help             # probe/frames/help.png
+probe/probe.sh png help
 probe/probe.sh kill
 ```
 
-Goldens catch regressions; the PNGs are for looking at. A golden only proves a frame
-has not changed, never that it is right.
-
 ## Project layout
 
-```
-internal/agent       loop, events, hooks — never imports the TUI
-internal/tui         everything on screen, including the attach mirror
+```text
+internal/agent       model loop, events, and hooks
+internal/tui         terminal UI and attach mirror
 internal/attachcmd   socket client and remote TUI wiring
 internal/tuicmd      default TUI entrypoint
 internal/runcmd      local and daemon-backed headless runs
-internal/servecmd    foreground daemon entrypoint
-internal/provider    ollama, openai, mock
-internal/tools       the tool set
-internal/daemon      server, protocol, sessions, reconnects, swarm coordination
+internal/servecmd    daemon entrypoint
+internal/provider    Ollama, OpenAI-compatible, DeepSeek, Codex, and mock providers
+internal/tools       built-in tools
+internal/daemon      server, sessions, reconnects, and swarms
 internal/wiring      shared provider/tool/session construction
-internal/memory      the semantic memory bank
-internal/lsp         language server client
-internal/ansirender  ANSI to PNG, for the probe rig
-probe/               tmux driver, scenarios, goldens
+internal/memory      semantic memory bank
 ```
 
-`internal/agent` does not import bubbletea, and a test enforces it. That separation is
-what lets the headless runner, daemon sessions, attached TUIs and the probe rig share
-one event and agent implementation. The client is a view and command bridge; the
-daemon is the owner of live work.
-
-## License
-
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+evilcode is GPL-3.0. If you try it, find something rough, or have an idea that would
+make it more useful, let me know.
