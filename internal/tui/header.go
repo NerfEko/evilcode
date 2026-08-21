@@ -174,22 +174,25 @@ const startPageWordmarkRows = 4
 
 const startPageWaveCycle = 40
 
-func evilCodeTitleLines(width int) []string {
-	lines := append([]string(nil), evilCodeTitleArt...)
-	for i, line := range lines {
-		lines[i] = centerStartPageLine(line, width)
+func evilCodeTitleWidth() int {
+	width := 0
+	for _, line := range evilCodeTitleArt {
+		width = max(width, lipgloss.Width(line))
 	}
-	return lines
+	return width
 }
 
-func centerStartPageLine(line string, width int) string {
-	if width <= 0 {
-		return line
+func evilCodeTitleLines(width int) []string {
+	blockWidth := evilCodeTitleWidth()
+	left := max((width-blockWidth)/2, 0)
+	lines := make([]string, len(evilCodeTitleArt))
+	for i, line := range evilCodeTitleArt {
+		if width > 0 && blockWidth > width {
+			line = truncateCells(line, width)
+		}
+		lines[i] = strings.Repeat(" ", left) + line
 	}
-	if lipgloss.Width(line) > width {
-		return truncateCells(line, width)
-	}
-	return strings.Repeat(" ", (width-lipgloss.Width(line))/2) + line
+	return lines
 }
 
 func (r *Renderer) startPageWordmark(width, frame int) []string {
@@ -198,7 +201,7 @@ func (r *Renderer) startPageWordmark(width, frame int) []string {
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUser))).Bold(true)
 	white := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUserText))).Bold(true)
-	wordmarkWidth := lipgloss.Width(evilCodeTitleArt[len(evilCodeTitleArt)-1])
+	wordmarkWidth := evilCodeTitleWidth()
 	left := max((width-wordmarkWidth)/2, 0)
 	base := left - 1 + frame%startPageWaveCycle
 	rowOffsets := [...]int{-1, 0, 1, 2}

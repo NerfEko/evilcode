@@ -571,6 +571,19 @@ func TestStartPageWordmarkWaveAnimatesAndUsesMauveWhite(t *testing.T) {
 	}
 }
 
+func TestStartPageWordmarkCentersTheWholeFigletBlock(t *testing.T) {
+	r := testRenderer(80)
+	got := plainLines(r.startPageWordmark(80, 0))
+	left := (80 - evilCodeTitleWidth()) / 2
+	for i, line := range got {
+		gotFirst := strings.IndexFunc(line, func(r rune) bool { return r != ' ' })
+		artFirst := strings.IndexFunc(evilCodeTitleArt[i], func(r rune) bool { return r != ' ' })
+		if gotFirst != left+artFirst {
+			t.Errorf("row %d starts at cell %d, want %d; title rows are not aligned:\n%q", i, gotFirst, left+artFirst, got)
+		}
+	}
+}
+
 func TestStartPageSelectionHighlightsAButton(t *testing.T) {
 	r := testRenderer(80)
 	rows := []SessionRow{
