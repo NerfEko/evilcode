@@ -5295,8 +5295,7 @@ func shellCommandForClipboard(source string) string {
 			cleaned = append(cleaned, "")
 			continue
 		}
-		line = stripShellComment(line)
-		line = strings.TrimRight(line, " \t")
+		line = shellLineForClipboard(line)
 		if strings.TrimSpace(line) == "" {
 			// A line that contained only a comment is not part of the command.
 			continue
@@ -5310,6 +5309,14 @@ func shellCommandForClipboard(source string) string {
 		cleaned = cleaned[:len(cleaned)-1]
 	}
 	return strings.Join(cleaned, "\n")
+}
+
+// shellLineForClipboard returns the exact visible source prefix that survives
+// copying for one shell line. It is shared by clipboard extraction and hover
+// painting so the underline ends at the same cell the pasted command ends at.
+func shellLineForClipboard(line string) string {
+	line = stripShellComment(line)
+	return strings.TrimRight(line, " \t\r")
 }
 
 // stripShellComment removes a bash/fish comment without touching # characters

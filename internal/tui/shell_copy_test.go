@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"evilcode/internal/theme"
 )
 
 func shellRow(t *testing.T, m *Model, needle string) int {
@@ -108,6 +109,24 @@ func TestHoverPersistsAcrossAnimationTicks(t *testing.T) {
 	rows := m.transcriptLines()
 	if !strings.Contains(rows.Lines[row], "\x1b[4:3m") {
 		t.Fatalf("hover underline disappeared on a passive tick: %q", rows.Lines[row])
+	}
+}
+
+func TestShellHoverOnlyUnderlinesCopiedPrefix(t *testing.T) {
+	r := NewRenderer(theme.Dracula(), 80)
+	lines := r.renderCodeBlock(Segment{
+		Code: true, Lang: "bash", Text: "sudo -k    # invalidate cached credentials\n# section note",
+	}, true)
+	commandLine := lines[1]
+	comment := strings.Index(commandLine, "#")
+	if comment < 0 {
+		t.Fatalf("rendered line lost its comment: %q", commandLine)
+	}
+	if underline := strings.LastIndex(commandLine, "\x1b[4:3m"); underline >= comment {
+		t.Fatalf("comment was included in hover underline: %q", commandLine)
+	}
+	if strings.Contains(lines[2], "\x1b[4:3m") {
+		t.Fatalf("comment-only line was underlined: %q", lines[2])
 	}
 }
 

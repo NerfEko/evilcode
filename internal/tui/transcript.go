@@ -540,8 +540,8 @@ func (r *Renderer) renderCodeBlock(seg Segment, hover ...bool) []string {
 		if i < len(highlighted) {
 			text = highlighted[i]
 		}
-		if hovered && strings.TrimSpace(body[i]) != "" {
-			text = jaggedUnderline(text)
+		if hovered && shellLanguage(seg.Lang) {
+			text = jaggedShellText(text, body[i])
 		}
 		out = append(out, chrome.Render("│ ")+text)
 	}
@@ -552,6 +552,24 @@ func (r *Renderer) renderCodeBlock(seg Segment, hover ...bool) []string {
 		out = append(out, chrome.Render("└─"))
 	}
 	return out
+}
+
+// jaggedShellText underlines only the source prefix that a bash/fish click
+// copies. Inline comments and their separating spaces remain visible as
+// annotations, but are not presented as part of the clickable command.
+func jaggedShellText(highlighted, source string) string {
+	command := shellLineForClipboard(source)
+	width := lipgloss.Width(command)
+	if width <= 0 {
+		return highlighted
+	}
+	visible := ansi.StringWidth(highlighted)
+	if width >= visible {
+		return jaggedUnderline(highlighted)
+	}
+	prefix := ansi.Cut(highlighted, 0, width)
+	suffix := ansi.Cut(highlighted, width, visible)
+	return jaggedUnderline(prefix) + suffix
 }
 
 // renderTool draws the one-line completed call of §9.5:
