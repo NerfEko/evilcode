@@ -165,7 +165,7 @@ func TestStartPageWaveUpdatesWithoutRebuildingPreview(t *testing.T) {
 
 	m.View()
 	lines := m.startPageCache.Lines
-	wordmark := lines[0]
+	wordmark := lines[startPageWordmarkRows-1]
 	preview := lines[startPageWordmarkRows+1]
 	m.startWaveFrame = 1
 	m.View()
@@ -173,7 +173,7 @@ func TestStartPageWaveUpdatesWithoutRebuildingPreview(t *testing.T) {
 	if &m.startPageCache.Lines[0] != &lines[0] {
 		t.Fatal("animating the wave rebuilt the cached start page")
 	}
-	if m.startPageCache.Lines[0] == wordmark {
+	if m.startPageCache.Lines[startPageWordmarkRows-1] == wordmark {
 		t.Fatal("animating the wave did not update the wordmark")
 	}
 	if m.startPageCache.Lines[startPageWordmarkRows+1] != preview {

@@ -896,11 +896,13 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) tick() tea.Cmd {
 	// A settled transcript has no spinner to animate. Keeping a 12.5 fps full
 	// frame loop alive while idle made a long session spend a measurable amount
-	// of CPU doing identical layout work. Background progress and pending asks
-	// still get picked up promptly on the slower cadence; an in-flight turn
-	// keeps the normal spinner cadence.
+	// of CPU doing identical layout work. The start page is an exception: its
+	// small wordmark shimmer needs the normal frame cadence, while the preview
+	// itself remains cached. Background progress and pending asks still get
+	// picked up promptly on the slower cadence; an in-flight turn keeps the
+	// normal spinner cadence.
 	interval := IdleTickInterval
-	if m.processing || m.hasRunningBackground() {
+	if m.processing || m.hasRunningBackground() || m.startPageVisible() {
 		interval = SpinnerInterval
 	}
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })

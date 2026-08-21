@@ -160,36 +160,22 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 // start-page copy. The start page now renders the EvilCode wordmark instead.
 const WelcomeMessage = "Welcome to evilcode 🦇"
 
-// evilCodeTitleGlyphs is a compact five-row block alphabet. It stays under
-// normal terminal widths while still reading as a real wordmark rather than a
-// plain heading. Each glyph is five cells wide so composing the title is cheap
-// and deterministic.
-var evilCodeTitleGlyphs = map[byte][5]string{
-	'E': {"#####", "#    ", "#### ", "#    ", "#####"},
-	'V': {"#   #", "#   #", "#   #", " # # ", "  #  "},
-	'I': {"#####", "  #  ", "  #  ", "  #  ", "#####"},
-	'L': {"#    ", "#    ", "#    ", "#    ", "#####"},
-	'C': {"#####", "#    ", "#    ", "#    ", "#####"},
-	'O': {" ### ", "#   #", "#   #", "#   #", " ### "},
-	'D': {"#### ", "#   #", "#   #", "#   #", "#### "},
+// evilCodeTitleArt is the compact small-font figlet treatment. Keeping the
+// generated shape as its own rows makes the title easy to recognize and lets
+// the shimmer paint individual glyph cells without rebuilding any preview.
+var evilCodeTitleArt = []string{
+	"         _ _            _",
+	" _____ _(_) |__ ___  __| |___",
+	"/ -_) V / | / _/ _ \\/ _\x60 / -_)",
+	"\\___|\\_/|_|_\\__\\___/\\__,_\\___|",
 }
 
-const startPageWordmarkRows = 5
+const startPageWordmarkRows = 4
 
-const startPageWaveCycle = 32
+const startPageWaveCycle = 40
 
 func evilCodeTitleLines(width int) []string {
-	const title = "EVILCODE"
-	lines := make([]string, startPageWordmarkRows)
-	for _, ch := range []byte(title) {
-		glyph := evilCodeTitleGlyphs[ch]
-		for row := range lines {
-			if lines[row] != "" {
-				lines[row] += " "
-			}
-			lines[row] += glyph[row]
-		}
-	}
+	lines := append([]string(nil), evilCodeTitleArt...)
 	for i, line := range lines {
 		lines[i] = centerStartPageLine(line, width)
 	}
@@ -212,8 +198,10 @@ func (r *Renderer) startPageWordmark(width, frame int) []string {
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUser))).Bold(true)
 	white := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleUserText))).Bold(true)
-	base := (frame*3 + width/2) % (width + 16)
-	rowOffsets := [...]int{-2, -1, 0, 1, 2}
+	wordmarkWidth := lipgloss.Width(evilCodeTitleArt[len(evilCodeTitleArt)-1])
+	left := max((width-wordmarkWidth)/2, 0)
+	base := left - 1 + frame%startPageWaveCycle
+	rowOffsets := [...]int{-1, 0, 1, 2}
 	for row, line := range lines {
 		var styled strings.Builder
 		for col, ch := range []rune(line) {
@@ -221,7 +209,7 @@ func (r *Renderer) startPageWordmark(width, frame int) []string {
 				styled.WriteRune(ch)
 				continue
 			}
-			center := base - 8 + rowOffsets[row]
+			center := base + rowOffsets[row]
 			distance := col - center
 			if distance < 0 {
 				distance = -distance

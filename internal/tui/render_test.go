@@ -528,7 +528,7 @@ func TestStartPage(t *testing.T) {
 	if strings.Contains(joined, WelcomeMessage) {
 		t.Errorf("start page still renders the old welcome message:\n%s", joined)
 	}
-	if !strings.Contains(joined, "##### #   # #####") {
+	if !strings.Contains(joined, "_____ _(_) |__") {
 		t.Errorf("start page missing the EvilCode ASCII wordmark:\n%s", joined)
 	}
 	// Every session appears as a horizontal button.
