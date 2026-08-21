@@ -112,6 +112,42 @@ func TestStartPagePreviewLoadsFromDisk(t *testing.T) {
 	_ = time.Now
 }
 
+func TestStartPageRefreshDoesNotReactivateWhileTyping(t *testing.T) {
+	m := NewModel(nil, HeaderState{SessionName: "current", Model: "mock"})
+	m.startRows = []SessionRow{{Info: session.Info{Name: "bat"}}}
+	m.startSelected = 0
+	m.startActive = true
+	m.editor.Text = "typed prompt"
+
+	m.applyStartSessions(startSessionsMsg{rows: []SessionRow{{Info: session.Info{Name: "bat"}}}})
+
+	if m.startActive {
+		t.Fatal("roster refresh reactivated the resume highlight while typing")
+	}
+}
+
+func TestStartPageRenderCacheSurvivesComposerEdits(t *testing.T) {
+	m := NewModel(nil, HeaderState{SessionName: "current", Model: "mock"})
+	m.width, m.height = 90, 24
+	m.startRows = []SessionRow{{Info: session.Info{Name: "bat"}}}
+
+	m.View()
+	if !m.startPageCacheValid || len(m.startPageCache.Lines) == 0 {
+		t.Fatal("start page render did not populate its cache")
+	}
+	version := m.startPageVersion
+	lines := m.startPageCache.Lines
+
+	_, _ = m.handleKey(keyPressText("h"))
+	m.View()
+	if m.startPageVersion != version {
+		t.Fatalf("ordinary typing invalidated the start page cache: version %d -> %d", version, m.startPageVersion)
+	}
+	if &m.startPageCache.Lines[0] != &lines[0] {
+		t.Fatal("ordinary typing rebuilt the start page instead of reusing its cached rows")
+	}
+}
+
 // keyPressRight builds a right-arrow KeyPressMsg.
 func keyPressRight() tea.KeyPressMsg { return tea.KeyPressMsg{Code: tea.KeyRight} }
 

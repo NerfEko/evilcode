@@ -60,6 +60,17 @@ type transcriptHeightEntry struct {
 	height int
 }
 
+// startPageCacheKey describes the inputs that affect the rendered empty-state
+// page. Composer edits usually leave these values unchanged, so the relatively
+// expensive welcome/preview render can be reused while a prompt is being typed.
+type startPageCacheKey struct {
+	version  uint64
+	width    int
+	height   int
+	selected int
+	active   bool
+}
+
 type hoverKind uint8
 
 const (
@@ -102,6 +113,15 @@ type Model struct {
 	transcriptCache      Rows
 	transcriptCacheWidth int
 	transcriptCacheValid bool
+
+	// startPageCache is separate from transcriptCache because the empty-state
+	// page has a height that follows the composer. Keeping its own key lets
+	// ordinary typing reuse the preview/buttons without freezing layout when a
+	// wrapped composer changes the available height.
+	startPageCache      Rows
+	startPageCacheKey   startPageCacheKey
+	startPageCacheValid bool
+	startPageVersion    uint64
 
 	// transcriptHeightCache stores the line count for the current and the
 	// scrollbar-probe widths. Counting a long, settled transcript does not need
@@ -1179,6 +1199,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// attachment is worse than a missing one (plan.md §6.6).
 		insert, stored := CollapsePaste(msg.Content)
 		m.editor.Insert(insert)
+		m.deactivateStartSelection()
 		m.resetTypingIfEmpty()
 		if stored != nil {
 			m.pastes = append(m.pastes, *stored)
@@ -1813,6 +1834,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				sel := clamp(m.palette.Selected, 0, len(suggestions)-1)
 				m.editor.Text = "/" + suggestions[sel].Name
 				m.editor.Cursor = len([]rune(m.editor.Text))
+				m.deactivateStartSelection()
 			}
 			return m, nil
 		case "enter":
@@ -1857,11 +1879,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "left", "up":
 			m.startActive = true
 			m.startSelected = max(m.startSelected-1, 0)
+			m.invalidateStartPageCache()
 			m.loadStartPreview()
 			return m, nil
 		case "right", "down":
 			m.startActive = true
 			m.startSelected = min(m.startSelected+1, len(m.startRows)-1)
+			m.invalidateStartPageCache()
 			m.loadStartPreview()
 			return m, nil
 		case "enter":
@@ -2054,6 +2078,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.pending = nil
 			m.editor.Text = strings.Join(texts, "\n\n")
 			m.editor.Cursor = len([]rune(m.editor.Text))
+			m.deactivateStartSelection()
 			m.notice = fmt.Sprintf("Retrieved %d pending message(s) for editing", n)
 			return m, nil
 		}
@@ -2061,6 +2086,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if all := m.prompts.All(); len(all) > 0 {
 				m.editor.Text = all[len(all)-1]
 				m.editor.Cursor = len([]rune(m.editor.Text))
+				m.deactivateStartSelection()
 			}
 		}
 		return m, nil
@@ -2119,7 +2145,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// produced — String() spells space as "space", which would drop it.
 	if txt := msg.Key().Text; txt != "" {
 		m.insertPromptText(txt)
-		m.startActive = false
 		m.confirmQuit = false
 		// Typing normally follows the bottom; the lock keeps the reader where
 		// they were (plan.md §4.5).
@@ -3684,9 +3709,22 @@ const minimumWPMWords = 5
 func (m *Model) insertPromptText(text string) {
 	wasEmpty := m.editor.Text == ""
 	m.editor.Insert(text)
+	m.deactivateStartSelection()
 	if wasEmpty && m.editor.Text != "" && m.typingStarted.IsZero() {
 		m.typingStarted = time.Now()
 	}
+}
+
+// deactivateStartSelection hands focus to the composer as soon as it receives
+// text. Keeping this in one helper covers keys, multiline insertion, and
+// bracketed paste, so a roster refresh can never make a resume pill flash back
+// on during an in-progress prompt.
+func (m *Model) deactivateStartSelection() {
+	if !m.startActive {
+		return
+	}
+	m.startActive = false
+	m.invalidateStartPageCache()
 }
 
 func (m *Model) resetTypingIfEmpty() {
@@ -3807,6 +3845,38 @@ func (m *Model) invalidateTranscriptCache() {
 	m.transcriptHeightCache = [2]transcriptHeightEntry{}
 }
 
+// invalidateStartPageCache marks the empty-state preview stale. Roster refresh
+// and arrow selection call this explicitly because those key paths are allowed
+// to keep the settled transcript cache, while the next ordinary composer edit
+// can continue using the already-rendered start page.
+func (m *Model) invalidateStartPageCache() {
+	m.startPageVersion++
+	m.startPageCache = Rows{}
+	m.startPageCacheValid = false
+}
+
+func (m *Model) renderStartPageRows(width, height int) Rows {
+	key := startPageCacheKey{
+		version:  m.startPageVersion,
+		width:    width,
+		height:   height,
+		selected: m.startSelected,
+		active:   m.startActive,
+	}
+	if m.startPageCacheValid && m.startPageCacheKey == key {
+		return m.startPageCache
+	}
+	lines := m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, width, height)
+	owner := make([]int, len(lines))
+	for i := range owner {
+		owner[i] = -1
+	}
+	m.startPageCache = Rows{Lines: lines, Owner: owner}
+	m.startPageCacheKey = key
+	m.startPageCacheValid = true
+	return m.startPageCache
+}
+
 func (m *Model) cachedTranscriptHeight(width int) (int, bool) {
 	for _, entry := range m.transcriptHeightCache {
 		if entry.valid && entry.width == width {
@@ -3859,12 +3929,7 @@ func (m *Model) transcriptLines() Rows {
 
 	if len(m.blocks) == 0 {
 		w, h := m.startPageBounds()
-		start := m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, w, h)
-		owner := make([]int, len(start))
-		for i := range owner {
-			owner[i] = -1
-		}
-		rows := Rows{Lines: start, Owner: owner}
+		rows := m.renderStartPageRows(w, h)
 		if cacheable {
 			m.rememberTranscriptHeight(m.renderer.Width, len(rows.Lines))
 		}
@@ -4011,7 +4076,11 @@ func (m *Model) stackFor(contentHeight int) Stack {
 // the cached height instead of walking every block again, which is what kept
 // the frame time climbing as the conversation grew.
 func (m *Model) contentHeightAtWidth(width int) int {
-	if !m.hasStreamingBlock() {
+	// The empty start page follows the composer height. Its rendered rows are
+	// cached separately, but the line count must still be probed after a
+	// wrapped composer edit; reusing the settled-transcript height here would
+	// leave scrollbar/layout feedback one frame behind typing.
+	if len(m.blocks) > 0 && !m.hasStreamingBlock() {
 		if height, ok := m.cachedTranscriptHeight(width); ok {
 			return height
 		}
@@ -4032,17 +4101,14 @@ func (m *Model) transcriptHeightOnly() int {
 	if _, active := m.entryAnim.Progress(time.Now()); active {
 		animating = true
 	}
-	if !animating && !m.hasStreamingBlock() {
+	if len(m.blocks) > 0 && !animating && !m.hasStreamingBlock() {
 		if height, ok := m.cachedTranscriptHeight(m.renderer.Width); ok {
 			return height
 		}
 	}
 	if len(m.blocks) == 0 {
 		w, h := m.startPageBounds()
-		height := len(m.renderer.RenderStartPage(m.startRows, m.startSelected, m.startActive, w, h))
-		if !animating {
-			m.rememberTranscriptHeight(m.renderer.Width, height)
-		}
+		height := len(m.renderStartPageRows(w, h).Lines)
 		return height
 	}
 	height := len(m.renderer.RenderHeader(m.header)) + 1

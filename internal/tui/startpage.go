@@ -110,7 +110,11 @@ func (m *Model) applyStartSessions(msg startSessionsMsg) {
 	// resume a different session than the one the user had highlighted.
 	m.startSelected = 0
 	m.startActive = false
-	if prevName != "" {
+	// Refreshes must not steal focus back from the composer. While the user is
+	// typing a new prompt the resume row is intentionally inactive; otherwise
+	// the three-second roster poll makes the green pill reappear between
+	// keystrokes and the next printable key removes it again.
+	if prevName != "" && m.editor.Text == "" {
 		for i, r := range m.startRows {
 			if r.Info.Name == prevName {
 				m.startSelected = i
@@ -122,6 +126,7 @@ func (m *Model) applyStartSessions(msg startSessionsMsg) {
 	if m.startSelected >= len(m.startRows) {
 		m.startSelected = max(len(m.startRows)-1, 0)
 	}
+	m.invalidateStartPageCache()
 
 	// Load the preview for the now-selected row so the box is populated on the
 	// first frame after the roster arrives, not just after the first arrow.
@@ -219,6 +224,7 @@ func (m *Model) loadStartPreview() {
 		// Distinguish "loaded and empty" from "not loaded yet", or an empty
 		// session re-reads on every frame.
 		row.Preview = []Block{}
+		m.invalidateStartPageCache()
 		return
 	}
 	// The count is the full conversation length, before tailing to the preview
@@ -233,4 +239,5 @@ func (m *Model) loadStartPreview() {
 		blocks = []Block{}
 	}
 	row.Preview = blocks
+	m.invalidateStartPageCache()
 }
