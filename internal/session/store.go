@@ -267,8 +267,21 @@ func CreateNamedAt(dataDir, name, cwd string) (*Store, error) {
 	}
 
 	flags := os.O_CREATE | os.O_EXCL | os.O_WRONLY | os.O_APPEND | syscall.O_NOFOLLOW
-	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
+	deterministic := os.Getenv("EVILCODE_DETERMINISTIC") == "1"
+	if deterministic {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND | syscall.O_NOFOLLOW
+	}
+	// In deterministic mode O_EXCL is dropped so a replay reopens the same name,
+	// which means `path` may already hold a prior run's conversation. Removing it
+	// on a failed start marker would destroy that log, so only clean up a file we
+	// actually created fresh.
+	preexisting := false
+	if deterministic {
+		if _, statErr := os.Lstat(path); statErr == nil {
+			preexisting = true
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
 	}
 	f, err := os.OpenFile(path, flags, FilePerm)
 	if err != nil {
@@ -283,7 +296,12 @@ func CreateNamedAt(dataDir, name, cwd string) (*Store, error) {
 		// A store returned alongside an error is a store nobody closes: the
 		// caller takes the error path and the descriptor, and the claimed name,
 		// stay held for the life of the process.
-		return nil, errors.Join(err, f.Close(), os.Remove(path))
+		closeErr := f.Close()
+		if preexisting {
+			// The file was someone else's; a failed start marker must not delete it.
+			return nil, errors.Join(err, closeErr)
+		}
+		return nil, errors.Join(err, closeErr, os.Remove(path))
 	}
 	return st, nil
 }

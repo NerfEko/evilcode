@@ -158,7 +158,15 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 		}
 		s.swarm.mu.Unlock()
 	}, cwd)
-	if err != nil && !errors.Is(err, errPublishedWorker) {
+	if err != nil {
+		// The worker was published but shutdown won the race with its first
+		// turn: spawn returned a nil session, and markFinished already
+		// returned its live slot, so the reservation is balanced — release
+		// would double-count it. There is no name to report; the caller learns
+		// the daemon is shutting down.
+		if errors.Is(err, errPublishedWorker) {
+			return "", err
+		}
 		s.swarm.release(spawner)
 		return "", err
 	}

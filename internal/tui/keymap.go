@@ -40,6 +40,7 @@ const (
 	ActionThinkingDisplay Action = "thinking_display_cycle"
 	ActionReasoningEffort Action = "reasoning_effort_cycle"
 	ActionBackgroundTask  Action = "background_task"
+	ActionSelectionMode   Action = "selection_mode"
 )
 
 // Binding pairs an action with the keys that trigger it and a description for
@@ -72,6 +73,7 @@ var DefaultBindings = []Binding{
 	{ActionThinkingDisplay, []string{"alt+t"}, "cycle thinking display"},
 	{ActionReasoningEffort, []string{"alt+r"}, "cycle reasoning effort"},
 	{ActionBackgroundTask, []string{"alt+b"}, "send the running tool to the background"},
+	{ActionSelectionMode, []string{"alt+o"}, "toggle mouse text selection (highlight & copy)"},
 }
 
 // Keymap resolves a key press to an action.

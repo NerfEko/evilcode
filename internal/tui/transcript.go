@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -835,8 +836,9 @@ func wrapPlain(s string, width int) []string {
 			// A single word longer than the width has to be broken, or it
 			// pushes the whole layout sideways.
 			for lipgloss.Width(line) > width {
-				out = append(out, truncateCells(line, width))
-				line = dropCells(line, width)
+				head, tail := splitPlainCells(line, width)
+				out = append(out, head)
+				line = tail
 			}
 		}
 		if line != "" {
@@ -866,9 +868,16 @@ func truncateCells(s string, width int) string {
 }
 
 // dropCells returns the remainder after truncateCells.
-func dropCells(s string, width int) string {
-	head := truncateCells(s, width)
-	return s[len(head):]
+func splitPlainCells(s string, width int) (head, tail string) {
+	head = truncateCells(s, width)
+	if head == "" && s != "" {
+		// A wide glyph cannot fit in a one-cell row, so ansi.Truncate returns
+		// an empty string. Consume the first rune anyway: preserving a glyph
+		// that is one cell wider is preferable to an infinite wrapping loop.
+		_, size := utf8.DecodeRuneInString(s)
+		head = s[:size]
+	}
+	return head, s[len(head):]
 }
 
 // ThinkingMode is how reasoning traces are displayed (plan.md §9.7).

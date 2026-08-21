@@ -237,6 +237,11 @@ type Model struct {
 	// typingLock keeps the view where it is while typing (Alt+S, §4.5).
 	typingLock bool
 
+	// selectionMode turns off mouse tracking so the terminal's native
+	// highlight-and-copy takes over the screen (Alt+O). The app's click/wheel
+	// handlers are inert while it is on; Esc or Alt+O leaves the mode.
+	selectionMode bool
+
 	// entryAnim is the ~600ms flourish on a just-submitted prompt (§10.2).
 	entryAnim EntryAnimation
 
@@ -1700,6 +1705,25 @@ func (m *Model) flushPending() {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	// Selection mode is modal: the terminal owns the mouse for native text
+	// selection, so the only keys that do anything are the ones that leave the
+	// mode. Everything else is swallowed so a keystroke does not edit the
+	// composer while the user is dragging to select.
+	if m.selectionMode {
+		if key == "esc" {
+			m.selectionMode = false
+			m.notice = "Selection mode off — mouse tracking restored"
+			return m, nil
+		}
+		if m.keymap != nil {
+			if b, ok := m.keymap.Lookup(key); ok && b.Action == ActionSelectionMode {
+				m.selectionMode = false
+				m.notice = "Selection mode off — mouse tracking restored"
+				return m, nil
+			}
+		}
+		return m, nil
+	}
 	if m.loginMode {
 		return m.handleLoginKey(key, msg)
 	}
@@ -2214,6 +2238,13 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 		m.notice = "Thinking display: " + string(m.thinking)
 	case ActionReasoningEffort:
 		m.cycleReasoningEffort()
+	case ActionSelectionMode:
+		m.selectionMode = !m.selectionMode
+		if m.selectionMode {
+			m.notice = "Selection mode: highlight with the mouse and copy with your terminal — Esc to exit"
+		} else {
+			m.notice = "Selection mode off — mouse tracking restored"
+		}
 	case ActionRetrievePending:
 		return m.retrievePending()
 	default:
@@ -4410,6 +4441,11 @@ func (m *Model) View() tea.View {
 
 	rows = m.debugOverlay(rows, res.Transcript)
 
+	// Selection mode overlays a banner on the top row and, by itself, does not
+	// touch the transcript cache — but it does change what the frame shows, so
+	// it is applied here on the finished rows.
+	rows = m.selectionBanner(rows)
+
 	// The anchor recorder runs on the finished frame, so what it measures is
 	// exactly what the reader saw (plan.md §13).
 	// Only the transcript is measured. The composer and status line move down
@@ -4434,13 +4470,34 @@ func (m *Model) View() tea.View {
 	// These are view properties in Bubble Tea v2, not program options.
 	v.AltScreen = true
 	// Cell motion is enough for the wheel and is better supported than all
-	// motion, which would flood the loop with movement events we ignore.
-	v.MouseMode = tea.MouseModeCellMotion
+	// motion, which would flood the loop with movement events we ignore. In
+	// selection mode mouse tracking is off entirely so the terminal's native
+	// text highlight-and-copy takes over the screen.
+	if m.selectionMode {
+		v.MouseMode = tea.MouseModeNone
+	} else {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	// Shift+Enter needs the kitty keyboard protocol to be distinguishable from
 	// a plain Enter. Terminals without it fall back to Alt+Enter or the
 	// trailing backslash (plan.md §6.2).
 	v.KeyboardEnhancements = tea.KeyboardEnhancements{ReportAlternateKeys: true}
 	return v
+}
+
+// selectionBanner overlays a one-line mode indicator on the top row of the
+// frame while selection mode is on. Mouse tracking is off in this mode, so the
+// terminal's native highlight-and-copy takes over; the banner tells the user
+// how to leave. Replacing row 0 (the header) keeps the layout height fixed.
+func (m *Model) selectionBanner(rows []string) []string {
+	if !m.selectionMode || len(rows) == 0 {
+		return rows
+	}
+	st := m.renderer.style(theme.RoleAccent).Reverse(true).Bold(true)
+	msg := " Selection mode: highlight with the mouse, copy with your terminal — Esc to exit "
+	pad := max(m.width-lipgloss.Width(msg), 0)
+	rows[0] = st.Render(msg + strings.Repeat(" ", pad))
+	return rows
 }
 
 // overlayHistory splices the reverse search over the finished frame. It is

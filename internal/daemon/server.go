@@ -519,16 +519,44 @@ func (s *Server) Close() {
 	}
 	// A build may have opened the shared bank before Close took the lock. Let it
 	// finish (or observe the closed flag and clean itself up) before closing the
-	// bank it borrows.
-	s.builds.Wait()
+	// bank it borrows — but not forever. wiring.Build is local I/O only, so a
+	// healthy build returns in well under the budget; a build that blows the
+	// budget is stuck on the filesystem (a hung NFS/FUSE mount), and a daemon
+	// shutdown must not wedge on that. On timeout the orphaned build keeps the
+	// bank it borrowed and cleans up via its own closed-check; the bank is not
+	// closed here to avoid racing that in-flight Build. The leak is benign: this
+	// only runs at shutdown.
+	bankOwned := waitForBuilds(&s.builds, closeBuildBudget)
 	os.Remove(s.Path)
 	for _, sess := range sessions {
 		sess.close()
 	}
 	// The bank is the server's, so it outlives every session and is closed last:
 	// a session's own Close must not take the swarm's memory down with it.
-	if bank != nil {
+	if bank != nil && bankOwned {
 		bank.Close()
+	}
+}
+
+// closeBuildBudget bounds how long Close waits for an in-flight build before
+// proceeding with the rest of shutdown. Generous for the local I/O a build
+// does, short enough that a stuck filesystem does not wedge teardown.
+const closeBuildBudget = 10 * time.Second
+
+// waitForBuilds reports whether all builds finished within the budget. A
+// sync.WaitGroup has no timeout of its own, so the wait runs in a goroutine
+// and the budget is enforced with a timer.
+func waitForBuilds(wg *sync.WaitGroup, budget time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(budget):
+		return false
 	}
 }
 

@@ -58,6 +58,12 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		return nil, fmt.Errorf("the daemon is shutting down")
 	}
 	s.builds.Add(1)
+	// Clone the config under the lock, exactly as Open does: wiring.Build
+	// mutates the config (AddDiscoveredCodex appends Providers) and reads
+	// ReasoningEfforts, while the MsgReasoningEffort handler writes that map
+	// under s.mu. Passing the shared config lock-free races a concurrent map
+	// read against that write — a fatal runtime panic.
+	cfg := s.Cfg.Clone()
 	s.mu.Unlock()
 	defer s.builds.Done()
 
@@ -72,7 +78,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 	var mcpClient *mcp.Client
 	var extraTools tools.Set
 	var extraClosers []func()
-	workerCfg := s.Cfg
+	workerCfg := cfg
 	if workerCfg == nil {
 		store.Close()
 		s.releaseName(store.Name)

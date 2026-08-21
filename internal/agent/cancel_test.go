@@ -206,6 +206,67 @@ func TestCancelledRoundKeepsFinishedResults(t *testing.T) {
 	}
 }
 
+// A deadline owned by one tool is an ordinary tool error, not evidence that
+// the user cancelled the whole turn. bg wait uses a child timeout to bound how
+// long it blocks while the underlying task keeps running.
+func TestToolLocalDeadlineDoesNotInterruptTurn(t *testing.T) {
+	wait := tools.Tool{
+		Name:   "wait",
+		Desc:   "waits with its own deadline",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run: func(context.Context, json.RawMessage) (tools.Result, error) {
+			return tools.Result{Output: "background task 1 is still running"}, context.DeadlineExceeded
+		},
+	}
+
+	a := newTestAgent(t, &deadlineProvider{}, tools.Set{wait})
+	events, err := collect(t, a, func() error {
+		return a.Run(context.Background(), "go")
+	})
+	if err != nil {
+		t.Fatalf("a tool-local deadline must not fail the turn: %v", err)
+	}
+	if last := events[len(events)-1]; last.Kind != EventTurnEnd || last.Reason != EndComplete {
+		t.Fatalf("turn ended with %s, want complete", last.Reason)
+	}
+
+	var result string
+	for _, msg := range a.Conv.Messages() {
+		if msg.ToolCallID == "call_wait" {
+			result = msg.Content
+		}
+	}
+	if !strings.Contains(result, "background task 1 is still running") {
+		t.Fatalf("tool timeout result was lost: %q", result)
+	}
+	if strings.Contains(result, stubSkipped) {
+		t.Fatalf("tool-local deadline was mislabeled as an interrupt: %q", result)
+	}
+}
+
+type deadlineProvider struct{ served bool }
+
+func (p *deadlineProvider) Name() string { return "deadline" }
+func (p *deadlineProvider) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, nil
+}
+func (p *deadlineProvider) Models(context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *deadlineProvider) ChatStream(context.Context, provider.Req) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk, 1)
+	if !p.served {
+		p.served = true
+		ch <- provider.Chunk{ToolCalls: []provider.ToolCall{{
+			ID: "call_wait", Name: "wait", Args: json.RawMessage(`{}`),
+		}}}
+	} else {
+		ch <- provider.Chunk{Text: "done"}
+	}
+	close(ch)
+	return ch, nil
+}
+
 // mixedProvider asks for one tool that finishes and one that hangs.
 type mixedProvider struct{ served bool }
 

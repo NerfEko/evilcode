@@ -655,6 +655,11 @@ func (a *codexCallAccum) get(item map[string]any) *codexCall {
 		}
 		call = &codexCall{Key: key, ID: itemID, CallID: callID}
 		a.order = append(a.order, key)
+		// Register the key under every name this call is known by, including the
+		// synthetic one used when call_id/item_id are both absent. Without this
+		// the synthetic key is added to a.order but never to a.byKey, so finish()'s
+		// `a.byKey[key]` returns nil and the next line dereferences it.
+		a.byKey[key] = call
 	}
 	if callID != "" {
 		a.byKey[callID] = call

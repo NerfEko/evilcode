@@ -588,6 +588,11 @@ func (a *Agent) loop(ctx context.Context) error {
 				a.endTurn(EndInterrupted)
 				return nil
 			}
+			// A mid-stream error that already showed deltas keeps the partial too:
+			// the reader watched the answer form, and discarding it here would
+			// leave the transcript shorter than what the UI showed — a resume then
+			// loses the text. The same rationale as the interrupt path.
+			a.commitPartial(msg)
 			ev := a.newEvent(EventError)
 			ev.Err = err
 			a.emit(ev)
@@ -856,16 +861,19 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
 	// real result, including one that legitimately returns nothing, and a tool
 	// that failed for its own reasons keeps its own error rather than being
 	// relabelled as interrupted.
-	cancelled := false
+	// A tool can impose its own deadline without the turn being cancelled. The
+	// bg wait tool does exactly that: its timeout means "still running", not
+	// "the user interrupted the agent". Only the parent turn context can tell us
+	// that this round was actually interrupted.
+	interrupted := ctx.Err() != nil
 	for i, out := range outcomes {
-		if errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded) {
-			cancelled = true
+		if interrupted && (errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded)) {
 			a.appendToolResult(calls[i], stubSkipped, fmt.Errorf("interrupted"), tools.Result{})
 			continue
 		}
 		a.appendToolResult(calls[i], out.Result.Output, out.Err, out.Result)
 	}
-	if cancelled || ctx.Err() != nil {
+	if interrupted {
 		return context.Canceled
 	}
 	return nil

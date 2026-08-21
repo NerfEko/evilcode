@@ -225,5 +225,6 @@ var HelpKeys = [][2]string{
 	{"Ctrl+A / E", "start / end of line"},
 	{"Ctrl+Z / S", "undo input / stash and restore a draft"},
 	{"Alt+R", "cycle the active model's reasoning effort"},
+	{"Alt+O", "toggle selection mode (highlight & copy text with the mouse)"},
 	{"PgUp / PgDn", "scroll a page"},
 }
