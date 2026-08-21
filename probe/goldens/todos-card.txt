@@ -1,7 +1,7 @@
  server: Dracula 🧛 · client: Spider 🕷
  /model to switch · socket:mock · mock-large                                                                                               ╷
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                                        │
- <repo>                                                                                                               │
+ <repo>                                                                                                   │
                                                                                                                                            │
  1› wire the auth flow                                                                                                                     │
                                                                                                                                            │

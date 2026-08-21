@@ -1,6 +1,6 @@
  /model to switch · socket:mock · mock-large                                                                      │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                               ╰──────────────────────╯ ╷
- <repo>                                                                                                               │
+ <repo>                                                                                                   │
                                                                                                                                            │
  1› long answer                                                                                                                            │
                                                                                                                                            │

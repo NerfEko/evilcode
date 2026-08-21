@@ -1,4 +1,7 @@
- Welcome to evilcode 🦇
+                                                                 _ _            _
+                                                         _____ _(_) |__ ___  __| |___
+                                                        / -_) V / | / _/ _ \/ _` / -_)
+                                                        \___|\_/|_|_\__\___/\__,_\___|
 
    no other sessions yet — type below to start a new one
  💡 Ctrl+R searches your prompt history

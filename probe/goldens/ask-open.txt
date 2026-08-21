@@ -1,4 +1,4 @@
- evilcode · v1.1.0                                                                                                  ╭──────────────────────╮
+ evilcode · v1.1.1                                                                                                  ╭──────────────────────╮
  server: Dracula 🧛 · client: Spider 🕷                                                                              │ Context 250/200k     │
  /model to switch · socket:mock · mock-large                                                                        │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯
@@ -8,5 +8,14 @@
 
  One decision first.
  ●·· ask ··● · 0s · Alt+B bg
+ ╭──────────────────────────────────────────────────────────────────────╮
+ │ Should the retry gate back off exponentially or on a fixed interval? │
+ │                                                                      │
+ │  ▸ Exponential backoff  Recommended; matches the rest of the client  │
+ │    Fixed interval  Simpler, but retries a dead endpoint hard         │
+ │                                                                      │
+ │ ↑↓ choose · ↵ answer · Esc skip                                      │
+ ╰──────────────────────────────────────────────────────────────────────╯
+
  2…
    Enter queues until the turn ends

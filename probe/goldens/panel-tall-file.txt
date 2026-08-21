@@ -1,4 +1,4 @@
- <repo>                                          │ testdata/big.go
+ <repo>                              │ testdata/big.go
                                                                       │   1 │ package testdata
  1› renumber them                                                     │   2 │
                                                                       │     │-// big is a probe fixture for the side panel: a file long enou
