@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -94,6 +95,19 @@ func TestViewEnablesUnpressedMouseMotionForHover(t *testing.T) {
 	}}, t.TempDir())
 	if got := m.View().MouseMode; got != tea.MouseModeAllMotion {
 		t.Fatalf("mouse mode = %v, want all-motion hover events", got)
+	}
+}
+
+func TestHoverPersistsAcrossAnimationTicks(t *testing.T) {
+	m := clickModel([]Block{{
+		Kind: BlockTool, ToolName: "read", ToolTarget: "main.go", ToolPath: "main.go",
+	}}, t.TempDir())
+	row := ownerRow(t, m, 0)
+	m.Update(tea.MouseMotionMsg(tea.Mouse{X: 2, Y: row}))
+	m.Update(tickMsg(time.Now()))
+	rows := m.transcriptLines()
+	if !strings.Contains(rows.Lines[row], "\x1b[4:3m") {
+		t.Fatalf("hover underline disappeared on a passive tick: %q", rows.Lines[row])
 	}
 }
 

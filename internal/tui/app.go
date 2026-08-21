@@ -1021,10 +1021,13 @@ func (r rawFlush) String() string {
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if _, motion := msg.(tea.MouseMotionMsg); !motion {
-		// Hover paint is only meaningful while the pointer is stationary over
-		// the transcript. Any other event can change the layout underneath it;
-		// clear the transient affordance before handling that event.
+	switch msg.(type) {
+	case tickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		// Animation ticks and button release do not move transcript rows. Keep
+		// the last actionable target painted while the pointer is stationary.
+	default:
+		// Keyboard input, scrolling, clicks, and incoming content can move the
+		// target under the pointer, so discard transient hover paint first.
 		m.clearHover()
 	}
 	// Most key/paste/mouse messages only change the composer or viewport. They
