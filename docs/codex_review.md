@@ -2,7 +2,7 @@
 
 Reviewed: 2026-08-26  
 Worktree: the current, uncommitted working tree in `/home/eko/projects/evilcode`  
-Scope: all 382 tracked files plus the four current untracked cloud-usage Go files: 312 Go files total (56,656 production lines and 32,153 test lines), the installer, documentation, provider integrations, daemon protocol, persistence formats, tools, every registered TUI command, and every widget/render path. Generated binaries, ignored probe captures, release artifacts, and scratch output were not treated as source.
+Scope: all 386 tracked files at commit `f6e651e`, including 312 Go files (56,656 production lines and 32,153 test lines), the installer, documentation, provider integrations, daemon protocol, persistence formats, tools, every registered TUI command, and every widget/render path. Generated binaries, ignored probe captures, release artifacts, and scratch output were not treated as source.
 
 ## Executive assessment
 
