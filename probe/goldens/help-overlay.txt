@@ -10,6 +10,7 @@
 │ Models                                                                                                                                   │
 │   /model             Switch model                                                                                                        │
 │   /models            List available models                                                                                               │
+│   /refresh-model-list Re-fetch the model catalog from every provider                                                                     │
 │   /reasoning         Set reasoning effort                                                                                                │
 │                                                                                                                                          │
 │ Working                                                                                                                                  │
@@ -34,5 +35,4 @@
 │                                                                                                                                          │
 │ Maintenance                                                                                                                              │
 │   /rebuild           Build, test, and restart into the new binary                                                                        │
-│   /reload            Restart, keeping this session                                                                                       │
 └ Esc to close · j/k scroll · Space page · /help <cmd> for details ────────────────────────────────────────────────────────────────────────┘

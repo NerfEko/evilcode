@@ -6,6 +6,7 @@
    no other sessions yet — type below to start a new one
  💡 Ctrl+R searches your prompt history
  1> /mod
- /model            Switch model
- /models           List available models
- /screenshot-mode  Auto-capture every changed frame
+ /model               Switch model
+ /models              List available models
+ /screenshot-mode     Auto-capture every changed frame
+ /refresh-model-list  Re-fetch the model catalog from every provider

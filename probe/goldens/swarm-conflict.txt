@@ -1,4 +1,4 @@
- evilcode · v1.1.1
+ evilcode · vX.Y.Z
  server: Dracula 🧛 · client: Bat 🦇
  /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
@@ -23,10 +23,10 @@
 
    ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
    Re-read it before you edit it — what you have is stale. Intent:
-   editing testdata/clamp.go.                ╭──────────────────────╮
-   Diff preview:                             │ Context 122/200k     │
-   --- a/testdata/clamp.go                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
-   +++ b/testdata/clamp.go                   ╰──────────────────────╯
+   editing testdata/clamp.go.                 ╭──────────────────────╮
+   Diff preview:                              │ Context 122/200k     │
+   --- a/testdata/clamp.go                    │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+   +++ b/testdata/clamp.go                    ╰──────────────────────╯
    @@ -8,7 +8,7 @@
    // makes every scenario's edit fail with "old string not found",
    and the
@@ -39,7 +39,7 @@
    mock-large · 122/200k ctx · dracula
 
 --- pane 1 ---
- evilcode · v1.1.1
+ evilcode · vX.Y.Z
  server: Dracula 🧛 · client: Serpent 🐉
  /model to switch · socket:mock · mock-large
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock
@@ -59,10 +59,10 @@
 
    ⚠ dracula-2 modified testdata/clamp.go which you read at turn 1.
    Re-read it before you edit it — what you have is stale. Intent:
-   editing testdata/clamp.go.                 ╭──────────────────────╮
-   Diff preview:                              │ Context 122/200k     │
-   --- a/testdata/clamp.go                    │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
-   +++ b/testdata/clamp.go                    ╰──────────────────────╯
+   editing testdata/clamp.go.                ╭──────────────────────╮
+   Diff preview:                             │ Context 122/200k     │
+   --- a/testdata/clamp.go                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
+   +++ b/testdata/clamp.go                   ╰──────────────────────╯
    @@ -8,7 +8,7 @@
    // makes every scenario's edit fail with "old string not found",
    and the

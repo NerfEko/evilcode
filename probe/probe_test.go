@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -186,7 +187,9 @@ func splitArgs(s string) []string {
 // scrub removes machine-specific text so a golden compares the same anywhere.
 // The repo can be reachable by more than one path (a symlinked or bind-mounted
 // home), and the TUI prints whichever one it was launched with, so both the
-// literal and the resolved form are replaced.
+// literal and the resolved form are replaced. The build version is scrubbed
+// too: the header badge changes on every release, and a golden that embeds it
+// goes stale the moment anything else in the frame is updated (E10).
 func scrub(s, root string) string {
 	forms := []string{root}
 	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != root {
@@ -197,8 +200,12 @@ func scrub(s, root string) string {
 	for _, f := range forms {
 		s = strings.ReplaceAll(s, f, "<repo>")
 	}
+	s = versionBadge.ReplaceAllString(s, "evilcode · vX.Y.Z")
 	return s
 }
+
+// versionBadge matches the header's `evilcode · v1.2.3` version badge.
+var versionBadge = regexp.MustCompile(`evilcode · v[0-9]+\.[0-9]+\.[0-9]+`)
 
 func checkGolden(t *testing.T, root, name string) {
 	t.Helper()
@@ -233,7 +240,7 @@ func checkGolden(t *testing.T, root, name string) {
 		t.Fatalf("no golden for %q (%v)\nrun: UPDATE_GOLDENS=1 go test -tags probe ./probe/...\ncaptured:\n%s",
 			name, err, gotText)
 	}
-	wantText := strings.TrimRight(string(want), "\n \t")
+	wantText := scrub(strings.TrimRight(string(want), "\n \t"), root)
 	if gotText != wantText {
 		t.Errorf("frame %q does not match its golden\n--- want ---\n%s\n--- got ---\n%s\n\n"+
 			"if the change is intended:\n  UPDATE_GOLDENS=1 go test -tags probe ./probe/...",

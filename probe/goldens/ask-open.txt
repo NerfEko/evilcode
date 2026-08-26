@@ -1,4 +1,4 @@
- evilcode · v1.1.1                                                                                                  ╭──────────────────────╮
+ evilcode · vX.Y.Z                                                                                                  ╭──────────────────────╮
  server: Dracula 🧛 · client: Spider 🕷                                                                              │ Context 250/200k     │
  /model to switch · socket:mock · mock-large                                                                        │ ▱▱▱▱▱▱▱▱▱▱ 0%        │
  ● ollama-local  ○ ollama-cloud  ○ deepseek  ● mock                                                                 ╰──────────────────────╯

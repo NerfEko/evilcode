@@ -9,6 +9,7 @@
  ╭───────────────────────────────╮
  │ model | provider | via (1/1)  │
  │  ▸ mock-large  mock  loading… │
+ │ Ctrl+O set as default         │
  ╰───────────────────────────────╯
 
  1>

@@ -6,11 +6,11 @@
    no other sessions yet — type below to start a new one
  💡 Ctrl+R searches your prompt history
  1> /
- /help               Show help
- /model              Switch model
- /models             List available models
- /reasoning          Set reasoning effort
- /plan               Plan before implementing
- /review             Review a path or this branch
- /bugfix             Reproduce and fix a bug
- /describe           Explain code structure  +45 more
+ /help                Show help
+ /model               Switch model
+ /models              List available models
+ /refresh-model-list  Re-fetch the model catalog from every provider
+ /reasoning           Set reasoning effort
+ /plan                Plan before implementing
+ /review              Review a path or this branch
+ /bugfix              Reproduce and fix a bug  +46 more
