@@ -93,9 +93,6 @@ func (o *OpenAI) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 	switch {
 	case strings.Contains(lower, "gpt-5.6"):
 		return OpenAIGPT56ReasoningEfforts()
-	case IsGLM53Model(lower):
-		// Z.ai's GLM-5.3 always reasons and accepts low, high, and max.
-		return GLM53ReasoningEfforts()
 	case strings.Contains(lower, "gpt-5"):
 		return OpenAIReasoningEfforts()
 	case strings.HasPrefix(lower, "o1"), strings.HasPrefix(lower, "o3"),

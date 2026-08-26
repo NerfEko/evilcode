@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -405,9 +406,6 @@ func ollamaReasoningEffortsForCapabilities(model string, capabilities []string) 
 		if strings.Contains(strings.ToLower(model), "gpt-oss") {
 			return OllamaThinkingReasoningEfforts()
 		}
-		if IsGLM53Model(model) {
-			return GLM53ReasoningEfforts()
-		}
 		return OllamaReasoningEfforts()
 	}
 	return nil
@@ -434,10 +432,16 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 	if resp.StatusCode != http.StatusOK {
 		return ModelInfo{}, httpError(resp.StatusCode, resp.Body)
 	}
-	var show ollamaShowResp
-	if err := json.NewDecoder(io.LimitReader(resp.Body, providerJSONMaxBytes)).Decode(&show); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, providerJSONMaxBytes))
+	if err != nil {
 		return ModelInfo{}, err
 	}
+	var show ollamaShowResp
+	if err := json.Unmarshal(body, &show); err != nil {
+		return ModelInfo{}, err
+	}
+	var raw map[string]any
+	_ = json.Unmarshal(body, &raw)
 
 	// A local daemon reports parameter_size as "8B"; cloud reports a bare count,
 	// or "0" for a model it does not publish one for. Only the already-readable
@@ -462,7 +466,18 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 			info.Vision = true
 		}
 	}
-	info.ReasoningEfforts = ollamaReasoningEffortsForCapabilities(model, show.Capabilities)
+	info.ReasoningEfforts = reasoningEffortsFromMetadata(raw)
+	if len(info.ReasoningEfforts) == 0 {
+		info.ReasoningEfforts = ollamaInfoEffortLevels(show.ModelInfo)
+	}
+	if len(info.ReasoningEfforts) == 0 {
+		// The API has no metadata for this model. Ollama today only reports a
+		// boolean "thinking" capability and accepts every think value for every
+		// thinking model, so the generic vocabulary is the best the API can
+		// express. If the server starts advertising per-model levels, the
+		// metadata read above picks them up with no code change.
+		info.ReasoningEfforts = ollamaReasoningEffortsForCapabilities(model, show.Capabilities)
+	}
 	// Cloud reports a bare parameter count where local reports "8B". Render the
 	// count so the picker's detail column stays one kind of thing.
 	if n, ok := jsonInt(show.ModelInfo["general.parameter_count"]); ok && n > 0 {
@@ -480,6 +495,32 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 // one request per model per client.
 const showEffortTimeout = 3 * time.Second
 
+// ollamaInfoEffortLevels scans a /api/show model_info map for effort-shaped
+// fields. Ollama scopes per-model metadata under the architecture
+// ("glm5_next.context_length"), so the scan matches on the key's field suffix
+// rather than the whole key. Sorted iteration keeps the result deterministic.
+func ollamaInfoEffortLevels(info map[string]any) []ReasoningEffort {
+	keys := make([]string, 0, len(info))
+	for key := range info {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		field := key
+		if i := strings.LastIndex(field, "."); i >= 0 {
+			field = field[i+1:]
+		}
+		switch field {
+		case "reasoning_efforts", "supported_reasoning_efforts",
+			"reasoning_effort", "efforts", "levels":
+			if levels := reasoningEffortsFromValue(info[key]); len(levels) > 0 {
+				return levels
+			}
+		}
+	}
+	return nil
+}
+
 func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 	o.showMu.Lock()
 	if info, ok := o.showCache[model]; ok && len(info.ReasoningEfforts) > 0 {
@@ -492,9 +533,6 @@ func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if strings.Contains(lower, "gpt-oss") {
 		return OllamaThinkingReasoningEfforts()
-	}
-	if IsGLM53Model(lower) {
-		return GLM53ReasoningEfforts()
 	}
 	if strings.Contains(lower, "think") || strings.Contains(lower, "reason") ||
 		strings.Contains(lower, "r1") || strings.Contains(lower, "qwen3") ||
@@ -518,12 +556,6 @@ func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 
 func ollamaThinkValue(model string, effort ReasoningEffort) any {
 	if effort == ReasoningEffortNone {
-		// GLM-5.3 cannot disable its thinking trace; a saved preference for
-		// none (legal before this model family was classified) must not send
-		// think: false. true keeps thinking on at the model's default effort.
-		if IsGLM53Model(model) {
-			return true
-		}
 		return false
 	}
 	if strings.Contains(strings.ToLower(model), "gpt-oss") {

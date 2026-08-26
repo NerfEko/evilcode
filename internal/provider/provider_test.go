@@ -513,39 +513,47 @@ func TestOllamaReasoningEffortFallbackRecognizesGLM(t *testing.T) {
 	}
 }
 
-func TestOllamaReasoningEffortGLM53UsesDocumentedLevels(t *testing.T) {
-	o := NewOllama("ollama-local", "", "")
-	want := GLM53ReasoningEfforts()
-	for _, model := range []string{"glm-5.3-flash", "glm-5.3-flash:0731", "glm5.3"} {
-		if got := o.reasoningEffortLevelsForModel(model); !slices.Equal(got, want) {
-			t.Errorf("%s reasoning levels = %v, want %v", model, got, want)
-		}
-		if got := ollamaReasoningEffortsForCapabilities(model, []string{"thinking"}); !slices.Equal(got, want) {
-			t.Errorf("%s capability levels = %v, want %v", model, got, want)
-		}
+func TestOllamaShowMetadataWinsForReasoningLevels(t *testing.T) {
+	// When the API advertises per-model levels, they must be used verbatim
+	// instead of the generic capability vocabulary — this is the automatic
+	// discovery path, with no model names in code.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"capabilities":["completion","thinking"],` +
+			`"model_info":{"glm5_next.reasoning_efforts":["low","high","max"],` +
+			`"glm5_next.context_length":131072}}`))
+	}))
+	defer srv.Close()
+
+	o := NewOllama("ollama-cloud", srv.URL, "key")
+	info, err := o.Show(context.Background(), "glm-5.3-flash:cloud")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// GLM-5.3 cannot disable thinking, so a stale saved "none" must not
-	// translate to think: false at the wire edge.
-	if got := ollamaThinkValue("glm-5.3-flash", ReasoningEffortNone); got != true {
-		t.Errorf("glm-5.3 think value for none = %v, want true", got)
+	want := []ReasoningEffort{ReasoningEffortLow, ReasoningEffortHigh, ReasoningEffortMax}
+	if !slices.Equal(info.ReasoningEfforts, want) {
+		t.Fatalf("metadata levels = %v, want %v", info.ReasoningEfforts, want)
 	}
-	// GLM-5.2 accepted non-thinking calls and keeps the generic vocabulary.
-	if got := o.reasoningEffortLevelsForModel("glm-5.2:cloud"); !slices.Equal(got, OllamaReasoningEfforts()) {
-		t.Errorf("glm-5.2 reasoning levels = %v, want %v", got, OllamaReasoningEfforts())
+	if got := ReasoningEffortLevelsForProvider(o, "glm-5.3-flash:cloud"); !slices.Equal(got, want) {
+		t.Errorf("resolution levels = %v, want %v", got, want)
 	}
 }
 
-func TestOpenAIGLM53EffortLevels(t *testing.T) {
-	o := NewOpenAI("zai", "https://api.z.ai", "key")
-	want := GLM53ReasoningEfforts()
-	if got := o.reasoningEffortLevelsForModel("glm-5.3-flash"); !slices.Equal(got, want) {
-		t.Errorf("glm-5.3-flash reasoning levels = %v, want %v", got, want)
+func TestOllamaShowWithoutMetadataFallsBackToCapability(t *testing.T) {
+	// Today's Ollama reports only the boolean capability; the generic
+	// vocabulary is the best the API can express, and must not change.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"capabilities":["completion","thinking"],` +
+			`"model_info":{"glm5_next.context_length":131072}}`))
+	}))
+	defer srv.Close()
+
+	o := NewOllama("ollama-cloud", srv.URL, "key")
+	info, err := o.Show(context.Background(), "glm-5.3-flash:cloud")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A provider configured without reasoning-effort support keeps the
-	// control hidden entirely.
-	plain := NewOpenAI("zai", "https://api.z.ai", "key").WithReasoningEffort(false)
-	if got := plain.reasoningEffortLevelsForModel("glm-5.3-flash"); got != nil {
-		t.Errorf("levels without support = %v, want nil", got)
+	if !slices.Equal(info.ReasoningEfforts, OllamaReasoningEfforts()) {
+		t.Fatalf("capability levels = %v, want %v", info.ReasoningEfforts, OllamaReasoningEfforts())
 	}
 }
 

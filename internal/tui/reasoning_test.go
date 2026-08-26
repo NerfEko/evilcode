@@ -68,33 +68,6 @@ func TestReasoningEffortRecognizesOllamaGLMModels(t *testing.T) {
 	}
 }
 
-func TestReasoningMenuShowsOnlyGLM53DocumentedLevels(t *testing.T) {
-	// GLM-5.3-Flash always reasons with low/high/max; the menu must not offer
-	// none or medium, which the model does not accept.
-	a := agent.New("s", provider.NewOllama("ollama-local", "", ""),
-		"glm-5.3-flash", nil, agent.NewConversation(""))
-	m := NewModel(a, HeaderState{Provider: "ollama-local", Model: "glm-5.3-flash"})
-
-	want := provider.GLM53ReasoningEfforts()
-	if !slices.Equal(m.reasoningLevels, want) {
-		t.Fatalf("glm-5.3-flash menu levels = %v, want %v", m.reasoningLevels, want)
-	}
-	sel := ModelEntry{Name: "glm-5.3-flash", Provider: "ollama-local"}
-	if !m.openReasoningPicker(sel) {
-		t.Fatal("expected the reasoning picker to open")
-	}
-	var shown []provider.ReasoningEffort
-	for _, level := range m.reasoningPicker.levels {
-		shown = append(shown, level)
-	}
-	if !slices.Equal(shown, want) {
-		t.Errorf("reasoning picker shows %v, want %v", shown, want)
-	}
-	if got := m.reasoningPicker.levels[m.reasoningPicker.selected]; got != provider.ReasoningEffortHigh {
-		t.Errorf("picker default = %q, want high", got)
-	}
-}
-
 func TestReasoningEffortRestoresPerModelAndPersistsChanges(t *testing.T) {
 	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""),
 		"gpt-5.6-luna", nil, agent.NewConversation(""))
