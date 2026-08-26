@@ -3852,6 +3852,16 @@ func (m *Model) submit(text string, wpm int) {
 		text = ExpandPastes(text, m.pastes)
 		m.pastes = nil
 	}
+	// E2: validate attachments before mutating any state. Sending the prompt
+	// with an unstripped [image N] placeholder and discarded image bytes made
+	// the model read about images it could never see. Blocking here keeps the
+	// editor text, the staged attachments, and the collapsed pastes intact so
+	// the user can switch models or detach the images.
+	if len(m.attachments) > 0 && !m.visionOK() {
+		m.notice = fmt.Sprintf("%s cannot see images. Set `vision = true` on the model in your config, "+
+			"or switch with /model.", m.header.Model)
+		return
+	}
 	m.blocks = append(m.blocks, Block{
 		Kind:      BlockUser,
 		Text:      text,
@@ -3873,15 +3883,10 @@ func (m *Model) submit(text string, wpm int) {
 	m.notice = ""
 
 	// Attachments ride with this message and are cleared by taking them, so a
-	// second prompt does not silently resend the first one's images.
+	// second prompt does not silently resend the first one's images. The vision
+	// gate ran above, so every attachment taken here is deliverable.
 	if images := m.TakeAttachments(); len(images) > 0 {
-		if m.visionOK() {
-			m.agent.Attach(images)
-		} else {
-			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: fmt.Sprintf(
-				"%s cannot see images. Set `vision = true` on the model in your config, "+
-					"or switch with /model.", m.header.Model)})
-		}
+		m.agent.Attach(images)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
