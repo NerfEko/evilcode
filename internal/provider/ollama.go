@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Ollama speaks the native Ollama API. Ollama Cloud is just a remote Ollama
@@ -471,6 +472,11 @@ func (o *Ollama) Show(ctx context.Context, model string) (ModelInfo, error) {
 	return info, nil
 }
 
+// showEffortTimeout bounds the one /api/show lookup that enriches reasoning
+// levels when the name heuristic misses. Show is memoized, so this is at most
+// one request per model per client.
+const showEffortTimeout = 3 * time.Second
+
 func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 	o.showMu.Lock()
 	if info, ok := o.showCache[model]; ok && len(info.ReasoningEfforts) > 0 {
@@ -488,6 +494,18 @@ func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 		strings.Contains(lower, "r1") || strings.Contains(lower, "qwen3") ||
 		strings.Contains(lower, "glm") || strings.Contains(lower, "qwq") {
 		return OllamaReasoningEfforts()
+	}
+
+	// The heuristic missed. The model may still advertise a "thinking"
+	// capability over /api/show — deepseek-v4, kimi, minimax, nemotron are
+	// not in the heuristic list — so ask the API before concluding the model
+	// has no reasoning control. A failed lookup leaves the heuristic result
+	// (nil) in place, so behavior is unchanged when the endpoint is
+	// unreachable.
+	ctx, cancel := context.WithTimeout(context.Background(), showEffortTimeout)
+	defer cancel()
+	if enriched, err := o.Show(ctx, model); err == nil {
+		return append([]ReasoningEffort(nil), enriched.ReasoningEfforts...)
 	}
 	return nil
 }
