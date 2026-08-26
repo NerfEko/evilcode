@@ -2,10 +2,10 @@ package theme
 
 import "image/color"
 
-// Dracula is the default palette (plan.md §7.1). A test holds a redundant copy
-// of this table and asserts equality, so the default can never drift by
-// accident — it is the one palette every ad-hoc literal in the spec was chosen
-// against.
+// Dracula is the original palette (plan.md §7.1); catppuccin-frappe is the
+// default. A test holds a redundant copy of this table and asserts equality,
+// so it can never drift by accident — it is the palette every ad-hoc literal
+// in the spec was chosen against.
 func Dracula() *Palette {
 	p := &Palette{Name: "dracula"}
 	set := func(r Role, hex string) {
@@ -244,7 +244,7 @@ func TintDiff(syntax, diff color.RGBA) color.RGBA {
 
 // CatppuccinFrappe is the published Catppuccin Frappé palette with the Mauve
 // accent — the same one the desktop's GTK theme uses, so evilcode sits in the
-// session rather than beside it.
+// session rather than beside it. It is the default palette.
 //
 // The hex values are transcribed from the published spec, not chosen: base
 // #303446, text #c6d0f5, mauve #ca9ee6, lavender #babbf1, and so on. Where a

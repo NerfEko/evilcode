@@ -62,11 +62,11 @@ func NewSubstituter(target *Palette, lightBackground bool) *Substituter {
 const LiteralRadius = 130.0
 
 func (s *Substituter) rebuild() {
-	if s.target == nil || s.target.Name == "dracula" {
+	if s.target == nil || s.target.Name == "catppuccin-frappe" {
 		s.active.Store(false)
 		return
 	}
-	def := Dracula()
+	def := CatppuccinFrappe()
 
 	s.mapping = make(map[color.RGBA]color.RGBA, numRoles)
 	for _, r := range AllRoles() {

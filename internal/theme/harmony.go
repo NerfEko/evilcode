@@ -403,7 +403,7 @@ func Generate(seed, background color.RGBA, name string) *Palette {
 	// A near-neutral seed has no hue to build on, so fall back to the user
 	// purple rather than generating a grayscale palette nobody wants.
 	if s.Chroma() < 0.02 {
-		s = ToOklab(Dracula().Get(RoleUser))
+		s = ToOklab(CatppuccinFrappe().Get(RoleUser))
 	}
 	chroma := math.Max(GenMinChroma, math.Min(s.Chroma(), GenMaxChroma))
 	baseHue := s.Hue()

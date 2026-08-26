@@ -14,7 +14,7 @@ func sgr(c color.RGBA) string {
 func TestSubstituterHandlesBackgroundColors(t *testing.T) {
 	target := Gloom()
 	s := NewSubstituter(target, false)
-	from := Dracula().Get(RoleUserBg)
+	from := CatppuccinFrappe().Get(RoleUserBg)
 	to := target.Get(RoleUserBg)
 
 	frame := fmt.Sprintf("\x1b[48;2;%d;%d;%dmband\x1b[m", from.R, from.G, from.B)
@@ -29,7 +29,7 @@ func TestSubstituterHandlesCompoundSGR(t *testing.T) {
 	// must survive.
 	target := Gloom()
 	s := NewSubstituter(target, false)
-	from := Dracula().Get(RoleAccent)
+	from := CatppuccinFrappe().Get(RoleAccent)
 
 	frame := fmt.Sprintf("\x1b[1;38;2;%d;%d;%d;4mtext\x1b[m", from.R, from.G, from.B)
 	got := s.Frame(frame)

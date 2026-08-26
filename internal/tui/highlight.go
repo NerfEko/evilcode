@@ -14,10 +14,10 @@ import (
 	"evilcode/internal/theme"
 )
 
-// highlightStyle is the chroma style code is coloured with. Dracula matches the
-// default palette, so highlighted code sits in the same world as the chrome
-// around it.
-var highlightStyle = styles.Get("dracula")
+// highlightStyle is the chroma style code is coloured with. Catppuccin Frappe
+// matches the default palette, so highlighted code sits in the same world as
+// the chrome around it.
+var highlightStyle = styles.Get("catppuccin-frappe")
 
 // tokenCache memoizes highlighting by (lang, code). Re-lexing every frame is
 // the kind of cost that only shows up once a transcript is long, which is

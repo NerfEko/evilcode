@@ -588,7 +588,7 @@ type Model struct {
 
 // NewModel builds the TUI over an agent.
 func NewModel(a *agent.Agent, h HeaderState) *Model {
-	p := theme.Dracula()
+	p := theme.CatppuccinFrappe()
 	levels := provider.NormalizeReasoningEfforts(h.ReasoningEfforts)
 	effortExplicit := h.ReasoningEffort.Valid()
 	actualProvider := providerForAgent(a)
@@ -5755,7 +5755,8 @@ func RunModel(m *Model) error {
 // read by anything.
 func (m *Model) WithDisplay(d config.Display) *Model {
 	// display.theme was parsed, defaulted and documented, and then never read:
-	// NewModel hardcoded dracula. Same class of gap as thinking_display.
+	// NewModel hardcoded dracula. Same class of gap as thinking_display. The
+	// default is catppuccin-frappe now, but the override still matters.
 	if d.Theme != "" {
 		m.setPalette(theme.ByName(d.Theme))
 	}

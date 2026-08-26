@@ -47,17 +47,17 @@ func (m helloModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// The dracula defaults from plan.md §7.1, enough of them to prove truecolor
-// survives the round trip.
+// The catppuccin-frappe defaults, enough of them to prove truecolor survives
+// the round trip.
 var (
-	styleAccent = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff79c6")).Bold(true)
-	styleUser   = lipgloss.NewStyle().Foreground(lipgloss.Color("#bd93f9"))
-	styleAI     = lipgloss.NewStyle().Foreground(lipgloss.Color("#50fa7b"))
-	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#505050"))
+	styleAccent = lipgloss.NewStyle().Foreground(lipgloss.Color("#f4b8e4")).Bold(true)
+	styleUser   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ca9ee6"))
+	styleAI     = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6d189"))
+	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626880"))
 	styleBand   = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#f8f8f2")).
-			Background(lipgloss.Color("#2a2440"))
-	styleItalic = lipgloss.NewStyle().Foreground(lipgloss.Color("#8c8c8c")).Italic(true)
+			Foreground(lipgloss.Color("#c6d0f5")).
+			Background(lipgloss.Color("#414559"))
+	styleItalic = lipgloss.NewStyle().Foreground(lipgloss.Color("#737994")).Italic(true)
 )
 
 func (m helloModel) View() tea.View {
