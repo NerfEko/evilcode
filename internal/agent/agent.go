@@ -577,15 +577,7 @@ func (a *Agent) loop(ctx context.Context) error {
 	start.Text = a.takePrompt()
 	a.emit(start)
 
-	for step := 0; ; step++ {
-		if a.MaxSteps > 0 && step >= a.MaxSteps {
-			a.Notice(LevelWarning,
-				"Stopped after %d tool rounds without finishing (features.max_steps).",
-				a.MaxSteps)
-			a.endTurn(EndMaxSteps)
-			return nil
-		}
-
+	for step := 0; ; {
 		msg, err := a.stream(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -627,6 +619,22 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 
 		if len(msg.ToolCalls) > 0 {
+			// The cap counts executed tool rounds, not model requests: with
+			// max_steps=1, one tool call runs and the concluding answer is
+			// still allowed. A response that would need another round beyond
+			// the cap is refused — its calls are answered with stub results
+			// (the wire format requires every tool_use to have an adjacent
+			// tool_result) and the turn ends with an explicit EndMaxSteps.
+			if a.MaxSteps > 0 && step >= a.MaxSteps {
+				for _, c := range msg.ToolCalls {
+					a.appendToolResult(c, stubMaxSteps, fmt.Errorf("stopped by features.max_steps"), tools.Result{})
+				}
+				a.Notice(LevelWarning,
+					"Stopped after %d tool rounds without finishing (features.max_steps).",
+					a.MaxSteps)
+				a.endTurn(EndMaxSteps)
+				return nil
+			}
 			if err := a.runTools(ctx, msg.ToolCalls); err != nil {
 				if errors.Is(err, context.Canceled) {
 					a.endTurn(EndInterrupted)
@@ -638,6 +646,7 @@ func (a *Agent) loop(ctx context.Context) error {
 				a.endTurn(EndError)
 				return err
 			}
+			step++
 			// Safe point D: after all tool results, before the next request.
 			// This is the default injection point.
 			a.injectInterrupts(false)
@@ -871,6 +880,10 @@ func toolDefs(ts tools.Set) []provider.ToolDef {
 // The API requires every tool_use to have an adjacent tool_result, so skipping
 // a call still has to answer it.
 const stubSkipped = "[Skipped: user interrupted]"
+
+// stubMaxSteps is the tool result written for calls refused because the
+// features.max_steps cap was reached. Same adjacency requirement.
+const stubMaxSteps = "[Skipped: features.max_steps reached]"
 
 // runTools executes a round of tool calls and appends their results.
 func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
