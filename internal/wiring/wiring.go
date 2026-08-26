@@ -186,6 +186,15 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	if err != nil && usingLastModel {
 		prov, modelName, err = cfg.Resolve("")
 	}
+	if err != nil && opts.Resume != "" {
+		// A resumed session's recorded model can name a provider that is not
+		// available on this machine (an imported codex transcript on a host
+		// without a codex account, a deleted provider). Resuming must not fail
+		// for that; fall back to the default model and say so.
+		fmt.Fprintf(os.Stderr, "evilcode: recorded model %q for session %q is not available (%v); resuming on the default model\n",
+			ref, opts.Resume, err)
+		prov, modelName, err = cfg.Resolve("")
+	}
 	if err != nil {
 		return nil, err
 	}

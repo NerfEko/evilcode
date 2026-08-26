@@ -127,6 +127,15 @@ func ImportExternalFile(dataDir string, source ExternalSource, path, idHint stri
 	}); err != nil {
 		return ImportInfo{}, err
 	}
+	// H1: persist the source model as session model metadata so a resume picks
+	// the model the conversation actually ran on. Mapped where the provider is
+	// known — Codex transcripts resolve against the discoverable codex
+	// provider — and left bare otherwise, where the default provider decides.
+	if ref := importedModelRef(source, external.Model); ref != "" {
+		if err := store.WriteMeta(Meta{Kind: MetaModel, Model: ref}); err != nil {
+			return ImportInfo{}, err
+		}
+	}
 	if err := store.Close(); err != nil {
 		return ImportInfo{}, err
 	}
@@ -174,6 +183,23 @@ func importedSessionName(source ExternalSource, sourceID, path string) string {
 	}
 	sum := sha256.Sum256([]byte(string(source) + "\x00" + identity))
 	return "imported_" + string(source) + "_" + hex.EncodeToString(sum[:8])
+}
+
+// importedModelRef maps a foreign transcript's model name to a canonical model
+// ref. Only Codex transcripts map — `model@codex` resolves against the
+// discoverable codex provider. Claude and OpenCode have no native provider in
+// this application, so writing their bare names would send a foreign slug to
+// the user's default provider and fail the first resumed request; their model
+// stays in the import note instead and resume uses the default (H1).
+func importedModelRef(source ExternalSource, model string) string {
+	if source != SourceCodex {
+		return ""
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	return model + "@codex"
 }
 
 func resolveExternalPath(source ExternalSource, id string) (string, error) {

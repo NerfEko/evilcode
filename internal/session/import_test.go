@@ -154,6 +154,21 @@ func TestImportCodexResponseItems(t *testing.T) {
 	if external.Messages[0].Message.Content != "find the torn tail" {
 		t.Fatalf("Codex user message = %#v", external.Messages[0].Message)
 	}
+
+	// H1: the source model must land in the native session's model metadata so
+	// a resume picks the model the conversation ran on.
+	dataDir := filepath.Join(root, "evilcode-data")
+	info, err := ImportExternalFile(dataDir, SourceCodex, path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := Describe(dataDir, info.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc.Model != "gpt-5@codex" {
+		t.Errorf("imported model metadata = %q, want gpt-5@codex", desc.Model)
+	}
 }
 
 func TestImportOpenCodeSessionParts(t *testing.T) {
