@@ -6378,3 +6378,47 @@ version badge and are current.
 Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`
 (probe suite excluded), `go test -race ./internal/provider ./internal/agent`,
 and `EVILCODE_BIN=<build> go test -tags probe ./probe/...` — all green.
+
+## 2026-08-26 — split view upgrade: whole-file diffs, per-side wheel scroll, Ctrl+L live view, q to close
+
+The side pane was a static window: clicking a write/edit block showed only the
+truncated diff, the wheel always scrolled the transcript, and Esc owned closing
+the pane. This pass makes the split a real second viewport.
+
+**Whole file on click.** `openQuickViewAt` now builds the quick view with
+`fileDiffContent`: the file's current lines plus the diff, so the pane renders
+the entire file with the change marked in the gutter (added lines numbered with
+`+`, deleted lines inserted where they were removed with a blank number and
+`-`). `PanelContent.ScrollTo` carries the first hunk's line, and the pane opens
+centered on it. The renderer gained `wholeFileDiff` for this; `fileDiffLines`
+(§9.4) was refactored onto the same `diffRow`/`renderDiffRows` helpers so the
+two gutter views cannot drift apart. Unreadable or binary files fall back to
+the diff alone.
+
+**Wheel scrolls the side under the mouse.** `handleWheel` routes by pointer
+column: over the pane it drives a new `panelScroll` (its own `Scroll` state,
+clamped to the body height measured in `attachSidePanel`), over the chat it
+drives the transcript as before. The pane body is measured once per frame and
+windowed, so the panel scrolls independently instead of truncating.
+
+**Ctrl+L live view.** `liveView` makes the split follow the agent: every
+read/write/edit tool result opens the touched file in the pane — whole file
+with the diff marked for edits, highlighted source for reads — scrolled to the
+change, updating as each edit streams in. The pane footer shows a green
+"live" tag bottom-left while active. Clicking a file (opening a quick view) or
+closing the split turns live view off; scrolling the pane away pauses the
+follow and scrolling back to the top resumes it. Image reads are skipped.
+
+**q closes the split.** Esc's quick-view rung moved to `q` (layered: quick view
+first, then the panel), and Esc is back to stop/clear only. `q` still types
+when the composer has text, so "quick" and "/quit" work with the pane open.
+The pane footer shows "q to close, ctrl+L for live view" bottom-right, and the
+help overlay lists both keys.
+
+Probe goldens for the panel scenarios were refreshed for the new footer row.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`
+(one pre-existing flaky daemon rename test passed on re-run), and
+`EVILCODE_BIN=<build> go test -tags probe ./probe/...` with refreshed goldens.
+Live smoke-tested in a probe pane: Ctrl+L after the mock's edit shows the whole
+`testdata/clamp.go` with the hunk marked, and q closes the split.
