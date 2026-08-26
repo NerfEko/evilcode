@@ -5713,7 +5713,7 @@ func (m *Model) fileDiffContent(path, diff string) PanelContent {
 }
 
 func (m *Model) readQuickView(path string) *PanelContent {
-	content := &PanelContent{Title: path, Path: path, Code: true}
+	content := &PanelContent{Title: path, Path: path, Code: true, Numbers: true}
 	if path == "" {
 		content.Code = false
 		content.Body = []string{"read did not include a file path"}

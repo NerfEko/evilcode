@@ -281,6 +281,32 @@ func TestPlainQTypesWithSplitOpen(t *testing.T) {
 	}
 }
 
+func TestReadQuickViewShowsLineNumbers(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := clickModel([]Block{{
+		Kind: BlockTool, ToolName: "read", ToolTarget: "main.go", ToolPath: "main.go",
+		ToolPathExists: true,
+	}}, root)
+
+	m.openQuickViewAt(tea.Mouse{X: 2, Y: ownerRow(t, m, 0)})
+	if m.quickView == nil || !m.quickView.Numbers {
+		t.Fatalf("read click did not request line numbers: %+v", m.quickView)
+	}
+
+	_, side := Horizontal{Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: true}.Split()
+	rows := plainLines(m.renderer.RenderSidePanel(*m.quickView, DiffInline, side, 10, true, 0, false))
+	joined := strings.Join(rows, "\n")
+	for _, want := range []string{"1 │ package main", "3 │ func main() {}"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("read view missing numbered line %q:\n%s", want, joined)
+		}
+	}
+}
+
 func TestPanelFooterShowsLiveAndHints(t *testing.T) {
 	r := testRenderer(120)
 	rows := plainLines(r.RenderSidePanel(

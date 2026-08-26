@@ -66,6 +66,10 @@ type PanelContent struct {
 	// used by read quick views; ordinary side-panel text stays plain.
 	Code bool
 
+	// Numbers asks the panel to draw a line-number gutter, the same one the
+	// diff views use, so a read and an edit of the same file line up.
+	Numbers bool
+
 	// ScrollTo is the body line to center when the content is first shown, so
 	// a clicked edit opens at the change rather than at the top of the file.
 	ScrollTo int
@@ -83,7 +87,7 @@ func (p PanelContent) Empty() bool {
 // matters because the body is styled with it.
 type panelBodyCacheKey struct {
 	title, path, diff string
-	code              bool
+	code, numbers     bool
 	mode              DiffMode
 	width             int
 	bodyLen           int
@@ -93,7 +97,7 @@ type panelBodyCacheKey struct {
 
 func panelBodyKeyFor(c PanelContent, mode DiffMode, width int, palette *theme.Palette) panelBodyCacheKey {
 	key := panelBodyCacheKey{
-		title: c.Title, path: c.Path, diff: c.Diff, code: c.Code,
+		title: c.Title, path: c.Path, diff: c.Diff, code: c.Code, numbers: c.Numbers,
 		mode: mode, width: width, bodyLen: len(c.Body),
 	}
 	if len(c.Body) > 0 {
@@ -143,6 +147,10 @@ func (r *Renderer) panelBody(c PanelContent, mode DiffMode, width int) []string 
 		// path above, which stays line-exact on purpose).
 		return strings.Split(
 			r.AtWidth(width).Markdown.Render(strings.Join(c.Body, "\n"), true), "\n")
+	case c.Code && c.Numbers:
+		// A read gets the same line-number gutter as the diff views, so a
+		// read and an edit of the same file line up.
+		return r.numberedLines(c.Path, c.Body, width)
 	case c.Code:
 		return HighlightLines(langFromPath(c.Path), strings.Join(c.Body, "\n"))
 	default:
@@ -255,6 +263,16 @@ func (r *Renderer) renderDiffRows(rows []diffRow, lang string, width int) []stri
 		out = append(out, gutter.Render(num+" │")+style.Render(rw.marker)+rendered)
 	}
 	return out
+}
+
+// numberedLines renders a file preview with the same line-number gutter the
+// diff views use, so a read and an edit of the same file line up.
+func (r *Renderer) numberedLines(path string, body []string, width int) []string {
+	rows := make([]diffRow, len(body))
+	for i, line := range body {
+		rows[i] = diffRow{num: i + 1, marker: " ", text: line}
+	}
+	return r.renderDiffRows(rows, langFromPath(path), width)
 }
 
 // fileDiffLines renders the whole-file view of §9.4.
