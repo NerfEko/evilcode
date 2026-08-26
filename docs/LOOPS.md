@@ -6492,3 +6492,21 @@ the Mauve accent, matching the desktop's GTK theme.
 Verified: `go build ./...`, `go test ./... -count=1` all green, and a live
 probe frame shows the idle art in frappe mauve `#ca9ee6` with no dracula
 purple anywhere.
+
+## 2026-08-26 — read views in the split show line numbers
+
+Read quick views (and live view's read tracking) rendered as bare highlighted
+source, while write/edit views carried the line-number gutter — the same file
+looked different depending on which tool touched it. `PanelContent` gained a
+`Numbers` flag, set by `readQuickView`, and the renderer gained
+`numberedLines`, which reuses the diff views' `renderDiffRows` with a plain
+marker so the gutter, digits, and truncation are identical. Markdown reads
+keep the rendered-document view, where wrapped prose has no per-line
+correspondence to number.
+
+Test: `TestReadQuickViewShowsLineNumbers` asserts the rendered pane contains
+`1 │ package main` and `3 │ func main() {}`. Live smoke: ctrl+l before the
+mock's read shows `testdata/clamp.go` numbered from line 1.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`
+all green.
