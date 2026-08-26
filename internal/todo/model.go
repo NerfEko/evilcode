@@ -663,13 +663,20 @@ func (s *Store) Apply(w Write) (Result, error) {
 	}
 
 	// The hard gate: completing a group requires end-to-end ownership. This is
-	// the one gate that blocks rather than defers (plan.md §12.3).
-	if group, ok := s.completesGroup(w); ok {
+	// the one gate that blocks rather than defers (plan.md §12.3). One write can
+	// finish several groups — including the ungrouped bucket — and every newly
+	// completed group must pass, so a low-score sibling cannot slip through
+	// beside a validated one (I1, I2).
+	for _, group := range s.completesGroup(w) {
 		owner := ownershipFor(w.Goals, s.goals, group)
 		if owner == nil || *owner < QualityGate {
 			got := "unset"
 			if owner != nil {
 				got = fmt.Sprint(*owner)
+			}
+			display := group
+			if display == "" {
+				display = "(ungrouped items)"
 			}
 			return Result{
 				Rejected: true,
@@ -677,7 +684,7 @@ func (s *Store) Apply(w Write) (Result, error) {
 					"rejected: completing the group %q requires end_to_end_ownership of at least %d, but it is %s. "+
 						"Owning a goal end to end means you verified the whole thing works, not just that each "+
 						"item was edited. Raise it only once you have.",
-					group, QualityGate, got),
+					display, QualityGate, got),
 			}, nil
 		}
 	}
@@ -738,28 +745,38 @@ func (s *Store) snapshot() func() {
 	}
 }
 
-// completesGroup reports whether this write finishes off a group that was not
-// already finished.
-func (s *Store) completesGroup(w Write) (string, bool) {
+// completesGroup reports every group this write finishes off that was not
+// already finished. Nil-group items are canonicalized to the ungrouped bucket
+// ("") so a flat plan gets the same hard gate as a grouped one (I2). The list
+// is sorted for stable diagnostics: one write can complete several groups,
+// and each must pass the ownership gate (I1).
+func (s *Store) completesGroup(w Write) []string {
 	groups := map[string]bool{}
 	for _, item := range w.Items {
-		if item.Group == nil {
-			continue
+		group := ""
+		if item.Group != nil {
+			group = *item.Group
 		}
-		groups[*item.Group] = true
+		groups[group] = true
 	}
+	var out []string
 	for group := range groups {
 		if allDone(w.Items, group) && !allDone(s.items, group) {
-			return group, true
+			out = append(out, group)
 		}
 	}
-	return "", false
+	sort.Strings(out)
+	return out
 }
 
 func allDone(items []Item, group string) bool {
 	seen := false
 	for _, item := range items {
-		if item.Group == nil || *item.Group != group {
+		itemGroup := ""
+		if item.Group != nil {
+			itemGroup = *item.Group
+		}
+		if itemGroup != group {
 			continue
 		}
 		seen = true

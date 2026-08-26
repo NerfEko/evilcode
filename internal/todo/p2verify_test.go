@@ -49,10 +49,13 @@ func TestPhase2Verification(t *testing.T) {
 
 	t.Run("the arrow shows a bulk end-stamp", func(t *testing.T) {
 		s := newStore(t)
-		s.Apply(Write{Items: []Item{item("a", "task", StatusInProgress, withConf(75))}})
-		s.Apply(Write{Items: []Item{
-			item("a", "task", StatusCompleted, withConf(100), withDone(100)),
-		}})
+		s.Apply(Write{Items: []Item{item("a", "task", StatusInProgress, withGroup("auth"), withConf(75))}})
+		s.Apply(Write{
+			Items: []Item{
+				item("a", "task", StatusCompleted, withGroup("auth"), withConf(100), withDone(100)),
+			},
+			Goals: []Goal{{Group: "auth", EndToEndOwnership: u8(QualityGate)}},
+		})
 
 		got := s.Items()[0]
 		if label := ArrowLabel(got.Confidence, got.CompletionConfidence); label == "" {

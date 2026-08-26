@@ -927,9 +927,16 @@ func TestPokeHookDrivesTheTurnEndTree(t *testing.T) {
 func TestPokeHookDisarmsWhenComplete(t *testing.T) {
 	store, _ := todo.NewStore(t.TempDir(), "dracula")
 	done := uint8(100)
+	owned := uint8(todo.QualityGate)
 	store.Apply(todo.Write{Items: []todo.Item{
-		{ID: "a", Content: "done", Status: todo.StatusCompleted, CompletionConfidence: &done},
+		{ID: "a", Content: "done", Status: todo.StatusInProgress},
 	}})
+	store.Apply(todo.Write{
+		Items: []todo.Item{
+			{ID: "a", Content: "done", Status: todo.StatusCompleted, CompletionConfidence: &done},
+		},
+		Goals: []todo.Goal{{EndToEndOwnership: &owned}},
+	})
 
 	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
 	a.Hooks = NewPokeHook(store, true)
