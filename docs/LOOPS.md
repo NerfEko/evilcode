@@ -6422,3 +6422,32 @@ Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`
 `EVILCODE_BIN=<build> go test -tags probe ./probe/...` with refreshed goldens.
 Live smoke-tested in a probe pane: Ctrl+L after the mock's edit shows the whole
 `testdata/clamp.go` with the hunk marked, and q closes the split.
+
+## 2026-08-26 — split view follow-up: wheel direction and per-frame render lag
+
+Two reports from using the new split: the right panel scrolled inverted, and
+scrolling lagged on both sides.
+
+**Inverted wheel.** The pane's scroll offset counts from the top of the file,
+but `panelWheel` reused the transcript's bottom-anchored mapping — wheel-up
+called `Up` (offset grows, view moves down the file) and wheel-down called
+`Down`. Swapped: wheel-up now moves toward the top, wheel-down toward the
+bottom. Live view's pause/resume semantics survive the swap because they ride
+`Scroll.Up`/`Down`'s Paused flag, not the direction.
+
+**Lag.** `attachSidePanel` re-rendered the entire pane body on every frame —
+`wholeFileDiff` syntax-highlights every line of the whole file — so each wheel
+notch (and every tick) paid ~50ms for a 1000-line file, on both sides of the
+split since the pane renders regardless of which side scrolls. The body is now
+cached on the Model, keyed by the content's identity: Body slice pointer
+(bodies are replaced wholesale when a file changes, so pointer identity is
+exact and cheap), path, diff, code flag, mode, width, and palette pointer (so
+a theme switch re-renders). A warm frame measures ~1.2ms.
+
+Tests: `TestPanelWheelDirectionIsNotInverted`,
+`TestPanelBodyIsCachedAcrossFrames`, and `BenchmarkPanelBodyWholeFile` /
+`BenchmarkPanelFrameWithCache` pinning the render cost.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
+probe suite green (one pre-existing flaky wait-pane timeout passed on re-run),
+and a live probe smoke of Ctrl+L on the diff-long scenario.
