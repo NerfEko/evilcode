@@ -1635,6 +1635,23 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 	modelRef := config.ModelRef(model, prov.Name())
 	overrides := cfg.ModelOverrides(modelRef)
 	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
+	// The name heuristic above only recognizes known thinking families
+	// (gpt-oss, qwen3, glm, ...). A model that advertises a "thinking"
+	// capability over /api/show but whose family is not in that list —
+	// deepseek-v4, kimi, minimax, nemotron — would be rejected here as "not
+	// supported" while the client picker, which derives levels from
+	// capabilities, offered them. Resolve the conflict in favour of the
+	// model's actual capabilities: when the heuristic missed, ask the
+	// provider for the model's details and use its advertised reasoning
+	// efforts. A failed lookup leaves the heuristic result (nil) in place, so
+	// behavior is unchanged when the endpoint is unreachable.
+	if len(levels) == 0 {
+		if o, ok := prov.(*provider.Ollama); ok {
+			if info, err := o.Show(context.Background(), model); err == nil {
+				levels = provider.NormalizeReasoningEfforts(info.ReasoningEfforts)
+			}
+		}
+	}
 	levelNames := make([]string, 0, len(levels))
 	for _, level := range levels {
 		levelNames = append(levelNames, string(level))

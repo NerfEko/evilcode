@@ -6305,3 +6305,42 @@ and `m.picker.Entries` now mark `mock-large@next` current. Failed before the fix
 
 Verified: `go build ./...`, `go vet ./internal/tui/...`, `go test ./internal/tui/`
 and `./internal/daemon/ -count=1`.
+
+## 2026-08-26 — daemon rejects reasoning effort for thinking models the name heuristic misses
+
+Reported: "when i try deepseek v4 flash 0731, no matter what reasoning effort i
+use it says not supported." Probed the live cloud `/api/show` to scope it:
+`deepseek-v4-flash:0731` advertises `thinking`, and so do `deepseek-v4-pro:*`,
+`kimi-k2.6`, `kimi-k2.7-code`, `minimax-m3`, and `nemotron-3-ultra` — none of
+whose family names the heuristic recognizes.
+
+**Root cause.** The client picker derives reasoning levels from the model's
+actual `/api/show` `thinking` capability (`ollamaReasoningEffortsForCapabilities`),
+so it offered levels and opened the reasoning menu. The daemon's `setModel`
+derives levels from `ReasoningEffortLevelsForProvider`, whose Ollama path is the
+name heuristic `reasoningEffortLevelsForModel` matching only `gpt-oss|think|
+reason|r1|qwen3|glm|qwq` — and a freshly-built daemon provider has an empty
+`showCache`, so it fell straight to the heuristic and returned nil. With
+`effortKnown` false, `setModel` early-returned `reasoning effort %q is not
+supported by %s` before emitting `EventModel`, so every effort was rejected and
+the footer stayed on the old model. Client and daemon disagreed on the source of
+truth.
+
+**Fix.** `setModel` now enriches via `Show` when the heuristic misses: if
+`ReasoningEffortLevelsForProvider` returned no levels and the provider is an
+`*Ollama`, it calls `o.Show(ctx, model)` and uses `info.ReasoningEfforts` (the
+capability-derived levels, identical to what the client picker used). A failed
+lookup leaves the heuristic result (nil) in place, so an unreachable endpoint
+behaves as before. The heuristic still serves the matched families (gpt-oss,
+qwen3, glm) without a network call; the new path only fires on the miss.
+
+Reproduction: `TestOllamaShowEnrichesReasoningEffortForHeuristicMiss` pins the
+mechanism — for `deepseek-v4-flash:0731` the heuristic returns nil, `Show`
+populates the capability-derived levels, and the second
+`ReasoningEffortLevelsForProvider` call is a cache hit returning
+`OllamaReasoningEfforts()`. The existing
+`TestRejectedModelEffortLeavesSessionUnchanged` still passes (the reject path
+for a mock provider with no thinking capability is unchanged).
+
+Verified: `go build ./...`, `go vet ./internal/daemon/... ./internal/provider/...`,
+`go test ./internal/daemon/ ./internal/provider/ -count=1`.
