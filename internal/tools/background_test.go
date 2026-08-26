@@ -3,29 +3,38 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestTimedOutForegroundIsAdopted(t *testing.T) {
+// F1: a timeout is a hard bound, not a handoff. The process group must be
+// killed and the caller must get an error — a destructive command must not
+// keep running as an adopted background task after the model was told it
+// exceeded the timeout.
+func TestTimedOutForegroundIsKilled(t *testing.T) {
 	e := NewExec(t.TempDir())
 	e.Timeout = 80 * time.Millisecond
-	res, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "sleep 0.3; echo finished"})
-	if err != nil {
-		t.Fatalf("adoption returned an error: %v", err)
+	marker := filepath.Join(t.TempDir(), "finished")
+	res, err := run(t, e.Tools(), "bash", map[string]any{
+		"cmd":           "sleep 0.4; echo finished > " + marker,
+		"justification": "test: verify the timeout kills the command before it can write its marker",
+	})
+	if err == nil {
+		t.Fatalf("a timed-out command must return an error, got %+v", res)
 	}
-	if !strings.Contains(res.Output, "background task 1") || !strings.Contains(res.Output, "do not re-run") {
-		t.Fatalf("adoption result = %q", res.Output)
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("err = %v, want a timeout diagnostic", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	task, err := e.Bg.Wait(ctx, 1)
-	if err != nil {
-		t.Fatal(err)
+	if len(e.Bg.Tasks()) != 0 {
+		t.Errorf("timed-out command was adopted: %+v", e.Bg.Tasks())
 	}
-	if _, failed, output := task.Snapshot(); failed || !strings.Contains(output, "finished") {
-		t.Fatalf("adopted task = failed:%v output:%q", failed, output)
+	// Well past when the command would have written its marker.
+	time.Sleep(700 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the command kept running after its timeout and wrote to the workspace")
 	}
 }
 

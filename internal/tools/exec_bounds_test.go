@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -127,9 +126,9 @@ func TestBackgroundDropsOldFinishedTasks(t *testing.T) {
 	}
 }
 
-// H3.4: cancelling kills the shell but not its descendants, so a grandchild
-// outlives the timeout and keeps working in the workspace after the tool call
-// that started it has returned.
+// H3.4/F1: the timeout kills the whole process group. A grandchild that
+// outlives its parent shell must not keep working in the workspace after the
+// tool call that started it has returned.
 func TestATimeoutKillsTheWholeProcessGroup(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "still-alive")
@@ -143,16 +142,11 @@ func TestATimeoutKillsTheWholeProcessGroup(t *testing.T) {
 	})
 
 	out := e.Tools().RunOne(context.Background(), Call{ID: "c", Name: "bash", Args: raw})
-	if out.Err != nil || !strings.Contains(out.Result.Output, "background task 1") {
-		t.Fatalf("want an adopted task, got %+v", out)
+	if out.Err == nil {
+		t.Fatalf("want a timeout error, got %+v", out)
 	}
-	if err := e.Bg.Cancel(1); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := e.Bg.Wait(ctx, 1); err != nil {
-		t.Fatal(err)
+	if len(e.Bg.Tasks()) != 0 {
+		t.Fatalf("timed-out command was adopted: %+v", e.Bg.Tasks())
 	}
 
 	// Well past when the grandchild would have written.

@@ -150,6 +150,15 @@ func (e *Exec) WithRiskPaths(configDir, dataDir string) *Exec {
 	return e
 }
 
+// Close cancels every running background task and waits a bounded grace period
+// for the process groups to die. Wiring registers it so session teardown cannot
+// leave detached commands mutating the workspace (F3).
+func (e *Exec) Close() {
+	if e.Bg != nil {
+		e.Bg.Close()
+	}
+}
+
 func (e *Exec) commandEnv() []string {
 	env := os.Environ()
 	if e.ScratchDir == "" {
@@ -234,7 +243,11 @@ func (e *Exec) bashTool() Tool {
 			}
 
 			if a.Background {
-				return e.runBackground(a.Cmd, a.Stdin)
+				timeout := time.Duration(0)
+				if a.Timeout > 0 {
+					timeout = time.Duration(a.Timeout) * time.Second
+				}
+				return e.runBackground(a.Cmd, a.Stdin, timeout)
 			}
 
 			timeout := e.Timeout
@@ -278,26 +291,17 @@ func (e *Exec) bashTool() Tool {
 			case runErr := <-done:
 				return e.finishForeground(runErr, buf.String(), workingDir, marker)
 			case <-ctx.Done():
-				if ctx.Err() == context.DeadlineExceeded {
-					if e.Bg == nil {
-						e.Bg = &Background{}
-					}
-					background := e.Bg
-					task := background.add(shortCmd(a.Cmd))
-					background.attach(task, &buf, func() { killProcessGroup(cmd) })
-					go func() {
-						runErr := <-done
-						out := Truncate(e.cleanBashOutputIfCurrent(buf.String(), marker, workingDir))
-						background.finish(task, out, runErr != nil)
-					}()
-					return Result{
-						Output: fmt.Sprintf("command exceeded %s and is still running as background task %d; output is accumulating in that task — use bg status/output/wait, and do not re-run it", timeout, task.ID),
-						Intent: fmt.Sprintf("adopted as background task %d", task.ID),
-					}, nil
-				}
+				// A timeout is a hard bound, not a handoff: the process group is
+				// killed and the caller gets an error. Adopting the command as a
+				// background task let a destructive/build/deploy command keep
+				// mutating the machine for up to BackgroundTimeout after the model
+				// was told it had exceeded the bound (F1).
 				killProcessGroup(cmd)
 				runErr := <-done
 				result, _ := e.finishForeground(runErr, buf.String(), workingDir, marker)
+				if ctx.Err() == context.DeadlineExceeded {
+					return result, fmt.Errorf("command exceeded its %s timeout and was killed", timeout)
+				}
 				return result, ctx.Err()
 			}
 		},
@@ -342,9 +346,10 @@ func (e *Exec) finishForeground(runErr error, output, workingDir, marker string)
 // runBackground starts a detached command and returns immediately.
 //
 // It deliberately does not inherit the caller's context: the point is to
-// outlive the tool call. It gets a generous ceiling of its own instead, so a
-// runaway watcher still cannot run forever.
-func (e *Exec) runBackground(command, stdin string) (Result, error) {
+// outlive the tool call. A requested timeout still applies — a caller that
+// asks for `timeout: 60` must not get a 30-minute ceiling by detaching — and
+// zero means the BackgroundTimeout ceiling.
+func (e *Exec) runBackground(command, stdin string, timeout time.Duration) (Result, error) {
 	if e.Bg == nil {
 		e.Bg = &Background{}
 	}
@@ -358,9 +363,13 @@ func (e *Exec) runBackground(command, stdin string) (Result, error) {
 			Held:   true,
 		}, fmt.Errorf("background task limit reached")
 	}
+	if timeout <= 0 {
+		timeout = BackgroundTimeout
+	}
+	background.setDeadline(task, time.Now().Add(timeout))
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), BackgroundTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		cmd := exec.Command("bash", "-c", command)

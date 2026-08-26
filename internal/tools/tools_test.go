@@ -385,18 +385,18 @@ func TestBashTimeout(t *testing.T) {
 	e := NewExec(t.TempDir())
 	e.Timeout = 100 * time.Millisecond
 	start := time.Now()
-	res, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "sleep 10"})
-	if err != nil {
-		t.Fatalf("a timed-out command should be adopted: %v", err)
+	_, err := run(t, e.Tools(), "bash", map[string]any{"cmd": "sleep 10"})
+	if err == nil {
+		t.Fatal("a timed-out command must return an error (F1)")
 	}
-	if !strings.Contains(res.Output, "background task 1") {
-		t.Fatalf("adoption output = %q", res.Output)
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("err = %v, want a timeout diagnostic", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("took %s; the timeout did not hand off promptly", elapsed)
+		t.Errorf("took %s; the timeout did not kill the command promptly", elapsed)
 	}
-	if err := e.Bg.Cancel(1); err != nil {
-		t.Fatal(err)
+	if len(e.Bg.Tasks()) != 0 {
+		t.Errorf("timed-out command was adopted: %+v", e.Bg.Tasks())
 	}
 }
 

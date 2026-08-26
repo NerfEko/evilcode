@@ -121,6 +121,13 @@ func formatTaskStatus(task *BackgroundTask) string {
 		if failed {
 			state = "failed"
 		}
+	} else if deadline := task.Deadline(); !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining > 0 {
+			state += fmt.Sprintf(" · deadline %s", remaining.Round(time.Second))
+		} else {
+			state += " · past deadline"
+		}
 	}
 	p := task.Progress()
 	progress := ""

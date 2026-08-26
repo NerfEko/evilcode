@@ -68,8 +68,17 @@ type BackgroundTask struct {
 	writer          *ringWriter
 	cancel          func()
 	cancelRequested bool
+	deadline        time.Time
 	doneCh          chan struct{}
 	doneOnce        sync.Once
+}
+
+// Deadline reports when the task will be killed, or the zero time when it has
+// none (a task registered directly by a test or caller).
+func (t *BackgroundTask) Deadline() time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.deadline
 }
 
 // Snapshot returns the task's current state and the output captured so far.
@@ -258,6 +267,38 @@ func (b *Background) tryAddExplicit(label string) (*BackgroundTask, bool) {
 	}
 	return b.addLocked(label), true
 }
+
+// setDeadline records when a task will be killed, so bg status can show it.
+func (b *Background) setDeadline(t *BackgroundTask, deadline time.Time) {
+	t.mu.Lock()
+	t.deadline = deadline
+	t.mu.Unlock()
+}
+
+// Close cancels every running task and waits a bounded grace period for them
+// to stop. Detached commands are session-owned: quitting, unloading an idle
+// session, updating, or stopping the daemon must not leave shell process
+// groups running for the rest of BackgroundTimeout with no owner left to
+// report or cancel them (F3).
+func (b *Background) Close() {
+	b.mu.Lock()
+	tasks := append([]*BackgroundTask(nil), b.tasks...)
+	b.mu.Unlock()
+	for _, task := range tasks {
+		_ = b.Cancel(task.ID)
+	}
+	grace := time.After(CloseGracePeriod)
+	for _, task := range tasks {
+		select {
+		case <-task.doneCh:
+		case <-grace:
+			return
+		}
+	}
+}
+
+// CloseGracePeriod bounds how long Background.Close waits for killed tasks.
+const CloseGracePeriod = 5 * time.Second
 
 func (b *Background) attach(t *BackgroundTask, writer *ringWriter, cancel func()) {
 	t.mu.Lock()

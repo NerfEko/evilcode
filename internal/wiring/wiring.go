@@ -291,6 +291,11 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	out.FS, out.Exec, out.LSP, out.Brave = fsTools, execTools, lsps, brave
+	if execTools != nil {
+		// Detached commands are session-owned: closing the session must kill
+		// them rather than leave process groups running with no owner (F3).
+		out.closers = append(out.closers, execTools.Close)
+	}
 	if effort := cfg.ReasoningEffortFor(config.ModelRef(modelName, prov.Name())); effort.Valid() && provider.SupportsReasoningEffort(prov) {
 		levels := provider.NormalizeReasoningEfforts(
 			provider.ReasoningEffortLevelsForProvider(prov, modelName))
