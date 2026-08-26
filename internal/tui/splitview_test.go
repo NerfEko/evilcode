@@ -166,7 +166,7 @@ func TestWheelOverChatScrollsTranscriptNotPanel(t *testing.T) {
 	}
 }
 
-func TestCtrlLTogglesLiveViewAndQClosesIt(t *testing.T) {
+func TestCtrlLTogglesLiveViewAndCtrlQClosesIt(t *testing.T) {
 	m := clickModel(nil, t.TempDir())
 	m.width, m.height = 100, 20
 
@@ -176,11 +176,11 @@ func TestCtrlLTogglesLiveViewAndQClosesIt(t *testing.T) {
 		t.Fatalf("ctrl+l did not open live view: live=%v open=%v", got.liveView, got.panelOpen)
 	}
 
-	// q closes the split and turns live view off.
-	model, _ = got.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	// ctrl+q closes the split and turns live view off.
+	model, _ = got.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl}))
 	got = model.(*Model)
 	if got.liveView || got.panelOpen || got.sidePaneOpen() {
-		t.Fatalf("q did not close the live split: live=%v open=%v", got.liveView, got.panelOpen)
+		t.Fatalf("ctrl+q did not close the live split: live=%v open=%v", got.liveView, got.panelOpen)
 	}
 }
 
@@ -252,9 +252,9 @@ func TestClickDisablesLiveView(t *testing.T) {
 	}
 }
 
-func TestQTypesWhenComposerHasText(t *testing.T) {
-	// "quick" and "/quit" must still type while the split is open; q only
-	// closes the split on an empty composer.
+func TestPlainQTypesWithSplitOpen(t *testing.T) {
+	// Plain q is an ordinary letter again: it types even while the split is
+	// open; ctrl+q is the close key.
 	m := clickModel(nil, t.TempDir())
 	m.panelOpen = true
 	m.panel = PanelContent{Body: []string{"content"}}
@@ -264,10 +264,20 @@ func TestQTypesWhenComposerHasText(t *testing.T) {
 	model, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
 	got := model.(*Model)
 	if !got.panelOpen {
-		t.Fatal("q with text in the composer closed the split")
+		t.Fatal("plain q closed the split")
 	}
 	if got.editor.Text != "quiq" {
 		t.Fatalf("q did not type: editor = %q", got.editor.Text)
+	}
+
+	// ctrl+q closes it even with text in the composer.
+	model, _ = got.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl}))
+	got = model.(*Model)
+	if got.panelOpen || got.sidePaneOpen() {
+		t.Fatal("ctrl+q did not close the split with text in the composer")
+	}
+	if got.editor.Text != "quiq" {
+		t.Fatalf("ctrl+q disturbed the composer: editor = %q", got.editor.Text)
 	}
 }
 
@@ -279,7 +289,7 @@ func TestPanelFooterShowsLiveAndHints(t *testing.T) {
 	if !strings.HasPrefix(last, "live") {
 		t.Fatalf("footer missing the live tag: %q", last)
 	}
-	if !strings.Contains(last, "q to close, ctrl+L for live view") {
+	if !strings.Contains(last, "ctrl+q to close, ctrl+L for live view") {
 		t.Fatalf("footer missing the key hints: %q", last)
 	}
 
@@ -290,7 +300,7 @@ func TestPanelFooterShowsLiveAndHints(t *testing.T) {
 	if strings.HasPrefix(last, "live") {
 		t.Fatalf("footer shows the live tag when live view is off: %q", last)
 	}
-	if !strings.Contains(last, "q to close, ctrl+L for live view") {
+	if !strings.Contains(last, "ctrl+q to close, ctrl+L for live view") {
 		t.Fatalf("footer missing the key hints: %q", last)
 	}
 }

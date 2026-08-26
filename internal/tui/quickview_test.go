@@ -20,7 +20,7 @@ func panelEqual(a, b PanelContent) bool {
 
 // TestQuickViewIsTransientAndDoesNotTouchDiffState is the F1.3 build test:
 // opening a quick view shows it in preference to the persistent /diff panel and
-// opens the pane regardless of m.panelOpen/m.diffMode, but closes (via q)
+// opens the pane regardless of m.panelOpen/m.diffMode, but closes (via ctrl+q)
 // leaving m.panel, m.panelOpen, and m.diffMode bit-identical to before. A quick
 // view that disturbs /diff state is the bug §3.2 exists to prevent.
 func TestQuickViewIsTransientAndDoesNotTouchDiffState(t *testing.T) {
@@ -51,7 +51,7 @@ func TestQuickViewIsTransientAndDoesNotTouchDiffState(t *testing.T) {
 			m.panel, m.panelOpen, m.diffMode, wantPanel, wantOpen, wantMode)
 	}
 
-	// q's first layer closes the quick view and nothing else.
+	// ctrl+q's first layer closes the quick view and nothing else.
 	m.closeSplit()
 	if m.quickView != nil {
 		t.Fatal("closeSplit() did not clear the quick view (its first layer)")
@@ -91,7 +91,7 @@ func TestQuickViewOpensPaneWhenDiffClosed(t *testing.T) {
 }
 
 // TestEscapeFallsThroughToInterruptWhenNoQuickView: Esc no longer closes the
-// split (q owns that); with an in-progress turn it interrupts — the rung
+// split (ctrl+q owns that); with an in-progress turn it interrupts — the rung
 // ordering of §3.3 must not regress.
 func TestEscapeFallsThroughToInterruptWhenNoQuickView(t *testing.T) {
 	m := &Model{processing: true, cancelTurn: func() {}}

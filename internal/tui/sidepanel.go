@@ -191,7 +191,7 @@ func (r *Renderer) renderPanelChrome(title string, body []string, width, height 
 		left = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleSuccess))).Render("live")
 	}
-	right := dim.Render("q to close, ctrl+L for live view")
+	right := dim.Render("ctrl+q to close, ctrl+L for live view")
 	avail := inner - lipgloss.Width(left)
 	if lipgloss.Width(right) > avail {
 		right = truncateCells(right, max(avail, 0))

@@ -358,7 +358,7 @@ type Model struct {
 	panelRatio int
 
 	// quickView is the transient click-to-look overlay (§3.2). Non-nil means it
-	// is showing; q clears it and the persistent /diff panel underneath is
+	// is showing; Ctrl+Q clears it and the persistent /diff panel underneath is
 	// untouched. It is rendered in preference to m.panel and opens the pane
 	// regardless of m.panelOpen/m.diffMode, but it never writes any of them.
 	quickView *PanelContent
@@ -2155,11 +2155,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.escape()
 		return m, nil
 
-	case "q":
-		// q closes the split when it is open and the composer is empty;
-		// otherwise it types like any other letter, so "quick" and "/quit"
-		// still work while the pane is up.
-		if m.sidePaneOpen() && m.editor.Text == "" {
+	case "ctrl+q":
+		// Ctrl+Q closes the split; plain q still types like any other letter.
+		if m.sidePaneOpen() {
 			m.closeSplit()
 			return m, nil
 		}
@@ -3921,9 +3919,9 @@ func terminalSetupText() string {
 	}, "\n")
 }
 
-// escape is the layered cancel of plan.md §6.7. Closing the split is q's job,
-// not Esc's: Esc means "stop" or "clear", and a user who opened a quick view
-// mid-turn meant "close this" only when they press q.
+// escape is the layered cancel of plan.md §6.7. Closing the split is Ctrl+Q's
+// job, not Esc's: Esc means "stop" or "clear", and a user who opened a quick
+// view mid-turn meant "close this" only when they press Ctrl+Q.
 func (m *Model) escape() {
 	// Esc cancels a pending two-press detach before anything else, so a reflexive
 	// "never mind" actually disarms Ctrl+C.
@@ -3940,7 +3938,8 @@ func (m *Model) escape() {
 	}
 }
 
-// closeSplit closes the side pane one layer at a time, which is what q owns:
+// closeSplit closes the side pane one layer at a time, which is what Ctrl+Q
+// owns:
 // the quick view first (revealing the persistent panel underneath, if any),
 // then the panel and live view together. The pane's scroll momentum stops
 // either way.

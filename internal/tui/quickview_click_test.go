@@ -106,32 +106,32 @@ func TestClickWriteAndBashReplaceQuickViewWithoutTouchingDiff(t *testing.T) {
 	}
 }
 
-func TestQClosesQuickViewWithoutTouchingDiff(t *testing.T) {
+func TestCtrlQClosesQuickViewWithoutTouchingDiff(t *testing.T) {
 	m := clickModel(nil, t.TempDir())
 	m.panel = PanelContent{Title: "pinned", Diff: "@@ pinned @@"}
 	m.panelOpen, m.diffMode = true, DiffPinned
 	wantPanel, wantOpen, wantMode := m.panel, m.panelOpen, m.diffMode
 	m.quickView = &PanelContent{Title: "read", Body: []string{"content"}}
 
-	model, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	model, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl}))
 	got := model.(*Model)
 	if got.quickView != nil {
-		t.Fatal("q left the quick view open")
+		t.Fatal("ctrl+q left the quick view open")
 	}
 	if !panelEqual(got.panel, wantPanel) || got.panelOpen != wantOpen || got.diffMode != wantMode {
-		t.Fatal("q changed persistent diff state while closing quick view")
+		t.Fatal("ctrl+q changed persistent diff state while closing quick view")
 	}
 }
 
 func TestEscapeNoLongerClosesTheSplit(t *testing.T) {
-	// Esc means stop/clear; q is the key that closes the split.
+	// Esc means stop/clear; ctrl+q is the key that closes the split.
 	m := clickModel(nil, t.TempDir())
 	m.quickView = &PanelContent{Title: "read", Body: []string{"content"}}
 
 	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	got := model.(*Model)
 	if got.quickView == nil {
-		t.Fatal("Esc closed the quick view; q owns that now")
+		t.Fatal("Esc closed the quick view; ctrl+q owns that now")
 	}
 }
 
@@ -212,9 +212,9 @@ func TestMarkdownClickOpensTheSidePanelRendered(t *testing.T) {
 		t.Fatalf("markdown was highlighted as source rather than rendered:\n%s", panel)
 	}
 
-	// q closes it, like every other quick view.
+	// ctrl+q closes it, like every other quick view.
 	got.closeSplit()
 	if got.quickView != nil {
-		t.Fatal("q did not close the markdown quick view")
+		t.Fatal("ctrl+q did not close the markdown quick view")
 	}
 }
