@@ -94,12 +94,54 @@ func TestWheelOverPanelScrollsPanelNotTranscript(t *testing.T) {
 
 	chat, _ := Horizontal{Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: true}.Split()
 	before := m.scroll.Offset
-	m.handleWheel(tea.MouseWheelMsg(tea.Mouse{X: chat + 2, Button: tea.MouseWheelUp}))
+	m.handleWheel(tea.MouseWheelMsg(tea.Mouse{X: chat + 2, Button: tea.MouseWheelDown}))
 	if m.panelScroll.Offset == 0 {
 		t.Fatal("wheel over the panel did not scroll the panel")
 	}
 	if m.scroll.Offset != before {
 		t.Fatal("wheel over the panel scrolled the transcript")
+	}
+}
+
+func TestPanelWheelDirectionIsNotInverted(t *testing.T) {
+	m := clickModel(nil, t.TempDir())
+	m.width, m.height = 100, 20
+	m.panelOpen = true
+	m.panel = PanelContent{Body: make([]string, 60)}
+	m.View()
+
+	chat, _ := Horizontal{Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: true}.Split()
+	// Wheel down moves toward the bottom of the file.
+	m.handleWheel(tea.MouseWheelMsg(tea.Mouse{X: chat + 2, Button: tea.MouseWheelDown}))
+	down := m.panelScroll.Offset
+	if down == 0 {
+		t.Fatal("wheel down did not move toward the bottom of the file")
+	}
+	// Wheel up moves back toward the top.
+	m.handleWheel(tea.MouseWheelMsg(tea.Mouse{X: chat + 2, Button: tea.MouseWheelUp}))
+	if m.panelScroll.Offset >= down {
+		t.Fatalf("wheel up moved the wrong way: offset %d, want < %d", m.panelScroll.Offset, down)
+	}
+}
+
+func TestPanelBodyIsCachedAcrossFrames(t *testing.T) {
+	m := clickModel(nil, t.TempDir())
+	m.width, m.height = 100, 20
+	m.panelOpen = true
+	m.panel = PanelContent{Body: []string{"a", "b"}}
+
+	m.View()
+	first := &m.panelBodyCache[0]
+	m.View()
+	if got := &m.panelBodyCache[0]; got != first {
+		t.Fatal("panel body re-rendered on an unchanged frame")
+	}
+
+	// New content re-renders.
+	m.panel = PanelContent{Body: []string{"a", "b", "c"}}
+	m.View()
+	if got := &m.panelBodyCache[0]; got == first {
+		t.Fatal("panel body cache did not refresh on new content")
 	}
 }
 

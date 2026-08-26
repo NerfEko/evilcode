@@ -377,6 +377,12 @@ type Model struct {
 	panelViewportHeight int
 	panelScrollPending  int
 
+	// panelBodyCache holds the last rendered pane body so a wheel notch or a
+	// tick does not re-render the whole file; panelBodyKey is what it was
+	// rendered from.
+	panelBodyCache []string
+	panelBodyKey   panelBodyCacheKey
+
 	// sessions is the full-screen picker, and dataDir is where session state
 	// lives so the picker can act on it.
 	sessions     SessionPickerState
@@ -2687,14 +2693,16 @@ func (m *Model) wheelOverPanel(x int) bool {
 	return side > 0 && x >= chat
 }
 
-// panelWheel scrolls the side pane's body. Scrolling away pauses live view's
-// follow; scrolling back to the top resumes it.
+// panelWheel scrolls the side pane's body. The pane's offset counts from the
+// top of the file, so wheel-up moves toward the top and wheel-down toward the
+// bottom. Scrolling away pauses live view's follow; scrolling back to the top
+// resumes it.
 func (m *Model) panelWheel(msg tea.MouseWheelMsg) {
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		m.panelScroll.Up(LinesPerNotch, m.panelContentHeight, m.panelViewportHeight)
-	case tea.MouseWheelDown:
 		m.panelScroll.Down(LinesPerNotch)
+	case tea.MouseWheelDown:
+		m.panelScroll.Up(LinesPerNotch, m.panelContentHeight, m.panelViewportHeight)
 	}
 }
 
@@ -5151,7 +5159,14 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 
 	// Measure the body once, then window it: the pane scrolls independently of
 	// the transcript, and the wheel needs the real content height to clamp to.
-	body := m.renderer.panelBody(content, mode, side-2)
+	// The body is cached — re-rendering the whole file on every frame made
+	// scrolling laggy on both sides of the split.
+	key := panelBodyKeyFor(content, mode, side-2, m.renderer.Palette)
+	if m.panelBodyKey != key {
+		m.panelBodyCache = m.renderer.panelBody(content, mode, side-2)
+		m.panelBodyKey = key
+	}
+	body := m.panelBodyCache
 	m.panelContentHeight = len(body)
 	m.panelViewportHeight = max(height-2, 0)
 	if m.panelScrollPending >= 0 {

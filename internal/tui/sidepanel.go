@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -73,6 +74,35 @@ type PanelContent struct {
 // Empty reports whether there is nothing to show.
 func (p PanelContent) Empty() bool {
 	return p.Diff == "" && len(p.Body) == 0
+}
+
+// panelBodyCacheKey identifies a rendered pane body. The Body slice is keyed
+// by its backing array's identity rather than its contents: pane bodies are
+// replaced wholesale when a file changes, so pointer identity is exact and
+// cheap where a content hash would re-read every line. The palette pointer
+// matters because the body is styled with it.
+type panelBodyCacheKey struct {
+	title, path, diff string
+	code              bool
+	mode              DiffMode
+	width             int
+	bodyLen           int
+	bodyPtr           uintptr
+	palettePtr        uintptr
+}
+
+func panelBodyKeyFor(c PanelContent, mode DiffMode, width int, palette *theme.Palette) panelBodyCacheKey {
+	key := panelBodyCacheKey{
+		title: c.Title, path: c.Path, diff: c.Diff, code: c.Code,
+		mode: mode, width: width, bodyLen: len(c.Body),
+	}
+	if len(c.Body) > 0 {
+		key.bodyPtr = reflect.ValueOf(c.Body).Pointer()
+	}
+	if palette != nil {
+		key.palettePtr = reflect.ValueOf(palette).Pointer()
+	}
+	return key
 }
 
 // RenderSidePanel draws the pane: a single left border column, a one-row
