@@ -405,6 +405,9 @@ func ollamaReasoningEffortsForCapabilities(model string, capabilities []string) 
 		if strings.Contains(strings.ToLower(model), "gpt-oss") {
 			return OllamaThinkingReasoningEfforts()
 		}
+		if IsGLM53Model(model) {
+			return GLM53ReasoningEfforts()
+		}
 		return OllamaReasoningEfforts()
 	}
 	return nil
@@ -490,6 +493,9 @@ func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 	if strings.Contains(lower, "gpt-oss") {
 		return OllamaThinkingReasoningEfforts()
 	}
+	if IsGLM53Model(lower) {
+		return GLM53ReasoningEfforts()
+	}
 	if strings.Contains(lower, "think") || strings.Contains(lower, "reason") ||
 		strings.Contains(lower, "r1") || strings.Contains(lower, "qwen3") ||
 		strings.Contains(lower, "glm") || strings.Contains(lower, "qwq") {
@@ -512,6 +518,12 @@ func (o *Ollama) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 
 func ollamaThinkValue(model string, effort ReasoningEffort) any {
 	if effort == ReasoningEffortNone {
+		// GLM-5.3 cannot disable its thinking trace; a saved preference for
+		// none (legal before this model family was classified) must not send
+		// think: false. true keeps thinking on at the model's default effort.
+		if IsGLM53Model(model) {
+			return true
+		}
 		return false
 	}
 	if strings.Contains(strings.ToLower(model), "gpt-oss") {

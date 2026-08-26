@@ -86,6 +86,15 @@ var deepSeekReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortMax,
 }
 
+// GLM-5.3 documents exactly three effort levels and cannot disable its
+// thinking trace, unlike the generic Ollama thinking vocabulary. GLM-5.2 and
+// older accepted non-thinking calls, so only 5.3-era names match this table.
+var glm53ReasoningEffortLevels = [...]ReasoningEffort{
+	ReasoningEffortLow,
+	ReasoningEffortHigh,
+	ReasoningEffortMax,
+}
+
 var ollamaReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortNone,
 	ReasoningEffortLow,
@@ -173,6 +182,20 @@ func OllamaReasoningEfforts() []ReasoningEffort {
 // cannot fully disable its reasoning trace.
 func OllamaThinkingReasoningEfforts() []ReasoningEffort {
 	return copyReasoningEfforts(ollamaThinkingReasoningEffortLevels[:])
+}
+
+// GLM53ReasoningEfforts returns the levels GLM-5.3 documents: low, high, and
+// max, with reasoning always enabled.
+func GLM53ReasoningEfforts() []ReasoningEffort {
+	return copyReasoningEfforts(glm53ReasoningEffortLevels[:])
+}
+
+// IsGLM53Model reports whether a model name names a GLM-5.3 family model.
+// Matching the 5.3 generation specifically keeps older GLM models, which do
+// accept non-thinking calls, on the generic Ollama vocabulary.
+func IsGLM53Model(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "glm-5.3") || strings.Contains(lower, "glm5.3")
 }
 
 // ParseReasoningEffort normalizes a user-facing effort value.

@@ -513,6 +513,42 @@ func TestOllamaReasoningEffortFallbackRecognizesGLM(t *testing.T) {
 	}
 }
 
+func TestOllamaReasoningEffortGLM53UsesDocumentedLevels(t *testing.T) {
+	o := NewOllama("ollama-local", "", "")
+	want := GLM53ReasoningEfforts()
+	for _, model := range []string{"glm-5.3-flash", "glm-5.3-flash:0731", "glm5.3"} {
+		if got := o.reasoningEffortLevelsForModel(model); !slices.Equal(got, want) {
+			t.Errorf("%s reasoning levels = %v, want %v", model, got, want)
+		}
+		if got := ollamaReasoningEffortsForCapabilities(model, []string{"thinking"}); !slices.Equal(got, want) {
+			t.Errorf("%s capability levels = %v, want %v", model, got, want)
+		}
+	}
+	// GLM-5.3 cannot disable thinking, so a stale saved "none" must not
+	// translate to think: false at the wire edge.
+	if got := ollamaThinkValue("glm-5.3-flash", ReasoningEffortNone); got != true {
+		t.Errorf("glm-5.3 think value for none = %v, want true", got)
+	}
+	// GLM-5.2 accepted non-thinking calls and keeps the generic vocabulary.
+	if got := o.reasoningEffortLevelsForModel("glm-5.2:cloud"); !slices.Equal(got, OllamaReasoningEfforts()) {
+		t.Errorf("glm-5.2 reasoning levels = %v, want %v", got, OllamaReasoningEfforts())
+	}
+}
+
+func TestOpenAIGLM53EffortLevels(t *testing.T) {
+	o := NewOpenAI("zai", "https://api.z.ai", "key")
+	want := GLM53ReasoningEfforts()
+	if got := o.reasoningEffortLevelsForModel("glm-5.3-flash"); !slices.Equal(got, want) {
+		t.Errorf("glm-5.3-flash reasoning levels = %v, want %v", got, want)
+	}
+	// A provider configured without reasoning-effort support keeps the
+	// control hidden entirely.
+	plain := NewOpenAI("zai", "https://api.z.ai", "key").WithReasoningEffort(false)
+	if got := plain.reasoningEffortLevelsForModel("glm-5.3-flash"); got != nil {
+		t.Errorf("levels without support = %v, want nil", got)
+	}
+}
+
 func TestOllamaEmbed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/embed" {
