@@ -1961,7 +1961,15 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 		case MsgStop:
 			send(ServerMsg{Kind: MsgStatus, Status: s.Status()})
-			go s.Close()
+			// D6: "stopped" must mean shutdown completed, not scheduled. The
+			// updater renames the executable the moment Stop returns; an old
+			// daemon still running tools, writing state, or owning the socket
+			// would race the replacement. Teardown runs synchronously here and
+			// the connection is dropped only after it finishes — the client
+			// reads that EOF as completion.
+			s.Close()
+			drop()
+			return
 
 		case MsgList:
 			send(ServerMsg{Kind: MsgSessions, Sessions: s.Sessions()})

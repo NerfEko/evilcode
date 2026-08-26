@@ -167,6 +167,12 @@ func (c *Client) Status() (*ServerStatus, error) {
 }
 
 // Stop requests a graceful daemon shutdown.
+//
+// "Stopped" means shutdown completed: the daemon closes this connection only
+// after teardown (socket unlinked, sessions closed), so the status reply is
+// progress, not completion. Returning on the status would let the updater
+// rename the executable while the old daemon was still running tools or
+// writing state (D6). Callers bound the wait with SetDeadline.
 func (c *Client) Stop() error {
 	if err := c.Send(ClientMsg{Kind: MsgStop}); err != nil {
 		return err
@@ -174,8 +180,8 @@ func (c *Client) Stop() error {
 	for {
 		msg, err := c.Recv()
 		if err != nil {
-			// A successful stop closes the socket immediately after replying in
-			// some runtimes, so EOF is also an acceptable completion.
+			// The daemon closes the connection after teardown; EOF is the
+			// completion acknowledgement.
 			if errors.Is(err, ErrClosed) {
 				return nil
 			}
@@ -183,9 +189,6 @@ func (c *Client) Stop() error {
 		}
 		if msg.Kind == MsgError {
 			return fmt.Errorf("%s", msg.Err)
-		}
-		if msg.Kind == MsgStatus {
-			return nil
 		}
 	}
 }
