@@ -80,15 +80,23 @@ This division is sound in principle. The main architectural risk is that state i
 
 Severity means: **critical** can make a default installation unusable, corrupt/escape state, or silently execute beyond an explicit safety boundary; **high** breaks a core feature or silently produces a materially wrong conversation/runtime; **medium** is a real defect with a narrower trigger; **low** is maintainability, diagnostics, or polish that can still cause drift.
 
+> **Verification status (2026-08-26):** every finding was re-checked against the
+> live services, the actual code, and a live probe run before this revision. A1
+> and E13 are **withdrawn** (see below). B1 is corrected in place and scoped to
+> the direct `deepseek` provider rather than the default ollama-cloud route,
+> which replays thinking through the Ollama adapter. All other findings were
+> reproduced in the code as described; C7 and E5 carry scope notes. The probe
+> suite was re-run and fails on this machine, corroborating E10/J1.
+
 ### A. Defaults, configuration, and routing
 
-#### A1 — Critical: both fresh-install Ollama defaults name the wrong model artifact
+#### A1 — Withdrawn: the defaults do not name a wrong or missing model artifact
 
-Evidence: `internal/config/config.go:233-235` sets `deepseek-v4-flash:0731@ollama-cloud` and the same bare `:0731` tag for `ollama-local`; `README.md:121-128` documents the cloud form. The current official Ollama catalog publishes `deepseek-v4-flash:0731-cloud`, `:cloud`, and `:preview-cloud`, not `:0731`. It is also a 304B cloud-hosted model, not a normal local pull.
+The original claim (“`deepseek-v4-flash:0731` is not a published tag; the catalog only has `:0731-cloud`/`:cloud`”) is false: `GET /api/tags` lists `deepseek-v4-flash:0731`, and `POST /api/show` for it returns 200 with `deepseek4.context_length: 1048576`. The proposed `:0731-cloud`/`:cloud` tags do not exist.
 
-Impact: with an Ollama key, a new session asks the cloud endpoint for a nonexistent tag. Without a key, it asks a local Ollama daemon for a cloud-only 304B model that a fresh machine will not have. The claim that a missing config is a “working setup” is therefore false at the first model request.
+The intermediate rewrite (“the local default names a cloud-only 304B model a fresh install does not have”) is equally wrong. The default does not name a local version of DeepSeek at all — `internal/config/config.go:228-232` documents that both default routes point at the **same** model, differing only in route, “because a local daemon proxies the same cloud models.” `@ollama-local` selects the local Ollama daemon as the transport to that same API model; there is no local artifact to pull. A fresh machine needs cloud auth one way or the other (an API key for the cloud route, `ollama login` for the local proxy route) — that is a setup condition, not a naming bug, and the “model not found” error on an unauthenticated local daemon is the expected auth failure.
 
-Solution: set the cloud reference to `deepseek-v4-flash:0731-cloud@ollama-cloud`. Do not pretend the same artifact is a local default; either choose a realistically pullable local model, discover installed local tags and select one, or show first-run setup when none exists. Add an integration test that compares each built-in default to the provider catalog (or a pinned catalog fixture) and a clean-home probe that reaches an intelligible setup state.
+Remaining (optional, product-level): first-run guidance when neither a cloud key nor a logged-in local daemon exists. Not a code defect.
 
 #### A2 — High: the built-in direct DeepSeek model is deprecated and the reasoning vocabulary is stale
 
@@ -156,11 +164,13 @@ Solution: render a redacted effective configuration: source path, repo override 
 
 ### B. Provider and model protocol correctness
 
-#### B1 — Critical: DeepSeek reasoning is not replayed across tool rounds
+#### B1 — High: the direct DeepSeek adapter does not replay reasoning across tool rounds
 
-Evidence: streamed `reasoning_content` is captured (`internal/provider/openai.go:217-221`, `:451-458`) and stored in `provider.Message.Reasoning`, but `oaiMessage` has no `reasoning_content` field (`internal/provider/openai.go:109-120`) and `toOAIMessages` ignores `Message.Reasoning` (`:154-184`). DeepSeek requires the assistant reasoning content to be returned with the tool calls in the next request when thinking is enabled.
+Evidence: streamed `reasoning_content` is captured (`internal/provider/openai.go:218`, `:460`) and stored in `provider.Message.Reasoning`, but `oaiMessage` has no `reasoning_content` field (`internal/provider/openai.go:111-122`) and `toOAIMessages` ignores `Message.Reasoning` (`:235-271`). DeepSeek's API requires the assistant reasoning content to be returned with the tool calls in the next request when thinking is enabled (thinking-mode guide at api-docs.deepseek.com; the "reasoning_content must be passed back" 400 is widely reported).
 
-Impact: the first DeepSeek response can call a tool, but the second request lacks required reasoning state. Current DeepSeek reasoning/tool workflows can be rejected or lose chain continuity exactly on coding tasks that need tools.
+Scope note (verified 2026-08-26): this affects only the built-in `deepseek` provider, which talks to `api.deepseek.com` through the OpenAI-style adapter. The default route, `deepseek-v4-flash:0731@ollama-cloud`, uses the Ollama adapter, which does replay stored reasoning (`Thinking: m.Reasoning` in `toOllamaMessages`, `internal/provider/ollama.go:121-142`). Users on the default cloud path do not hit this.
+
+Impact: the first DeepSeek response can call a tool, but the second request lacks required reasoning state. Current DeepSeek reasoning/tool workflows on the direct provider can be rejected or lose chain continuity exactly on coding tasks that need tools.
 
 Solution: add the DeepSeek-only replay field and populate it on assistant messages, preserving its adjacency with calls/results. Write a two-round HTTP fixture that asserts the second request contains the first response’s reasoning content.
 
@@ -278,11 +288,13 @@ Impact: session teardown/model switches can leave bounded embedding calls alive 
 
 Solution: give the compactor a lifecycle context, cancel and join in-flight work on close, and reset in-flight flags immediately when changing provider epochs.
 
-#### C7 — Medium: hidden prompts are represented inconsistently
+#### C7 — Medium (verified, low impact): hidden prompts are represented inconsistently
 
-Evidence: local `RunHidden` ultimately relies on a mutable prompt/string path, while the daemon separately sets `requestHidden` and rewrites event text (`internal/daemon/server.go:1000-1021`, `:1507-1536`). The core `Agent.prompt` stores only text (`internal/agent/agent.go:122-124`).
+Evidence: local `RunHidden` relies on a mutable `hiddenPrompt` string on the model, while the daemon separately sets `requestHidden` and rewrites event text (`internal/daemon/server.go:1000-1021`, `:1507-1536`).
 
-Impact: visibility is a transport-side convention rather than part of the turn identity. New frontends or direct local callers can persist/render harness prompts differently.
+Scope note (verified 2026-08-26): `Hidden` does ride on the persisted provider message (`internal/agent/agent.go:421`), so the review's wording overstates the gap; the real issue is that two different mechanisms carry the flag (model field vs daemon transport marker), which is a consistency/maintainability defect rather than a data-loss one.
+
+Impact: two mechanisms can drift; new frontends or direct local callers can render harness prompts differently.
 
 Solution: define a `TurnInput{Text, Images, Hidden, RequestID, Source}` and carry it through agent events and persistence in one place.
 
@@ -418,11 +430,11 @@ Impact: assistant/tool messages are labeled prompts; a month-long session appear
 
 Solution: stream session entries and count user-role prompts, `MetaTokens`, and entry timestamps by day. Persist/start timestamps explicitly. Add fixture tests spanning days and roles.
 
-#### E5 — Medium: picker identity is sometimes only a model name
+#### E5 — Medium (verified, narrower than written): picker identity is sometimes only a model name
 
-Evidence: selection/current logic includes paths that compare `sel.Name` or current model without provider qualification, while duplicate model names are valid across providers (`internal/tui/picker.go`, `internal/tui/app.go:2782-2940`). Vision lookup after local switch calls `m.visionFor(sel.Name)` rather than `targetRef` (`internal/tui/app.go:2912-2917`).
+Evidence: selection/current logic includes paths that compare `sel.Name` or current model without provider qualification, while duplicate model names are valid across providers (`internal/tui/app.go:2904`, `:3181-3183`). Most picker paths are properly qualified (`Name == m.header.Model && Provider == m.header.Provider` at `:3021-3024`); the unqualified paths are the picker's initial `Selected` row and the effort-level fallback check.
 
-Impact: two providers exposing the same model can highlight/select the wrong row and apply the wrong vision override.
+Impact: with two providers exposing the same model name, the initial highlighted row can be the wrong one and the wrong vision/effort override can be applied.
 
 Solution: make canonical `model@provider` the picker key everywhere; use display name only for rendering.
 
@@ -482,13 +494,9 @@ Impact: callers can receive `io.ErrShortWrite` or alter behavior merely because 
 
 Solution: retain `originalLen`, store only the bounded prefix, and return `originalLen, nil`.
 
-#### E13 — Low: `/login` contains duplicate Codex error assignment
+#### E13 — Withdrawn: there is no duplicate Codex error assignment
 
-Evidence: the identical notice is assigned twice in the missing-account branch (`internal/tui/selftest.go:550-556`).
-
-Impact: no user-visible difference, but it is a concrete sign of copy/paste drift in an authentication path.
-
-Solution: remove the duplicate and cover the branch in the command test.
+The claimed duplicate does not exist. The Codex branch in `/login` assigns each notice exactly once — “codex OAuth account detected; use `codex login` to change accounts” on a successful build and “codex OAuth account not found; run `codex login` first” on failure (`internal/tui/selftest.go:581-587`). A repository-wide search finds a single occurrence of each message. This finding is withdrawn.
 
 #### E14 — Low: graphics override accepts arbitrary protocols silently
 
@@ -846,8 +854,8 @@ The corrective work should retain several good foundations:
 
 ### Release blocker patch set
 
-1. Correct Ollama/DeepSeek defaults and current reasoning catalogs (A1, A2).
-2. Replay DeepSeek reasoning and enforce terminal completion in both provider and agent layers (B1–B5).
+1. Update the DeepSeek catalog/reasoning vocabulary (A2).
+2. Replay DeepSeek reasoning on the direct provider and enforce terminal completion in both provider and agent layers (B1–B5).
 3. Replace/bypass NDJSON for images and other bulk data, with byte bounds/backpressure (D1, D2, D11).
 4. Make command timeout kill, and cancel background work on runtime close (F1–F3).
 5. Make rename a full identity migration and make attached client identity mutable/cancellable (D3, D7).
@@ -874,4 +882,43 @@ The corrective work should retain several good foundations:
 
 The project is not structurally unsound; it is suffering from boundary drift. Inside individual packages, the code is generally careful. The failures appear where a guarantee crosses boundaries: provider stream to agent, image to JSON frame, daemon identity to client closure, config file to live provider, timeout to background registry, source transcript to native session, or widget label to stored data. Fixing those boundaries and turning their comments into contract tests will produce a much more reliable system than adding more features now.
 
-The current release should not be considered clean-install ready until A1, B1/B2, D1, D3, F1, and the failing probe suite are resolved.
+The current release should not be considered clean-install ready until B1 (direct-DeepSeek adapter only), B2, D1, D3, F1, and the failing probe suite are resolved. After live verification (2026-08-26), A1 is withdrawn in full (both the original tag claim and the local-pull framing) and B1's applicability to the default cloud route is withdrawn; see the corrected findings above.
+
+## Fix status (2026-08-26, second pass)
+
+Implemented and committed on `main` since this review was written. Each fix
+landed with its own regression tests; the full unit suite, vet, and the probe
+suite pass on this machine at the listed commits.
+
+| Finding | Fix commit | What changed |
+|---|---|---|
+| B1 | `e5900fa` | Direct DeepSeek adapter replays `reasoning_content` on assistant messages (two-round HTTP fixture). |
+| B2 | `e5900fa` | OpenAI SSE requires the `[DONE]` marker; clean EOF is a typed `ErrStreamTruncated`, retried only before any output. |
+| B3 | `e5900fa` | Non-normal `finish_reason` (`length`, `content_filter`) surfaces as an error instead of a clipped "success". |
+| B4 | `e5900fa` | Synthesized tool IDs come from a session-shared atomic sequence; no more `call_1` collisions between responses. |
+| B5 | `e5900fa` | `streamOnce` requires exactly one terminal `Done` chunk; missing or duplicated terminals are errors. |
+| B6 | `e5900fa` | `retryable()` retries only transport failures, timeouts, retryable HTTP statuses, and truncation. |
+| A2 | `e5900fa` | DeepSeek vocabulary is none/low/high/max; all DeepSeek models are thinking-capable; built-in default is `deepseek-v4-flash`. |
+| F1 | `ac2e53f` | Foreground timeout kills the process group and returns a timeout error; no more adoption-as-background. |
+| F2 | `ac2e53f` | Background commands honor the requested timeout; deadline shown by `bg status`. |
+| F3 | `ac2e53f` | `Exec.Close`/`Background.Close` cancel all detached process groups; wired into session close. |
+| A4 | `1890bc7` | `LoadFrom` records the config path before the read, so `last_model` refresh starts the moment the file appears. |
+| A6 | `1890bc7` | `lenient_tool_parse` implemented: strict JSON-in-text tool-call fallback, opt-in per model. |
+| E9 | `1890bc7` | Stale Ctrl+T "toggle queue mode" help line removed. |
+| C2 | `8261f88` | `max_steps` counts executed tool rounds; the concluding answer is allowed; over-cap rounds are stubbed and end `EndMaxSteps`. |
+| E2 | `5e747bf` | Submitting images on a vision-less model blocks with guidance and retains text/attachments instead of sending placeholders. |
+| I1 | `45f7982` | Completion gate validates every newly completed group in a write. |
+| I2 | `45f7982` | Ungrouped items are a bucket and get the same ownership gate. |
+| H1 | `e8fee68` | Codex imports write `model@codex` session metadata; unresolvable resume refs fall back to the default with a warning. |
+| D6 | `22a3640` | Daemon stop acknowledges only after teardown (socket unlinked); the updater cannot race the old binary. |
+| D1 | `e17bc36` | Client frames over 8 MiB are refused with a typed, actionable error; server scanner matches. |
+| D2 | `e17bc36` | Queued input is bounded in count (64) and bytes (16 MiB) with visible rejection. |
+| D11 | `e17bc36` | Scanner failures send a typed protocol error and a server-side log instead of a silent disconnect. |
+| D3 | `f90b8df` | Rename migrates swarm spawner/spawn-count/inbox keys and file-registry ownership, then republishes the new identity. |
+| D7 | `f90b8df` | Attached client holds the session name in mutable state updated by snapshots; `pollRoster` takes a context and a dynamic identity. |
+| E10 | `aa4fa4a` | Probe goldens scrub the version badge on both sides; stale frames refreshed for the v1.1.3 layout; suite is green. |
+
+Not fixed in this pass (open, lower priority): A3, A5, A7, A8, A9, B7, B8, B9,
+C1, C3, C4, C5, C6, C7, C8, D4, D5, D8, D9, D10, E1, E3, E4, E5, E6, E7, E8,
+E11, E12, E14, F4–F14, G1–G7, H2–H10, I3–I5, J1–J4. See the patch-set
+sequence above for the next recommended order.

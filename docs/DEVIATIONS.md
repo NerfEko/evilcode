@@ -565,3 +565,18 @@ image bytes into content-addressed sidecar blobs referenced by session messages.
 therefore survive native session resume and daemon attach without being placed inline in
 the JSONL record. The old entry remains in place as historical provenance because this
 file is append-only; this entry is the current statement.
+
+## 2026-08-26 — codex-review fix pass (no plan.md deviation)
+
+The `docs/codex_review.md` second pass fixed 24 findings without deviating
+from plan.md: every change implements a guarantee the code or its comments
+already promised (timeout as a hard bound, terminal stream markers, ownership
+gates, identity migration). Two behavior notes:
+
+- **F1 removed the timeout-adoption feature.** A timed-out foreground command
+  used to become a background task; it is now killed and reported as an error.
+  This restores the documented `timeout` contract (plan.md §17: "timeout in
+  seconds" as a bound), which the adoption behavior had silently broken.
+- **Probe goldens now scrub the build version** instead of embedding it, so a
+  golden survives a release without churn. Layout goldens were refreshed for
+  the v1.1.3 UI (help overlay, context widget, panel widths).

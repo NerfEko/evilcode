@@ -6344,3 +6344,37 @@ for a mock provider with no thinking capability is unchanged).
 
 Verified: `go build ./...`, `go vet ./internal/daemon/... ./internal/provider/...`,
 `go test ./internal/daemon/ ./internal/provider/ -count=1`.
+
+## 2026-08-26 — codex review fix pass (B1-B6, A2, A4, A6, C2, D1-D3, D6-D7, D11, E2, E9, E10, F1-F3, H1, I1-I2)
+
+`docs/codex_review.md` listed 60 findings; this pass implemented the release
+blockers and the highest-value correctness items, one commit each, all pushed
+to `main` (e5900fa..aa4fa4a).
+
+**Provider layer:** the OpenAI/DeepSeek adapters now enforce stream
+completion — `[DONE]` is required, clean EOF is a typed `ErrStreamTruncated`,
+non-normal `finish_reason` values surface as errors, synthesized tool IDs come
+from a session-shared sequence, and DeepSeek replays `reasoning_content`
+across tool rounds. The agent requires exactly one terminal `Done` chunk and
+retries only transport failures. DeepSeek's vocabulary is now none/low/high/max
+and `deepseek-v4-flash` is the built-in direct default.
+
+**Safety:** foreground timeouts now kill the process group and return an error
+(the old adopt-as-background behavior let a command keep mutating the machine
+for up to 30 minutes); background commands honor a requested deadline; session
+close cancels all detached process groups.
+
+**Daemon:** stop acknowledges only after teardown; frames over 8 MiB are
+refused with a typed error; queued input is byte/count bounded; rename migrates
+swarm and file-registry identity and republishes a snapshot; the attached
+client follows renames through a mutable identity and the roster poller is
+cancellable.
+
+**Other:** `lenient_tool_parse` implemented, `max_steps` counts tool rounds,
+todo gate covers every group incl. ungrouped, image submission blocks without
+vision, codex imports resume on their source model, probe goldens scrub the
+version badge and are current.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`
+(probe suite excluded), `go test -race ./internal/provider ./internal/agent`,
+and `EVILCODE_BIN=<build> go test -tags probe ./probe/...` — all green.
