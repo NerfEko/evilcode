@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -197,6 +198,28 @@ type queuedInput struct {
 	text      string
 	images    [][]byte
 	hidden    bool
+}
+
+const (
+	// MaxQueuedInputs bounds prompts waiting for a busy session. The queue is
+	// the anti-starvation path for one user, not a sink for unbounded
+	// automation; a full queue is rejected visibly (D2).
+	MaxQueuedInputs = 64
+	// MaxQueuedInputBytes bounds the queue's total payload, images included.
+	// Unbounded queues let one client enqueue prompts/images faster than a
+	// model finishes, growing memory without limit.
+	MaxQueuedInputBytes = 16 << 20
+)
+
+func queuedInputBytes(q []queuedInput) int {
+	n := 0
+	for _, in := range q {
+		n += len(in.text)
+		for _, img := range in.images {
+			n += len(img)
+		}
+	}
+	return n
 }
 
 func (sess *Session) busy() bool {
@@ -1531,6 +1554,23 @@ func (sess *Session) inputRequest(requestID, text string, hidden bool, images ..
 			if len(images) > 0 {
 				attached = images[0]
 			}
+			// D2: the queue is bounded in count and bytes. An unbounded one let
+			// a client enqueue prompts/images faster than the model finishes,
+			// growing daemon memory without limit; a full queue is refused
+			// visibly rather than accepted and forgotten.
+			newBytes := len(text)
+			for _, img := range attached {
+				newBytes += len(img)
+			}
+			if len(sess.queued) >= MaxQueuedInputs ||
+				queuedInputBytes(sess.queued)+newBytes > MaxQueuedInputBytes {
+				sess.mu.Unlock()
+				a.Notice(agent.LevelError,
+					"queued input rejected: the session's queue is full "+
+						"(max %d prompts or %d MiB); wait for the current turn to end",
+					MaxQueuedInputs, MaxQueuedInputBytes/(1<<20))
+				return
+			}
 			sess.queued = append(sess.queued, queuedInput{
 				requestID: requestID, text: text, images: attached, hidden: hidden,
 			})
@@ -1941,7 +1981,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	}
 
 	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	// 8 MiB matches MaxClientFrameBytes; a frame of exactly that size plus its
+	// newline would otherwise trip the scanner before the daemon could parse it.
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
 		s.touch()
 		var msg ClientMsg
@@ -2101,6 +2143,18 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 		default:
 			send(ServerMsg{Kind: MsgError, Err: "unknown kind " + msg.Kind})
+		}
+	}
+	// D11: a scanner failure is a protocol error, not a clean hangup. An
+	// oversized frame used to read as an unexplained daemon disconnect; name
+	// it instead, and log the connection context for the server side.
+	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			send(ServerMsg{Kind: MsgError, Err: "frame exceeds the daemon's 8 MiB size limit"})
+			log.Println("daemon: dropping connection:", conn.RemoteAddr(), "frame exceeds the size limit")
+		} else {
+			send(ServerMsg{Kind: MsgError, Err: "daemon read error: " + err.Error()})
+			log.Println("daemon: connection failed:", conn.RemoteAddr(), err)
 		}
 	}
 }

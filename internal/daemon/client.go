@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,12 +57,24 @@ func (c *Client) SetDeadline(d time.Duration) error {
 }
 
 // Send writes one frame. It is safe to call from any goroutine.
+//
+// The frame is encoded into memory first so an oversized payload is refused
+// with a typed error instead of overflowing the server's scanner, which would
+// terminate the connection before the daemon ever parsed the prompt (D1).
 func (c *Client) Send(msg ClientMsg) error {
 	if msg.Version == 0 {
 		msg.Version = ProtocolVersion
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(msg); err != nil {
+		return err
+	}
+	if buf.Len() > MaxClientFrameBytes {
+		return fmt.Errorf("%w: %d bytes (images inflate by ~1/3 in base64; attach fewer or smaller images)",
+			ErrFrameTooLarge, buf.Len())
+	}
 	return c.enc.Encode(msg)
 }
 
@@ -69,6 +82,9 @@ func (c *Client) Send(msg ClientMsg) error {
 func (c *Client) Recv() (ServerMsg, error) {
 	if !c.sc.Scan() {
 		if err := c.sc.Err(); err != nil {
+			if errors.Is(err, bufio.ErrTooLong) {
+				return ServerMsg{}, fmt.Errorf("%w (server→client)", ErrFrameTooLarge)
+			}
 			return ServerMsg{}, err
 		}
 		return ServerMsg{}, ErrClosed

@@ -9,6 +9,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,18 @@ import (
 
 // SocketName is the daemon's socket under $XDG_RUNTIME_DIR.
 const SocketName = "evilcode.sock"
+
+// MaxClientFrameBytes bounds one client→server frame. The server scanner
+// accepts up to this size; images inflate by roughly a third in base64, so
+// near-limit attachments can exceed it and must be refused with an actionable
+// error instead of silently dropping the connection (D1).
+const MaxClientFrameBytes = 8 << 20
+
+// ErrFrameTooLarge marks a frame that exceeds MaxClientFrameBytes. The sender
+// checks before writing so the connection survives and the caller can tell the
+// user why (too many or too large images) rather than reading a mystifying
+// disconnect.
+var ErrFrameTooLarge = errors.New("frame exceeds the daemon's 8 MiB size limit")
 
 // ProtocolVersion changes whenever the transport shape changes in a way that
 // an older client cannot safely interpret.
