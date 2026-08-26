@@ -223,7 +223,6 @@ var HelpKeys = [][2]string{
 	{"Shift+Enter / Alt+Enter", "newline (or end a line with a backslash)"},
 	{"Esc", "close overlays, interrupt (disarms auto-poke), then clear input"},
 	{"Ctrl+C", "detach this window (twice); the agent keeps running — Esc interrupts"},
-	{"Ctrl+T", "toggle queue mode"},
 	{"Ctrl+R", "search prompt history"},
 	{"Ctrl+Up", "retrieve staged messages for editing"},
 	{"Ctrl+G", "toggle a scroll bookmark"},

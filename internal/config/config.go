@@ -328,6 +328,12 @@ func Load() (*Config, error) {
 func LoadFrom(path string) (*Config, error) {
 	cfg := Default()
 
+	// Record the path before attempting the read, including a missing file:
+	// the daemon uses Path to decide whether it can refresh last_model from
+	// disk, and a daemon started before the file exists must start refreshing
+	// the moment it does (A4).
+	cfg.Path = path
+
 	data, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
@@ -342,7 +348,6 @@ func LoadFrom(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("config: parsing %s: %w", path, err)
 		}
-		cfg.Path = path
 		// Default() had to guess the route from the environment, because it
 		// builds the very struct this file decodes into. Now that the file's
 		// providers — and any key /login wrote into them — are loaded, the guess

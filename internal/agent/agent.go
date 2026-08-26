@@ -75,6 +75,12 @@ type Agent struct {
 	// not bound them at all; see DefaultMaxSteps.
 	MaxSteps int
 
+	// LenientToolParse enables the JSON-in-text tool-call fallback for models
+	// that emit tool calls as prose instead of structured tool_call records
+	// (config [[model]] lenient_tool_parse). Off by default: it can misfire on
+	// ordinary text, so it is opt-in per model.
+	LenientToolParse bool
+
 	// Retry policy for transient failures.
 	MaxRetries int
 	BaseDelay  time.Duration
@@ -599,6 +605,17 @@ func (a *Agent) loop(ctx context.Context) error {
 			a.emit(ev)
 			a.endTurn(EndError)
 			return err
+		}
+
+		// Opt-in JSON-in-text tool calls: a small model that cannot emit
+		// structured tool calls may still write one as prose. Parsed only when
+		// the response carried no structured calls, and only with strict
+		// name/schema validation so ordinary prose cannot misfire.
+		if a.LenientToolParse && len(msg.ToolCalls) == 0 {
+			if calls, stripped, ok := parseLenientToolCalls(msg.Content, a.Tools); ok {
+				msg.ToolCalls = calls
+				msg.Content = stripped
+			}
 		}
 
 		a.Conv.Append(msg)

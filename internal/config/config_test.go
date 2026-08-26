@@ -21,15 +21,16 @@ func write(t *testing.T, body string) string {
 
 func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	t.Setenv(EnvOllamaKey, "")
-	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "absent.toml"))
+	path := filepath.Join(t.TempDir(), "absent.toml")
+	cfg, err := LoadFrom(path)
 	if err != nil {
 		t.Fatalf("a missing config file must not be an error: %v", err)
 	}
 	if len(cfg.Providers) != 3 {
 		t.Errorf("providers = %d, want the three defaults", len(cfg.Providers))
 	}
-	if cfg.Path != "" {
-		t.Errorf("Path = %q, want empty for defaults", cfg.Path)
+	if cfg.Path != path {
+		t.Errorf("Path = %q, want %q — the path must be recorded even for a missing file, so a daemon can start refreshing last_model once the file appears (A4)", cfg.Path, path)
 	}
 }
 

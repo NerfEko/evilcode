@@ -309,6 +309,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	// of the hardcoded guess behind them.
 	a.NumCtx = config.ContextWindowFor(prov, modelName, overrides.ContextWindow)
 	a.MaxSteps = cfg.Features.MaxSteps
+	a.LenientToolParse = overrides.LenientToolParse
 
 	// Compaction reaches headless and the daemon too. It was a *tui.Model
 	// method, so a long daemon session, an overnight run and every spawned
