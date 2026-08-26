@@ -257,6 +257,35 @@ func normalize(path string) string {
 	return filepath.Clean(path)
 }
 
+// Rename moves every record owned by oldName to newName, so a renamed session
+// keeps its read/write/conflict history instead of becoming a stranger to the
+// swarm (D3).
+func (r *Registry) Rename(oldName, newName string) {
+	if oldName == "" || newName == "" || oldName == newName {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, readers := range r.reads {
+		if access, ok := readers[oldName]; ok {
+			delete(readers, oldName)
+			readers[newName] = access
+		}
+	}
+	for i, access := range r.writes {
+		if access.Session == oldName {
+			r.writes[i].Session = newName
+		}
+	}
+	prefix := oldName + "\x00"
+	for key, at := range r.delivered {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.delivered, key)
+			r.delivered[newName+key[len(prefix)-1:]] = at
+		}
+	}
+}
+
 // Read records that a session read a file on a turn.
 func (r *Registry) Read(session, path string, turn int) {
 	if session == "" || path == "" {

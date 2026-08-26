@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
@@ -118,6 +119,11 @@ func run(args []string, autoStart bool) error {
 	conv := agent.NewConversation("")
 	conv.Sync(snapshotMessages(snap), snap.Epoch)
 	a := agent.New(snap.Session, nil, snap.Model, nil, conv)
+	// The session identity is mutable: /rename republishes a snapshot with the
+	// new name, and every closure below must follow it rather than capture the
+	// boot-time value (D3).
+	self := &sessionIdentity{name: snap.Session}
+	a.Session = self.get()
 	// The daemon resolved the model's real context window at session start
 	// (config.ContextWindowFor). Mirror it here so the context meter renders
 	// the actual window rather than the 200k fallback behind contextMax.
@@ -126,7 +132,7 @@ func run(args []string, autoStart bool) error {
 	inputID := func() string { return fmt.Sprintf("attach-%d", inputSeq.Add(1)) }
 	a.ForwardHidden = func(_ context.Context, text string, images [][]byte, hidden bool) error {
 		return client.Send(daemon.ClientMsg{
-			Kind: daemon.MsgInput, Session: snap.Session, Text: text,
+			Kind: daemon.MsgInput, Session: self.get(), Text: text,
 			RequestID: inputID(), Images: images, Hidden: hidden,
 		})
 	}
@@ -134,7 +140,7 @@ func run(args []string, autoStart bool) error {
 		// Queuing locally would strand the message: nothing on this side ever
 		// drains it, because the loop that would is in the daemon.
 		err := client.Send(daemon.ClientMsg{
-			Kind: daemon.MsgInterrupt, Session: snap.Session,
+			Kind: daemon.MsgInterrupt, Session: self.get(),
 			Text: in.Text, Urgent: in.Urgent,
 		})
 		if err != nil {
@@ -203,34 +209,34 @@ func run(args []string, autoStart bool) error {
 	if snap.ReasoningEffort != "" || len(snap.ReasoningEfforts) > 0 {
 		m.WithReasoningEffort(provider.ReasoningEffort(snap.ReasoningEffort), func(effort provider.ReasoningEffort) error {
 			return client.Send(daemon.ClientMsg{
-				Kind: daemon.MsgReasoningEffort, Session: snap.Session,
+				Kind: daemon.MsgReasoningEffort, Session: self.get(),
 				ReasoningEffort: string(effort),
 			})
 		})
 	}
 	m.WithSwarm(swarm, func(task string) (string, error) {
-		return summon(path, snap.Session, task)
+		return summon(path, self.get(), task)
 	}).
 		WithRemoteModelEffort(func(ref string, effort provider.ReasoningEffort) error {
 			return client.Send(daemon.ClientMsg{
-				Kind: daemon.MsgModel, Session: snap.Session, Model: ref,
+				Kind: daemon.MsgModel, Session: self.get(), Model: ref,
 				ReasoningEffort: string(effort),
 			})
 		}).
 		WithRemoteInterrupt(func(_ bool) error {
 			return client.Send(daemon.ClientMsg{
-				Kind: daemon.MsgInterrupt, Session: snap.Session,
+				Kind: daemon.MsgInterrupt, Session: self.get(),
 			})
 		}).
 		WithRemoteCommand(func(kind, arg, secret string) error {
 			return client.Send(daemon.ClientMsg{
-				Kind: daemon.MsgCommand, Session: snap.Session,
+				Kind: daemon.MsgCommand, Session: self.get(),
 				Arg: arg, Secret: secret, Text: kind,
 			})
 		}).
 		WithRemoteAskAnswer(func(id string, labels []string) error {
 			return client.Send(daemon.ClientMsg{
-				Kind: daemon.MsgAnswer, Session: snap.Session,
+				Kind: daemon.MsgAnswer, Session: self.get(),
 				RequestID: id, Answers: labels,
 			})
 		}).
@@ -241,7 +247,9 @@ func run(args []string, autoStart bool) error {
 		m.SetRemoteAsk(req)
 	}
 	m.RebuildFrom(conv.Messages())
-	go pollRoster(path, snap.Session, swarm)
+	pollerCtx, stopPoller := context.WithCancel(context.Background())
+	defer stopPoller()
+	go pollRoster(pollerCtx, path, self.get, swarm)
 
 	// The receive loop owns the event stream. It stops on EOF, which is what a
 	// daemon shutdown looks like from here.
@@ -272,6 +280,9 @@ func run(args []string, autoStart bool) error {
 				}
 			case daemon.MsgSnapshot:
 				if msg.Snapshot != nil {
+					// Follow a /rename: the new identity is authoritative for every
+					// closure and the roster self-filter from here on (D3).
+					self.set(msg.Snapshot.Session)
 					a.Conv.Sync(snapshotMessages(msg.Snapshot), msg.Snapshot.Epoch)
 					a.Inject(agent.Event{
 						Kind:               agent.EventSnapshot,
@@ -401,15 +412,46 @@ func summon(path, sessionName, task string) (string, error) {
 	}
 }
 
+// sessionIdentity is the mutable session name of an attached window. The
+// daemon republishes a snapshot after /rename; closures and pollers must
+// follow the new identity instead of holding the boot-time name forever,
+// or the window sends to a dead session and lists itself as another agent
+// (D3, D7).
+type sessionIdentity struct {
+	mu   sync.Mutex
+	name string
+}
+
+func (s *sessionIdentity) get() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
+}
+
+func (s *sessionIdentity) set(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.name = name
+}
+
 // RosterInterval is how often the swarm roster is refreshed. Seconds, not
 // milliseconds: the roster changes when an agent starts or stops, and polling
 // faster would spend a round trip per frame to redraw the same list.
 const RosterInterval = 2 * time.Second
 
-// pollRoster keeps the swarm widget current.
-func pollRoster(path, self string, swarm *tui.SwarmState) {
+// pollRoster keeps the swarm widget current until ctx is cancelled. The
+// identity is read dynamically on every cycle, so a renamed session stops
+// filtering itself out under its old name; the context lets the caller join
+// the poller instead of accumulating one dial loop per resume (D7).
+func pollRoster(ctx context.Context, path string, self func() string, swarm *tui.SwarmState) {
+	ticker := time.NewTicker(RosterInterval)
+	defer ticker.Stop()
 	for {
-		time.Sleep(RosterInterval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		c, err := daemon.DialPath(path)
 		if err != nil {
 			return
@@ -424,9 +466,10 @@ func pollRoster(path, self string, swarm *tui.SwarmState) {
 			return
 		}
 
+		me := self()
 		agents := make([]tui.SwarmAgent, 0, len(sessions))
 		for _, s := range sessions {
-			if s.Name == self {
+			if s.Name == me {
 				continue
 			}
 			agents = append(agents, tui.SwarmAgent{

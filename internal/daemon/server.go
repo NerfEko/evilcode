@@ -1069,18 +1069,21 @@ func (s *Server) renameSession(sess *Session, name string) error {
 		return fmt.Errorf("session %q already exists", name)
 	}
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
 	if sess.closing {
+		sess.mu.Unlock()
 		return fmt.Errorf("session is closing")
 	}
 	if sess.running || sess.built.Agent.Running() {
+		sess.mu.Unlock()
 		return fmt.Errorf("finish or interrupt the current turn first")
 	}
 	old := sess.Name
 	if old == name {
+		sess.mu.Unlock()
 		return nil
 	}
 	if err := sess.built.Store.Rename(config.DataDir(), name); err != nil {
+		sess.mu.Unlock()
 		return err
 	}
 	if sess.built.Todos != nil {
@@ -1090,8 +1093,10 @@ func (s *Server) renameSession(sess *Session, name string) error {
 			// publishing any new identity to the server.
 			rollbackErr := sess.built.Store.Rename(config.DataDir(), old)
 			if rollbackErr != nil {
+				sess.mu.Unlock()
 				return errors.Join(err, fmt.Errorf("rolling back session rename: %w", rollbackErr))
 			}
+			sess.mu.Unlock()
 			return err
 		}
 	}
@@ -1099,6 +1104,34 @@ func (s *Server) renameSession(sess *Session, name string) error {
 	s.sessions[name] = sess
 	sess.Name = name
 	sess.built.Agent.Session = name
+	sess.mu.Unlock()
+
+	// D3: identity-indexed coordination state must move with the session, or a
+	// renamed agent becomes a stranger to the swarm: worker results stop
+	// routing back to it, its spawn budget resets, queued messages sit under
+	// an unreachable key, and file-conflict history forgets who it is.
+	s.swarm.mu.Lock()
+	for worker, spawner := range s.swarm.spawnedBy {
+		if spawner == old {
+			s.swarm.spawnedBy[worker] = name
+		}
+	}
+	if count := s.swarm.spawnCount[old]; count > 0 {
+		delete(s.swarm.spawnCount, old)
+		s.swarm.spawnCount[name] = count
+	}
+	if queued := s.swarm.inbox[old]; len(queued) > 0 {
+		delete(s.swarm.inbox, old)
+		s.swarm.inbox[name] = queued
+	}
+	s.swarm.mu.Unlock()
+	if s.Files != nil {
+		s.Files.Rename(old, name)
+	}
+
+	// Publish the new identity so attached clients stop addressing the old
+	// name (their pollers and closures follow the snapshot).
+	sess.publishSnapshot()
 	return nil
 }
 
