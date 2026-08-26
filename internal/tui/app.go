@@ -5145,9 +5145,14 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 	// A short conversation next to a long file used to cut the panel off at the
 	// composer — the top of the diff rendered and everything below it, divider
 	// included, silently vanished.
-	height := max(len(rows), transcriptRows)
-	if m.height > height {
-		height = m.height
+	//
+	// It is also never taller than the terminal: when the chat frame overflows
+	// (an overscroll facts line, a notice, an ask picker), the rows beyond
+	// m.height are clipped by the terminal, and a panel as tall as the frame
+	// would push its footer row off-screen with them.
+	height := m.height
+	if height <= 0 {
+		height = max(len(rows), transcriptRows)
 	}
 	// The quick view sits on top of the persistent panel: when it is open, it
 	// is what the pane draws, and the /diff state underneath is untouched (§3.2).
