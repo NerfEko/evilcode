@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestSessionPreviewShowsTheConversation(t *testing.T) {
 		Preview: BlocksFromMessages([]provider.Message{
 			{Role: provider.RoleUser, Content: "wire the auth flow"},
 			{Role: provider.RoleAssistant, Content: "Done — the refresh path is wired."},
-		}),
+		}, ""),
 	}}
 
 	got := strings.Join(plainLines(r.sessionPreview(rows, 0, 70, 20)), "\n")
@@ -63,7 +64,7 @@ func TestSessionPreviewTailsALongConversation(t *testing.T) {
 	})
 	rows := []SessionRow{{
 		Info:    session.Info{Name: "long", Messages: len(msgs)},
-		Preview: BlocksFromMessages(msgs),
+		Preview: BlocksFromMessages(msgs, ""),
 	}}
 
 	got := strings.Join(plainLines(r.sessionPreview(rows, 0, 70, 14)), "\n")
@@ -86,7 +87,7 @@ func TestBlocksFromMessagesNumbersPromptsFromOne(t *testing.T) {
 		{Role: provider.RoleUser, Content: "first"},
 		{Role: provider.RoleAssistant, Content: "reply"},
 		{Role: provider.RoleUser, Content: "second"},
-	})
+	}, "")
 	var nums []int
 	for _, b := range got {
 		if b.Kind == BlockUser {
@@ -95,5 +96,47 @@ func TestBlocksFromMessagesNumbersPromptsFromOne(t *testing.T) {
 	}
 	if len(nums) != 2 || nums[0] != 1 || nums[1] != 2 {
 		t.Errorf("prompt numbers = %v, want 1 then 2", nums)
+	}
+}
+
+func TestBlocksFromMessagesRebuildsToolRows(t *testing.T) {
+	// A resumed session must show bash commands and their outputs, not a bare
+	// "bash" row: the command lives on the assistant message's tool call and
+	// the output on the tool-result message.
+	bashArgs := json.RawMessage(`{"cmd": "ls -la"}`)
+	editArgs := json.RawMessage(`{"path": "main.go", "old": "x", "new": "y"}`)
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: "inspect the repo"},
+		{Role: provider.RoleAssistant, Content: "On it.",
+			ToolCalls: []provider.ToolCall{
+				{ID: "c1", Name: "bash", Args: bashArgs},
+				{ID: "c2", Name: "edit", Args: editArgs},
+			}},
+		{Role: provider.RoleTool, ToolCallID: "c1", ToolName: "bash",
+			Content: "total 4\ndrwxr-xr-x 2 eko eko 4096 Aug 26 10:00 .\n"},
+		{Role: provider.RoleTool, ToolCallID: "c2", ToolName: "edit",
+			Content: "updated", Diff: "@@ -1,1 +1,1 @@\n-x\n+y\n"},
+	}
+
+	blocks := BlocksFromMessages(msgs, "")
+	if len(blocks) != 4 {
+		t.Fatalf("got %d blocks, want 4: %+v", len(blocks), blocks)
+	}
+	bash := blocks[2]
+	if bash.ToolName != "bash" || bash.ToolCommand != "ls -la" {
+		t.Fatalf("bash row lost its command: %+v", bash)
+	}
+	if !strings.Contains(bash.ToolOutput, "total 4") {
+		t.Fatalf("bash row lost its output: %+v", bash)
+	}
+	if bash.ToolTarget != "ls -la" {
+		t.Fatalf("bash row lost its target: %+v", bash)
+	}
+	edit := blocks[3]
+	if edit.ToolName != "edit" || edit.ToolPath != "main.go" {
+		t.Fatalf("edit row lost its path: %+v", edit)
+	}
+	if edit.Diff == "" || !edit.HasDiff || edit.Added != 1 || edit.Removed != 1 {
+		t.Fatalf("edit row lost its diff: %+v", edit)
 	}
 }

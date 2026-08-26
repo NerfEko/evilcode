@@ -13,6 +13,7 @@ import (
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
 	"evilcode/internal/todo"
+	"evilcode/internal/tools"
 )
 
 // handleSessionKey drives the full-screen session picker.
@@ -246,12 +247,28 @@ func (m *Model) runRewind(arg string) (tea.Model, tea.Cmd) {
 
 // rebuildFromMessages repopulates the transcript from a message list, which a
 // rewind and a resume both need.
-// BlocksFromMessages turns a conversation into transcript blocks.
 //
-// Free of model state so the session picker can render a preview through the
-// same path the transcript uses — a preview that looks like the thing it is
-// previewing costs nothing extra when the renderer is already there.
-func BlocksFromMessages(msgs []provider.Message) []Block {
+// BlocksFromMessages turns a conversation into transcript blocks. It is free of
+// model state so the session picker can render a preview through the same path
+// the transcript uses — a preview that looks like the thing it is previewing
+// costs nothing extra when the renderer is already there.
+//
+// Tool blocks are rebuilt from both halves of the conversation: the tool-call
+// arguments live on the assistant message that requested the call, and the
+// output lives on the tool-result message. Dropping either half is how a
+// resumed session ends up with rows that say "bash" and nothing else.
+func BlocksFromMessages(msgs []provider.Message, cwd string) []Block {
+	// calls maps a tool-call ID to its name and arguments, gathered from the
+	// assistant messages that requested the tools.
+	calls := map[string]provider.ToolCall{}
+	for _, msg := range msgs {
+		if msg.Role == provider.RoleAssistant {
+			for _, c := range msg.ToolCalls {
+				calls[c.ID] = c
+			}
+		}
+	}
+
 	var out []Block
 	prompts := 0
 	for _, msg := range msgs {
@@ -275,17 +292,46 @@ func BlocksFromMessages(msgs []provider.Message) []Block {
 			}
 
 		case provider.RoleTool:
-			out = append(out, Block{
+			b := Block{
 				Kind: BlockTool, ToolName: msg.ToolName, Held: msg.Held, Failed: msg.IsError && !msg.Held,
-				Repairs: msg.Repairs,
-			})
+				Repairs: msg.Repairs, Diff: msg.Diff,
+			}
+			if msg.Diff != "" {
+				b.HasDiff = true
+				for _, line := range strings.Split(msg.Diff, "\n") {
+					switch {
+					case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+					case strings.HasPrefix(line, "+"):
+						b.Added++
+					case strings.HasPrefix(line, "-"):
+						b.Removed++
+					}
+				}
+			}
+			if call, ok := calls[msg.ToolCallID]; ok {
+				if b.ToolName == "" {
+					b.ToolName = call.Name
+				}
+				b.ToolTarget = toolTarget(call.Args)
+				b.ToolPath = toolPath(call.Args)
+				if b.ToolPath != "" {
+					b.ToolPathExists = toolPathExists(cwd, b.ToolPath)
+					b.ToolPathMarkdown = b.ToolPathExists && isMarkdown(b.ToolPath)
+				}
+				if b.ToolName == "bash" {
+					b.ToolCommand = truncateToolCommand(toolCommand(call.Args))
+					b.ToolOutput = tools.Truncate(msg.Content)
+					b.ToolTokens = len(msg.Content) / 4
+				}
+			}
+			out = append(out, b)
 		}
 	}
 	return out
 }
 
 func (m *Model) rebuildFromMessages(msgs []provider.Message) {
-	for _, b := range BlocksFromMessages(msgs) {
+	for _, b := range BlocksFromMessages(msgs, m.cwd) {
 		if b.Kind == BlockUser {
 			m.promptCount++
 			b.Number = m.promptCount
@@ -388,7 +434,7 @@ func (m *Model) loadPreview() {
 	if len(msgs) > PreviewMessages {
 		msgs = msgs[len(msgs)-PreviewMessages:]
 	}
-	blocks := BlocksFromMessages(msgs)
+	blocks := BlocksFromMessages(msgs, m.cwd)
 	if blocks == nil {
 		// Distinguish "loaded and empty" from "not loaded yet", or an empty
 		// session is re-read on every frame.

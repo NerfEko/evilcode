@@ -982,6 +982,7 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 		Held:       res.Held,
 		Images:     res.Images,
 		Repairs:    res.Repairs,
+		Diff:       res.Diff,
 	})
 
 	e := a.newEvent(EventToolResult)

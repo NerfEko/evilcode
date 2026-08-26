@@ -275,6 +275,11 @@ type Message struct {
 	// display metadata: it lives on the message so a resumed or attached
 	// session's tool rows show the same repair suffix as the live one did.
 	Repairs []string `json:"repairs,omitempty"`
+
+	// Diff is the unified diff a write/edit produced. Display metadata, kept
+	// on the message so a resumed or attached session can re-render the change
+	// instead of showing a bare tool row.
+	Diff string `json:"diff,omitempty"`
 }
 
 // ToolDef describes a tool to the model.

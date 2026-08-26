@@ -238,7 +238,7 @@ func (m *Model) loadStartPreview() {
 	if len(tail) > PreviewMessages {
 		tail = tail[len(tail)-PreviewMessages:]
 	}
-	blocks := BlocksFromMessages(tail)
+	blocks := BlocksFromMessages(tail, m.cwd)
 	if blocks == nil {
 		blocks = []Block{}
 	}
