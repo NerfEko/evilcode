@@ -150,7 +150,10 @@ max_steps = 0            # 0 means unlimited tool rounds
 
 If the Codex CLI is installed and logged in, evilcode can discover its OAuth account
 from the normal Codex auth file. `/model` and `-m` select a model; `/reasoning` changes
-the advertised reasoning effort when a provider supports it.
+the advertised reasoning effort when a provider supports it. The model catalog is
+fetched live from each provider once per session and then cached, so newly released
+models will not appear until you run `/refresh-model-list` (or restart) — it drops the
+cache and re-runs discovery against every configured provider.
 
 Use `/connect brave` to enable the optional Brave-backed `web_search` tool. Credentials
 are masked and stored in the user-only config, or can be supplied through

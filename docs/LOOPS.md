@@ -6230,3 +6230,46 @@ resume an in-flight provider request or in-memory runtime registry, although flu
 session history, model metadata, workspace metadata, and later resume remain intact.
 
 commit: the `server-tui-separation` implementation and documentation commit on this branch
+
+## 2026-08-21 — model catalog refresh: `/refresh-model-list`
+
+Reported: "how does ec update the model list when ollama cloud releases new
+models?" — followed by "what triggers it refreshing the list? because its not up
+to date." The 2026-07-31 entry established that discovery is live
+(`GET /api/tags` + a bounded `POST /api/show` fan-out), but it left the catalog
+frozen after the first fetch.
+
+**Root cause.** `openPicker` short-circuits on a warm cache
+(`app.go:openPicker`, `if len(m.models) > 0 || m.modelsPending { return nil }`),
+and nothing in non-test code ever nilled `m.models`. So the catalog was fetched
+once per process lifetime and then shown as-is for the whole session; reopening
+the picker re-displayed the same slice with no network call. New Ollama Cloud
+models released after the first open never surfaced until a restart.
+
+**Built instead.** A `/refresh-model-list` command drops the cache and re-opens
+the picker, which re-runs `fetchAllModels` against every configured provider —
+the same discovery pipeline as the first open, just re-triggered. The picker
+opens immediately with a "loading…" placeholder, then `applyModels` swaps in
+the fresh entries when the providers answer. No restart needed. The plain
+`/model` command is unchanged: a warm cache is shown as-is, which is the behavior
+`/refresh-model-list` exists to override.
+
+**Discovery boundary, restated.** `/api/tags` + `/api/show` supplies the name,
+the family-scoped `*.context_length` context window, the `vision` capability,
+and a humanized parameter count. Reasoning *levels* are not endpoint data:
+Ollama exposes a single `thinking` capability, and evilcode maps it to a fixed
+vocabulary (`{none,low,medium,high,max}`, or `{low,medium,high}` for gpt-oss)
+with a name-based heuristic fallback (`think|reason|r1|qwen3|glm|qwq`). A newly
+released reasoning model with an unfamiliar name and no `capabilities` field
+would show no reasoning control until Ollama fills `capabilities`. Everything
+else `/api/show` returns (modelfile, template, quantization, parent_model) is
+not decoded.
+
+Reproductions: `TestRefreshModelListClearsCacheAndRefetches` seeds a stale
+`ghost-model` into the cache, runs the command, asserts the cache is cleared
+and a fetch scheduled, executes it, and confirms the fresh catalog replaces the
+stale entry; `TestModelCommandDoesNotRefetchWarmCache` pins the intentional
+warm-cache behavior of `/model`.
+
+Verified: `go build ./...`, `go test ./internal/tui/ -count=1`. README's
+Configuration section now documents the once-per-session cache and the command.

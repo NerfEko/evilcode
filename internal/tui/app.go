@@ -3157,6 +3157,15 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "model", "models":
 		return m, m.openPicker()
 
+	case "refresh-model-list":
+		// The picker cache (m.models) is held for the whole session once
+		// filled, so newly released models never surface until restart. Drop
+		// the cache and re-open the picker, which re-runs fetchAllModels.
+		m.models = nil
+		m.modelsPending = false
+		m.notice = "Refreshing model list…"
+		return m, m.openPicker()
+
 	case "reasoning", "effort":
 		value := strings.TrimSpace(m.commandArg)
 		if value == "" {

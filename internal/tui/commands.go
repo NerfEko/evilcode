@@ -27,6 +27,10 @@ var Commands = []Command{
 		Long: "Open the model picker, or pass a model reference directly:\n" +
 			"  /model qwen3-coder:480b-cloud@ollama-cloud"},
 	{Name: "models", Help: "List available models"},
+	{Name: "refresh-model-list", Help: "Re-fetch the model catalog from every provider",
+		Long: "Re-runs the live model discovery (GET /api/tags on Ollama, the\n" +
+			"catalog endpoint on other providers) so newly released models appear\n" +
+			"without restarting. The picker cache is otherwise held for the session."},
 	{Name: "reasoning", Help: "Set reasoning effort",
 		Long: "/reasoning [none|minimal|low|medium|high|xhigh|max]\n" +
 			"  Values follow the active model's advertised capabilities. With no\n" +
@@ -183,7 +187,7 @@ type HelpSection struct {
 // never be invisible (plan.md §5.5).
 var HelpSections = []HelpSection{
 	{"Getting around", []string{"help", "keys", "context", "stats", "info", "version"}},
-	{"Models", []string{"model", "models", "reasoning"}},
+	{"Models", []string{"model", "models", "refresh-model-list", "reasoning"}},
 	{"Working", []string{"plan", "review", "bugfix", "describe", "todos", "poke", "memory", "skills"}},
 	{"Swarm", []string{"summon", "agents"}},
 	{"Analysis", []string{"lsp", "advisor", "productivity", "overnight"}},
