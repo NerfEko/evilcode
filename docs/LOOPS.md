@@ -6573,3 +6573,30 @@ Probe goldens refreshed.
 
 Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
 probe suite with refreshed goldens.
+
+## 2026-08-26 — resumed sessions keep bash commands, outputs, and diffs
+
+Report: resuming a session or viewing it from another window dropped the
+context — bash rows said "bash" with no command or output, and edits had no
+diff. The conversation persisted both halves, but `BlocksFromMessages` rebuilt
+tool rows from only the tool-result message: the command/path lives on the
+assistant message's tool call, and the output lives on the result message's
+content. Dropping the first half is how a row ends up naming a tool and
+nothing else.
+
+Fix: tool blocks are rebuilt from both halves. `BlocksFromMessages` (now
+cwd-aware) gathers tool calls from assistant messages and fills each tool row
+with its target, path, command, output, and token estimate. The diff a
+write/edit produced is now persisted on the tool message
+(`provider.Message.Diff`, set by `appendToolResult`) so resumed sessions
+re-render the change — including the +/- counts computed from the diff and
+the whole-file quick view on click. The session picker and start-page previews
+share the path, so they show real tool rows too.
+
+Test: `TestBlocksFromMessagesRebuildsToolRows` builds a bash call + result and
+an edit call + result and asserts the command, output, target, path, and diff
+survive. Persistence verified against a real session JSONL (tool call args and
+output present), and the daemon snapshot decodes the new field.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`, probe
+suite green.
