@@ -6470,3 +6470,25 @@ composer), and the footer assertions updated to the new hint.
 Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
 probe suite with refreshed goldens, and a live probe smoke: ctrl+l opens the
 split with the new footer, ctrl+q closes it.
+
+## 2026-08-26 — catppuccin-frappe (mauve) becomes the default theme
+
+The config default had said `catppuccin-frappe` for a while, but `NewModel`
+hardcoded `theme.Dracula()`, so the true default was dracula everywhere the
+display block did not override it. The default is now Catppuccin Frappé with
+the Mauve accent, matching the desktop's GTK theme.
+
+- `NewModel` starts on `CatppuccinFrappe()`.
+- The Substituter's identity palette follows: widgets emit default-palette
+  colors, so the no-op fast path is now frappe and dracula is a target to map
+  toward instead of the baseline (the default theme pays no per-frame
+  substitution cost).
+- Syntax highlighting uses chroma's `catppuccin-frappe` style so code matches
+  the chrome around it.
+- The harmony generator's neutral-seed fallback and the probe hello smoke app
+  use the frappe colors.
+- Dracula remains a selectable palette; its frozen-value test is untouched.
+
+Verified: `go build ./...`, `go test ./... -count=1` all green, and a live
+probe frame shows the idle art in frappe mauve `#ca9ee6` with no dracula
+purple anywhere.
