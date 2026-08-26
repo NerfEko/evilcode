@@ -6527,3 +6527,25 @@ asserts the footer is on the last visible row.
 
 Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
 probe suite green (no golden changes).
+
+## 2026-08-26 — ctrl+l closes the live split; footer always shows ctrl+q to close
+
+Two follow-ups from using the split:
+
+**Ctrl+L is a true toggle.** With live view on, Ctrl+L used to turn live mode
+off and leave the pane open; it now closes the split entirely (quick view,
+panel, and live view together), so off → on opens the pane and on → off closes
+it.
+
+**The close hint is unconditional.** The footer always shows "ctrl+q to close"
+— the bind works in every split view (quick view, pinned panel, live view) —
+and the "ctrl+L for live view" hint only appears while live mode is on, so a
+non-live split does not advertise a mode it is not in. Probe goldens refreshed
+for the shorter non-live footer.
+
+Tests: `TestCtrlLTogglesLiveViewAndCtrlQClosesIt` now asserts ctrl+l closes the
+split, and `TestPanelFooterShowsLiveAndHints` asserts the non-live footer keeps
+the close hint and drops the live hint.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
+probe suite with refreshed goldens.
