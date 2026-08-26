@@ -266,7 +266,9 @@ func (r *Renderer) renderDiffRows(rows []diffRow, lang string, width int) []stri
 			rendered = style.Render(text)
 		}
 
-		out = append(out, gutter.Render(num+" │")+style.Render(rw.marker)+rendered)
+		// The marker sits after the line number and before the separator, so
+		// the gutter reads number, change, then the line: `11 +│ text`.
+		out = append(out, gutter.Render(num+" ")+style.Render(rw.marker)+gutter.Render("│ ")+rendered)
 	}
 	return out
 }

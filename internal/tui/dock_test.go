@@ -701,8 +701,8 @@ func TestFileDiffBlanksDeletedLineNumbers(t *testing.T) {
 		t.Fatalf("rows = %v", rows)
 	}
 	gutter := strings.SplitN(deleted, "│", 2)[0]
-	if strings.TrimSpace(gutter) != "" {
-		t.Errorf("deleted line carries number %q, want a blank gutter", gutter)
+	if strings.ContainsAny(gutter, "0123456789") {
+		t.Errorf("deleted line carries number %q, want a blank number", gutter)
 	}
 	if strings.TrimSpace(strings.SplitN(added, "│", 2)[0]) == "" {
 		t.Error("the added line should be numbered")

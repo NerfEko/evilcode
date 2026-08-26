@@ -1567,14 +1567,15 @@ func (m *Model) applyEvent(e agent.Event) {
 			b.HasDiff = true
 			b.Added, b.Removed = e.DiffStat.Added, e.DiffStat.Removed
 		}
-		// The panel always holds the newest diff, whether or not it is visible,
-		// so toggling to it later shows something rather than nothing.
+		// The panel holds the newest diff for when the user opens it, but it
+		// only changes on its own in live view: a pinned panel or quick view
+		// the reader opened is never swapped underneath them, and the pane
+		// never forces itself open outside live mode.
 		//
 		// The block keeps its diff too: whether the transcript draws it is the
 		// renderer's call, which is what lets Alt+G re-render history instead
 		// of only affecting what arrives next.
 		if e.Diff != "" {
-			m.panel = PanelContent{Title: b.ToolTarget, Path: b.ToolPath, Diff: e.Diff}
 			if m.liveView {
 				// Live view shows the whole file with the change marked, and
 				// follows the edit unless the reader has scrolled away.
@@ -1583,8 +1584,11 @@ func (m *Model) applyEvent(e agent.Event) {
 				if !m.panelScroll.Paused {
 					m.panelScrollPending = m.panel.ScrollTo
 				}
-			} else if m.diffMode.UsesPanel() {
-				m.panelOpen = true
+			} else if !m.panelOpen {
+				// Not live view: store the newest diff so opening the pane
+				// later shows something, but never open it or swap content
+				// under an open pane.
+				m.panel = PanelContent{Title: b.ToolTarget, Path: b.ToolPath, Diff: e.Diff}
 			}
 		}
 		// Live view also tracks reads: the file the agent just looked at opens

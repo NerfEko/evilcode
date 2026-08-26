@@ -1,12 +1,12 @@
  <repo>                                          │ testdata/clamp.go
-                                                                      │   8 │ // makes every scenario's edit fail with "old string not found
- 1› fix the clamp                                                     │   9 │ // goldens then bake in the failure — which is exactly what ha
-                                                                      │  10 │ func clamp(offset, max int) int {
- Fixing the off-by-one.                                               │     │-    if offset > max {
-                                                                      │  11 │+    if offset >= max {
-   ✓ edit testdata/clamp.go · 72 tok (+1 -1)                          │  12 │         return max
-                                                                      │  13 │     }
- That was the clamp bug.                                              │  14 │     return offset
+                                                                      │   8  │ // makes every scenario's edit fail with "old string not foun
+ 1› fix the clamp                                                     │   9  │ // goldens then bake in the failure — which is exactly what h
+                                                                      │  10  │ func clamp(offset, max int) int {
+ Fixing the off-by-one.                                               │     -│     if offset > max {
+                                                                      │  11 +│     if offset >= max {
+   ✓ edit testdata/clamp.go · 72 tok (+1 -1)                          │  12  │         return max
+                                                                      │  13  │     }
+ That was the clamp bug.                                              │  14  │     return offset
                                                                       │
                                                                       │
                                                                       │

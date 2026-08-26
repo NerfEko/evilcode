@@ -78,6 +78,69 @@ func TestWholeFileDiffMarksChangesInTheFullFile(t *testing.T) {
 	}
 }
 
+func TestDiffMarkerSitsBetweenNumberAndSeparator(t *testing.T) {
+	// The + and - belong after the line number and before the |, so the
+	// gutter reads number, change, then the line.
+	r := testRenderer(80)
+	fileLines := []string{"one", "two", "three"}
+	diff := "@@ -1,3 +1,3 @@\n one\n-two\n+two!\n three\n"
+
+	rows := plainLines(r.wholeFileDiff("x.txt", fileLines, diff, 40))
+	var added, deleted string
+	for _, row := range rows {
+		switch {
+		case strings.Contains(row, "2 +│"):
+			added = row
+		case strings.Contains(row, "-│"):
+			deleted = row
+		}
+	}
+	if added == "" || deleted == "" {
+		t.Fatalf("rows = %v", rows)
+	}
+	// Marker before the separator, after the number: `11 +│ text`.
+	if !strings.Contains(added, "2 +│") {
+		t.Fatalf("added marker not between number and separator: %q", added)
+	}
+	if !strings.Contains(deleted, "-│") {
+		t.Fatalf("deleted marker not between number and separator: %q", deleted)
+	}
+	// And never after the separator.
+	if strings.Contains(added, "│+") || strings.Contains(deleted, "│-") {
+		t.Fatalf("marker still on the line side of the separator: %q / %q", added, deleted)
+	}
+}
+
+func TestPanelDoesNotAutoUpdateOutsideLiveView(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("one\ntwo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := clickModel(nil, root)
+	m.width, m.height = 100, 20
+	m.panelOpen = true
+	m.panel = PanelContent{Title: "pinned", Diff: "@@ pinned @@"}
+	want := m.panel
+
+	// A diff event while the pane is open and live view is off must not swap
+	// the content underneath the reader.
+	m.applyEvent(writeEvent("f.txt", "@@ -1,1 +1,1 @@\n-one\n+ONE\n"))
+	if !panelEqual(m.panel, want) {
+		t.Fatalf("open pane was auto-updated outside live view: %+v", m.panel)
+	}
+
+	// With the pane closed, the newest diff is stored for later, but the pane
+	// stays closed.
+	m.panelOpen = false
+	m.applyEvent(writeEvent("f.txt", "@@ -1,1 +1,1 @@\n-one\n+ONE\n"))
+	if m.panelOpen {
+		t.Fatal("pane auto-opened outside live view")
+	}
+	if m.panel.Diff == "" || m.panel.Path != "f.txt" {
+		t.Fatalf("newest diff not stored for later: %+v", m.panel)
+	}
+}
+
 func TestWheelOverPanelScrollsPanelNotTranscript(t *testing.T) {
 	m := clickModel(nil, t.TempDir())
 	m.width, m.height = 100, 20
@@ -309,7 +372,7 @@ func TestReadQuickViewShowsLineNumbers(t *testing.T) {
 	_, side := Horizontal{Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: true}.Split()
 	rows := plainLines(m.renderer.RenderSidePanel(*m.quickView, DiffInline, side, 10, true, 0, false))
 	joined := strings.Join(rows, "\n")
-	for _, want := range []string{"1 │ package main", "3 │ func main() {}"} {
+	for _, want := range []string{"1  │ package main", "3  │ func main() {}"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("read view missing numbered line %q:\n%s", want, joined)
 		}

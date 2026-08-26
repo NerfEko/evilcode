@@ -1,40 +1,40 @@
  <repo>                                          │ testdata/big.go
-                                                                      │   1 │ package testdata
- 1› renumber them                                                     │   2 │
-                                                                      │     │-// big is a probe fixture for the side panel: a file long enou
- Renumbering all of them.                                             │     │-// does not fit the panel, which is where a panel that cannot
-                                                                      │     │-// first half and silently drops the rest.
-   ✓ write testdata/big.go · 7 tok (+15 -22)                          │     │-//
-                                                                      │     │-// Committed in the state BEFORE the scenario's write, for the
- All fifteen now multiply.                                            │     │-// clamp.go is: the probe restores testdata from git before ev
-                                                                      │     │-// uncommitted fixture stays rewritten and every later run see
-                                                                      │     │-func alpha(a int) int    { return a + 1 }
-                                                                      │     │-func bravo(a int) int    { return a + 2 }
-                                                                      │     │-func charlie(a int) int  { return a + 3 }
- 💡 Ctrl+R searches your prompt history                               │     │-func delta(a int) int    { return a + 4 }
- Diff mode: file                                                      │     │-func echo(a int) int     { return a + 5 }
- 2>                                                                   │     │-func foxtrot(a int) int  { return a + 6 }
-   mock-large · 408/200k ctx · dracula                                │     │-func golf(a int) int     { return a + 7 }
-                                                                      │     │-func hotel(a int) int    { return a + 8 }
-                                                                      │     │-func india(a int) int    { return a + 9 }
-                                                                      │     │-func juliet(a int) int   { return a + 10 }
-                                                                      │     │-func kilo(a int) int     { return a + 11 }
-                                                                      │     │-func lima(a int) int     { return a + 12 }
-                                                                      │     │-func mike(a int) int     { return a + 13 }
-                                                                      │     │-func november(a int) int { return a + 14 }
-                                                                      │     │-func oscar(a int) int    { return a + 15 }
-                                                                      │   3 │+func alpha(a int) int    { return a * 1 }
-                                                                      │   4 │+func bravo(a int) int    { return a * 2 }
-                                                                      │   5 │+func charlie(a int) int  { return a * 3 }
-                                                                      │   6 │+func delta(a int) int    { return a * 4 }
-                                                                      │   7 │+func echo(a int) int     { return a * 5 }
-                                                                      │   8 │+func foxtrot(a int) int  { return a * 6 }
-                                                                      │   9 │+func golf(a int) int     { return a * 7 }
-                                                                      │  10 │+func hotel(a int) int    { return a * 8 }
-                                                                      │  11 │+func india(a int) int    { return a * 9 }
-                                                                      │  12 │+func juliet(a int) int   { return a * 10 }
-                                                                      │  13 │+func kilo(a int) int     { return a * 11 }
-                                                                      │  14 │+func lima(a int) int     { return a * 12 }
-                                                                      │  15 │+func mike(a int) int     { return a * 13 }
-                                                                      │  16 │+func november(a int) int { return a * 14 }
+                                                                      │   1  │ package testdata
+ 1› renumber them                                                     │   2  │
+                                                                      │     -│ // big is a probe fixture for the side panel: a file long eno
+ Renumbering all of them.                                             │     -│ // does not fit the panel, which is where a panel that cannot
+                                                                      │     -│ // first half and silently drops the rest.
+   ✓ write testdata/big.go · 7 tok (+15 -22)                          │     -│ //
+                                                                      │     -│ // Committed in the state BEFORE the scenario's write, for th
+ All fifteen now multiply.                                            │     -│ // clamp.go is: the probe restores testdata from git before e
+                                                                      │     -│ // uncommitted fixture stays rewritten and every later run se
+                                                                      │     -│ func alpha(a int) int    { return a + 1 }
+                                                                      │     -│ func bravo(a int) int    { return a + 2 }
+                                                                      │     -│ func charlie(a int) int  { return a + 3 }
+ 💡 Ctrl+R searches your prompt history                               │     -│ func delta(a int) int    { return a + 4 }
+ Diff mode: file                                                      │     -│ func echo(a int) int     { return a + 5 }
+ 2>                                                                   │     -│ func foxtrot(a int) int  { return a + 6 }
+   mock-large · 408/200k ctx · dracula                                │     -│ func golf(a int) int     { return a + 7 }
+                                                                      │     -│ func hotel(a int) int    { return a + 8 }
+                                                                      │     -│ func india(a int) int    { return a + 9 }
+                                                                      │     -│ func juliet(a int) int   { return a + 10 }
+                                                                      │     -│ func kilo(a int) int     { return a + 11 }
+                                                                      │     -│ func lima(a int) int     { return a + 12 }
+                                                                      │     -│ func mike(a int) int     { return a + 13 }
+                                                                      │     -│ func november(a int) int { return a + 14 }
+                                                                      │     -│ func oscar(a int) int    { return a + 15 }
+                                                                      │   3 +│ func alpha(a int) int    { return a * 1 }
+                                                                      │   4 +│ func bravo(a int) int    { return a * 2 }
+                                                                      │   5 +│ func charlie(a int) int  { return a * 3 }
+                                                                      │   6 +│ func delta(a int) int    { return a * 4 }
+                                                                      │   7 +│ func echo(a int) int     { return a * 5 }
+                                                                      │   8 +│ func foxtrot(a int) int  { return a * 6 }
+                                                                      │   9 +│ func golf(a int) int     { return a * 7 }
+                                                                      │  10 +│ func hotel(a int) int    { return a * 8 }
+                                                                      │  11 +│ func india(a int) int    { return a * 9 }
+                                                                      │  12 +│ func juliet(a int) int   { return a * 10 }
+                                                                      │  13 +│ func kilo(a int) int     { return a * 11 }
+                                                                      │  14 +│ func lima(a int) int     { return a * 12 }
+                                                                      │  15 +│ func mike(a int) int     { return a * 13 }
+                                                                      │  16 +│ func november(a int) int { return a * 14 }
                                                                       │                                                      ctrl+q to close
