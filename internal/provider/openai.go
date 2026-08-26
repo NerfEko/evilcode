@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 )
 
 // OpenAI speaks the OpenAI-compatible chat completions API, which covers
@@ -26,6 +27,12 @@ type OpenAI struct {
 	// uses high/max rather than the OpenAI vocabulary.
 	supportsReasoningEffort bool
 	reasoningProtocol       openAIReasoningProtocol
+
+	// callSeq synthesizes tool_call IDs for gateways that omit them. It is
+	// shared across a session's requests so IDs stay unique across turns, not
+	// just within one — a repeated ID would pair a tool result to the wrong
+	// call on a later replay (see Ollama.callSeq).
+	callSeq atomic.Int64
 }
 
 type openAIReasoningProtocol uint8
@@ -77,11 +84,8 @@ func (o *OpenAI) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
 		return nil
 	}
 	if o.isDeepSeekReasoning() {
-		lower := strings.ToLower(strings.TrimSpace(model))
-		if !strings.Contains(lower, "reasoner") && !strings.Contains(lower, "r1") &&
-			!strings.Contains(lower, "think") {
-			return nil
-		}
+		// Every current DeepSeek model accepts the thinking toggle; the old
+		// reasoner-name heuristic misclassified deepseek-v4-* as non-thinking.
 		return DeepSeekReasoningEfforts()
 	}
 
@@ -113,12 +117,20 @@ type oaiMessage struct {
 
 	// Content is a string for an ordinary message and an array of parts when
 	// images are attached. The API accepts either, and every text-only request
-	// must keep emitting the bare string — switching everything to parts would
-	// change the shape of every call to serve the rare one.
+	// must keep emitting the bare string — treating images as parts would
+	// change the shape of every request to serve the rare one.
 	Content    any           `json:"content"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	Name       string        `json:"name,omitempty"`
+
+	// ReasoningContent carries a DeepSeek thinking trace back on assistant
+	// messages. DeepSeek requires the previous response's reasoning_content to
+	// be returned with tool calls in the next request when thinking is enabled;
+	// dropping it makes the API reject the exchange or lose chain continuity.
+	// It is emitted only for the DeepSeek protocol — OpenAI-compatible gateways
+	// do not consume it and some reject unknown assistant fields.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // oaiPart is one element of a multimodal content array.
@@ -232,7 +244,7 @@ type oaiStreamResp struct {
 	} `json:"error"`
 }
 
-func toOAIMessages(msgs []Message) []oaiMessage {
+func (o *OpenAI) toOAIMessages(msgs []Message) []oaiMessage {
 	out := make([]oaiMessage, 0, len(msgs))
 	var toolImages [][]byte
 	flushToolImages := func() {
@@ -251,6 +263,11 @@ func toOAIMessages(msgs []Message) []oaiMessage {
 			Content:    oaiContent(m),
 			ToolCallID: m.ToolCallID,
 			Name:       m.ToolName,
+		}
+		if o.isDeepSeekReasoning() && m.Role == RoleAssistant && m.Reasoning != "" {
+			// B1: DeepSeek requires the previous assistant reasoning to be
+			// returned verbatim on the next request (thinking-mode guide).
+			om.ReasoningContent = m.Reasoning
 		}
 		for i, tc := range m.ToolCalls {
 			var otc oaiToolCall
@@ -286,7 +303,7 @@ func toOAITools(tools []ToolDef) []oaiTool {
 func (o *OpenAI) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 	body := oaiReq{
 		Model:       req.Model,
-		Messages:    toOAIMessages(req.Messages),
+		Messages:    o.toOAIMessages(req.Messages),
 		Tools:       toOAITools(req.Tools),
 		Stream:      true,
 		Temperature: req.Temperature,
@@ -339,7 +356,7 @@ func (o *OpenAI) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) 
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
-		streamOpenAISSE(ctx, resp.Body, ch)
+		streamOpenAISSE(ctx, resp.Body, ch, &o.callSeq)
 	}()
 	return ch, nil
 }
@@ -372,18 +389,19 @@ func (a *toolCallAccum) add(tc oaiToolCall) {
 	}
 }
 
-func (a *toolCallAccum) finish() []ToolCall {
-	// a.order records indices in first-arrival order, not protocol order —
+func (a *toolCallAccum) finish(seq *atomic.Int64) []ToolCall {
+	// a.order is indices in first-arrival order, not protocol order —
 	// out-of-order fragment delivery must not scramble which result a caller
 	// later pairs with which call.
 	slices.Sort(a.order)
 	out := make([]ToolCall, 0, len(a.order))
-	for i, idx := range a.order {
+	for _, idx := range a.order {
 		tc := *a.byIdx[idx]
 		if tc.ID == "" {
 			// Not every gateway issues IDs; the agent still needs one to pair
-			// the result back to its call.
-			tc.ID = fmt.Sprintf("call_%d", i+1)
+			// the result back to its call. The sequence is shared across a
+			// session's requests so IDs never repeat between turns.
+			tc.ID = fmt.Sprintf("call_%d", seq.Add(1))
 		}
 		if len(tc.Args) == 0 {
 			tc.Args = json.RawMessage("{}")
@@ -394,13 +412,17 @@ func (a *toolCallAccum) finish() []ToolCall {
 }
 
 // streamOpenAISSE decodes an SSE body onto ch, accumulating tool-call
-// fragments and emitting them once at the end of the stream.
-func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
+// fragments and emitting them once at the end of the stream. callSeq
+// synthesizes IDs for gateways that omit them, shared across a session's
+// requests so they never collide between turns.
+func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk, callSeq *atomic.Int64) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	calls := newToolCallAccum()
 	var usage *Usage
+	gotDone := false
+	finishReason := ""
 
 	send := func(c Chunk) bool {
 		select {
@@ -422,6 +444,7 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		}
 		data = strings.TrimSpace(data)
 		if data == "[DONE]" {
+			gotDone = true
 			break
 		}
 
@@ -448,6 +471,9 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 			}
 		}
 		for _, choice := range resp.Choices {
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
 			d := choice.Delta
 			reasoning := d.ReasoningContent
 			if reasoning == "" {
@@ -467,7 +493,27 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		send(Chunk{Err: err})
 		return
 	}
-	send(Chunk{ToolCalls: calls.finish(), Usage: usage, Done: true})
+	if ctx.Err() != nil {
+		return
+	}
+	if !gotDone {
+		// A clean transport EOF is not a successful response unless the
+		// protocol terminal marker arrived. A proxy reset or truncated reply
+		// must not be committed as a complete answer.
+		send(Chunk{Err: fmt.Errorf("openai: %w", ErrStreamTruncated)})
+		return
+	}
+	switch finishReason {
+	case "", "stop", "tool_calls":
+		// Normal terminal states, and gateways that never populate the field.
+	default:
+		// length/content_filter and other non-normal terminations mean the
+		// response is incomplete; surface them instead of saving a clipped
+		// answer as a successful turn.
+		send(Chunk{Err: fmt.Errorf("openai: response ended with finish_reason %q; the answer is incomplete", finishReason)})
+		return
+	}
+	send(Chunk{ToolCalls: calls.finish(callSeq), Usage: usage, Done: true})
 }
 
 func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -514,12 +560,13 @@ func (o *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 
 func deepSeekReasoningEffort(effort ReasoningEffort) string {
 	switch effort {
+	case ReasoningEffortLow, ReasoningEffortMinimal, ReasoningEffortMedium:
+		return "low"
+	case ReasoningEffortHigh:
+		return "high"
 	case ReasoningEffortXHigh, ReasoningEffortMax:
 		return "max"
 	default:
-		// DeepSeek's public API currently treats low, medium, and high as the
-		// high reasoning mode. The UI keeps the shared vocabulary, while this
-		// edge performs the provider-specific translation.
 		return "high"
 	}
 }

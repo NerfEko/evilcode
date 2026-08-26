@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -737,10 +738,21 @@ func retryable(err error) bool {
 	if errors.As(err, &he) {
 		return he.Retryable()
 	}
-	// A transport error (connection refused, DNS, reset) is explicitly
-	// retryable: treating a transient network fault as permanent is the bug
-	// plan.md §12.6 calls out.
-	return true
+	// A truncated stream is a transport-level interruption: the response never
+	// reached its terminal marker, so the connection may recover on a retry.
+	// The agent retries it only before any content was shown.
+	if errors.Is(err, provider.ErrStreamTruncated) {
+		return true
+	}
+	// Recognized transient transport failures (DNS, refused, reset, timeout).
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	// Everything else — malformed SSE, invalid JSON, unsupported message
+	// shapes, local serialization errors — is deterministic. Retrying it only
+	// costs latency and API calls and hides the real problem.
+	return false
 }
 
 func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) {
@@ -764,11 +776,22 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 	// retry after content was shown replays it, so the retry decision in
 	// stream depends on this.
 	var emitted bool
+	// done tracks the protocol terminal chunk. Every provider must emit exactly
+	// one; a channel that closes without it is a contract violation and must
+	// not be treated as a complete response (B5).
+	sawDone := false
 
 	for chunk := range ch {
 		if chunk.Err != nil {
 			msg.Content, msg.Reasoning = text.String(), reasoning.String()
 			return msg, emitted, chunk.Err
+		}
+		if chunk.Done {
+			if sawDone {
+				msg.Content, msg.Reasoning = text.String(), reasoning.String()
+				return msg, emitted, fmt.Errorf("%s: multiple terminal chunks in one stream", a.Provider.Name())
+			}
+			sawDone = true
 		}
 		if chunk.Text != "" {
 			text.WriteString(chunk.Text)
@@ -809,6 +832,12 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 	msg.Content, msg.Reasoning = text.String(), reasoning.String()
 	if ctx.Err() != nil {
 		return msg, emitted, context.Canceled
+	}
+	if !sawDone {
+		// Defense in depth: the built-in adapters already surface truncation as
+		// an error chunk, but a third-party provider that closes its channel
+		// without a terminal chunk must not read as a completed turn.
+		return msg, emitted, fmt.Errorf("%s: stream closed without a terminal done chunk", a.Provider.Name())
 	}
 	return msg, emitted, nil
 }

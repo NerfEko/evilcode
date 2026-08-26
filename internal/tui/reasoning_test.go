@@ -19,11 +19,11 @@ func TestReasoningEffortCyclesAdvertisedModelLevels(t *testing.T) {
 		})
 
 	m.cycleReasoningEffort()
-	if got != provider.ReasoningEffortHigh || m.reasoningEffort != provider.ReasoningEffortHigh {
-		t.Fatalf("cycled effort = %q/%q, want high", got, m.reasoningEffort)
+	if got != provider.ReasoningEffortLow || m.reasoningEffort != provider.ReasoningEffortLow {
+		t.Fatalf("cycled effort = %q/%q, want low (the level after none)", got, m.reasoningEffort)
 	}
-	if m.header.ReasoningEffort != provider.ReasoningEffortHigh {
-		t.Errorf("header effort = %q, want high", m.header.ReasoningEffort)
+	if m.header.ReasoningEffort != provider.ReasoningEffortLow {
+		t.Errorf("header effort = %q, want low", m.header.ReasoningEffort)
 	}
 	if !m.setEffort(provider.ReasoningEffortMax) || got != provider.ReasoningEffortMax {
 		t.Errorf("explicit max effort = %q", got)
@@ -31,7 +31,7 @@ func TestReasoningEffortCyclesAdvertisedModelLevels(t *testing.T) {
 	if m.setEffort(provider.ReasoningEffortMedium) {
 		t.Error("medium should be rejected by DeepSeek's advertised levels")
 	}
-	if !strings.Contains(m.notice, "available: none, high, max") {
+	if !strings.Contains(m.notice, "available: none, low, high, max") {
 		t.Errorf("unsupported-level notice = %q", m.notice)
 	}
 }

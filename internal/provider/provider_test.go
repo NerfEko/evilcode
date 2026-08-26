@@ -44,7 +44,8 @@ func collectOpenAI(t *testing.T, body string) (string, string, []ToolCall, *Usag
 	ch := make(chan Chunk)
 	go func() {
 		defer close(ch)
-		streamOpenAISSE(context.Background(), strings.NewReader(body), ch)
+		var seq atomic.Int64
+		streamOpenAISSE(context.Background(), strings.NewReader(body), ch, &seq)
 	}()
 	return drain(ch)
 }

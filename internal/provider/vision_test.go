@@ -32,7 +32,7 @@ func TestOllamaWantsBareBase64(t *testing.T) {
 }
 
 func TestOpenAIWantsContentParts(t *testing.T) {
-	got := toOAIMessages([]Message{
+	got := (&OpenAI{}).toOAIMessages([]Message{
 		{Role: RoleUser, Content: "what is this?", Images: [][]byte{pngBytes}},
 	})
 	raw, err := json.Marshal(got[0])
@@ -48,7 +48,7 @@ func TestOpenAIWantsContentParts(t *testing.T) {
 }
 
 func TestOpenAIToolImagesBecomeAnAdjacentUserMessage(t *testing.T) {
-	got := toOAIMessages([]Message{
+	got := (&OpenAI{}).toOAIMessages([]Message{
 		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call_a", Name: "read"}}},
 		{Role: RoleTool, Content: "Image sent", ToolCallID: "call_a", ToolName: "read", Images: [][]byte{pngBytes}},
 		{Role: RoleAssistant, Content: "I can inspect it now."},
@@ -75,7 +75,7 @@ func TestOpenAIKeepsABareStringWithoutImages(t *testing.T) {
 	// Every text-only request must keep emitting a plain string. Switching
 	// everything to content parts would change the shape of every call to serve
 	// the rare one.
-	got := toOAIMessages([]Message{{Role: RoleUser, Content: "hello"}})
+	got := (&OpenAI{}).toOAIMessages([]Message{{Role: RoleUser, Content: "hello"}})
 	raw, _ := json.Marshal(got[0])
 	if !strings.Contains(string(raw), `"content":"hello"`) {
 		t.Errorf("text-only message is not a bare string: %s", raw)

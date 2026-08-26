@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -162,11 +164,168 @@ func TestOpenAIGPT56FallbackIncludesMax(t *testing.T) {
 	}
 }
 
+// DeepSeek requires the previous assistant response's reasoning_content to be
+// passed back on the next request when thinking is enabled. A two-round fixture
+// asserts the second request carries the first response's reasoning verbatim.
+func TestDeepSeekReasoningReplayedAcrossToolRounds(t *testing.T) {
+	var bodies []map[string]any
+	round := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		bodies = append(bodies, body)
+		round++
+		if round == 1 {
+			// First round: thinking trace plus a tool call.
+			w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"trace-one\",\"content\":\"\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+				"data: [DONE]\n\n"))
+			return
+		}
+		// Second round: the tool result is present, so the assistant message
+		// must carry the replayed reasoning.
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	oai := NewOpenAI("deepseek", srv.URL, "k").WithDeepSeekReasoning()
+	req := Req{Model: "deepseek-v4-flash", Messages: []Message{
+		{Role: RoleUser, Content: "hi"},
+	}}
+
+	// Round one: reasoning streamed and stored on the message.
+	ch, err := oai.ChatStream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoning string
+	for c := range ch {
+		if c.Err != nil {
+			t.Fatalf("round 1 stream error: %v", c.Err)
+		}
+		reasoning += c.Reasoning
+	}
+	if reasoning != "trace-one" {
+		t.Fatalf("round 1 reasoning = %q", reasoning)
+	}
+
+	// Round two replays the assistant message carrying that reasoning.
+	req.Messages = append(req.Messages,
+		Message{Role: RoleAssistant, Content: "", Reasoning: "reasoning_content",
+			ToolCalls: []ToolCall{{ID: "call_x", Name: "read", Args: json.RawMessage(`{}`)}}},
+		Message{Role: RoleTool, Content: "result", ToolCallID: "call_x", ToolName: "read"},
+	)
+	ch, err = oai.ChatStream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for c := range ch {
+		if c.Err != nil {
+			t.Fatalf("round 2 stream error: %v", c.Err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want 2", len(bodies))
+	}
+	msgs, ok := bodies[1]["messages"].([]any)
+	if !ok {
+		t.Fatalf("second request messages = %#v", bodies[1]["messages"])
+	}
+	var assistant map[string]any
+	for _, raw := range msgs {
+		m := raw.(map[string]any)
+		if m["role"] == "assistant" {
+			assistant = m
+		}
+	}
+	if assistant == nil {
+		t.Fatal("no assistant message in the second request")
+	}
+	if got := assistant["reasoning_content"]; got != "reasoning_content" {
+		t.Errorf("replayed reasoning_content = %#v, want the first response's reasoning", got)
+	}
+}
+
+// A stream that ends without the [DONE] terminal marker must be reported as a
+// truncation error, not committed as a complete answer (B2).
+func TestOpenAITruncatedStreamIsAnError(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\" answer\"}}]}\n\n"
+
+	_, _, _, _, err := collectOpenAI(t, body)
+	if err == nil {
+		t.Fatal("want an error for a stream that never reached [DONE]")
+	}
+	if !errors.Is(err, ErrStreamTruncated) {
+		t.Errorf("err = %v, want ErrStreamTruncated", err)
+	}
+}
+
+// A finish_reason of length/content_filter means the answer is clipped; it must
+// surface as an error rather than save a truncated turn as complete (B3).
+func TestOpenAINonNormalFinishReasonIsAnError(t *testing.T) {
+	for _, reason := range []string{"length", "content_filter"} {
+		body := "data: {\"choices\":[{\"delta\":{\"content\":\"clipped\"}}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"" + reason + "\"}]}\n\n" +
+			"data: [DONE]\n\n"
+		text, _, _, _, err := collectOpenAI(t, body)
+		if err == nil {
+			t.Fatalf("%s: want an error, got text %q", reason, text)
+		}
+		if !strings.Contains(err.Error(), reason) {
+			t.Errorf("%s: err = %v, want it to name the finish reason", reason, err)
+		}
+	}
+}
+
+// Synthesized tool IDs must not collide between responses: gateways that omit
+// IDs are common, and a repeated id pairs the next turn's result to the wrong
+// call (B4).
+func TestOpenAISynthesizedIDsAreUniqueAcrossResponses(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	oai := NewOpenAI("oai", srv.URL, "k")
+	req := Req{Model: "m", Messages: []Message{{Role: RoleUser, Content: "hi"}}}
+	seen := map[string]bool{}
+	for turn := 0; turn < 2; turn++ {
+		ch, err := oai.ChatStream(context.Background(), req)
+		if err != nil {
+			t.Fatalf("turn %d: %v", turn, err)
+		}
+		var got Chunk
+		for c := range ch {
+			if c.Err != nil {
+				t.Fatalf("turn %d: %v", turn, c.Err)
+			}
+			if c.Done {
+				got = c
+			}
+		}
+		if len(got.ToolCalls) != 1 {
+			t.Fatalf("turn %d: calls = %d, want 1", turn, len(got.ToolCalls))
+		}
+		if seen[got.ToolCalls[0].ID] {
+			t.Fatalf("turn %d: tool_call_id %q reused from an earlier turn", turn, got.ToolCalls[0].ID)
+		}
+		seen[got.ToolCalls[0].ID] = true
+	}
+}
+
 // H5.6: some OpenAI-compatible gateways require role:"tool" messages to carry
 // the tool's name, not just the call ID. toOAIMessages must copy it from
 // Message.ToolName.
 func TestToOAIMessagesSetsToolName(t *testing.T) {
-	out := toOAIMessages([]Message{
+	out := (&OpenAI{}).toOAIMessages([]Message{
 		{Role: RoleTool, Content: "result", ToolCallID: "call_a", ToolName: "get_weather"},
 	})
 	if len(out) != 1 {

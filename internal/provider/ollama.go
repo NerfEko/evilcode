@@ -267,7 +267,7 @@ func streamOllamaNDJSON(ctx context.Context, r io.Reader, ch chan<- Chunk, callS
 		// A clean transport EOF is not a successful Ollama response unless a
 		// protocol record said done. Treating a truncated proxy response as a final
 		// answer silently commits partial text to the conversation.
-		send(Chunk{Err: fmt.Errorf("ollama: stream closed before a done response")})
+		send(Chunk{Err: fmt.Errorf("ollama: %w", ErrStreamTruncated)})
 	}
 }
 

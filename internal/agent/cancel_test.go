@@ -23,7 +23,7 @@ func (p *twoToolProvider) Models(ctx context.Context) ([]provider.ModelInfo, err
 	return nil, nil
 }
 func (p *twoToolProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
-	ch := make(chan provider.Chunk, 2)
+	ch := make(chan provider.Chunk, 3)
 	if !p.served {
 		p.served = true
 		ch <- provider.Chunk{ToolCalls: []provider.ToolCall{
@@ -33,6 +33,7 @@ func (p *twoToolProvider) ChatStream(ctx context.Context, req provider.Req) (<-c
 	} else {
 		ch <- provider.Chunk{Text: "done"}
 	}
+	ch <- provider.Chunk{Done: true}
 	close(ch)
 	return ch, nil
 }
@@ -254,7 +255,7 @@ func (p *deadlineProvider) Models(context.Context) ([]provider.ModelInfo, error)
 	return nil, nil
 }
 func (p *deadlineProvider) ChatStream(context.Context, provider.Req) (<-chan provider.Chunk, error) {
-	ch := make(chan provider.Chunk, 1)
+	ch := make(chan provider.Chunk, 2)
 	if !p.served {
 		p.served = true
 		ch <- provider.Chunk{ToolCalls: []provider.ToolCall{{
@@ -263,6 +264,7 @@ func (p *deadlineProvider) ChatStream(context.Context, provider.Req) (<-chan pro
 	} else {
 		ch <- provider.Chunk{Text: "done"}
 	}
+	ch <- provider.Chunk{Done: true}
 	close(ch)
 	return ch, nil
 }
@@ -278,7 +280,7 @@ func (p *mixedProvider) Models(ctx context.Context) ([]provider.ModelInfo, error
 	return nil, nil
 }
 func (p *mixedProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
-	ch := make(chan provider.Chunk, 1)
+	ch := make(chan provider.Chunk, 2)
 	if !p.served {
 		p.served = true
 		ch <- provider.Chunk{ToolCalls: []provider.ToolCall{
@@ -288,6 +290,7 @@ func (p *mixedProvider) ChatStream(ctx context.Context, req provider.Req) (<-cha
 	} else {
 		ch <- provider.Chunk{Text: "done"}
 	}
+	ch <- provider.Chunk{Done: true}
 	close(ch)
 	return ch, nil
 }

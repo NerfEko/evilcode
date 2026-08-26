@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -31,6 +32,12 @@ const (
 
 	DefaultReasoningEffort = ReasoningEffortMedium
 )
+
+// ErrStreamTruncated marks a stream that reached EOF without its protocol
+// terminal marker ([DONE] for SSE, done:true for Ollama NDJSON). A proxy
+// reset or truncated reply must not be committed as a complete answer. It is
+// retryable at the agent layer only before any output was shown.
+var ErrStreamTruncated = errors.New("stream closed before a terminal marker")
 
 var standardReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortNone,
@@ -69,8 +76,12 @@ var gpt56ReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortMax,
 }
 
+// DeepSeek V4 documents low/high/max thinking effort. none stays in the
+// vocabulary as the thinking toggle; medium and below translate to low at the
+// wire edge.
 var deepSeekReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortNone,
+	ReasoningEffortLow,
 	ReasoningEffortHigh,
 	ReasoningEffortMax,
 }

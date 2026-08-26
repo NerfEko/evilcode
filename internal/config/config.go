@@ -232,7 +232,7 @@ type Config struct {
 const (
 	DefaultCloudModel    = "deepseek-v4-flash:0731@ollama-cloud"
 	DefaultLocalModel    = "deepseek-v4-flash:0731@ollama-local"
-	DefaultDeepSeekModel = "deepseek-chat"
+	DefaultDeepSeekModel = "deepseek-v4-flash"
 )
 
 // Default returns the configuration used when nothing is on disk: a local
