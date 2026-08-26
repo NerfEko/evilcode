@@ -26,6 +26,11 @@ const (
 	EnvConfigPath  = "EVILCODE_CONFIG"
 	EnvOllamaKey   = "OLLAMA_API_KEY"
 	EnvDeepSeekKey = "DEEPSEEK_API_KEY"
+	// EnvOllamaSessionCookie feeds the Cloud Usage widget. Ollama exposes no
+	// usage API; the widget reads https://ollama.com/settings with the browser's
+	// session cookie. A bare value is sent as `__Secure-session=<value>`; a
+	// value containing '=' is sent verbatim as a full Cookie header.
+	EnvOllamaSessionCookie = "OLLAMA_SESSION_COOKIE"
 	// EnvBraveSearchKey is the preferred key name for the optional web_search
 	// tool. EnvBraveKey is accepted too because it is a common shorthand.
 	EnvBraveSearchKey = "BRAVE_SEARCH_API_KEY"
@@ -69,10 +74,16 @@ type ProviderConfig struct {
 }
 
 // WebConfig holds credentials for optional web capabilities. It is written
-// with restrictive permissions by SaveBraveSearchAPIKey; environment values
-// still take precedence when present.
+// with restrictive permissions by SaveBraveSearchAPIKey and
+// SaveOllamaSessionCookie; environment values still take precedence when
+// present.
 type WebConfig struct {
 	BraveAPIKey string `toml:"brave_api_key"`
+	// OllamaSessionCookie is the browser session cookie for the Ollama Cloud
+	// usage widget, saved by /connect ollama-usage. The settings page is
+	// reachable with the session cookie alone, so it is a live credential and
+	// must be guarded like a password.
+	OllamaSessionCookie string `toml:"ollama_session_cookie"`
 }
 
 // ModelConfig is an optional `[[model]]` block carrying per-model overrides
@@ -406,7 +417,7 @@ func SaveBraveSearchAPIKey(key string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("config: reading %s: %w", path, err)
 	}
-	updated, found := updateWebBraveKey(string(data), key)
+	updated, found := writeWebKey(string(data), "brave_api_key", key)
 	if !found {
 		if updated != "" {
 			if !strings.HasSuffix(updated, "\n") {
@@ -415,6 +426,38 @@ func SaveBraveSearchAPIKey(key string) error {
 			updated += "\n"
 		}
 		updated += "[web]\nbrave_api_key = " + strconv.Quote(key) + "\n"
+	}
+	return writeConfigAtomic(path, []byte(updated))
+}
+
+// SaveOllamaSessionCookie writes the Ollama Cloud session cookie into the
+// dedicated [web] table, preserving unknown TOML text. It is entered through
+// /connect ollama-usage and stored in the user config, which is written with
+// mode 0600.
+func SaveOllamaSessionCookie(cookie string) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
+	cookie = strings.TrimSpace(cookie)
+	if cookie == "" {
+		return fmt.Errorf("config: Ollama session cookie is required")
+	}
+	path := os.Getenv(EnvConfigPath)
+	if path == "" {
+		path = filepath.Join(ConfigDir(), "config.toml")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	updated, found := writeWebKey(string(data), "ollama_session_cookie", cookie)
+	if !found {
+		if updated != "" {
+			if !strings.HasSuffix(updated, "\n") {
+				updated += "\n"
+			}
+			updated += "\n"
+		}
+		updated += "[web]\nollama_session_cookie = " + strconv.Quote(cookie) + "\n"
 	}
 	return writeConfigAtomic(path, []byte(updated))
 }
@@ -773,7 +816,7 @@ func updateProviderKey(text, providerName, key string) (string, bool, error) {
 	return text, false, nil
 }
 
-func updateWebBraveKey(text, key string) (string, bool) {
+func writeWebKey(text, name, key string) (string, bool) {
 	if text == "" {
 		return text, false
 	}
@@ -793,11 +836,11 @@ func updateWebBraveKey(text, key string) (string, bool) {
 			}
 			end++
 		}
-		value := "brave_api_key = " + strconv.Quote(key) + "\n"
+		value := name + " = " + strconv.Quote(key) + "\n"
 		for i := start + 1; i < end; i++ {
 			trimmed := strings.TrimSpace(lines[i])
-			name, _, ok := strings.Cut(trimmed, "=")
-			if !ok || strings.TrimSpace(name) != "brave_api_key" {
+			field, _, ok := strings.Cut(trimmed, "=")
+			if !ok || strings.TrimSpace(field) != name {
 				continue
 			}
 			indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
@@ -1016,6 +1059,23 @@ func (c *Config) BraveSearchAPIKey() string {
 		return value
 	}
 	return strings.TrimSpace(c.Web.BraveAPIKey)
+}
+
+// OllamaSessionCookie returns the Ollama Cloud session cookie supplied through
+// the environment. Config-file values are resolved by
+// (*Config).OllamaSessionCookie so callers that already loaded configuration
+// do not need to read it a second time.
+func OllamaSessionCookie() string {
+	return strings.TrimSpace(os.Getenv(EnvOllamaSessionCookie))
+}
+
+// OllamaSessionCookie resolves the cookie with environment precedence over the
+// value saved by /connect ollama-usage.
+func (c *Config) OllamaSessionCookie() string {
+	if value := OllamaSessionCookie(); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.Web.OllamaSessionCookie)
 }
 
 // Resolve turns a model reference into a live provider and the bare model name.

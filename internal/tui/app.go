@@ -21,6 +21,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/cloudusage"
 	"evilcode/internal/config"
 	"evilcode/internal/core"
 	"evilcode/internal/graphics"
@@ -53,6 +54,22 @@ type eventBatchMsg []agent.Event
 
 // eventsClosedMsg signals the agent stream ended.
 type eventsClosedMsg struct{}
+
+// cloudUsageMsg carries the result of one Ollama Cloud usage fetch into the
+// update loop. The fetch runs in a tea.Cmd goroutine so the network never
+// blocks the event loop.
+type cloudUsageMsg struct {
+	snap cloudusage.Snapshot
+	err  error
+}
+
+// contextWindowMsg carries the context window resolved for a just-switched
+// model. The provider ask is a network call, so it runs off the loop; the ref
+// lets the handler discard a result that a later switch already made stale.
+type contextWindowMsg struct {
+	ref    string
+	window int
+}
 
 type transcriptHeightEntry struct {
 	valid  bool
@@ -241,6 +258,12 @@ type Model struct {
 	// so a /model switch re-evaluates the gate against the new model rather than
 	// the one the session started with. nil in headless builds.
 	visionFor func(modelRef string) bool
+
+	// contextWindowOverride resolves a model reference to its explicit
+	// [[model]] context_window, so a /model switch can re-derive the meter
+	// without re-reading the config file. nil means no override is configured
+	// and the provider is asked instead.
+	contextWindowOverride func(modelRef string) int
 
 	// fs is the filesystem tool group, held so a model switch can update its
 	// vision gate to match. nil when the session runs canned/headless tools.
@@ -458,6 +481,20 @@ type Model struct {
 	// the widget away outside DeepSeek.
 	cacheRead  int
 	cacheWrite int
+
+	// cloudUsage holds the latest Ollama Cloud usage snapshot for the widget,
+	// plus the machinery to refresh it without ever blocking the loop: the
+	// fetch runs as a tea.Cmd, so these fields are touched only on the loop.
+	cloudUsage        *cloudusage.Snapshot
+	cloudUsageErr     error
+	cloudUsagePending bool
+	cloudUsageNext    time.Time
+	// cloudUsageCookieValue/Checked memoize the resolved session cookie so an
+	// idle tick (500ms) does not re-read the config file every frame. The
+	// /connect ollama-usage flow writes them directly; otherwise the file is
+	// re-probed only when a refresh is due.
+	cloudUsageCookieValue string
+	cloudUsageCookieAt    time.Time
 
 	// keepThinking leaves finished traces expanded (display.keep_thinking).
 	keepThinking bool
@@ -931,6 +968,55 @@ func (m *Model) hasRunningBackground() bool {
 	return false
 }
 
+// maybeRefreshCloudUsage decides whether a settings-page fetch is due. It is
+// deliberately conservative: nothing runs in deterministic (golden) mode, and
+// nothing runs unless a session cookie is configured (environment or saved by
+// /connect ollama-usage) — the widget's presence is the opt-in. A fetch is due
+// when none has happened yet or the last one completed
+// CloudUsageRefreshInterval ago.
+func (m *Model) maybeRefreshCloudUsage(now time.Time) bool {
+	if Deterministic() || m.cloudUsagePending {
+		return false
+	}
+	if m.cloudUsageCookie(now) == "" {
+		return false
+	}
+	return m.cloudUsageNext.IsZero() || !now.Before(m.cloudUsageNext)
+}
+
+// cloudUsageCookie resolves the session cookie: the environment wins, then the
+// value saved by /connect ollama-usage. The config file is consulted at most
+// once per CloudUsageRefreshInterval, so an idle session does not re-read it on
+// every tick.
+func (m *Model) cloudUsageCookie(now time.Time) string {
+	if env := config.OllamaSessionCookie(); env != "" {
+		m.cloudUsageCookieValue = env
+		m.cloudUsageCookieAt = now
+		return env
+	}
+	if !m.cloudUsageCookieAt.IsZero() && now.Sub(m.cloudUsageCookieAt) < CloudUsageRefreshInterval {
+		return m.cloudUsageCookieValue
+	}
+	m.cloudUsageCookieAt = now
+	cfg, err := config.Load()
+	if err != nil {
+		m.cloudUsageCookieValue = ""
+		return ""
+	}
+	m.cloudUsageCookieValue = cfg.OllamaSessionCookie()
+	return m.cloudUsageCookieValue
+}
+
+// refreshCloudUsage fetches the Ollama Cloud settings page off the loop. The
+// caller arms cloudUsagePending on the loop before handing this to bubbletea,
+// so two fetches can never overlap; the cloudUsageMsg handler disarms it. The
+// cookie is resolved on the loop and passed in, because this command runs on a
+// goroutine and must not read model state.
+func (m *Model) refreshCloudUsage(cookie string) tea.Msg {
+	snap, err := cloudusage.Fetch(context.Background(), cookie, "", time.Now())
+	return cloudUsageMsg{snap: snap, err: err}
+}
+
 // waitForEvent bridges the agent's channel into bubbletea's message loop.
 func (m *Model) waitForEvent() tea.Cmd {
 	return func() tea.Msg {
@@ -1044,6 +1130,11 @@ func (r rawFlush) String() string {
 	return out
 }
 
+// cloudUsageRefreshInterval is how often the Cloud Usage widget re-reads the
+// settings page. The session window is five hours and the weekly window a week;
+// a five-minute cadence keeps the bar honest without hammering ollama.com.
+const CloudUsageRefreshInterval = 5 * time.Minute
+
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
@@ -1150,7 +1241,39 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.needsStartRefresh() {
 			cmds = append(cmds, m.refreshStartSessions())
 		}
+		if m.maybeRefreshCloudUsage(time.Time(msg)) {
+			m.cloudUsagePending = true
+			// Resolved on the loop; the cmd goroutine only reads the captured
+			// value, never model state.
+			cookie := m.cloudUsageCookie(time.Time(msg))
+			cmds = append(cmds, func() tea.Msg {
+				return m.refreshCloudUsage(cookie)
+			})
+		}
 		return m, tea.Batch(cmds...)
+
+	case cloudUsageMsg:
+		m.cloudUsagePending = false
+		m.cloudUsageNext = time.Now().Add(CloudUsageRefreshInterval)
+		if msg.err != nil {
+			// Keep the last good snapshot on screen; the widget reports why it
+			// is stale.
+			m.cloudUsageErr = msg.err
+		} else {
+			m.cloudUsage = &msg.snap
+			m.cloudUsageErr = nil
+		}
+		m.invalidateTranscriptCache()
+		return m, nil
+
+	case contextWindowMsg:
+		// The user may have switched models again while the lookup was in
+		// flight; only a result for the current model applies.
+		if m.agent != nil && config.ModelRef(m.agent.Model, m.header.Provider) == msg.ref {
+			m.agent.NumCtx = msg.window
+			m.invalidateTranscriptCache()
+		}
+		return m, nil
 
 	case startSessionsMsg:
 		m.applyStartSessions(msg)
@@ -1505,6 +1628,12 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 		if e.VisionKnown {
 			m.vision.Store(e.Vision)
+		}
+		if e.ContextWindowKnown && m.agent != nil {
+			// The daemon resolved the window at model-set time; mirror it so
+			// the context meter tracks the active model instead of the 200k
+			// fallback or the startup model's value.
+			m.agent.NumCtx = e.ContextWindow
 		}
 		if m.remoteModel != nil && e.Model != "" {
 			if err := m.rememberModel(config.ModelRef(e.Model, e.Provider)); err != nil {
@@ -2588,7 +2717,7 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 				m.picker.Filter = ""
 				return m, nil
 			}
-			m.applyModel(sel)
+			return m, m.applyModel(sel)
 		}
 		m.pickerOpen = false
 		m.picker.Filter = ""
@@ -2673,8 +2802,9 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 // applyModel switches the live session to the selected model using the
 // remembered or preferred reasoning effort. It is the non-explicit path: a
 // Shift+Tab favorite cycle, a sparse-catalog selection, and tests all use it.
-func (m *Model) applyModel(sel ModelEntry) {
-	m.applyModelWithEffort(sel, "", false)
+// The returned cmd re-derives the context meter's window for the new model.
+func (m *Model) applyModel(sel ModelEntry) tea.Cmd {
+	return m.applyModelWithEffort(sel, "", false)
 }
 
 // applyModelWithEffort switches the live session to the selected model:
@@ -2687,7 +2817,10 @@ func (m *Model) applyModel(sel ModelEntry) {
 // When explicit is true the effort comes from the reasoning picker and is
 // persisted for the model; otherwise the remembered or preferred default is
 // used, matching the pre-picker behavior.
-func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEffort, explicit bool) {
+//
+// The returned tea.Cmd resolves the new model's context window off the loop
+// (the provider ask is a network call); it is nil when no ask is needed.
+func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEffort, explicit bool) tea.Cmd {
 	previousModel := m.header.Model
 	previousProvider := m.header.Provider
 	previousRef := config.ModelRef(previousModel, previousProvider)
@@ -2736,12 +2869,14 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 		}
 		if err != nil {
 			m.notice = "could not switch model: " + err.Error()
-			return
+			return nil
 		}
 		if explicit && next.Valid() {
 			_ = m.rememberEffort(targetRef, next)
 		}
-		return
+		// The daemon publishes the canonical EventModel with the resolved
+		// context window; the mirror picks it up there, so nothing to return.
+		return nil
 	}
 	if targetProvider != m.header.Provider {
 		// Crossing providers rebuilds the live client. The picker lists
@@ -2828,6 +2963,34 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 		}
 	}
 	m.applyModelCurrent()
+	return m.resolveContextWindow(targetRef)
+}
+
+// resolveContextWindow re-derives the context meter's window for the model the
+// session just switched to. An explicit [[model]] context_window wins and is
+// applied synchronously; otherwise the provider is asked, which is a network
+// call and must not block the event loop, so it runs as a tea.Cmd and the
+// result lands as contextWindowMsg. Returns nil when the window is already
+// known or there is nothing to ask.
+func (m *Model) resolveContextWindow(ref string) tea.Cmd {
+	if m.agent == nil || m.agent.Provider == nil {
+		return nil
+	}
+	if m.contextWindowOverride != nil {
+		if override := m.contextWindowOverride(ref); override > 0 {
+			m.agent.NumCtx = override
+			return nil
+		}
+	}
+	// Captured on the loop: the cmd goroutine must not read agent state.
+	prov := m.agent.Provider
+	model := m.agent.Model
+	return func() tea.Msg {
+		return contextWindowMsg{
+			ref:    ref,
+			window: config.ContextWindowFor(prov, model, 0),
+		}
+	}
 }
 
 // applyModelPrefs re-marks the Default and Favorite flags everywhere the
@@ -2916,7 +3079,7 @@ func (m *Model) switchToNextFavorite() (tea.Model, tea.Cmd) {
 	if sel.Name == "" {
 		sel = ModelEntry{Name: name, Provider: prov}
 	}
-	m.applyModel(sel)
+	cmd := m.applyModel(sel)
 	// The picker stays open across a Shift+Tab cycle, so the Current mark on
 	// the row the session just moved to has to follow the header.
 	current := config.ModelRef(m.header.Model, m.header.Provider)
@@ -2924,7 +3087,7 @@ func (m *Model) switchToNextFavorite() (tea.Model, tea.Cmd) {
 		ref := config.ModelRef(m.picker.Entries[i].Name, m.picker.Entries[i].Provider)
 		m.picker.Entries[i].Current = ref == current
 	}
-	return m, nil
+	return m, cmd
 }
 
 func removeString(xs []string, x string) []string {
@@ -3806,6 +3969,14 @@ func (m *Model) WithVisionFor(fn func(string) bool, fs *tools.FS) *Model {
 	if fs != nil {
 		fs.WithVisionFn(func() bool { return m.vision.Load() })
 	}
+	return m
+}
+
+// WithContextWindowOverride installs the resolver for explicit [[model]]
+// context_window values, so a /model switch re-derives the context meter
+// without re-reading the config file or asking the provider.
+func (m *Model) WithContextWindowOverride(fn func(ref string) int) *Model {
+	m.contextWindowOverride = fn
 	return m
 }
 
@@ -4831,6 +5002,11 @@ func (m *Model) activeWidgets() []Widget {
 	if m.cacheProviderActive() && (m.cacheRead > 0 || m.cacheWrite > 0) {
 		add(m.renderer.KvCacheWidget(m.cacheRead, m.cacheWrite))
 	}
+	// Cloud usage appears whenever a fetch has landed — which only happens
+	// after the user sets OLLAMA_SESSION_COOKIE, so its presence is the opt-in.
+	if m.cloudUsage != nil || m.cloudUsageErr != nil {
+		add(m.renderer.CloudUsageWidget(m.cloudUsage, m.cloudUsageErr, time.Now()))
+	}
 	add(m.renderer.ModelInfoWidget(m.header, 1))
 	if m.bg != nil {
 		var tasks []BackgroundTask
@@ -4958,6 +5134,11 @@ func (m *Model) widgetUrgency(w Widget) float64 {
 	case WidgetKvCache:
 		// Informational, not urgent, but it only exists once DeepSeek has
 		// reported cache tokens — so when it is present it has real news.
+		return 4
+	case WidgetCloudUsage:
+		if m.cloudUsageErr != nil {
+			return 7 // an expired session is a user problem; a stale bar is not
+		}
 		return 4
 	case WidgetSwarmStatus:
 		if m.swarm != nil && len(m.swarm.Live()) > 0 {

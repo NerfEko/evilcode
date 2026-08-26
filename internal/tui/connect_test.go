@@ -16,7 +16,7 @@ func TestConnectCommandRegistersHelpAndSystemSection(t *testing.T) {
 	if !ok {
 		t.Fatal("connect command not registered")
 	}
-	for _, want := range []string{"/connect brave", "/connect brave status"} {
+	for _, want := range []string{"/connect brave", "/connect brave status", "/connect ollama-usage", "/connect ollama-usage status"} {
 		if !strings.Contains(cmd.Long, want) {
 			t.Errorf("connect help missing %q:\n%s", want, cmd.Long)
 		}
@@ -86,5 +86,76 @@ func TestConnectBraveStatusNeverPrintsKey(t *testing.T) {
 	m.runCommandWithArg("connect", "brave status")
 	if !strings.Contains(m.notice, "API key present") || strings.Contains(m.notice, "brave-env-secret") {
 		t.Fatalf("status with key leaked or omitted presence: %q", m.notice)
+	}
+}
+
+// /connect ollama-usage mirrors /connect brave: masked paste, saved to the
+// user config with 0600, never echoed, and the widget is armed immediately so
+// the next tick fetches without a restart.
+func TestConnectOllamaUsageSavesCookieAndArmsWidget(t *testing.T) {
+	path := writeLoginConfig(t)
+	t.Setenv(config.EnvOllamaSessionCookie, "")
+	m := NewModel(nil, HeaderState{SessionName: "s", Model: "m"})
+
+	m.runCommandWithArg("connect", "ollama-usage")
+	if !m.loginMode || m.loginProvider != "ollama-usage" {
+		t.Fatalf("connect entry state: mode=%v target=%q", m.loginMode, m.loginProvider)
+	}
+	cookie := "__Secure-session-super-secret"
+	m.editor.Text = cookie
+	m.editor.Cursor = len([]rune(cookie))
+	m.handleLoginKey("enter", tea.KeyPressMsg{})
+
+	if m.loginMode || m.editor.Text != "" || m.loginProvider != "" {
+		t.Fatalf("connect did not clear state: mode=%v text=%q target=%q", m.loginMode, m.editor.Text, m.loginProvider)
+	}
+	if m.cloudUsageCookieValue != cookie {
+		t.Fatalf("widget cookie memo = %q, want %q", m.cloudUsageCookieValue, cookie)
+	}
+	if !m.cloudUsageNext.IsZero() {
+		t.Fatalf("connect should mark the fetch due, next = %v", m.cloudUsageNext)
+	}
+	if strings.Contains(m.notice, cookie) || len(m.blocks) != 0 {
+		t.Fatalf("connect leaked the cookie into UI state: notice=%q blocks=%v", m.notice, m.blocks)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "ollama_session_cookie = \""+cookie+"\"") {
+		t.Fatalf("connect did not persist the cookie: %s", data)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.OllamaSessionCookie(); got != cookie {
+		t.Fatalf("reloaded cookie = %q, want %q", got, cookie)
+	}
+}
+
+func TestConnectOllamaUsageStatusNeverPrintsCookie(t *testing.T) {
+	writeLoginConfig(t)
+	t.Setenv(config.EnvOllamaSessionCookie, "")
+	m := &Model{}
+	m.runCommandWithArg("connect", "ollama-usage status")
+	if !strings.Contains(m.notice, "ollama usage") || !strings.Contains(m.notice, "no session cookie") {
+		t.Fatalf("status without cookie = %q", m.notice)
+	}
+
+	t.Setenv(config.EnvOllamaSessionCookie, "env-secret")
+	m.runCommandWithArg("connect", "ollama-usage status")
+	if !strings.Contains(m.notice, "session cookie present") || strings.Contains(m.notice, "env-secret") {
+		t.Fatalf("status with cookie leaked or omitted presence: %q", m.notice)
+	}
+
+	// A saved (non-env) cookie is reported present without printing it.
+	t.Setenv(config.EnvOllamaSessionCookie, "")
+	if err := config.SaveOllamaSessionCookie("file-secret"); err != nil {
+		t.Fatal(err)
+	}
+	m.runCommandWithArg("connect", "ollama-usage status")
+	if !strings.Contains(m.notice, "session cookie present") || strings.Contains(m.notice, "file-secret") {
+		t.Fatalf("status with saved cookie leaked or omitted presence: %q", m.notice)
 	}
 }

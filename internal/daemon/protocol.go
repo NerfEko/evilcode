@@ -201,6 +201,11 @@ type Snapshot struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	Vision          bool   `json:"vision"`
 
+	// ContextWindow is the resolved window for the session's model, so an
+	// attaching TUI renders the real context meter instead of its hardcoded
+	// fallback. Zero means the window could not be discovered.
+	ContextWindow int `json:"context_window,omitempty"`
+
 	// ReasoningEfforts is the active model's ordered capability list. It lets an
 	// attached TUI render the same provider-specific picker as a local client.
 	ReasoningEfforts []string    `json:"reasoning_efforts,omitempty"`

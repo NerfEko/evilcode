@@ -104,8 +104,7 @@ func (m *Model) handleReasoningPickerKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		effort := rp.levels[clamp(rp.selected, 0, len(rp.levels)-1)]
-		m.applyModelWithEffort(rp.sel, effort, true)
-		return m, nil
+		return m, m.applyModelWithEffort(rp.sel, effort, true)
 	}
 	return m, nil
 }

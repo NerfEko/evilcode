@@ -159,6 +159,18 @@ Use `/connect brave` to enable the optional Brave-backed `web_search` tool. Cred
 are masked and stored in the user-only config, or can be supplied through
 `BRAVE_SEARCH_API_KEY` / `BRAVE_API_KEY`.
 
+Ollama Cloud exposes no usage API, so the Cloud Usage widget reads
+`https://ollama.com/settings` with your browser session. Paste the
+`__Secure-session` cookie value (DevTools → Network → any ollama.com request →
+Cookies) with `/connect ollama-usage` — it is stored masked in the user-only
+config, like `/connect brave` stores its key — or set `OLLAMA_SESSION_COOKIE`
+(env beats the saved value; a value containing `=` is treated as a full
+`Cookie:` header). `/connect ollama-usage status` reports presence without
+printing it. The widget then shows Session and Weekly quota bars, each slice
+colored per model. Treat the cookie like a password — it is a live session
+credential. The scrape is unofficial; if the page changes, the widget reports
+that instead of guessing.
+
 Repository-specific defaults can live in `.evilcode.toml` at the repository root. Model
 and role overrides are supported there; credentials are deliberately not.
 

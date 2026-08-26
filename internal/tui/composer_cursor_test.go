@@ -132,3 +132,86 @@ func TestRenderComposerCursorAtEnd(t *testing.T) {
 func hasReverseSGR(s string) bool {
 	return strings.Contains(s, "\x1b[7m") || strings.Contains(s, "\x1b[7;")
 }
+
+// Trailing whitespace at the caret must stay visible while typing. wrapPlain
+// collapses it for completed transcript text, but the composer is live input:
+// without preserving it, pressing space changes nothing on screen until the
+// next character lands, because the caret block already sat at the end of the
+// last word.
+func TestTrailingSpacePreserved(t *testing.T) {
+	cases := []struct {
+		body   string
+		cursor int
+		width  int
+		want   string
+		col    int
+	}{
+		{"hello ", 6, 80, "hello ", 6},     // one trailing space
+		{"hello   ", 8, 80, "hello   ", 8}, // several trailing spaces
+		{"hello ", 5, 80, "hello ", 5},     // caret on the space itself
+		{" ", 1, 80, " ", 1},               // a lone space on an empty line
+		{"   ", 3, 80, "   ", 3},           // only spaces
+	}
+	for _, c := range cases {
+		lines, line, col := wrapPlainWithCursor(c.body, c.cursor, c.width)
+		if len(lines) != 1 || lines[0] != c.want {
+			t.Errorf("body=%q cursor=%d: lines=%q want %q", c.body, c.cursor, lines, []string{c.want})
+		}
+		if line != 0 || col != c.col {
+			t.Errorf("body=%q cursor=%d: line=%d col=%d want 0,%d", c.body, c.cursor, line, col, c.col)
+		}
+	}
+}
+
+// Completed text without trailing whitespace still matches wrapPlain, so the
+// transcript invariant (no layout shift) holds where it matters.
+func TestNoTrailingStillMatchesWrapPlain(t *testing.T) {
+	for _, s := range []string{"hello", "hello world", "hello   world", "  leading spaces"} {
+		got, _, _ := wrapPlainWithCursor(s, len([]rune(s)), 20)
+		want := wrapPlain(s, 20)
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("trailing invariant broken for %q:\n got=%q\nwant=%q", s, got, want)
+		}
+	}
+}
+
+// RenderComposer must show a typed trailing space: the space lands in the row
+// and the block cursor sits after it, not on the last word.
+func TestRenderComposerShowsTrailingSpace(t *testing.T) {
+	r := NewRenderer(theme.Dracula(), 80)
+	rows := r.RenderComposer(ComposerState{Text: "hello ", Cursor: 6})
+	joined := strings.Join(rows, "\n")
+	if !hasReverseSGR(joined) {
+		t.Fatalf("no cursor drawn:\n%s", joined)
+	}
+	// The row contains the trailing space followed by the cursor cell. Strip
+	// ANSI to check the visible text: it must end with "hello " (the space).
+	plain := stripAnsi(rows[0])
+	if !strings.Contains(plain, "hello ") {
+		t.Fatalf("trailing space not rendered:\n%s", joined)
+	}
+	// The cursor block is one cell past the space, so the visible width grew by
+	// the prefix plus 6 (5 letters + space) plus 1 cursor cell.
+	if w := lipgloss.Width(rows[0]); w < 7 {
+		t.Fatalf("cursor row too narrow after trailing space: width=%d row=%q", w, joined)
+	}
+}
+
+func stripAnsi(s string) string {
+	var b strings.Builder
+	in := false
+	for _, r := range s {
+		if r == '\x1b' {
+			in = true
+			continue
+		}
+		if in {
+			if r == 'm' {
+				in = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}

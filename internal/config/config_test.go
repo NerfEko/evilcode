@@ -74,6 +74,19 @@ func TestConfigBraveSearchAPIKeyPrefersEnvironmentOverSavedValue(t *testing.T) {
 	}
 }
 
+func TestConfigOllamaSessionCookiePrefersEnvironmentOverSavedValue(t *testing.T) {
+	t.Setenv(EnvOllamaSessionCookie, "env-cookie")
+	cfg := &Config{Web: WebConfig{OllamaSessionCookie: "file-cookie"}}
+	if got := cfg.OllamaSessionCookie(); got != "env-cookie" {
+		t.Errorf("Config.OllamaSessionCookie() = %q, want the environment cookie", got)
+	}
+
+	t.Setenv(EnvOllamaSessionCookie, "")
+	if got := cfg.OllamaSessionCookie(); got != "file-cookie" {
+		t.Errorf("Config.OllamaSessionCookie() = %q, want the saved cookie", got)
+	}
+}
+
 func TestPartialConfigKeepsDefaults(t *testing.T) {
 	// The regression this guards: booleans that default to true must survive a
 	// config file that never mentions them.
@@ -629,6 +642,52 @@ future_setting = "also keep"
 	}
 	if got := cfg.BraveSearchAPIKey(); got != key {
 		t.Fatalf("loaded Brave key = %q, want saved key", got)
+	}
+}
+
+func TestSaveOllamaSessionCookiePreservesUnknownTOMLAndUses0600(t *testing.T) {
+	path := write(t, `default_model = "m@ollama-local"
+unknown_setting = "keep me"
+
+[[provider]]
+name = "ollama-local"
+kind = "ollama"
+base_url = "http://localhost:11434"
+
+[web]
+brave_api_key = "keep-me-too"
+
+[future]
+future_setting = "also keep"
+`)
+	t.Setenv(EnvConfigPath, path)
+	t.Setenv(EnvOllamaSessionCookie, "")
+	cookie := "session-secret"
+	if err := SaveOllamaSessionCookie(cookie); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !containsAll(text, "unknown_setting = \"keep me\"", "future_setting = \"also keep\"",
+		"brave_api_key = \"keep-me-too\"", "ollama_session_cookie = \""+cookie+"\"") {
+		t.Fatalf("writer dropped or failed to update TOML: %s", text)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("config mode = %o, want 0600", info.Mode().Perm())
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.OllamaSessionCookie(); got != cookie {
+		t.Fatalf("loaded cookie = %q, want saved cookie", got)
 	}
 }
 

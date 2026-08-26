@@ -154,6 +154,13 @@ type Event struct {
 	Vision               bool     `json:"vision,omitempty"`
 	VisionKnown          bool     `json:"vision_known,omitempty"`
 
+	// ContextWindow is the context window the model was resolved to, published
+	// with EventModel so an attached TUI mirrors the daemon's window for the
+	// context meter. ContextWindowKnown distinguishes a real zero (window not
+	// discoverable) from an absent field on the wire.
+	ContextWindow      int  `json:"context_window,omitempty"`
+	ContextWindowKnown bool `json:"context_window_known,omitempty"`
+
 	// Snapshot fields are used by an attached frontend when the daemon rewrites
 	// history or renames a session. They travel through the same event queue as
 	// ordinary UI updates so Bubble Tea, not a socket goroutine, owns model

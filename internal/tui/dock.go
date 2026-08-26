@@ -32,6 +32,7 @@ const (
 	WidgetTodos
 	WidgetContextUsage
 	WidgetUsageLimits
+	WidgetCloudUsage
 	WidgetKvCache
 	WidgetMemoryActivity
 	WidgetModelInfo

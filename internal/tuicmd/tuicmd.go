@@ -324,6 +324,10 @@ func runOnce(args []string) (string, error) {
 	// re-evaluates it, so neither gate is stale after the picker changes the
 	// model. WithVisionFor wires fsTools.VisionFn to the live capability.
 	m.WithVisionFor(func(ref string) bool { return cfg.ModelOverrides(ref).Vision }, fsTools)
+	// The context meter tracks the active model the same way: an explicit
+	// [[model]] context_window survives a /model switch without asking the
+	// provider again.
+	m.WithContextWindowOverride(func(ref string) int { return cfg.ModelOverrides(ref).ContextWindow })
 	if len(priorMessages) > 0 {
 		m.RebuildFrom(conv.Messages())
 	}

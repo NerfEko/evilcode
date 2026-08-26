@@ -90,8 +90,10 @@ var Commands = []Command{
 			"/login status [provider] report whether a key/account is present without printing it.\n" +
 			"                         Codex OAuth is discovered from `codex login`; it does not accept an API key."},
 	{Name: "connect", Help: "Connect an API service",
-		Long: "/connect brave         enter a masked Brave Search API key\n" +
-			"/connect brave status  report whether a Brave key is present without printing it."},
+		Long: "/connect brave          enter a masked Brave Search API key\n" +
+			"/connect brave status   report whether a Brave key is present without printing it.\n" +
+			"/connect ollama-usage        paste the Ollama Cloud session cookie\n" +
+			"/connect ollama-usage status report whether a cookie is present without printing it."},
 	{Name: "version", Help: "Show version"},
 	{Name: "config", Help: "Show the loaded configuration"},
 	{Name: "theme", Help: "Switch, score, or generate a palette",

@@ -118,6 +118,10 @@ func run(args []string, autoStart bool) error {
 	conv := agent.NewConversation("")
 	conv.Sync(snapshotMessages(snap), snap.Epoch)
 	a := agent.New(snap.Session, nil, snap.Model, nil, conv)
+	// The daemon resolved the model's real context window at session start
+	// (config.ContextWindowFor). Mirror it here so the context meter renders
+	// the actual window rather than the 200k fallback behind contextMax.
+	a.NumCtx = snap.ContextWindow
 	var inputSeq atomic.Uint64
 	inputID := func() string { return fmt.Sprintf("attach-%d", inputSeq.Add(1)) }
 	a.ForwardHidden = func(_ context.Context, text string, images [][]byte, hidden bool) error {

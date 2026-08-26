@@ -481,6 +481,22 @@ func TestSnapshotCarriesRepairs(t *testing.T) {
 	}
 }
 
+// The attach snapshot carries the daemon-resolved context window, so an
+// attached TUI renders the real context meter instead of the 200k fallback
+// behind contextMax.
+func TestSnapshotCarriesContextWindow(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+	sess, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.built.Agent.NumCtx = 1048576
+	if got := sess.snapshot("").ContextWindow; got != 1048576 {
+		t.Fatalf("snapshot ContextWindow = %d, want 1048576", got)
+	}
+}
+
 func TestDetachedOvernightReportIsServerOwned(t *testing.T) {
 	srv, _ := testServer(t)
 	defer srv.Close()

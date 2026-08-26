@@ -457,40 +457,47 @@ func (m *Model) statsCommand() tea.Cmd {
 
 func (m *Model) connectCommand(arg string) tea.Cmd {
 	parts := strings.Fields(arg)
+	const usage = "usage: /connect brave|ollama-usage [status]"
 	if len(parts) == 0 {
-		m.notice = "usage: /connect brave [status]"
+		m.notice = usage
 		return nil
 	}
 	target := strings.ToLower(parts[0])
 	status := false
 	if target == "status" {
 		if len(parts) != 1 {
-			m.notice = "usage: /connect brave [status]"
+			m.notice = usage
 			return nil
 		}
 		target = "brave"
 		status = true
 	} else if len(parts) > 1 {
 		if len(parts) != 2 || strings.ToLower(parts[1]) != "status" {
-			m.notice = "usage: /connect brave [status]"
+			m.notice = usage
 			return nil
 		}
 		status = true
 	}
-	if target != "brave" {
-		m.notice = "usage: /connect brave [status]"
+	if target != "brave" && target != "ollama-usage" {
+		m.notice = usage
 		return nil
 	}
 	if status {
 		cfg, err := config.Load()
 		if err != nil {
-			m.notice = "brave connection status unavailable"
+			m.notice = target + " connection status unavailable"
 			return nil
 		}
-		if cfg.BraveSearchAPIKey() != "" {
-			m.notice = "brave: API key present"
+		if target == "brave" {
+			if cfg.BraveSearchAPIKey() != "" {
+				m.notice = "brave: API key present"
+			} else {
+				m.notice = "brave: no API key configured"
+			}
+		} else if cfg.OllamaSessionCookie() != "" {
+			m.notice = "ollama usage: session cookie present"
 		} else {
-			m.notice = "brave: no API key configured"
+			m.notice = "ollama usage: no session cookie configured"
 		}
 		return nil
 	}
@@ -499,9 +506,13 @@ func (m *Model) connectCommand(arg string) tea.Cmd {
 		return nil
 	}
 	m.loginMode = true
-	m.loginProvider = "brave"
+	m.loginProvider = target
 	m.editor = Editor{}
-	m.notice = "Brave Search API key · input hidden · Enter saves · Esc cancels"
+	if target == "brave" {
+		m.notice = "Brave Search API key · input hidden · Enter saves · Esc cancels"
+	} else {
+		m.notice = "Ollama session cookie · input hidden · Enter saves · Esc cancels"
+	}
 	return nil
 }
 
@@ -664,7 +675,7 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 		m.loginMode = false
 		m.editor = Editor{}
 		m.loginProvider = ""
-		if target == "brave" {
+		if target == "brave" || target == "ollama-usage" {
 			m.notice = "connect cancelled"
 		} else {
 			m.notice = "login cancelled"
@@ -680,10 +691,33 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 		}
 		m.loginProvider = ""
 		if strings.TrimSpace(keyText) == "" {
-			if target == "brave" {
-				m.notice = "brave connection cancelled: no key entered"
+			if target == "brave" || target == "ollama-usage" {
+				m.notice = "connect cancelled: no secret entered"
 			} else {
 				m.notice = target + " login cancelled: no key entered"
+			}
+			return m, nil
+		}
+		if target == "ollama-usage" {
+			keyText = strings.TrimSpace(keyText)
+			if err := config.SaveOllamaSessionCookie(keyText); err != nil {
+				m.notice = "ollama usage connection failed"
+				return m, nil
+			}
+			activeCookie := keyText
+			envCookie := config.OllamaSessionCookie()
+			if envCookie != "" {
+				activeCookie = envCookie
+			}
+			// Arm the widget immediately: the next tick sees the cookie, marks
+			// the fetch due, and the Cloud Usage bar appears without a restart.
+			m.cloudUsageCookieValue = activeCookie
+			m.cloudUsageCookieAt = time.Now()
+			m.cloudUsageNext = time.Time{}
+			if envCookie != "" {
+				m.notice = "Ollama session cookie saved · environment cookie remains active"
+			} else {
+				m.notice = "Ollama session cookie saved"
 			}
 			return m, nil
 		}

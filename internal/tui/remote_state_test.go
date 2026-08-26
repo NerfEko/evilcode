@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/config"
 	"evilcode/internal/provider"
 	"evilcode/internal/tools"
 )
@@ -56,5 +57,80 @@ func TestRemoteModelEventOwnsVisionAndReasoningState(t *testing.T) {
 	})
 	if m.visionOK() || m.header.Model != "text-only" || m.header.ReasoningEffort != provider.ReasoningEffortNone {
 		t.Fatalf("remote model state = vision:%v model:%q effort:%q", m.visionOK(), m.header.Model, m.header.ReasoningEffort)
+	}
+}
+
+// The daemon resolves the context window at model-set time (ContextWindowFor)
+// and publishes it on EventModel; an attached TUI must mirror it or the meter
+// renders the hardcoded 200k fallback for every model.
+func TestRemoteModelEventCarriesContextWindow(t *testing.T) {
+	m := newTestModel(t)
+	m.applyEvent(agent.Event{
+		Kind: agent.EventModel, Model: "deepseek-v4-flash:0731", Provider: "ollama-cloud",
+		ContextWindow: 1048576, ContextWindowKnown: true,
+	})
+	if m.agent.NumCtx != 1048576 {
+		t.Fatalf("agent NumCtx = %d, want 1048576", m.agent.NumCtx)
+	}
+	if got := m.contextMax(); got != 1048576 {
+		t.Fatalf("contextMax = %d, want the event's window", got)
+	}
+}
+
+// contextWindowMsg is the off-loop result of the provider ask after a model
+// switch. Only the result for the model still active applies: a later switch
+// makes an earlier lookup's answer stale.
+func TestContextWindowMsgAppliesOnlyToCurrentModel(t *testing.T) {
+	m := newTestModel(t)
+	m.agent.Model = "deepseek-v4-flash:0731"
+	m.header.Provider = "ollama-cloud"
+	ref := config.ModelRef(m.agent.Model, m.header.Provider)
+
+	m.Update(contextWindowMsg{ref: ref, window: 1048576})
+	if m.agent.NumCtx != 1048576 {
+		t.Fatalf("current model window = %d, want 1048576", m.agent.NumCtx)
+	}
+
+	// A result for a model the session has already left is discarded.
+	other := config.ModelRef("glm-5.2", "ollama-cloud")
+	m.Update(contextWindowMsg{ref: other, window: 262144})
+	if m.agent.NumCtx != 1048576 {
+		t.Fatalf("stale window overwrote the current model's: NumCtx = %d", m.agent.NumCtx)
+	}
+}
+
+func TestResolveContextWindowUsesOverrideSynchronously(t *testing.T) {
+	m := newTestModel(t)
+	m.contextWindowOverride = func(ref string) int {
+		if ref == "deepseek-v4-flash:0731@ollama-cloud" {
+			return 262144
+		}
+		return 0
+	}
+	cmd := m.applyModel(ModelEntry{Name: "deepseek-v4-flash:0731", Provider: "ollama-cloud"})
+	if cmd != nil {
+		t.Fatal("an explicit override should resolve synchronously, not return a cmd")
+	}
+	if m.agent.NumCtx != 262144 {
+		t.Fatalf("NumCtx = %d, want the override 262144", m.agent.NumCtx)
+	}
+}
+
+func TestResolveContextWindowDefersProviderAskOffLoop(t *testing.T) {
+	m := newTestModel(t) // mock provider, no override
+	ref := config.ModelRef("deepseek-v4-flash:0731", "ollama-cloud")
+	m.agent.Model = "deepseek-v4-flash:0731"
+	m.header.Provider = "ollama-cloud"
+
+	cmd := m.resolveContextWindow(ref)
+	if cmd == nil {
+		t.Fatal("no override: expected a deferred provider ask")
+	}
+	msg, ok := cmd().(contextWindowMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want contextWindowMsg", msg)
+	}
+	if msg.ref != ref {
+		t.Errorf("msg ref = %q, want %q", msg.ref, ref)
 	}
 }

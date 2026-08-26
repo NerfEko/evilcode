@@ -328,10 +328,6 @@ func wrapParagraphWithCursor(runes []rune, caret int, width int) (lines []string
 		}
 		words = append(words, wordSpan{s, i})
 	}
-	if len(words) == 0 {
-		// The paragraph was whitespace only; wrapPlain emits one blank line.
-		return []string{""}, 0, 0
-	}
 
 	type lineInfo struct {
 		text   string
@@ -368,6 +364,40 @@ func wrapParagraphWithCursor(runes []rune, caret int, width int) (lines []string
 		}
 		// Break a single word longer than the width into cell chunks, matching
 		// wrapPlain's splitPlainCells path.
+		for lipgloss.Width(lineBuf.String()) > width {
+			cur := lineBuf.String()
+			chunk, remainder := splitPlainCells(cur, width)
+			cRunes := len([]rune(chunk))
+			wp := pieces[0]
+			pieces[0] = wrapPiece{text: chunk, start: wp.start, end: wp.start + cRunes, space: wp.space}
+			lineBuf.Reset()
+			lineBuf.WriteString(chunk)
+			flush()
+			lineBuf.WriteString(remainder)
+			pieces = []wrapPiece{{text: remainder, start: wp.start + cRunes, end: wp.end, space: false}}
+			lineStart = wp.start + cRunes
+		}
+	}
+	// Trailing whitespace after the last word is preserved on the final line
+	// so the live caret on a trailing space stays visible while typing.
+	// wrapPlain collapses it for completed transcript text, but the composer
+	// is live input: without it, pressing space changes nothing on screen
+	// until the next character lands, because the caret block already sat at
+	// the end of the last word.
+	trailingStart := 0
+	if len(words) > 0 {
+		trailingStart = words[len(words)-1].end
+	}
+	if trailingStart < len(runes) {
+		trailing := string(runes[trailingStart:])
+		if lineBuf.Len() == 0 {
+			lineBuf.WriteString(trailing)
+			pieces = []wrapPiece{{text: trailing, start: trailingStart, end: len(runes), space: false}}
+			lineStart = trailingStart
+		} else {
+			lineBuf.WriteString(trailing)
+			pieces = append(pieces, wrapPiece{text: trailing, start: trailingStart, end: len(runes), space: false})
+		}
 		for lipgloss.Width(lineBuf.String()) > width {
 			cur := lineBuf.String()
 			chunk, remainder := splitPlainCells(cur, width)

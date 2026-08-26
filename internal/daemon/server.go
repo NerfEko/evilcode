@@ -1470,6 +1470,7 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 		ReasoningEffort:  effort,
 		ReasoningEfforts: levelNames,
 		Vision:           cfg != nil && cfg.ModelOverrides(config.ModelRef(agentModel, prov.Name())).Vision,
+		ContextWindow:    sess.built.Agent.NumCtx,
 		Skills:           skillNames,
 		MCP:              mcpStatus,
 		Running:          reserved || sess.built.Agent.Running(),
@@ -1733,6 +1734,8 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 		ReasoningEffortKnown: effortKnown,
 		Vision:               overrides.Vision,
 		VisionKnown:          true,
+		ContextWindow:        sess.built.Agent.NumCtx,
+		ContextWindowKnown:   true,
 	})
 	return preferenceErr
 }
