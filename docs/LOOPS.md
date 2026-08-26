@@ -6549,3 +6549,27 @@ the close hint and drops the live hint.
 
 Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
 probe suite with refreshed goldens.
+
+## 2026-08-26 — pane stops auto-updating outside live view; diff markers move before the separator
+
+Two reports from the split:
+
+**The pane changed on its own.** Diff events forced the pane open in
+pinned/file diff modes and swapped its content mid-turn, so mini diff blocks
+kept appearing in the right panel while the agent worked — no click, no live
+view. The pane now only changes on its own in live view: a diff event stores
+the newest diff for later (so opening the pane still shows something) but
+never opens the pane and never swaps content under an open one.
+
+**The markers were on the line side of the separator.** The gutter read
+`11+ │ line`; it now reads `11 +│ line` — number, space, marker, then the
+separator — so the change is attached to the number, not to the line. The
+`│` stays aligned because the marker column is one cell for every row.
+
+Tests: `TestPanelDoesNotAutoUpdateOutsideLiveView` (open pane untouched, closed
+pane stays closed, diff still stored), `TestDiffMarkerSitsBetweenNumberAnd
+Separator`, and the deleted-line blank-number check updated for the new gutter.
+Probe goldens refreshed.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
+probe suite with refreshed goldens.
