@@ -6451,3 +6451,22 @@ Tests: `TestPanelWheelDirectionIsNotInverted`,
 Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
 probe suite green (one pre-existing flaky wait-pane timeout passed on re-run),
 and a live probe smoke of Ctrl+L on the diff-long scenario.
+
+## 2026-08-26 — split view follow-up: ctrl+q closes the split
+
+Plain `q` as the close key collided with typing — "quick" and "/quit" needed
+an empty-composer guard, and the guard itself was a surprise. The close key is
+now `ctrl+q`: plain q is an ordinary letter again and types even while the
+split is open, and ctrl+q closes the split (quick view first, then the panel
+and live view) regardless of composer state. The pane footer and the help
+overlay now read "ctrl+q to close, ctrl+L for live view", and the probe panel
+goldens were refreshed for the new footer text.
+
+Tests: `TestCtrlQClosesQuickViewWithoutTouchingDiff`,
+`TestCtrlLTogglesLiveViewAndCtrlQClosesIt`, `TestPlainQTypesWithSplitOpen`
+(plain q types with the split open; ctrl+q closes even with text in the
+composer), and the footer assertions updated to the new hint.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
+probe suite with refreshed goldens, and a live probe smoke: ctrl+l opens the
+split with the new footer, ctrl+q closes it.
