@@ -6510,3 +6510,20 @@ mock's read shows `testdata/clamp.go` numbered from line 1.
 
 Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`
 all green.
+
+## 2026-08-26 — panel footer vanished when the chat frame overflowed
+
+Report: the text at the bottom of the live view disappeared. Reproduced with a
+10-row terminal and the overscroll facts line revealed: the chat frame grew to
+11 rows, and `attachSidePanel` rendered the panel as tall as the *frame*, so
+the footer row (the green "live" tag and the key hints) landed at row 10 —
+below the last visible row, where the terminal clips it. The panel now spans
+exactly the visible screen (`m.height`), falling back to the frame height only
+when the terminal size is unknown, so the footer is pinned to the bottom row
+and the overflowing chat rows clip without it.
+
+Test: `TestPanelFooterStaysOnScreenWhenChatOverflows` builds the overflow and
+asserts the footer is on the last visible row.
+
+Verified: `go build ./...`, `go vet ./internal/tui/`, `go test ./... -count=1`,
+probe suite green (no golden changes).
