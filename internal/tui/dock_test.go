@@ -731,14 +731,14 @@ func TestParseHunkStart(t *testing.T) {
 func TestSidePanelRefusesTooNarrow(t *testing.T) {
 	// Half a diff is worse than none.
 	r := testRenderer(80)
-	if got := r.RenderSidePanel(PanelContent{Diff: "x"}, DiffPinned, 10, 20, false); got != nil {
+	if got := r.RenderSidePanel(PanelContent{Diff: "x"}, DiffPinned, 10, 20, false, 0, false); got != nil {
 		t.Errorf("a %d-wide pane rendered %d rows", 10, len(got))
 	}
 }
 
 func TestSidePanelEmptySaysSo(t *testing.T) {
 	r := testRenderer(120)
-	rows := plainLines(r.RenderSidePanel(PanelContent{}, DiffPinned, 40, 6, false))
+	rows := plainLines(r.RenderSidePanel(PanelContent{}, DiffPinned, 40, 6, false, 0, false))
 	if !strings.Contains(strings.Join(rows, "\n"), "nothing pinned") {
 		t.Errorf("rows = %v", rows)
 	}

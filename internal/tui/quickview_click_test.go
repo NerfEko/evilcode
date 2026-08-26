@@ -106,20 +106,32 @@ func TestClickWriteAndBashReplaceQuickViewWithoutTouchingDiff(t *testing.T) {
 	}
 }
 
-func TestEscapeClosesQuickViewWithoutTouchingDiff(t *testing.T) {
+func TestQClosesQuickViewWithoutTouchingDiff(t *testing.T) {
 	m := clickModel(nil, t.TempDir())
 	m.panel = PanelContent{Title: "pinned", Diff: "@@ pinned @@"}
 	m.panelOpen, m.diffMode = true, DiffPinned
 	wantPanel, wantOpen, wantMode := m.panel, m.panelOpen, m.diffMode
 	m.quickView = &PanelContent{Title: "read", Body: []string{"content"}}
 
-	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	model, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
 	got := model.(*Model)
 	if got.quickView != nil {
-		t.Fatal("Esc left the quick view open")
+		t.Fatal("q left the quick view open")
 	}
 	if !panelEqual(got.panel, wantPanel) || got.panelOpen != wantOpen || got.diffMode != wantMode {
-		t.Fatal("Esc changed persistent diff state while closing quick view")
+		t.Fatal("q changed persistent diff state while closing quick view")
+	}
+}
+
+func TestEscapeNoLongerClosesTheSplit(t *testing.T) {
+	// Esc means stop/clear; q is the key that closes the split.
+	m := clickModel(nil, t.TempDir())
+	m.quickView = &PanelContent{Title: "read", Body: []string{"content"}}
+
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	got := model.(*Model)
+	if got.quickView == nil {
+		t.Fatal("Esc closed the quick view; q owns that now")
 	}
 }
 
@@ -192,7 +204,7 @@ func TestMarkdownClickOpensTheSidePanelRendered(t *testing.T) {
 	// are gone and the bold marks with them.
 	_, side := Horizontal{Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: true}.Split()
 	panel := plain(strings.Join(
-		m.renderer.RenderSidePanel(*got.quickView, DiffInline, side, 10, true), "\n"))
+		m.renderer.RenderSidePanel(*got.quickView, DiffInline, side, 10, true, 0, false), "\n"))
 	if !strings.Contains(panel, "hello") || !strings.Contains(panel, "bold") {
 		t.Fatalf("panel is missing the file's prose:\n%s", panel)
 	}
@@ -200,9 +212,9 @@ func TestMarkdownClickOpensTheSidePanelRendered(t *testing.T) {
 		t.Fatalf("markdown was highlighted as source rather than rendered:\n%s", panel)
 	}
 
-	// Esc closes it, like every other quick view.
-	got.escape()
+	// q closes it, like every other quick view.
+	got.closeSplit()
 	if got.quickView != nil {
-		t.Fatal("escape did not close the markdown quick view")
+		t.Fatal("q did not close the markdown quick view")
 	}
 }

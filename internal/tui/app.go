@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -357,10 +358,24 @@ type Model struct {
 	panelRatio int
 
 	// quickView is the transient click-to-look overlay (§3.2). Non-nil means it
-	// is showing; Esc clears it and the persistent /diff panel underneath is
+	// is showing; q clears it and the persistent /diff panel underneath is
 	// untouched. It is rendered in preference to m.panel and opens the pane
 	// regardless of m.panelOpen/m.diffMode, but it never writes any of them.
 	quickView *PanelContent
+
+	// liveView is the Ctrl+L live split: the pane follows the agent's file
+	// activity, opening each touched file scrolled to the change. It turns off
+	// when the split closes or a click opens a quick view.
+	liveView bool
+
+	// panelScroll is the side pane's own scroll state, so the wheel scrolls
+	// whichever side the mouse is over. panelContentHeight and
+	// panelViewportHeight are the body size the last frame rendered, and
+	// panelScrollPending is a body line to center on the next frame (-1 = none).
+	panelScroll         Scroll
+	panelContentHeight  int
+	panelViewportHeight int
+	panelScrollPending  int
 
 	// sessions is the full-screen picker, and dataDir is where session state
 	// lives so the picker can act on it.
@@ -627,6 +642,7 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		reasoningLevels:         levels,
 		diffMode:                DiffInline,
 		panelRatio:              50,
+		panelScrollPending:      -1,
 		showHints:               true,
 		overscroll:              Overscroll{Mode: OverscrollPull},
 		drawnImages:             map[int]imagePlacement{},
@@ -1552,9 +1568,27 @@ func (m *Model) applyEvent(e agent.Event) {
 		// renderer's call, which is what lets Alt+G re-render history instead
 		// of only affecting what arrives next.
 		if e.Diff != "" {
-			m.panel = PanelContent{Title: b.ToolTarget, Path: b.ToolTarget, Diff: e.Diff}
-			if m.diffMode.UsesPanel() {
+			m.panel = PanelContent{Title: b.ToolTarget, Path: b.ToolPath, Diff: e.Diff}
+			if m.liveView {
+				// Live view shows the whole file with the change marked, and
+				// follows the edit unless the reader has scrolled away.
+				m.panel = m.fileDiffContent(b.ToolPath, e.Diff)
 				m.panelOpen = true
+				if !m.panelScroll.Paused {
+					m.panelScrollPending = m.panel.ScrollTo
+				}
+			} else if m.diffMode.UsesPanel() {
+				m.panelOpen = true
+			}
+		}
+		// Live view also tracks reads: the file the agent just looked at opens
+		// in the split, from the top. Image reads are skipped — their bytes are
+		// not a line view.
+		if m.liveView && b.ToolName == "read" && b.ToolPath != "" && len(e.Images) == 0 {
+			m.panel = *m.readQuickView(b.ToolPath)
+			m.panelOpen = true
+			if !m.panelScroll.Paused {
+				m.panelScrollPending = 0
 			}
 		}
 		m.blocks = append(m.blocks, b)
@@ -2115,6 +2149,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.escape()
 		return m, nil
 
+	case "q":
+		// q closes the split when it is open and the composer is empty;
+		// otherwise it types like any other letter, so "quick" and "/quit"
+		// still work while the pane is up.
+		if m.sidePaneOpen() && m.editor.Text == "" {
+			m.closeSplit()
+			return m, nil
+		}
+
+	case "ctrl+l":
+		m.toggleLiveView()
+		return m, nil
+
 	case "enter":
 		// A bare Enter right after a paste is the terminal ending the paste,
 		// not the user submitting (plan.md §6.6).
@@ -2231,7 +2278,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "alt+g":
 		m.diffMode = m.diffMode.Next()
-		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
+		m.panelOpen = m.liveView || (m.diffMode.UsesPanel() && !m.panel.Empty())
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -2240,6 +2287,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "alt+m":
 		m.panelOpen = !m.panelOpen
+		if !m.panelOpen {
+			// Closing the split turns live view off too.
+			m.liveView = false
+		}
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -2605,9 +2656,15 @@ func (m *Model) noteNearMiss(key string) {
 	m.notice = m.renderer.RenderNearMiss(key, nearest, found)
 }
 
-// handleWheel applies the momentum scrolling of §4.1.
+// handleWheel applies the momentum scrolling of §4.1. The wheel scrolls
+// whichever side the pointer is over: the transcript on the left, the side
+// pane on the right.
 func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	now := time.Now()
+	if m.wheelOverPanel(msg.X) {
+		m.panelWheel(msg)
+		return m, nil
+	}
 	switch msg.Button {
 	case tea.MouseWheelUp:
 		m.scroll.WheelUp(now, m.contentHeight(), m.transcriptHeight())
@@ -2619,6 +2676,26 @@ func (m *Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.overscroll.Tick(now, atBottom)
 	}
 	return m, nil
+}
+
+// wheelOverPanel reports whether the pointer is over the side pane, so the
+// wheel can scroll the pane instead of the transcript.
+func (m *Model) wheelOverPanel(x int) bool {
+	chat, side := Horizontal{
+		Width: m.width, SidePaneRatio: m.panelRatio, SidePaneOpen: m.sidePaneOpen(),
+	}.Split()
+	return side > 0 && x >= chat
+}
+
+// panelWheel scrolls the side pane's body. Scrolling away pauses live view's
+// follow; scrolling back to the top resumes it.
+func (m *Model) panelWheel(msg tea.MouseWheelMsg) {
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		m.panelScroll.Up(LinesPerNotch, m.panelContentHeight, m.panelViewportHeight)
+	case tea.MouseWheelDown:
+		m.panelScroll.Down(LinesPerNotch)
+	}
 }
 
 // handleHistoryKey drives the Ctrl+R reverse search.
@@ -3588,7 +3665,7 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 
 	case "diff":
 		m.diffMode = m.diffMode.Next()
-		m.panelOpen = m.diffMode.UsesPanel() && !m.panel.Empty()
+		m.panelOpen = m.liveView || (m.diffMode.UsesPanel() && !m.panel.Empty())
 		m.applyWrapWidth()
 		m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
 		m.drainDiagrams()
@@ -3836,17 +3913,14 @@ func terminalSetupText() string {
 	}, "\n")
 }
 
-// escape is the layered cancel of plan.md §6.7.
+// escape is the layered cancel of plan.md §6.7. Closing the split is q's job,
+// not Esc's: Esc means "stop" or "clear", and a user who opened a quick view
+// mid-turn meant "close this" only when they press q.
 func (m *Model) escape() {
 	// Esc cancels a pending two-press detach before anything else, so a reflexive
 	// "never mind" actually disarms Ctrl+C.
 	m.confirmQuit = false
 	switch {
-	case m.quickView != nil:
-		// Closing something you are looking at is what Esc means in every other
-		// overlay here, and a user who opened a quick view mid-turn meant "close
-		// this", not "kill the turn" (§3.3). First rung, above interrupt.
-		m.quickView = nil
 	case m.processing:
 		// Esc means stop, which is why it also disarms auto-poke — unlike
 		// Ctrl+C, which means "skip this".
@@ -3856,6 +3930,51 @@ func (m *Model) escape() {
 		m.clearEditor()
 		m.notice = "Input cleared - Ctrl+Z to restore"
 	}
+}
+
+// closeSplit closes the side pane one layer at a time, which is what q owns:
+// the quick view first (revealing the persistent panel underneath, if any),
+// then the panel and live view together. The pane's scroll momentum stops
+// either way.
+func (m *Model) closeSplit() {
+	if m.quickView != nil {
+		m.quickView = nil
+		m.panelScroll.ResetMomentum()
+		m.panelScrollPending = m.panel.ScrollTo
+		return
+	}
+	m.panelOpen = false
+	m.liveView = false
+	m.panelScroll.ResetMomentum()
+	m.applyWrapWidth()
+	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+	m.drainDiagrams()
+}
+
+// toggleLiveView flips the Ctrl+L live split. Turning it on opens the pane on
+// whatever the agent last touched; turning it off leaves the pane as it is.
+func (m *Model) toggleLiveView() {
+	m.liveView = !m.liveView
+	if m.liveView {
+		m.quickView = nil
+		m.panelOpen = true
+		if m.panel.Empty() {
+			m.notice = "Live view: ON - waiting for the agent to touch a file"
+		} else {
+			// Rebuild the last edit as a whole-file view, so live mode opens
+			// at the change rather than on a stale diff-only panel.
+			if m.panel.Diff != "" && len(m.panel.Body) == 0 {
+				m.panel = m.fileDiffContent(m.panel.Path, m.panel.Diff)
+			}
+			m.panelScrollPending = m.panel.ScrollTo
+			m.notice = "Live view: ON"
+		}
+	} else {
+		m.notice = "Live view: OFF"
+	}
+	m.applyWrapWidth()
+	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
+	m.drainDiagrams()
 }
 
 // interrupt cancels the turn. disarmPoke distinguishes the two keys that get
@@ -5029,7 +5148,27 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 	if m.quickView != nil {
 		content, mode = *m.quickView, DiffInline
 	}
-	panel := m.renderer.RenderSidePanel(content, mode, side, height, m.quickView != nil)
+
+	// Measure the body once, then window it: the pane scrolls independently of
+	// the transcript, and the wheel needs the real content height to clamp to.
+	body := m.renderer.panelBody(content, mode, side-2)
+	m.panelContentHeight = len(body)
+	m.panelViewportHeight = max(height-2, 0)
+	if m.panelScrollPending >= 0 {
+		// A fresh view opens centered on its ScrollTo line (the diff, or the
+		// top of a read file).
+		m.panelScroll.Offset = clamp(
+			m.panelScrollPending-m.panelViewportHeight/2, 0,
+			Max(m.panelContentHeight, m.panelViewportHeight))
+		m.panelScrollPending = -1
+		m.panelScroll.Paused = false
+	}
+	m.panelScroll.Offset = clamp(m.panelScroll.Offset, 0,
+		Max(m.panelContentHeight, m.panelViewportHeight))
+	start := m.panelScroll.Offset
+	end := min(start+m.panelViewportHeight, len(body))
+	panel := m.renderer.renderPanelChrome(content.Title, body[start:end],
+		side, height, m.quickView != nil, m.liveView)
 
 	// Grow the frame so every panel row has something to attach to. Blank chat
 	// rows below the composer are empty screen either way; without them the
@@ -5509,11 +5648,10 @@ func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 	case "read":
 		m.quickView = m.readQuickView(b.ToolPath)
 	case "write", "edit", "multiedit":
-		body := []string(nil)
-		if b.Diff == "" {
-			body = []string{"no diff captured for this edit"}
-		}
-		m.quickView = &PanelContent{Title: b.ToolTarget, Path: b.ToolPath, Diff: b.Diff, Body: body}
+		// A clicked edit opens the whole file with the change marked, scrolled
+		// to the diff — not the truncated diff alone.
+		c := m.fileDiffContent(b.ToolPath, b.Diff)
+		m.quickView = &c
 	case "bash":
 		command := b.ToolCommand
 		if command == "" {
@@ -5527,6 +5665,37 @@ func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 		body = append(body, strings.Split(strings.TrimSuffix(output, "\n"), "\n")...)
 		m.quickView = &PanelContent{Title: "bash", Body: body}
 	}
+	if m.quickView != nil {
+		// A manual click takes over the pane: live view steps aside.
+		m.liveView = false
+		m.panelScroll.ResetMomentum()
+		m.panelScrollPending = m.quickView.ScrollTo
+	}
+}
+
+// fileDiffContent builds the whole-file view for a write/edit: the file's
+// current lines with the diff's changes marked, scrolled to the first hunk.
+// When the file cannot be read the diff alone is shown, as before.
+func (m *Model) fileDiffContent(path, diff string) PanelContent {
+	content := PanelContent{Title: path, Path: path, Diff: diff, ScrollTo: diffScrollLine(diff)}
+	if path == "" {
+		return content
+	}
+	file, err := os.Open(resolveToolPath(m.cwd, path))
+	if err != nil {
+		return content
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return content
+	}
+	// A binary file has no line view; the diff alone is the honest fallback.
+	if bytes.IndexByte(data, 0) >= 0 {
+		return content
+	}
+	content.Body = strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	return content
 }
 
 func (m *Model) readQuickView(path string) *PanelContent {
