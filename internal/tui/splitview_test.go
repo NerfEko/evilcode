@@ -176,7 +176,16 @@ func TestCtrlLTogglesLiveViewAndCtrlQClosesIt(t *testing.T) {
 		t.Fatalf("ctrl+l did not open live view: live=%v open=%v", got.liveView, got.panelOpen)
 	}
 
-	// ctrl+q closes the split and turns live view off.
+	// ctrl+l again closes the split entirely, not just live mode.
+	model, _ = got.Update(tea.KeyPressMsg(tea.Key{Code: 'l', Mod: tea.ModCtrl}))
+	got = model.(*Model)
+	if got.liveView || got.panelOpen || got.sidePaneOpen() {
+		t.Fatalf("ctrl+l did not close the live split: live=%v open=%v", got.liveView, got.panelOpen)
+	}
+
+	// ctrl+q also closes it when live view is on.
+	model, _ = got.Update(tea.KeyPressMsg(tea.Key{Code: 'l', Mod: tea.ModCtrl}))
+	got = model.(*Model)
 	model, _ = got.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Mod: tea.ModCtrl}))
 	got = model.(*Model)
 	if got.liveView || got.panelOpen || got.sidePaneOpen() {
@@ -319,15 +328,19 @@ func TestPanelFooterShowsLiveAndHints(t *testing.T) {
 		t.Fatalf("footer missing the key hints: %q", last)
 	}
 
-	// Without live view the tag is gone but the hints stay.
+	// Without live view the tag and the live hint are gone, but the close
+	// hint stays — ctrl+q works in every split view.
 	rows = plainLines(r.RenderSidePanel(
 		PanelContent{Body: []string{"a", "b"}}, DiffInline, 60, 8, false, 0, false))
 	last = strings.TrimPrefix(rows[len(rows)-1], "│ ")
 	if strings.HasPrefix(last, "live") {
 		t.Fatalf("footer shows the live tag when live view is off: %q", last)
 	}
-	if !strings.Contains(last, "ctrl+q to close, ctrl+L for live view") {
-		t.Fatalf("footer missing the key hints: %q", last)
+	if !strings.Contains(last, "ctrl+q to close") {
+		t.Fatalf("footer missing the close hint: %q", last)
+	}
+	if strings.Contains(last, "ctrl+L for live view") {
+		t.Fatalf("footer shows the live hint when live view is off: %q", last)
 	}
 }
 

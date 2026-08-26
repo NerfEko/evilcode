@@ -37,4 +37,4 @@
                                                                       │
                                                                       │
                                                                       │
-                                                                      │                                ctrl+q to close, ctrl+L for live view
+                                                                      │                                                      ctrl+q to close

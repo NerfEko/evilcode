@@ -3959,7 +3959,7 @@ func (m *Model) closeSplit() {
 }
 
 // toggleLiveView flips the Ctrl+L live split. Turning it on opens the pane on
-// whatever the agent last touched; turning it off leaves the pane as it is.
+// whatever the agent last touched; turning it off closes the split entirely.
 func (m *Model) toggleLiveView() {
 	m.liveView = !m.liveView
 	if m.liveView {
@@ -3977,6 +3977,10 @@ func (m *Model) toggleLiveView() {
 			m.notice = "Live view: ON"
 		}
 	} else {
+		// Ctrl+L again closes the split, not just live mode.
+		m.quickView = nil
+		m.panelOpen = false
+		m.panelScroll.ResetMomentum()
 		m.notice = "Live view: OFF"
 	}
 	m.applyWrapWidth()
