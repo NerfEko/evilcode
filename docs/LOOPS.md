@@ -6273,3 +6273,35 @@ warm-cache behavior of `/model`.
 
 Verified: `go build ./...`, `go test ./internal/tui/ -count=1`. README's
 Configuration section now documents the once-per-session cache and the command.
+
+## 2026-08-25 — picker Current marker follows a model switch
+
+Reported: "when i change model in /model, the footer needs to be updated, or
+maybe the model isnt changing properly." Traced the full switch path — local and
+daemon/remote — and checked every bottom-region element that shows the model
+(the dock `ModelInfoWidget`, the `factStack`, the composer, the header). All read
+`m.header`, and both switch paths (`applyModelWithEffort` local path; the
+`EventModel` handler for the remote path) update `m.header`, so on a successful
+switch the footer updates on the next frame. The footer is not a stale source.
+
+**The real staleness was in the picker itself.** `applyModelPrefs` re-marks
+`Default`/`Favorite` across `m.models` and `m.picker.Entries` after a change, but
+nothing re-marked `Current` — so reopening `/model` still highlighted the model
+that was current when the catalogue was fetched, not the one now active. That
+reads exactly as "the model didn't change."
+
+**Fix.** Added `applyModelCurrent()`, which re-marks `Current` across both
+`m.models` and `m.picker.Entries` against the active `m.header.Model`/
+`m.header.Provider`, and called it at the end of the local `applyModelWithEffort`
+and in the remote `EventModel` handler. A failed daemon switch still leaves the
+mirror on the old model by design (the `setModel` early-return at
+`server.go:1644` returns before emitting `EventModel`), so the footer correctly
+stays put and a `daemon: …` notice surfaces — that is a failed switch, not a
+display bug.
+
+Reproduction: `TestModelSwitchUpdatesPickerCurrentMarker` seeds the cache with
+`mock-small` current, switches to `mock-large@next`, and asserts both `m.models`
+and `m.picker.Entries` now mark `mock-large@next` current. Failed before the fix.
+
+Verified: `go build ./...`, `go vet ./internal/tui/...`, `go test ./internal/tui/`
+and `./internal/daemon/ -count=1`.

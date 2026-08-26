@@ -1511,6 +1511,7 @@ func (m *Model) applyEvent(e agent.Event) {
 				m.notice = "model changed, but could not remember it: " + err.Error()
 			}
 		}
+		m.applyModelCurrent()
 
 	case agent.EventBackground:
 		if e.Background != nil {
@@ -2826,6 +2827,7 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 			m.notice = "could not record model: " + werr.Error()
 		}
 	}
+	m.applyModelCurrent()
 }
 
 // applyModelPrefs re-marks the Default and Favorite flags everywhere the
@@ -2841,6 +2843,22 @@ func (m *Model) applyModelPrefs() {
 		ref := config.ModelRef(m.picker.Entries[i].Name, m.picker.Entries[i].Provider)
 		m.picker.Entries[i].Default = ref == m.defaultModel
 		m.picker.Entries[i].Favorite = m.isFavorite(ref)
+	}
+}
+
+// applyModelCurrent re-marks the Current flag across the cached model list and
+// the live picker entries after a model switch, so reopening /model highlights
+// the newly active model rather than the one that was current when the catalogue
+// was fetched. applyModelWithEffort and the EventModel handler both call this:
+// the local path switches immediately, the remote path switches when the
+// canonical event arrives. Without it the picker's Current marker is frozen for
+// the whole session and reads as "the model didn't change".
+func (m *Model) applyModelCurrent() {
+	for i := range m.models {
+		m.models[i].Current = m.models[i].Name == m.header.Model && m.models[i].Provider == m.header.Provider
+	}
+	for i := range m.picker.Entries {
+		m.picker.Entries[i].Current = m.picker.Entries[i].Name == m.header.Model && m.picker.Entries[i].Provider == m.header.Provider
 	}
 }
 
