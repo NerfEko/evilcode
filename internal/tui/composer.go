@@ -155,7 +155,7 @@ func idleHint(s ComposerState) string {
 		ctx := fmt.Sprintf("%s/%s ctx", humanTokens(s.CtxUsed), roundTokens(s.CtxMax))
 		// The percentage only earns its space once it is worth watching. At 0%
 		// it is noise beside the two numbers that already say the same thing.
-		if pct := s.CtxUsed * 100 / s.CtxMax; pct >= 1 {
+		if pct := percentOf(s.CtxUsed, s.CtxMax); pct >= 1 {
 			ctx += fmt.Sprintf(" · %d%%", pct)
 		}
 		parts = append(parts, ctx)
@@ -245,6 +245,31 @@ func (r *Renderer) RenderComposer(s ComposerState) []string {
 
 	if hint := r.hintLine(s); hint != "" {
 		out = append(out, hint)
+	}
+	return out
+}
+
+// RenderQueuedPrompts draws prompts an attached client sent to a busy
+// session. They render in the same slot and style as the local pending rows,
+// but they are consumed by the daemon's EventTurnStart rather than by
+// flushPending, so they live on the Model separately.
+func (r *Renderer) RenderQueuedPrompts(msgs []string) []string {
+	if len(msgs) == 0 {
+		return nil
+	}
+	shown := msgs
+	if len(shown) > MaxPendingRows {
+		shown = shown[:MaxPendingRows]
+	}
+	out := make([]string, 0, len(shown))
+	for i, text := range shown {
+		glyphStyle := r.style(theme.RoleQueued)
+		textStyle := r.style(theme.RoleDim)
+		numStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(len(shown) - 1 - i))))
+		text := truncateCells(strings.ReplaceAll(text, "\n", " "), max(r.Width-6, 8))
+		out = append(out, numStyle.Render(strconv.Itoa(i+1))+" "+
+			glyphStyle.Render("⏳")+" "+textStyle.Render(text))
 	}
 	return out
 }

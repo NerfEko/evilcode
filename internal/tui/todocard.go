@@ -102,7 +102,12 @@ func (r *Renderer) RenderTodoCard(s TodoCardState) []string {
 		if !flat {
 			out = append(out, r.todoGroupHeader(group, items))
 		} else {
-			out = append(out, r.todoPips(items))
+			done, total := todoBucketCounts(items)
+			row := r.todoPips(items)
+			if total > 0 {
+				row += meta.Render(todoProgressSuffix(done, total))
+			}
+			out = append(out, row)
 		}
 
 		if g, ok := goalByGroup[group]; ok {
@@ -135,7 +140,9 @@ func itemsInGroup(items []todo.Item, group string) []todo.Item {
 	return out
 }
 
-// todoGroupHeader draws `auth flow  ●●●○○`, hot when anything is active.
+// todoGroupHeader draws `auth flow  ●●●○○ 2/3 done · 67%`, hot when anything
+// is active. The exact fraction rides the pips row so the header's progress
+// never depends on the per-item confidence scores.
 func (r *Renderer) todoGroupHeader(group string, items []todo.Item) string {
 	style := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(todoGroupCool))).Bold(true)
@@ -146,7 +153,13 @@ func (r *Renderer) todoGroupHeader(group string, items []todo.Item) string {
 			break
 		}
 	}
-	return style.Render(group) + "  " + r.todoPips(items)
+	done, total := todoBucketCounts(items)
+	meta := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(todoMeta)))
+	line := style.Render(group) + "  " + r.todoPips(items)
+	if total > 0 {
+		line += meta.Render(todoProgressSuffix(done, total))
+	}
+	return line
 }
 
 // todoPips renders the progress meter. One pip per item while they fit; past
@@ -193,6 +206,26 @@ func (r *Renderer) todoPips(items []todo.Item) string {
 	return doneStyle.Render(strings.Repeat("●", dp)) +
 		activeStyle.Render(strings.Repeat("●", ap)) +
 		openStyle.Render(strings.Repeat("○", op))
+}
+
+// todoProgressSuffix is the exact `N/M done · P%` figure for a bucket,
+// rendered from statuses. The pips can under-read a tiny bucket and the
+// per-item confidence scores are not progress, so the row that shows either
+// carries this too — and an all-closed group reads 100%.
+func todoProgressSuffix(done, total int) string {
+	return fmt.Sprintf(" %d/%d done · %d%%", done, total, percentOf(done, total))
+}
+
+// todoBucketCounts tallies closed (completed/cancelled) vs total for the
+// progress suffix.
+func todoBucketCounts(items []todo.Item) (done, total int) {
+	for _, i := range items {
+		total++
+		if i.Status == todo.StatusCompleted || i.Status == todo.StatusCancelled {
+			done++
+		}
+	}
+	return done, total
 }
 
 func (r *Renderer) todoGoalLine(g todo.Goal) string {

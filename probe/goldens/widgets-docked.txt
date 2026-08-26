@@ -8,7 +8,7 @@
 
  Tracking the work.
                                                                                                         ╭──────────────────────────────────╮
-   ✓ todo · 23 tok                                                                                      │ Todos 1/4 ●●○○ · 100%            │
+   ✓ todo · 23 tok                                                                                      │ Todos 1/4 ●●○○ · 25%             │
    ↳ 4 added  (1/4)                                                                                     │   ● Wire the refresh path        │
      + Read the OAuth callback handler                                                                  │   ⊳ Add the retry gate (blocked) │
      + Wire the refresh path                                                                            │   ○ Write the integration        │

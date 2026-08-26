@@ -141,15 +141,42 @@ func Fetch(ctx context.Context, cookie, pageURL string, now time.Time) (Snapshot
 }
 
 // cookieHeader turns the configured value into a Cookie header. A value that
-// already looks like a header (contains '=') is passed through, so pasting the
-// browser's whole Cookie line works; a bare value is treated as the
-// `__Secure-session` cookie the settings page is served under.
+// already looks like a header (contains a ';' separator or starts with a real
+// cookie name) is passed through, so pasting the browser's whole Cookie line
+// works; a bare value is treated as the `__Secure-session` cookie the settings
+// page is served under.
+//
+// Presence of '=' alone is not the test: the session token itself is base64
+// and ends in '=' padding, so a bare token with padding must still be wrapped.
 func cookieHeader(cookie string) string {
-	if strings.Contains(cookie, "=") {
-		return cookie
+	v := strings.TrimSpace(cookie)
+	if fullCookieHeader(v) {
+		return v
 	}
-	return "__Secure-session=" + cookie
+	return "__Secure-session=" + v
 }
+
+// fullCookieHeader reports whether the value is a full Cookie header line
+// rather than the bare `__Secure-session` value. A header line is either
+// several cookies joined with ';' or a "name=value" pair whose name sits at
+// the very start, with its '=' right after the name — never at the end of the
+// string, where base64 padding lives.
+func fullCookieHeader(v string) bool {
+	if strings.Contains(v, ";") {
+		return true
+	}
+	i := strings.IndexByte(v, '=')
+	if i <= 0 || i >= 40 || i >= len(v)-2 {
+		return false
+	}
+	return cookieNameRe.MatchString(v[:i])
+}
+
+// cookieNameRe matches a cookie name: an identifier of letters, digits,
+// underscore, dot, and hyphen. The dashless base64 alphabet never needs a
+// leading-letter rule of its own, but base64 padding '=' at the end of a bare
+// token is excluded by the position checks above.
+var cookieNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
 
 // sessionBounced reports whether the response's final URL is a sign-in route,
 // which is where an expired session lands instead of the settings page.

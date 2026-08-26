@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"sync"
 
 	"evilcode/internal/agent"
@@ -14,6 +15,13 @@ import (
 // worst case for "my terminal died mid-answer".
 const RingSize = 4096
 
+// RingMaxBytes bounds the ring's total payload. Events carry tool output,
+// diffs, display payloads, and image bytes, so a count cap alone can retain
+// gigabytes when a session runs many large tool calls (D2). The budget keeps
+// the newest events — what a reconnecting client actually needs — and drops
+// the oldest until the total fits.
+const RingMaxBytes = 16 << 20
+
 // Ring is a fixed-size event buffer with sequence numbers.
 //
 // Events carry their own Seq from the agent, but the ring assigns its own on
@@ -26,6 +34,7 @@ type Ring struct {
 	next  int // write position
 	count int
 	seq   int
+	bytes int // approximate payload bytes currently retained
 }
 
 // NewRing builds an empty ring.
@@ -33,7 +42,10 @@ func NewRing() *Ring {
 	return &Ring{buf: make([]agent.Event, RingSize), seqs: make([]int, RingSize)}
 }
 
-// Add appends an event and returns its sequence number.
+// Add appends an event and returns its sequence number. When the byte budget
+// is exceeded the oldest retained events are dropped (the newest always
+// survives), so a session streaming many large tool results cannot grow the
+// ring's memory without limit.
 func (r *Ring) Add(e agent.Event) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -41,11 +53,35 @@ func (r *Ring) Add(e agent.Event) int {
 	e.Seq = r.seq
 	r.buf[r.next] = e
 	r.seqs[r.next] = r.seq
+	r.bytes += eventBytes(e)
 	r.next = (r.next + 1) % len(r.buf)
 	if r.count < len(r.buf) {
 		r.count++
 	}
+	for r.count > 1 && r.bytes > RingMaxBytes {
+		oldest := (r.next - r.count + len(r.buf)) % len(r.buf)
+		r.bytes -= eventBytes(r.buf[oldest])
+		r.buf[oldest] = agent.Event{}
+		r.seqs[oldest] = 0
+		r.count--
+	}
 	return r.seq
+}
+
+// eventBytes approximates how much memory an event's payload retains: its
+// text fields, image bytes, and the JSON encoding of its display payload.
+// Seq/Session/Call pointers are shared and counted once at the struct level.
+func eventBytes(e agent.Event) int {
+	n := len(e.Text) + len(e.Output) + len(e.Diff) + len(e.Intent) + len(e.Session) + len(e.RequestID)
+	for _, img := range e.Images {
+		n += len(img)
+	}
+	if e.Display != nil {
+		if b, err := json.Marshal(e.Display); err == nil {
+			n += len(b)
+		}
+	}
+	return n
 }
 
 // Seq is the newest sequence number.

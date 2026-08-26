@@ -164,12 +164,14 @@ Ollama Cloud exposes no usage API, so the Cloud Usage widget reads
 `__Secure-session` cookie value (DevTools → Network → any ollama.com request →
 Cookies) with `/connect ollama-usage` — it is stored masked in the user-only
 config, like `/connect brave` stores its key — or set `OLLAMA_SESSION_COOKIE`
-(env beats the saved value; a value containing `=` is treated as a full
-`Cookie:` header). `/connect ollama-usage status` reports presence without
-printing it. The widget then shows Session and Weekly quota bars, each slice
-colored per model. Treat the cookie like a password — it is a live session
-credential. The scrape is unofficial; if the page changes, the widget reports
-that instead of guessing.
+(env beats the saved value; a value with a `;` or a cookie-name prefix such as
+`__Secure-session=` is treated as a full `Cookie:` header, anything else as the
+bare `__Secure-session` value, so base64 `=` padding inside the token is fine).
+`/connect ollama-usage status` reports presence without printing it. The
+widget then shows Session and Weekly quota bars, each slice colored per model.
+Treat the cookie like a password — it is a live session credential. The scrape
+is unofficial; if the page changes, the widget reports that instead of
+guessing.
 
 Repository-specific defaults can live in `.evilcode.toml` at the repository root. Model
 and role overrides are supported there; credentials are deliberately not.

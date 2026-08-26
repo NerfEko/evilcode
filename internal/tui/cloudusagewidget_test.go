@@ -174,7 +174,7 @@ func TestMaybeRefreshCloudUsageGating(t *testing.T) {
 	// never the developer's real ~/.config/evilcode.
 	writeLoginConfig(t)
 	t.Setenv(config.EnvOllamaSessionCookie, "")
-	m := NewModel(nil, HeaderState{})
+	m := NewModel(nil, HeaderState{Provider: "ollama-cloud"})
 	now := time.Now()
 
 	if m.maybeRefreshCloudUsage(now) {
@@ -185,6 +185,23 @@ func TestMaybeRefreshCloudUsageGating(t *testing.T) {
 	if !m.maybeRefreshCloudUsage(now) {
 		t.Error("cookie configured, never fetched: should fetch now")
 	}
+
+	// The widget scrapes the Ollama settings page: only Ollama providers
+	// fetch or show it. A mock header with no config row falls back to the
+	// built-in names, so a non-Ollama name must not fetch.
+	m.header.Provider = "codex"
+	if m.maybeRefreshCloudUsage(now) {
+		t.Error("codex session: must not fetch the Ollama settings page")
+	}
+	m.header.Provider = "openai"
+	if m.maybeRefreshCloudUsage(now) {
+		t.Error("openai session: must not fetch the Ollama settings page")
+	}
+	m.header.Provider = "ollama-local"
+	if !m.maybeRefreshCloudUsage(now) {
+		t.Error("ollama-local session with a cookie: should fetch")
+	}
+	m.header.Provider = "ollama-cloud"
 
 	m.cloudUsagePending = true
 	if m.maybeRefreshCloudUsage(now) {

@@ -964,6 +964,14 @@ func (a *Agent) appendToolResult(call provider.ToolCall, output string, err erro
 	if content == "" {
 		content = "(no output)"
 	}
+	if len(res.Repairs) > 0 {
+		// The tool row's "repaired:" note is display-only — the model never
+		// sees it, so it would keep emitting the same alias on every call and
+		// every row would carry the note. One terse line in the result teaches
+		// the canonical argument names; once the model adopts them, the repairs
+		// stop.
+		content += "\n\nNote: tool arguments were repaired: " + strings.Join(res.Repairs, ", ")
+	}
 
 	a.Conv.Append(provider.Message{
 		Role:       provider.RoleTool,

@@ -26,7 +26,7 @@
  Understands user intent 87%                                                                                      ╭──────────────────────╮ │
    User intention · Ship the plan-level intent gate so low-confidence plans get re-examined before                │ Context 122/200k     │ │
                     work starts                                                                                   │ ▱▱▱▱▱▱▱▱▱▱ 0%        │ │
- auth flow  ●●○○                                                                                                  ╰──────────────────────╯ │
+ auth flow  ●●○○ 1/4 done · 25%                                                                                   ╰──────────────────────╯ │
    Closed feedback loop 92% · Ownership 88%                                                                                                │
    Feedback · go test ./internal/auth/...                                                                                                  │
    ● Wire the refresh path                                                                                                                 │

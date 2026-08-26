@@ -29,7 +29,9 @@ const (
 	// EnvOllamaSessionCookie feeds the Cloud Usage widget. Ollama exposes no
 	// usage API; the widget reads https://ollama.com/settings with the browser's
 	// session cookie. A bare value is sent as `__Secure-session=<value>`; a
-	// value containing '=' is sent verbatim as a full Cookie header.
+	// value that looks like a full Cookie header (contains ';' or starts with a
+	// cookie name) is sent verbatim. The token itself is base64, so '=' padding
+	// inside it does not turn it into a header.
 	EnvOllamaSessionCookie = "OLLAMA_SESSION_COOKIE"
 	// EnvBraveSearchKey is the preferred key name for the optional web_search
 	// tool. EnvBraveKey is accepted too because it is a common shorthand.

@@ -19,6 +19,13 @@ import (
 // repository into the context window is a cost bug, not a feature.
 const MaxResultBytes = 50 * 1024
 
+// MaxDiffBytes caps the unified diff a tool may attach to a result (D2). The
+// model never sees the diff — Output is the model-visible part — but every
+// tool event carries it and the session's replay ring retains events, so an
+// unbounded diff would defeat the ring's byte budget. DiffStat keeps the
+// real line counts; only the rendered text is cut.
+const MaxDiffBytes = 1 << 20
+
 // DiffStat counts changed lines, for the `(+8 -5)` badge on edit rows (§9.5).
 type DiffStat struct {
 	Added   int `json:"added"`
@@ -259,6 +266,7 @@ func (s Set) RunOne(ctx context.Context, call Call) (outcome Outcome) {
 	repaired, repairs := repairArgs(call.Args, tool.Schema)
 	res, err := tool.Run(ctx, repaired)
 	res.Output = Truncate(res.Output)
+	res.Diff = truncateDiff(res.Diff)
 	if tool.Exposure != nil {
 		tool.Exposure.Record(res.Shown)
 	}
@@ -287,6 +295,22 @@ func Truncate(s string) string {
 	head := available * 2 / 3
 	tail := available - head
 	// Cut on rune boundaries so truncation never emits a broken sequence.
+	head = backToRuneBoundary(s, head)
+	tailStart := forwardToRuneBoundary(s, len(s)-tail)
+	return s[:head] + fmt.Sprintf(format, tailStart-head) + s[tailStart:]
+}
+
+// truncateDiff cuts an oversized unified diff the same way, with a note that
+// the change itself is complete: the diff is display metadata, so a reader
+// losing the middle still has the shape of the change and DiffStat's counts.
+func truncateDiff(s string) string {
+	if len(s) <= MaxDiffBytes {
+		return s
+	}
+	const format = "\n\n… diff truncated at %d bytes; the change itself is applied in full …\n\n"
+	available := MaxDiffBytes - len(fmt.Sprintf(format, len(s)))
+	head := available * 2 / 3
+	tail := available - head
 	head = backToRuneBoundary(s, head)
 	tailStart := forwardToRuneBoundary(s, len(s)-tail)
 	return s[:head] + fmt.Sprintf(format, tailStart-head) + s[tailStart:]

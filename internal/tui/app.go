@@ -178,6 +178,13 @@ type Model struct {
 
 	pending []PendingMessage
 
+	// queuedTexts holds prompts this window sent to a busy session (attached
+	// clients). The daemon queues them and starts a turn with each once the
+	// running turn ends; until the matching EventTurnStart arrives they render
+	// above the composer, not in the transcript (plan.md §6.3). Unlike
+	// pending, they are never flushed locally — the daemon owns delivery.
+	queuedTexts []string
+
 	// palette is the slash-command overlay. It reserves no layout height:
 	// opening it must never move the transcript (plan.md invariant 3).
 	palette PaletteState
@@ -474,6 +481,11 @@ type Model struct {
 	// ctxUsed is the newest request's context size, for the meter. It is not
 	// the sum of the turn's requests — each one carries the whole conversation.
 	ctxUsed int
+
+	// ctxMax is the provider-reported context window from the newest usage
+	// event, when the provider reports one. It wins over the heuristic window
+	// (config/model-name based) because it is what the API actually enforces.
+	ctxMax int
 
 	// cacheRead/cacheWrite accumulate DeepSeek KV-cache token counts across
 	// the whole session, for the KvCache widget (plan.md §8.5-adjacent). They
@@ -969,19 +981,41 @@ func (m *Model) hasRunningBackground() bool {
 }
 
 // maybeRefreshCloudUsage decides whether a settings-page fetch is due. It is
-// deliberately conservative: nothing runs in deterministic (golden) mode, and
+// deliberately conservative: nothing runs in deterministic (golden) mode,
 // nothing runs unless a session cookie is configured (environment or saved by
-// /connect ollama-usage) — the widget's presence is the opt-in. A fetch is due
-// when none has happened yet or the last one completed
-// CloudUsageRefreshInterval ago.
+// /connect ollama-usage) — the widget's presence is the opt-in — and nothing
+// runs unless the active provider is an Ollama one, whose quota is what the
+// settings page shows. A fetch is due when none has happened yet or the last
+// one completed CloudUsageRefreshInterval ago.
 func (m *Model) maybeRefreshCloudUsage(now time.Time) bool {
 	if Deterministic() || m.cloudUsagePending {
+		return false
+	}
+	if !m.cloudUsageProviderActive() {
 		return false
 	}
 	if m.cloudUsageCookie(now) == "" {
 		return false
 	}
 	return m.cloudUsageNext.IsZero() || !now.Before(m.cloudUsageNext)
+}
+
+// cloudUsageProviderActive reports whether the active provider is an Ollama
+// provider (local or cloud) — the only ones whose quota lives on the Ollama
+// settings page the widget scrapes. Codex, OpenAI-compatible endpoints, and
+// mock sessions must neither fetch nor show it.
+func (m *Model) cloudUsageProviderActive() bool {
+	if m.header.Provider == "" {
+		return false
+	}
+	for _, p := range m.providers {
+		if p.Name == m.header.Provider {
+			return p.Kind == config.KindOllama
+		}
+	}
+	// No config row (an unusual snapshot or a bare test model): fall back to
+	// the two built-in Ollama provider names.
+	return m.header.Provider == "ollama-local" || m.header.Provider == "ollama-cloud"
 }
 
 // cloudUsageCookie resolves the session cookie: the environment wins, then the
@@ -1431,11 +1465,18 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.hiddenPrompt = ""
 		} else if e.Text != "" && e.Text == m.hiddenPrompt {
 			m.hiddenPrompt = ""
-		} else if e.Text != "" && !m.lastBlockIsPrompt(e.Text) {
-			m.promptCount++
-			m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: e.Text, Number: m.promptCount})
-			m.renumberPrompts()
-			m.followIfPinned()
+		} else if e.Text != "" {
+			// A prompt this window queued behind a busy session stays out of the
+			// transcript until its turn actually starts; the matching TurnStart
+			// is what draws it, so take it off the queue strip and force the
+			// block even when the last block already shows the same text.
+			queued := m.takeQueuedPrompt(e.Text)
+			if queued || !m.lastBlockIsPrompt(e.Text) {
+				m.promptCount++
+				m.blocks = append(m.blocks, Block{Kind: BlockUser, Text: e.Text, Number: m.promptCount})
+				m.renumberPrompts()
+				m.followIfPinned()
+			}
 		}
 
 	case agent.EventTextDelta:
@@ -1574,6 +1615,9 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.sessionTokensIn += e.Usage.In
 		m.sessionTokensOut += e.Usage.Out
 		m.ctxUsed = e.Usage.CtxUsed
+		if e.Usage.CtxMax > 0 {
+			m.ctxMax = e.Usage.CtxMax
+		}
 		m.cacheRead += e.Usage.CacheRead
 		m.cacheWrite += e.Usage.CacheWrite
 		m.genMS += e.Usage.GenMS
@@ -1668,6 +1712,13 @@ func (m *Model) applyEvent(e agent.Event) {
 		// paragraph — "…refresh path next.Done.Done.Done." — because the poke
 		// continues the same Loop and so never emits a fresh turn start.
 		m.streamingIdx = -1
+		if strings.Contains(e.Text, "queued input rejected") {
+			// The daemon refused the newest queued prompt (queue full); its
+			// strip entry will never become a turn.
+			if n := len(m.queuedTexts); n > 0 {
+				m.queuedTexts = m.queuedTexts[:n-1]
+			}
+		}
 		if e.Level == agent.LevelInfo || e.Level == "" {
 			m.notice = e.Text
 			break
@@ -1706,6 +1757,14 @@ func (m *Model) applyEvent(e agent.Event) {
 	case agent.EventTurnEnd:
 		m.finishStreaming()
 		m.processing = false
+		if m.remoteCommand == nil {
+			// Local sessions inject queued prompts mid-turn without a TurnStart
+			// to consume the strip, so anything still waiting was already
+			// delivered; clear it rather than leaving a ghost entry. Attached
+			// sessions keep the strip: the daemon launches each queued prompt
+			// as its own turn after this one ends.
+			m.queuedTexts = nil
+		}
 		// Slack is temporary scaffolding for a collapsing reasoning trace while
 		// the answer streams. A short answer may not spend all of it; carrying
 		// that remainder past the turn leaves a permanent blank hole and lets two
@@ -2244,12 +2303,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		if m.editor.Text == "" {
 			m.scroll.Up(1, m.contentHeight(), m.transcriptHeight())
+		} else {
+			m.editor.Up()
 		}
 		return m, nil
 
 	case "down":
 		if m.editor.Text == "" {
 			m.scroll.Down(1)
+		} else {
+			m.editor.Down()
 		}
 		return m, nil
 	}
@@ -3855,11 +3918,28 @@ func (m *Model) submit(text string, wpm int) {
 	// E2: validate attachments before mutating any state. Sending the prompt
 	// with an unstripped [image N] placeholder and discarded image bytes made
 	// the model read about images it could never see. Blocking here keeps the
-	// editor text, the staged attachments, and the collapsed pastes intact so
-	// the user can switch models or detach the images.
+	// editor text and the staged attachments intact (the pastes above were
+	// already expanded into the local text) so the user can switch models or
+	// detach the images.
 	if len(m.attachments) > 0 && !m.visionOK() {
 		m.notice = fmt.Sprintf("%s cannot see images. Set `vision = true` on the model in your config, "+
 			"or switch with /model.", m.header.Model)
+		return
+	}
+	if m.processing || (m.agent != nil && m.agent.Running()) {
+		// The session is busy: the daemon (attached) or the agent's interrupt
+		// queue (local) delivers this only after the running turn ends. It must
+		// not appear in the transcript as if it were sent — the queue strip
+		// above the composer is its place until the matching turn start draws
+		// it (plan.md §6.3).
+		m.queuedTexts = append(m.queuedTexts, text)
+		if m.prompts != nil {
+			_ = m.prompts.Add(text)
+		}
+		m.clearEditor()
+		m.scroll.FollowBottom()
+		m.notice = ""
+		m.dispatchTurn(text, wpm)
 		return
 	}
 	m.blocks = append(m.blocks, Block{
@@ -3881,7 +3961,12 @@ func (m *Model) submit(text string, wpm int) {
 	m.clearEditor()
 	m.scroll.FollowBottom()
 	m.notice = ""
+	m.dispatchTurn(text, wpm)
+}
 
+// dispatchTurn sends text to the model, taking any staged attachments along.
+// It is the tail of submit, shared by the immediate and the queued path.
+func (m *Model) dispatchTurn(text string, wpm int) {
 	// Attachments ride with this message and are cleared by taking them, so a
 	// second prompt does not silently resend the first one's images. The vision
 	// gate ran above, so every attachment taken here is deliverable.
@@ -3983,6 +4068,20 @@ func (m *Model) WithVisionFor(fn func(string) bool, fs *tools.FS) *Model {
 func (m *Model) WithContextWindowOverride(fn func(ref string) int) *Model {
 	m.contextWindowOverride = fn
 	return m
+}
+
+// takeQueuedPrompt removes the oldest queued text equal to text and reports
+// whether one was found. The daemon launches queued prompts in FIFO order,
+// each with its own TurnStart, so matching keeps the queue strip and the
+// transcript in step.
+func (m *Model) takeQueuedPrompt(text string) bool {
+	for i, q := range m.queuedTexts {
+		if q == text {
+			m.queuedTexts = append(m.queuedTexts[:i], m.queuedTexts[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // drainPendingForEdit returns the staged messages for retrieval, in the order
@@ -4671,7 +4770,7 @@ func (m *Model) View() tea.View {
 	if m.status.Phase == PhaseIdle && m.notice == "" {
 		m.status.Tip = TipAt(time.Since(m.started), m.width)
 	}
-	m.status.Queued = len(m.pending)
+	m.status.Queued = len(m.pending) + len(m.queuedTexts)
 	rows = append(rows, m.renderer.RenderStatus(m.status))
 
 	// The swarm strip is the fallback for when the dock widget cannot find a
@@ -4712,6 +4811,11 @@ func (m *Model) View() tea.View {
 		rows = append(rows, "")
 	}
 
+	if len(m.queuedTexts) > 0 {
+		// Prompts this window queued behind a busy session wait here, above the
+		// input, until the daemon starts their turn (plan.md §6.3).
+		rows = append(rows, m.renderer.RenderQueuedPrompts(m.queuedTexts)...)
+	}
 	rows = append(rows, m.renderer.RenderComposer(m.composerState())...)
 
 	// The elastic facts line lives below the composer and owns the same facts
@@ -5008,8 +5112,11 @@ func (m *Model) activeWidgets() []Widget {
 		add(m.renderer.KvCacheWidget(m.cacheRead, m.cacheWrite))
 	}
 	// Cloud usage appears whenever a fetch has landed — which only happens
-	// after the user sets OLLAMA_SESSION_COOKIE, so its presence is the opt-in.
-	if m.cloudUsage != nil || m.cloudUsageErr != nil {
+	// after the user sets OLLAMA_SESSION_COOKIE, so its presence is the opt-in —
+	// and only while an Ollama provider (local or cloud) is active: the widget
+	// scrapes the Ollama settings page, which says nothing about a Codex,
+	// OpenAI-compatible, or mock session.
+	if m.cloudUsageProviderActive() && (m.cloudUsage != nil || m.cloudUsageErr != nil) {
 		add(m.renderer.CloudUsageWidget(m.cloudUsage, m.cloudUsageErr, time.Now()))
 	}
 	add(m.renderer.ModelInfoWidget(m.header, 1))
@@ -5158,6 +5265,9 @@ func (m *Model) widgetUrgency(w Widget) float64 {
 // contextMax is the model's window, falling back to a common default so the
 // meter is useful before the provider has reported one.
 func (m *Model) contextMax() int {
+	if m.ctxMax > 0 {
+		return m.ctxMax
+	}
 	if m.agent != nil && m.agent.NumCtx > 0 {
 		return m.agent.NumCtx
 	}

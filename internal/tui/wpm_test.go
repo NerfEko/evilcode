@@ -70,6 +70,7 @@ func TestQueuedPromptCarriesWPMThroughFlush(t *testing.T) {
 		t.Fatalf("pending = %+v, want one message with 5 WPM", m.pending)
 	}
 
+	m.processing = false // flush runs from the TurnEnd handler, after processing clears
 	m.flushPending()
 	last := m.blocks[len(m.blocks)-1]
 	if last.TypingWPM != 5 {

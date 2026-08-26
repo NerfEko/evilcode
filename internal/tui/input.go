@@ -240,6 +240,69 @@ func (e *Editor) Right() {
 	}
 }
 
+// Up moves the cursor to the previous line, keeping the column when the line
+// is long enough (a shorter line clamps to its end). A no-op on the first
+// line, so multi-line prompts can be navigated with the arrow keys.
+func (e *Editor) Up() {
+	e.clampCursor()
+	r := e.runes()
+	lineStart := 0
+	for i, ch := range r {
+		if i >= e.Cursor {
+			break
+		}
+		if ch == '\n' {
+			lineStart = i + 1
+		}
+	}
+	if lineStart == 0 {
+		return
+	}
+	prevStart := 0
+	for i := lineStart - 2; i >= 0; i-- {
+		if r[i] == '\n' {
+			prevStart = i + 1
+			break
+		}
+	}
+	prevLen := lineStart - 1 - prevStart
+	e.Cursor = prevStart + min(e.Cursor-lineStart, prevLen)
+}
+
+// Down moves the cursor to the next line, keeping the column when it fits
+// (clamped to the line's end). A no-op on the last line.
+func (e *Editor) Down() {
+	e.clampCursor()
+	r := e.runes()
+	lineStart := 0
+	for i, ch := range r {
+		if i >= e.Cursor {
+			break
+		}
+		if ch == '\n' {
+			lineStart = i + 1
+		}
+	}
+	nextStart := -1
+	for i := lineStart; i < len(r); i++ {
+		if r[i] == '\n' {
+			nextStart = i + 1
+			break
+		}
+	}
+	if nextStart < 0 {
+		return
+	}
+	nextLen := len(r) - nextStart
+	for i := nextStart; i < len(r); i++ {
+		if r[i] == '\n' {
+			nextLen = i - nextStart
+			break
+		}
+	}
+	e.Cursor = nextStart + min(e.Cursor-lineStart, nextLen)
+}
+
 // WordLeft and WordRight move by words, for Ctrl+B/F and Ctrl+←/→.
 func (e *Editor) WordLeft() {
 	e.clampCursor()

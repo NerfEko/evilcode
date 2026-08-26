@@ -34,7 +34,7 @@ func (r *Renderer) KvCacheWidget(read, write int) Widget {
 	total := read + write
 	rate := 0
 	if total > 0 {
-		rate = read * 100 / total
+		rate = percentOf(read, total)
 	}
 
 	// The bar fills with hits; misses are the dim track. It reads as "how

@@ -912,13 +912,13 @@ suite pass on this machine at the listed commits.
 | H1 | `e8fee68` | Codex imports write `model@codex` session metadata; unresolvable resume refs fall back to the default with a warning. |
 | D6 | `22a3640` | Daemon stop acknowledges only after teardown (socket unlinked); the updater cannot race the old binary. |
 | D1 | `e17bc36` | Client frames over 8 MiB are refused with a typed, actionable error; server scanner matches. |
-| D2 | `e17bc36` | Queued input is bounded in count (64) and bytes (16 MiB) with visible rejection. |
+| D2 | `e17bc36`, `v1.1.4` | Queued input is bounded in count (64) and bytes (16 MiB) with visible rejection; the replay ring is byte-bounded (16 MiB budget, oldest events evicted) and `Result.Diff` is capped at 1 MiB separately from model-visible `Output`. |
 | D11 | `e17bc36` | Scanner failures send a typed protocol error and a server-side log instead of a silent disconnect. |
 | D3 | `f90b8df` | Rename migrates swarm spawner/spawn-count/inbox keys and file-registry ownership, then republishes the new identity. |
 | D7 | `f90b8df` | Attached client holds the session name in mutable state updated by snapshots; `pollRoster` takes a context and a dynamic identity. |
 | E10 | `aa4fa4a` | Probe goldens scrub the version badge on both sides; stale frames refreshed for the v1.1.3 layout; suite is green. |
 
 Not fixed in this pass (open, lower priority): A3, A5, A7, A8, A9, B7, B8, B9,
-C1, C3, C4, C5, C6, C7, C8, D4, D5, D8, D9, D10, E1, E3, E4, E5, E6, E7, E8,
-E11, E12, E14, F4–F14, G1–G7, H2–H10, I3–I5, J1–J4. See the patch-set
+C1, C3, C4, C5, C6, C7, C8, D4, D5, D8, D9, D10, E1, E3, E4, E5, E6,
+E7, E8, E11, E12, E14, F4–F14, G1–G7, H2–H10, I3–I5, J1–J4. See the patch-set
 sequence above for the next recommended order.

@@ -36,6 +36,9 @@ func TestSendWhileProcessingQueues(t *testing.T) {
 	}
 
 	count := m.promptCount
+	// The real flow flushes from the TurnEnd handler, after processing is
+	// cleared; mirror that ordering.
+	m.processing = false
 	m.flushPending()
 	if m.promptCount != count+1 {
 		t.Errorf("promptCount = %d, want %d (queued message submitted once at turn end)",
@@ -111,6 +114,7 @@ func TestMultipleQueuedMessagesFlushTogether(t *testing.T) {
 	}
 
 	count := m.promptCount
+	m.processing = false // flush runs from the TurnEnd handler, after processing clears
 	m.flushPending()
 	if m.promptCount != count+1 {
 		t.Fatalf("promptCount = %d, want %d (one batched prompt)", m.promptCount, count+1)

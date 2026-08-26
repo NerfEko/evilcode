@@ -270,6 +270,24 @@ func TestToolResultEventUsesEffectiveRepairedArgs(t *testing.T) {
 	}
 }
 
+func TestToolResultSurfacesRepairsToTheModel(t *testing.T) {
+	a := newTestAgent(t, provider.NewMock("mock", "chat"), nil)
+	call := provider.ToolCall{ID: "call_repaired", Name: "bash", Args: json.RawMessage(`{"command":"echo hi"}`)}
+	a.appendToolResult(call, "hi", nil, tools.Result{Repairs: []string{"command→cmd"}})
+
+	msgs := a.Conv.Messages()
+	last := msgs[len(msgs)-1]
+	if last.Role != provider.RoleTool {
+		t.Fatalf("last message role = %v, want tool", last.Role)
+	}
+	if !strings.Contains(last.Content, "command→cmd") {
+		t.Errorf("tool result content = %q, want the repair surfaced so the model stops repeating the alias", last.Content)
+	}
+	if !strings.Contains(last.Content, "Note: tool arguments were repaired") {
+		t.Errorf("tool result content = %q, want the repair note", last.Content)
+	}
+}
+
 func TestBatchToolCallsAllResolve(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644)

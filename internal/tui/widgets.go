@@ -100,6 +100,7 @@ func (r *Renderer) ContextWidget(used, total int) Widget {
 	if total <= 0 {
 		return Widget{Kind: WidgetContextUsage}
 	}
+	used = min(used, total) // usage can briefly overshoot the window; never show >100%
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(140, 140, 150))))
 	remaining := float64(total-used) / float64(total)
 	counts := lipgloss.NewStyle().
@@ -115,9 +116,25 @@ func (r *Renderer) ContextWidget(used, total int) Widget {
 			// — 428 tokens of 200k showed as 99%, directly contradicting both
 			// the bar and the composer's own reading of the same two numbers.
 			SegmentedBar(used, total, 10) +
-				label.Render(fmt.Sprintf(" %d%%", used*100/total)),
+				label.Render(fmt.Sprintf(" %d%%", percentOf(used, total))),
 		},
 	}
+}
+
+// percentOf rounds the used fraction of total to the nearest whole percent,
+// clamped to [0, 100]. Floored integer division would read 94.6% as 94 — a
+// meter that is always a little off.
+func percentOf(used, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	if used <= 0 {
+		return 0
+	}
+	if used >= total {
+		return 100
+	}
+	return (used*100 + total/2) / total
 }
 
 // ModelInfoWidget renders the §8.9 widget.
@@ -179,11 +196,13 @@ func (r *Renderer) TodosWidget(items []todo.Item, goals []todo.Goal, available i
 		}
 	}
 
+	// The trailing percent is exact progress, not the aggregate confidence:
+	// "Todos 1/4 ●●○○ · 25%" — a dock that read 94% with everything closed
+	// was quoting the model's confidence, which is not the progress it sits
+	// next to. The per-item scores stay on the inline card.
 	header := label.Render("Todos ") +
-		counter.Render(fmt.Sprintf("%d/%d ", done, len(items))) + r.todoPips(items)
-	if avg, ok := todo.AggregateConfidence(items); ok {
-		header += counter.Render(" · ") + scoreStyle(uint8(avg)).Render(fmt.Sprintf("%d%%", avg))
-	}
+		counter.Render(fmt.Sprintf("%d/%d ", done, len(items))) + r.todoPips(items) +
+		counter.Render(fmt.Sprintf(" · %d%%", percentOf(done, len(items))))
 	lines := []string{header}
 
 	// The compact form shows only what fits; the inline card is where the

@@ -136,9 +136,21 @@ func TestCookieHeader(t *testing.T) {
 	if got := cookieHeader("abc123"); got != "__Secure-session=abc123" {
 		t.Errorf("bare cookie = %q", got)
 	}
+	// The session token is base64 and ends in '=' padding; it must still be
+	// wrapped, not mistaken for a Cookie header line.
+	padded := "YWdlLWVuY3J5cHRpb24uYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"
+	if got := cookieHeader(padded); got != "__Secure-session="+padded {
+		t.Errorf("padded bare token = %q, want __Secure-session=<token>", got)
+	}
 	full := "__Secure-session=a; wos-session=b; path=/"
 	if got := cookieHeader(full); got != full {
 		t.Errorf("full header should pass through, got %q", got)
+	}
+	// A single-cookie header line still passes through: '=' right after the
+	// name, not at the end of the string.
+	single := "__Secure-session=aGVsbG8="
+	if got := cookieHeader(single); got != single {
+		t.Errorf("single-cookie header should pass through, got %q", got)
 	}
 }
 
