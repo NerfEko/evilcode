@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"evilcode/internal/daemon"
 	"evilcode/internal/tuicmd"
 )
 
@@ -120,6 +121,11 @@ func runUpdate() error {
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("update: closing downloaded binary: %w", err)
 	}
+	// A running daemon holds the old binary in memory; swapping the file on
+	// disk does not change the version it serves. Stop it first so the next
+	// `evilcode serve` picks up the new binary. Done after the download
+	// verifies, so a failed download never disturbs a running daemon.
+	stopDaemonIfRunning()
 	if err := os.Rename(tmp, exe); err != nil {
 		return fmt.Errorf("update: installing %s: %w\nmanual: curl -fL -o %s %s", exe, err, shellQuote(exe), a.URL)
 	}
@@ -303,4 +309,31 @@ func updateTarget() (exe string, mode os.FileMode, dir string, err error) {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// stopDaemonIfRunning requests a graceful shutdown of the per-user daemon when
+// one is reachable. A failed dial is not an error — it means no daemon is
+// running (or its socket is stale), in which case there is nothing to stop. A
+// failed stop is reported as a warning rather than aborting the update: the
+// binary still swaps in, and the user can restart the daemon manually to pick
+// up the new version.
+func stopDaemonIfRunning() {
+	stopDaemonIfRunningAt(daemon.SocketPath())
+}
+
+// stopDaemonIfRunningAt is the testable form: it stops whatever daemon answers
+// at path, or is a no-op when nothing does.
+func stopDaemonIfRunningAt(path string) {
+	client, err := daemon.DialPath(path)
+	if err != nil {
+		return
+	}
+	defer client.Close()
+	// Bound the shutdown so a wedged daemon cannot hang the update.
+	_ = client.SetDeadline(10 * time.Second)
+	if err := client.Stop(); err != nil {
+		fmt.Fprintf(os.Stderr, "update: could not stop the running daemon (it will keep the old binary until restarted): %v\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "update: stopped the running daemon")
 }

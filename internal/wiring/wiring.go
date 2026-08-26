@@ -162,6 +162,19 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 	cfg.AddDiscoveredCodex()
 
+	// The daemon loads its config once at serve start, but the interactive
+	// client persists last_model to the file whenever a session resolves or the
+	// user picks a model. A long-lived daemon would otherwise resolve every new
+	// session from the value it booted with, ignoring later switches. Refresh
+	// just this one field from the daemon's own config file; a missing or
+	// broken file falls back to the in-memory value. Only a file-backed config
+	// (Path set) refreshes — an in-memory test config stays hermetic.
+	if cfg.Path != "" {
+		if fresh, loadErr := config.LoadFrom(cfg.Path); loadErr == nil && fresh.LastModel != "" {
+			cfg.LastModel = fresh.LastModel
+		}
+	}
+
 	ref := modelRefForResume(dataDir, opts)
 	usingLastModel := false
 	if ref == "" && opts.Model == "" && opts.Resume == "" && cfg.LastModel != "" &&

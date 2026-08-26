@@ -625,6 +625,35 @@ func TestTipRotation(t *testing.T) {
 	}
 }
 
+// TestTipsFitAndRotate guards the passive discovery surface. The status line
+// renders a tip on a single row without wrapping, so every tip must stay within
+// a modest bound; and the rotation must visit every entry so a tip added to the
+// list actually reaches the user.
+func TestTipsFitAndRotate(t *testing.T) {
+	const maxTipCells = 50 // status line is one row; longer tips would overflow it
+
+	seen := map[string]bool{}
+	for i := range Tips {
+		tip := Tips[i]
+		if tip == "" {
+			t.Errorf("tips[%d] is empty", i)
+		}
+		if w := lipgloss.Width(tip); w > maxTipCells {
+			t.Errorf("tip %q is %d cells, want <= %d (status line does not wrap)",
+				tip, w, maxTipCells)
+		}
+		seen[tip] = true
+		// Each period advances the index by one, so every tip is shown eventually.
+		got := TipAt(time.Duration(i)*TipPeriod, 80)
+		if got != tip {
+			t.Errorf("period %d: tip = %q, want %q", i, got, tip)
+		}
+	}
+	if len(seen) != len(Tips) {
+		t.Errorf("tips contain duplicates: %d unique of %d", len(seen), len(Tips))
+	}
+}
+
 func TestWrapPlainBreaksLongWords(t *testing.T) {
 	// A single unbreakable token must not push the layout sideways.
 	lines := wrapPlain(strings.Repeat("x", 50), 10)

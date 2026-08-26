@@ -70,9 +70,9 @@ type PickerState struct {
 func pickerHint(width int) string {
 	for _, hint := range []string{
 		"keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite",
-		"keys: Ctrl+O default · Ctrl+N favorite · Shift+Tab next favorite",
-		"Ctrl+O default · Ctrl+N favorite",
-		"Ctrl+O · Ctrl+N",
+		"keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab next favorite",
+		"Ctrl+O set default · Ctrl+N favorite",
+		"Ctrl+O set default",
 	} {
 		if lipgloss.Width(hint) <= width {
 			return hint
@@ -269,6 +269,10 @@ func pickerSuffixes(e ModelEntry) string {
 }
 
 // pickerNotice is the caveat line under the header when the selection has one.
+// It also surfaces the picker's default-setter: a selectable model that is not
+// already the default gets a "Ctrl+O set as default" hint, so the binding is
+// discoverable right at the model the cursor is on rather than only in the
+// one-line key summary above the box.
 func pickerNotice(e ModelEntry) string {
 	switch {
 	case e.Unavailable:
@@ -282,13 +286,21 @@ func pickerNotice(e ModelEntry) string {
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(210, 150, 110)))).Italic(true).
 			Render("⚠ " + e.Detail)
-	case len(e.ReasoningEfforts) > 0:
-		return lipgloss.NewStyle().
-			Foreground(lipgloss.Color(theme.Hex(theme.RGB(150, 170, 190)))).Italic(true).
-			Render("reasoning: " + reasoningEffortsText(e.ReasoningEfforts))
-	default:
+	}
+
+	var parts []string
+	if len(e.ReasoningEfforts) > 0 {
+		parts = append(parts, "reasoning: "+reasoningEffortsText(e.ReasoningEfforts))
+	}
+	if !e.Default {
+		parts = append(parts, "Ctrl+O set as default")
+	}
+	if len(parts) == 0 {
 		return ""
 	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Hex(theme.RGB(150, 170, 190)))).Italic(true).
+		Render(strings.Join(parts, " · "))
 }
 
 // underlineMatch highlights filter matches with an underline. This is

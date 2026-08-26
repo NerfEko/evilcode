@@ -254,13 +254,34 @@ const (
 	MinTipWidth = 16
 )
 
-// Tips are the idle hints.
+// Tips are the idle hints. They are the only passive discovery surface — a
+// user who never opens /help or presses an undiscovered chord still sees them
+// rotate in the status line and the dock. Keep each short: the status line
+// renders a tip on one row without wrapping, and the dock widget wraps at
+// WidgetMaxWidth-4. New entries should name a niche feature that no other hint
+// surfaces (the picker hint, HelpKeys, or an adaptive HotkeyUsage reminder).
 var Tips = []string{
 	"Ctrl+R searches your prompt history",
 	"Ctrl+G bookmarks your scroll position",
 	"Alt+C toggles centered layout",
 	"Enter while a turn runs queues your message",
 	"/help lists everything",
+
+	// Niche bindings with no other passive surface.
+	"Alt+B sends a running tool to the background",
+	"Alt+R cycles reasoning effort",
+	"Ctrl+Up retrieves staged messages for editing",
+	"Alt+G cycles diff display mode",
+	"Ctrl+P toggles auto-poke",
+
+	// The right-side dock widgets and side panel.
+	"Alt+I toggles the info widgets on the right",
+	"Alt+X toggles the todo card",
+	"Alt+M toggles the side panel",
+
+	// Niche slash commands only /help would otherwise reveal.
+	"/btw asks a side question that costs no context",
+	"/rewind collapses back to a checkpoint",
 }
 
 // TipAt returns the tip to show at a given uptime, or "" when the rotation is

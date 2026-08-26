@@ -219,8 +219,8 @@ type Config struct {
 // back to a *different* model instead meant falling back to one that is usually
 // not even pulled.
 const (
-	DefaultCloudModel    = "glm-5.2:cloud@ollama-cloud"
-	DefaultLocalModel    = "glm-5.2:cloud@ollama-local"
+	DefaultCloudModel    = "deepseek-v4-flash:0731@ollama-cloud"
+	DefaultLocalModel    = "deepseek-v4-flash:0731@ollama-local"
 	DefaultDeepSeekModel = "deepseek-chat"
 )
 
@@ -252,6 +252,13 @@ func Default() *Config {
 		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false},
 	}
 	c.DefaultModel = c.preferredDefaultModel()
+	// deepseek-v4-flash:0731 is a thinking model, so the default routes pin
+	// reasoning effort to high for both the cloud and local routes. A user's
+	// saved preference (ReasoningEffortFor) still overrides this at runtime.
+	c.ReasoningEfforts = map[string]string{
+		DefaultCloudModel: string(provider.ReasoningEffortHigh),
+		DefaultLocalModel: string(provider.ReasoningEffortHigh),
+	}
 	return c
 }
 

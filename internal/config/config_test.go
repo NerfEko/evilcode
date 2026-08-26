@@ -35,11 +35,11 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 
 func TestDefaultModelFollowsCloudKey(t *testing.T) {
 	t.Setenv(EnvOllamaKey, "")
-	if got := Default().DefaultModel; got != "glm-5.2:cloud@ollama-local" {
+	if got := Default().DefaultModel; got != "deepseek-v4-flash:0731@ollama-local" {
 		t.Errorf("without a key, default = %q, want the local model", got)
 	}
 	t.Setenv(EnvOllamaKey, "sk-test")
-	if got := Default().DefaultModel; got != "glm-5.2:cloud@ollama-cloud" {
+	if got := Default().DefaultModel; got != "deepseek-v4-flash:0731@ollama-cloud" {
 		t.Errorf("with a key, default = %q, want the cloud model", got)
 	}
 }

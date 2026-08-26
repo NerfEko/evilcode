@@ -118,14 +118,14 @@ The config file is `~/.config/evilcode/config.toml`, unless `EVILCODE_CONFIG` po
 somewhere else. A missing config is okay; evilcode starts with sensible defaults.
 
 Ollama Cloud is the easiest route to try. With `OLLAMA_API_KEY`, the default model is
-`glm-5.2:cloud@ollama-cloud`; without a key, the local Ollama route is used when it is
+`deepseek-v4-flash:0731@ollama-cloud` (reasoning effort high); without a key, the local Ollama route is used when it is
 available. You can also use OpenAI-compatible providers, DeepSeek, Codex, Ollama Local,
 or the deterministic mock provider used by tests.
 
 For example:
 
 ```toml
-default_model = "glm-5.2:cloud@ollama-cloud"
+default_model = "deepseek-v4-flash:0731@ollama-cloud"
 
 [[provider]]
 name = "ollama-cloud"

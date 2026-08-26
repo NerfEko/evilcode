@@ -98,6 +98,20 @@ func run(args []string, autoStart bool) error {
 	// here as it is in the standalone TUI and headless paths.
 	cfg.AddDiscoveredCodex()
 
+	// Record the model this session resolved to, so the next launch remembers
+	// it. The daemon decides the model for a fresh session (wiring.Build reads
+	// last_model and falls back to the configured default); the client sees the
+	// result in the snapshot and persists it here, mirroring the standalone
+	// TUI path. Without this the daemon path never wrote last_model, so it sat
+	// at whatever value it booted with forever.
+	if last := config.ModelRef(snap.Model, snap.Provider); last != cfg.LastModel {
+		if saveErr := config.SaveLastModel(last); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "evilcode: could not remember model:", saveErr)
+		} else {
+			cfg.LastModel = last
+		}
+	}
+
 	// A local agent with no provider: the TUI drives it exactly as it drives a
 	// real one, but Forward sends turns down the socket and the receive loop
 	// pushes the daemon's events back into the same stream (invariant 1).
