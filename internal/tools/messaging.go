@@ -123,7 +123,8 @@ func broadcastTool(m Messenger) Tool {
 
 func peersTool(m Messenger) Tool {
 	return Tool{
-		Name: "peers",
+		Name:   "peers",
+		Effect: EffectReadOnly,
 		Desc: "List the other agents in this swarm, what each is working on, and " +
 			"which files they have touched.",
 		Schema: json.RawMessage(`{"type": "object", "properties": {}}`),

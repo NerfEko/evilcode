@@ -95,7 +95,8 @@ type recallArgs struct {
 
 func recallTool(m *memory.Manager) Tool {
 	return Tool{
-		Name: "recall",
+		Name:   "recall",
+		Effect: EffectReadOnly,
 		Desc: "Search long-term memory. Relevant memories are already injected " +
 			"automatically each turn, so reach for this only when you need something " +
 			"the current turn did not surface.",
@@ -147,7 +148,8 @@ type reflectArgs struct {
 
 func reflectTool(m *memory.Manager) Tool {
 	return Tool{
-		Name: "reflect",
+		Name:   "reflect",
+		Effect: EffectReadOnly,
 		Desc: "Ask a question of the whole memory bank and get a synthesized answer. " +
 			"Prefer recall for a single lookup; use reflect only when the answer spans " +
 			"several memories rather than sitting in one.",

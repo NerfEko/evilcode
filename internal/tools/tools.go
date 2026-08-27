@@ -93,6 +93,11 @@ type Tool struct {
 	Desc   string
 	Schema json.RawMessage
 
+	// Effect declares what the tool does to the world, which is what RunBatch
+	// schedules on. The zero value is the safe default: an undeclared tool —
+	// every MCP tool today — runs alone, in the order the model asked.
+	Effect Effect
+
 	// Exposure is the optional per-session ledger used to collapse repeated
 	// source hits. It is attached by filesystem and command tool constructors.
 	Exposure *Exposure
@@ -101,6 +106,27 @@ type Tool struct {
 	// model can read and recover from — it does not abort the turn.
 	Run func(ctx context.Context, args json.RawMessage) (Result, error)
 }
+
+// Effect declares a tool's observable side effects for batch scheduling
+// (R2-07). Nothing here is advisory: RunBatch will not run a mutating call
+// next to anything else, because two edits to one file, a mkdir before a
+// write, or a test racing a generated file must land in the order the model
+// asked — returning outcomes in original order repairs only the transcript,
+// never the effects.
+type Effect int
+
+const (
+	// EffectUnknown is the zero value and the safe default: a tool whose
+	// effects are not declared runs serialized, one at a time, in order.
+	// bash, bg, ask, lsp (rename mutates), todo, memory writes, swarm
+	// coordination, and every MCP tool intentionally land here.
+	EffectUnknown Effect = iota
+
+	// EffectReadOnly tools never change anything another tool could observe:
+	// filesystem reads, globs, greps, git metadata, memory lookups. RunBatch
+	// may run consecutive read-only calls concurrently.
+	EffectReadOnly
+)
 
 // Set is the collection of tools available to a turn.
 type Set []Tool
@@ -148,14 +174,16 @@ const MaxConcurrent = 8
 // output can ask for thousands, and every one of them is answered.
 const MaxBatch = 64
 
-// RunBatch executes calls concurrently and returns outcomes in the original
-// order, so the transcript reads in the order the model asked rather than the
-// order things happened to finish.
+// RunBatch executes calls and returns outcomes in the original order, so the
+// transcript reads in the order the model asked rather than the order things
+// happened to finish.
 //
-// A fixed pool rather than a goroutine per call. The semaphore bounded how many
-// tools *ran*, which is what it was for, but the goroutines were created before
-// it had any say — so a five-thousand-call round cost five thousand stacks and
-// the scheduler that goes with them, whatever the concurrency cap said.
+// Scheduling is effect-aware (R2-07): a maximal run of consecutive read-only
+// calls shares a bounded pool; a mutating, spawning, interactive, or undeclared
+// call is a barrier — it runs alone, after everything before it has finished
+// and before anything after it starts. Two edits to one file, a mkdir before
+// the write that fills it, or a test racing a generated file therefore land in
+// the order the model asked, while a fan-out of reads still overlaps.
 func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 	out := make([]Outcome, len(calls))
 
@@ -171,33 +199,67 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 		}
 	}
 
-	workers := min(MaxConcurrent, runnable)
-	queue := make(chan int)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range queue {
-				if ctx.Err() != nil {
-					out[i] = Outcome{Call: calls[i], Err: ctx.Err()}
-					continue
-				}
-				out[i] = s.RunOne(ctx, calls[i])
-			}
-		}()
-	}
-	for i := range runnable {
-		select {
-		case queue <- i:
-		case <-ctx.Done():
+	// runGroup runs one maximal read-only run on a fresh bounded pool and
+	// waits for every member to finish before returning: the next call of any
+	// kind starts only after the whole group's effects have landed.
+	runGroup := func(group []int) {
+		if len(group) == 0 {
+			return
 		}
-		if ctx.Err() != nil {
+		queue := make(chan int)
+		var wg sync.WaitGroup
+		for range min(MaxConcurrent, len(group)) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range queue {
+					if ctx.Err() != nil {
+						out[i] = Outcome{Call: calls[i], Err: ctx.Err()}
+						continue
+					}
+					out[i] = s.RunOne(ctx, calls[i])
+				}
+			}()
+		}
+		for _, i := range group {
+			select {
+			case queue <- i:
+			case <-ctx.Done():
+			}
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		close(queue)
+		wg.Wait()
+	}
+
+	i := 0
+	for i < runnable && ctx.Err() == nil {
+		// Accumulate the maximal run of read-only calls starting here.
+		j := i
+		for j < runnable && s.readOnly(calls[j].Name) {
+			j++
+		}
+		if j > i {
+			group := make([]int, 0, j-i)
+			for k := i; k < j; k++ {
+				group = append(group, k)
+			}
+			runGroup(group)
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		if j >= runnable {
 			break
 		}
+		// The call at j has effects: everything before it has finished, and
+		// nothing else is in flight while it runs.
+		out[j] = s.RunOne(ctx, calls[j])
+		j++
+		i = j
 	}
-	close(queue)
-	wg.Wait()
 
 	// Whatever was never dispatched is answered here. Every tool_use needs an
 	// adjacent result (H1.2), and a cancelled batch that leaves blanks in the
@@ -212,6 +274,14 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 		}
 	}
 	return out
+}
+
+// readOnly reports whether the named tool declared itself read-only. An
+// unknown name is not read-only: the call runs inline and is answered with
+// the unknown-tool error, one at a time like every other undeclared tool.
+func (s Set) readOnly(name string) bool {
+	t, ok := s.Find(name)
+	return ok && t.Effect == EffectReadOnly
 }
 
 // RunBatchWithPolicy answers calls rejected by an active skill without

@@ -653,6 +653,9 @@ func TestRunBatchPreservesOrder(t *testing.T) {
 	var running, maxRunning int64
 	set := Set{{
 		Name: "slow",
+		// Read-only: the overlap this test asserts is the read-only pool's;
+		// undeclared tools are serialized by design since R2-07.
+		Effect: EffectReadOnly,
 		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			n := atomic.AddInt64(&running, 1)
 			for {

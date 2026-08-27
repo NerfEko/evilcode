@@ -48,6 +48,9 @@ func TestCancelledToolRoundStillAnswersEveryCall(t *testing.T) {
 	blocker := tools.Tool{
 		Name:   "blocker",
 		Desc:   "waits for cancellation",
+		// Read-only: the round must have two calls in flight when cancel lands,
+		// which only read-only calls can be since R2-07's effect scheduling.
+		Effect: tools.EffectReadOnly,
 		Schema: json.RawMessage(`{"type":"object"}`),
 		Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
 			entered <- struct{}{}
@@ -304,6 +307,9 @@ func TestPersistedTranscriptOfACancelledTurnIsWellFormed(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	blocker := tools.Tool{
 		Name: "blocker", Desc: "waits for cancellation",
+		// Read-only: two calls must be in flight when cancel lands, which only
+		// read-only calls can be since R2-07's effect scheduling.
+		Effect: tools.EffectReadOnly,
 		Schema: json.RawMessage(`{"type":"object"}`),
 		Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
 			entered <- struct{}{}

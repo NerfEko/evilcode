@@ -19,6 +19,10 @@ func TestBatchDoesNotSpawnAGoroutinePerCall(t *testing.T) {
 	running := 0
 	tool := Tool{
 		Name: "hold", Desc: "holds until released",
+		// Read-only: this test pins the pool's goroutine economy, which only
+		// read-only calls ride — undeclared tools are serialized by design
+		// since the effect-aware scheduling (R2-07).
+		Effect: EffectReadOnly,
 		Schema: json.RawMessage(`{"type":"object"}`),
 		Run: func(ctx context.Context, args json.RawMessage) (Result, error) {
 			mu.Lock()

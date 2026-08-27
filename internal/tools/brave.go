@@ -130,7 +130,8 @@ type braveWebResult struct {
 
 func (b *BraveSearch) searchTool() Tool {
 	return Tool{
-		Name: "web_search",
+		Name:   "web_search",
+		Effect: EffectReadOnly,
 		Desc: "Search the live public web with Brave. Use this when the user asks for " +
 			"research or when the answer depends on current facts, external documentation, " +
 			"release notes, API/provider/model specifications, compatibility, security notices, " +

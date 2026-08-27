@@ -42,7 +42,8 @@ func (g *Git) run(ctx context.Context, args ...string) (string, error) {
 
 func (g *Git) overviewTool() Tool {
 	return Tool{
-		Name: "git_overview",
+		Name:   "git_overview",
+		Effect: EffectReadOnly,
 		Desc: "Summarize the repository: current branch, staged and unstaged file counts, " +
 			"and recent commits. Use this once near the start of a repository change and before " +
 			"committing; " +
@@ -131,7 +132,8 @@ type gitFileDiffArgs struct {
 
 func (g *Git) fileDiffTool() Tool {
 	return Tool{
-		Name: "git_file_diff",
+		Name:   "git_file_diff",
+		Effect: EffectReadOnly,
 		Desc: "Show the diff for one file. Use this after editing to inspect what changed. " +
 			"Set staged to see the index rather than the working tree; this tool is read-only.",
 		Schema: json.RawMessage(`{
@@ -181,7 +183,8 @@ type gitHunkArgs struct {
 
 func (g *Git) hunkTool() Tool {
 	return Tool{
-		Name: "git_hunk",
+		Name:   "git_hunk",
+		Effect: EffectReadOnly,
 		Desc: "Show a single hunk of a file's working-tree diff, numbered from 1. Use this " +
 			"to inspect a large diff without loading all of it; it is read-only.",
 		Schema: json.RawMessage(`{

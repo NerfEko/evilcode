@@ -6864,3 +6864,47 @@ the exact claim the old notice could never make).
 Verified: `go test ./internal/tui/ -count=1`, `go vet ./...`,
 `go test ./... -count=1` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-07: batch scheduling is effect-aware
+
+Verified: exactly as reported. `RunBatch` (tools.go:141-215) pushed every
+allowed call through the eight-worker pool; `Tool` carried no notion of
+read-only vs mutating vs spawning; two edits to one file, a mkdir before the
+write that fills it, or two shell commands could therefore execute in a
+different order than the model asked. Returning outcomes in original order
+fixed only the transcript.
+
+Done: `Tool` gains an `Effect` enum whose zero value is the safe default —
+`EffectUnknown` means serialized, one at a time, in the order the model asked
+(bash, bg, ask, lsp because rename mutates, todo, memory writes, swarm
+coordination, and every MCP tool land there, satisfying "default unknown/MCP
+to serialized"). `EffectReadOnly` is opt-in and goes on exactly the tools that
+cannot surprise each other: read, glob, grep, git_overview, git_file_diff,
+git_hunk, recall, reflect, peers, session_search, web_search.
+
+`RunBatch` now dispatches maximal runs of consecutive read-only calls through
+a fresh bounded pool and treats every other call as a barrier: nothing before
+it is unfinished and nothing after it starts until it has. A
+read/write/read sequence therefore executes read → write → read, while a
+fan-out of reads still overlaps. Resource keys (the finer middle ground the
+review mentions) are not added — they need a declared per-call key contract
+across every tool; the barrier model gets the ordering invariant without it.
+
+Two existing tests pinned the old all-parallel behavior and now pin the new
+contract instead: `TestRunBatchPreservesOrder` and the pool-economy test tag
+their tools read-only (their assertions — result order, goroutine economy,
+overlap — are the read-only pool's properties), and
+`TestCancelledToolRoundStillAnswersEveryCall` plus
+`TestPersistedTranscriptOfACancelledTurnIsWellFormed` need two calls in flight
+when cancel lands, so their blockers are read-only too. The first full-suite
+run after the change deadlocked in exactly those two cancel tests — two
+untagged blockers can no longer both be in flight, so the goroutine waiting
+for a second `entered` never fired the cancel. The tests now say why.
+
+Tests: `TestBatchSerializesUndeclaredTools` (max concurrency exactly 1),
+`TestBatchBarriersMutationsAroundReads` (write starts only after the first
+read ends; second read only after the write), and
+`TestBatchStillOverlapsReadOnlyFans` (the pool survives for reads).
+
+Verified: `go test ./internal/tools/ -count=1`, `go test ./internal/agent/
+-count=1`, `go test ./... -count=1 -timeout 300s` green, `gofmt` clean.
+

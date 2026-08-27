@@ -285,6 +285,7 @@ type readArgs struct {
 func (f *FS) readTool() Tool {
 	return Tool{
 		Name:     "read",
+		Effect:   EffectReadOnly,
 		Exposure: f.exposure,
 		Desc: "Read an existing file and return its contents with line numbers. Use this " +
 			"before editing; use glob for directory or filename discovery. Keep reads narrow " +
@@ -1194,7 +1195,8 @@ var globIgnored = map[string]bool{
 
 func (f *FS) globTool() Tool {
 	return Tool{
-		Name: "glob",
+		Name:   "glob",
+		Effect: EffectReadOnly,
 		Desc: "Find files by glob pattern, e.g. '**/*.go' or 'internal/**/*_test.go'. " +
 			"Use this for path inventory, not content search; use grep for contents. " +
 			"Returns paths relative to the workspace root and skips common dependency " +

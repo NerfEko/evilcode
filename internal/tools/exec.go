@@ -624,6 +624,7 @@ type grepArgs struct {
 func (e *Exec) grepTool() Tool {
 	return Tool{
 		Name:     "grep",
+		Effect:   EffectReadOnly,
 		Exposure: e.exposure,
 		Desc: "Search file contents with a regular expression, via ripgrep. Use this for " +
 			"content or symbol lookup; use glob for filenames. Narrow with path or glob. " +
