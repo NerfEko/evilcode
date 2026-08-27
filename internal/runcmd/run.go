@@ -181,7 +181,8 @@ func Run(args []string) (int, error) {
 			execTools := tools.NewExec(cwd).
 				WithExposure(exposure).
 				WithScratchDir(filepath.Join(dataDir, "scratch")).
-				WithRiskPaths(config.ConfigDir(), dataDir)
+				WithRiskPaths(config.ConfigDir(), dataDir).
+				WithEnvPassthrough(cfg.Features.EnvPassthrough)
 			if lsps != nil {
 				execTools.WithLSP(lsps)
 			}

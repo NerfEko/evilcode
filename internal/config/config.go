@@ -172,6 +172,13 @@ type Features struct {
 	// only when confine_to_workspace is on (R2-08).
 	ConfineWeak bool `toml:"confine_weak"`
 
+	// EnvPassthrough names environment variables that model-run shell
+	// commands inherit beyond the built-in allowlist (PATH, HOME, locale,
+	// XDG user directories, and so on). The daemon's own environment —
+	// provider API keys above all — stays out of the command's reach without
+	// an explicit name here (R2-16).
+	EnvPassthrough []string `toml:"env_passthrough"`
+
 	// MaxSteps bounds tool-call rounds in a single turn. Zero — the default —
 	// means unbounded: a long refactor converges slowly and legitimately, and a
 	// fixed cap cuts off exactly the turns least able to afford losing the

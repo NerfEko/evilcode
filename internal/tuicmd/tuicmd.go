@@ -277,7 +277,8 @@ func runOnce(args []string) (string, error) {
 	execTools := tools.NewExec(cwd).
 		WithExposure(exposure).
 		WithScratchDir(filepath.Join(dataDir, "scratch")).
-		WithRiskPaths(config.ConfigDir(), dataDir)
+		WithRiskPaths(config.ConfigDir(), dataDir).
+		WithEnvPassthrough(cfg.Features.EnvPassthrough)
 
 	// Language servers start on first use, not here: gopls costs seconds and
 	// indexes the module, and a session that never asks should never pay.

@@ -30,6 +30,11 @@ type Exec struct {
 	// tests and embedders may leave it empty to inherit the environment.
 	ScratchDir string
 
+	// EnvPassthrough names beyond the allowlist that model-run commands
+	// inherit. Empty by default: the daemon's environment is not the
+	// command's business (R2-16).
+	EnvPassthrough []string
+
 	// lspServer enriches grep hits with document symbols when a language
 	// server is configured for the hit's file. It is optional: the declaration
 	// scanner is deliberately the fallback for repositories without one.
@@ -141,6 +146,15 @@ func (e *Exec) WithScratchDir(dir string) *Exec {
 	return e
 }
 
+// WithEnvPassthrough names environment variables beyond the allowlist that
+// model-run shell commands inherit. Everything else the daemon carries —
+// provider keys, harness secrets, unrelated build configuration — stays
+// behind the boundary (R2-16).
+func (e *Exec) WithEnvPassthrough(names []string) *Exec {
+	e.EnvPassthrough = append([]string(nil), names...)
+	return e
+}
+
 // WithRiskPaths supplies the application state roots used by the destructive
 // command gate. Keeping these explicit makes tests and embedders deterministic
 // without making the classifier read the host filesystem.
@@ -159,22 +173,81 @@ func (e *Exec) Close() {
 	}
 }
 
+// envAllowlistKeys are the exact names a model-run shell command inherits.
+// The daemon's own environment is full of things a shell command has no
+// business reading — provider API keys, harness secrets, unrelated build
+// configuration — and before this allowlist every one of them was one `env`
+// away from the model (R2-16). `[features] env_passthrough` adds names
+// explicitly.
+var envAllowlistKeys = []string{
+	// Process basics: without these almost nothing works.
+	"PATH", "HOME", "SHELL", "USER", "LOGNAME", "TERM", "COLORTERM", "TZ", "LANG",
+	// TMPDIR is re-exported as the scratch directory when one is configured,
+	// and passed through as-is when it does not.
+	"TMPDIR",
+	// The agent socket lets a command reach the user's own ssh agent, which
+	// is what a `git push` from a model-run command needs.
+	"SSH_AUTH_SOCK", "SSH_AGENT_PID",
+	// git identity set at the process level, so commits a command makes carry
+	// the user's identity without reading a config file the model could edit.
+	"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+}
+
+// envAllowlistPrefixes are inherited by prefix: locale variants (LC_ALL, ...)
+// and the XDG user-directory family.
+var envAllowlistPrefixes = []string{"LC_", "XDG_"}
+
+func envAllowed(name string) bool {
+	for _, k := range envAllowlistKeys {
+		if name == k {
+			return true
+		}
+	}
+	for _, p := range envAllowlistPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// commandEnv builds the environment a model-run command inherits: the
+// allowlist, anything the user passed through by name, and the scratch
+// directory override. It deliberately does not start from os.Environ — the
+// daemon's environment is not the command's business.
 func (e *Exec) commandEnv() []string {
-	env := os.Environ()
-	if e.ScratchDir == "" {
-		return env
+	passthrough := make(map[string]bool, len(e.EnvPassthrough))
+	for _, name := range e.EnvPassthrough {
+		passthrough[name] = true
 	}
-	if err := os.MkdirAll(e.ScratchDir, 0o700); err != nil {
-		return env
-	}
-	filtered := env[:0]
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "TMPDIR=") || strings.HasPrefix(entry, "EVILCODE_SCRATCH_DIR=") {
+
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
 			continue
 		}
-		filtered = append(filtered, entry)
+		// TMPDIR is re-exported below when a scratch directory exists; the
+		// harness's own EVILCODE_ variables never reach a command.
+		if name == "EVILCODE_SCRATCH_DIR" || (name == "TMPDIR" && e.ScratchDir != "") {
+			continue
+		}
+		if passthrough[name] || envAllowed(name) {
+			env = append(env, entry)
+		}
 	}
-	return append(filtered, "TMPDIR="+e.ScratchDir, "EVILCODE_SCRATCH_DIR="+e.ScratchDir)
+	if e.ScratchDir != "" {
+		if err := os.MkdirAll(e.ScratchDir, 0o700); err == nil {
+			env = append(env, "TMPDIR="+e.ScratchDir, "EVILCODE_SCRATCH_DIR="+e.ScratchDir)
+		} else {
+			// The scratch directory is a convenience; without it the machine's
+			// TMPDIR (filtered above) still reaches the command.
+			if t, ok := os.LookupEnv("TMPDIR"); ok {
+				env = append(env, "TMPDIR="+t)
+			}
+		}
+	}
+	return env
 }
 
 // Cwd reports the working directory subsequent commands will run in.

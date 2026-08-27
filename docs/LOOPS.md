@@ -7033,3 +7033,34 @@ text names the kernel requirement and the opt-in.
 Verified: `go test ./internal/tools/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-16: model-run commands get an environment allowlist
+
+Verified: `commandEnv` started from `os.Environ()` and removed only the two
+scratch variables — so every model-authored shell command (and its children)
+inherited the daemon's entire environment: provider API keys, harness
+secrets, other agents' sockets, whatever `evilcode serve` happened to carry.
+
+Done: `commandEnv` is now an allowlist, not os.Environ minus two. Inherited:
+process basics (PATH, HOME, SHELL, USER, LOGNAME, TERM, COLORTERM, TZ, LANG),
+TMPDIR (re-exported as the scratch directory when one is configured),
+SSH_AUTH_SOCK/SSH_AGENT_PID (what a model-run `git push` needs to reach the
+user's own agent), process-level git identity, the LC_* locale family, and the
+XDG user-directory family. Everything else is dropped unless the user names it
+in the new `[features] env_passthrough` (a list of names), wired through
+`Exec.WithEnvPassthrough` at all three construction sites (wiring, tuicmd,
+runcmd). The scratch-directory export and its fallback behavior are unchanged.
+
+Tests: `TestModelRunCommandsDoNotInheritTheDaemonEnvironment` (a set secret,
+an API-key-shaped variable, and an unrelated token all read as unset inside a
+model-run command while PATH survives), `TestModelRunCommandsKeepTheBasics`,
+`TestEnvPassthroughForwardsOnlyNamedVariables` (the named variable arrives,
+a sibling does not), and `TestCommandEnvDropsScratchAndKeepsFallbackTmpdir`.
+
+Two self-caught slips while writing: the first version dropped TMPDIR entirely
+when no scratch directory was configured (caught by the new test), and the
+test's own `t.Setenv("TMPDIR", …)` raced `t.TempDir()`'s directory creation
+(the variable must be set after the temp dir exists).
+
+Verified: `go test ./internal/tools/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+
