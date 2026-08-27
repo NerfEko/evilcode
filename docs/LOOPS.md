@@ -6828,3 +6828,39 @@ working as designed.
 Verified: `go test ./internal/tui/ -count=1`, `go vet ./...`,
 `go test ./... -count=1` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-04: the side pane stops loading whole files
+
+Verified: both claims held. `fileDiffContent` (app.go:5780) opened the file a
+diff named and ran unbounded `io.ReadAll`, then split the whole file into
+lines; the pane's `panelBody` then built rows and syntax-highlighted every one
+of them — all so `renderPanelChrome` could draw `body[start:end]` of a
+viewport. A click on a generated file allocated several copies of it on the
+update loop. `readQuickView` had the opposite defect: it read
+`MaxResultBytes+1` and passed that prefix to `tools.Truncate`, which saw a
+50 KiB+1 string, cut to its head+tail, and reported "N bytes truncated" where
+N counted only the prefix — a gigabyte file produced a notice claiming one
+byte was omitted and a tail that was not the file's tail.
+
+Done: `fileDiffContent` stats first (`maxPanelFileBytes` = 2 MiB) and caps the
+read with `io.LimitReader` so a file that grows after the Stat cannot blow the
+budget either; over the ceiling it returns the diff-only view, which is the
+honest fallback the pane already had. `readQuickView` no longer touches the
+model-facing `Truncate`: it reads a head window, cuts on a line boundary, and
+appends a truthful notice — "showing the first 50K of 150K; use read with
+offset/limit for the rest", with the real total from Stat (or "a larger file"
+when stat failed).
+
+Not done, deliberately: per-visible-row highlighting. The byte ceiling bounds
+the real cost (≤ 2 MiB of rows, built once per content change and cached);
+visible-window highlighting would have to re-key the body cache on scroll
+offset — logged as the follow-up to R2-42's panel extraction, not smuggled
+into this fix.
+
+Tests: `TestFileDiffContentRefusesOversizedFile` (over-ceiling → diff-only
+fallback, small file unaffected), `TestFileDiffContentCapsGrowthAfterStat`,
+and `TestQuickViewTruncationNoticeIsTruthful` (the real total must be named —
+the exact claim the old notice could never make).
+
+Verified: `go test ./internal/tui/ -count=1`, `go vet ./...`,
+`go test ./... -count=1` green, `gofmt` clean.
+

@@ -5774,21 +5774,35 @@ func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 	}
 }
 
+// maxPanelFileBytes bounds the file the side pane loads around a diff. A
+// click on a generated file used to io.ReadAll the whole thing, split it into
+// lines, and syntax-highlight every row — several copies of a file of any
+// size, built on the update loop, when the pane only ever draws a viewport
+// (R2-04). Past the ceiling the truncated diff alone is the honest fallback.
+const maxPanelFileBytes = 2 << 20
+
 // fileDiffContent builds the whole-file view for a write/edit: the file's
 // current lines with the diff's changes marked, scrolled to the first hunk.
-// When the file cannot be read the diff alone is shown, as before.
+// When the file cannot be read — including when it is over the pane's byte
+// ceiling — the diff alone is shown, as before.
 func (m *Model) fileDiffContent(path, diff string) PanelContent {
 	content := PanelContent{Title: path, Path: path, Diff: diff, ScrollTo: diffScrollLine(diff)}
 	if path == "" {
 		return content
 	}
-	file, err := os.Open(resolveToolPath(m.cwd, path))
+	full := resolveToolPath(m.cwd, path)
+	if info, err := os.Stat(full); err != nil || info.Size() > maxPanelFileBytes {
+		return content
+	}
+	file, err := os.Open(full)
 	if err != nil {
 		return content
 	}
 	defer file.Close()
-	data, err := io.ReadAll(file)
-	if err != nil {
+	// The stat above can be stale by the time we read; the LimitReader keeps a
+	// file replaced by something huge from blowing the budget anyway.
+	data, err := io.ReadAll(io.LimitReader(file, maxPanelFileBytes+1))
+	if err != nil || len(data) > maxPanelFileBytes {
 		return content
 	}
 	// A binary file has no line view; the diff alone is the honest fallback.
@@ -5799,6 +5813,12 @@ func (m *Model) fileDiffContent(path, diff string) PanelContent {
 	return content
 }
 
+// quickViewWindow is how much of a file a read quick view loads. Past it the
+// pane shows the head plus an honest notice carrying the real total, instead
+// of the model-facing Truncate helper, which on a truncated prefix reports
+// "one byte omitted" and shows the prefix's tail as if it were the file's.
+const quickViewWindow = tools.MaxResultBytes
+
 func (m *Model) readQuickView(path string) *PanelContent {
 	content := &PanelContent{Title: path, Path: path, Code: true, Numbers: true}
 	if path == "" {
@@ -5807,20 +5827,42 @@ func (m *Model) readQuickView(path string) *PanelContent {
 		return content
 	}
 
-	file, err := os.Open(resolveToolPath(m.cwd, path))
+	full := resolveToolPath(m.cwd, path)
+	info, statErr := os.Stat(full)
+	file, err := os.Open(full)
 	if err != nil {
 		content.Code = false
 		content.Body = []string{"error: " + err.Error()}
 		return content
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, int64(tools.MaxResultBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(file, quickViewWindow+1))
 	if err != nil {
 		content.Code = false
 		content.Body = []string{"error reading file: " + err.Error()}
 		return content
 	}
-	content.Body = strings.Split(tools.Truncate(string(data)), "\n")
+	if len(data) <= quickViewWindow {
+		content.Body = strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+		return content
+	}
+	// Over the window: show the head, cut on a line boundary, and say exactly
+	// how much of the real file is not on screen.
+	data = data[:quickViewWindow]
+	if cut := strings.LastIndexByte(string(data), '\n'); cut > 0 {
+		data = data[:cut]
+	}
+	body := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if statErr == nil {
+		body = append(body, "",
+			fmt.Sprintf("… showing the first %s of %s; use read with offset/limit for the rest …",
+				humanBytes(len(data)), humanBytes(int(info.Size()))))
+	} else {
+		body = append(body, "",
+			fmt.Sprintf("… showing the first %s of a larger file; use read with offset/limit for the rest …",
+				humanBytes(len(data))))
+	}
+	content.Body = body
 	return content
 }
 
