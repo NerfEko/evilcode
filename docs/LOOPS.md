@@ -7120,6 +7120,43 @@ first entry, a reachable second — the answer comes from the second),
 stops the walk and both entries are named), and
 `TestSideCallWithNoUsableModelNamesTheRole`.
 
+## 2026-08-26 — codex review 2, R2-15: the updater verifies what it installs
+
+Verified: the updater downloaded over HTTPS, bounded the size, checked ELF
+magic, and replaced the running executable — nothing tied the downloaded
+bytes to the release that advertised them. A compromised release host, forge
+account, or DNS/TLS endpoint could serve arbitrary code that passed every
+check.
+
+Done, four pieces. (1) A checksums manifest is REQUIRED: the release must
+attach `checksums.txt` ("sha256  <asset>" lines); a release without one is
+refused, so the release process and the updater move together. (2) The
+downloaded binary's SHA-256 must match the manifest entry for the exact asset
+name — an unattributable download never reaches the install step. (3) A
+pinned ed25519 public key (`pinnedUpdateKey`, hex, compile-time) enforces a
+detached signature over the manifest (`checksums.txt.sig`) once release
+engineering arms it — the mechanism is in and tested with generated keys; the
+constant ships empty until a keypair exists, and the code comment says
+exactly what residual risk that leaves (a compromised host can still serve
+both files — HTTPS + manifest integrity is what's gained today). (4) The
+install directory is fsynced after the rename, so the swap is durable, and
+verification runs BEFORE the daemon is stopped.
+
+Tests: `TestVerifyChecksumManifestMatchesTheAssetEntry`,
+`TestVerifyChecksumManifestRequiresTheManifest`,
+`TestVerifyChecksumManifestRefusesAMismatchedBinary`,
+`TestVerifyChecksumManifestRefusesAnUnknownAsset`,
+`TestVerifyChecksumManifestEnforcesTheSignatureWhenAKeyIsPinned` (unsigned and
+forged signatures refused; a good signature still runs the checksum stage),
+and `TestSyncDirSurvivesAMissingDirectory`. The verification was split
+(`verifyChecksumManifest`) so the logic is testable without a live release
+server. First draft pointed the mismatch tests at `/nonexistent`, which fails
+at hashing before it reaches the entry check — the tests now write real
+binaries.
+
+Verified: `go test ./cmd/evilcode/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+
 Verified: `go test ./internal/config/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 

@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -121,6 +124,13 @@ func runUpdate() error {
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("update: closing downloaded binary: %w", err)
 	}
+	// The manifest and — when a key is pinned — its signature are verified
+	// before anything on this machine changes: not before the daemon stops,
+	// not before the rename. A download that cannot be attributed to the
+	// release never reaches the install step (R2-15).
+	if err := verifyChecksums(rel, want, tmp, pinnedUpdateKey); err != nil {
+		return err
+	}
 	// A running daemon holds the old binary in memory; swapping the file on
 	// disk does not change the version it serves. Stop it first so the next
 	// `evilcode serve` picks up the new binary. Done after the download
@@ -129,8 +139,155 @@ func runUpdate() error {
 	if err := os.Rename(tmp, exe); err != nil {
 		return fmt.Errorf("update: installing %s: %w\nmanual: curl -fL -o %s %s", exe, err, shellQuote(exe), a.URL)
 	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("update: syncing the install directory: %w", err)
+	}
 	fmt.Printf("updated %s: %s -> %s\n", exe, tuicmd.Version, tag)
 	return nil
+}
+
+// checksumsAssetName is the manifest release tooling publishes: one
+// "sha256sum  <asset-name>" line per downloadable asset. An update is refused
+// when it is missing — an unattributable binary is exactly the failure the
+// old magic-byte check could not catch (R2-15).
+const (
+	checksumsAssetName    = "checksums.txt"
+	checksumsSigAssetName = "checksums.txt.sig"
+	maxChecksumsBytes     = 1 << 20
+	maxChecksumsSigBytes  = 1 << 12
+)
+
+// pinnedUpdateKey is the ed25519 public key release checksums must be signed
+// with, hex-encoded. Empty means signature enforcement is not armed in this
+// build: the checksums manifest is still required and verified, but the
+// release process has not published a keypair yet. Release engineering arms
+// it by filling this (and signing checksums.txt with the matching private
+// key); until then a compromised release host remains able to serve both the
+// binary and its manifest, which is the residual risk DEVIATIONS.md
+// documents.
+var pinnedUpdateKey = func() []byte {
+	const hexKey = ""
+	k, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil
+	}
+	return k
+}()
+
+// syncDir flushes a directory entry so a rename is durable, not merely
+// visible. The install is otherwise atomic-in-name only: after a crash the
+// rename could be missing while the new binary's contents are on disk.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// verifyChecksums fetches the release's checksums manifest, verifies it
+// against the pinned signature when one is armed, and checks the downloaded
+// binary's SHA-256 against the entry for the exact asset name.
+func verifyChecksums(rel release, want, binaryPath string, key []byte) error {
+	ca := rel.findAsset(checksumsAssetName)
+	if ca == nil {
+		return fmt.Errorf(
+			"update: release has no %s; refusing to install an unattributable binary "+
+				"(release tooling must publish one)", checksumsAssetName)
+	}
+	manifest, err := fetchAsset(ca.URL, maxChecksumsBytes)
+	if err != nil {
+		return fmt.Errorf("update: fetching %s: %w", checksumsAssetName, err)
+	}
+	var sig []byte
+	if len(key) == ed25519.PublicKeySize {
+		sa := rel.findAsset(checksumsSigAssetName)
+		if sa == nil {
+			return fmt.Errorf("update: release has no %s; refusing unsigned checksums", checksumsSigAssetName)
+		}
+		sig, err = fetchAsset(sa.URL, maxChecksumsSigBytes)
+		if err != nil {
+			return fmt.Errorf("update: fetching %s: %w", checksumsSigAssetName, err)
+		}
+	}
+	return verifyChecksumManifest(manifest, sig, key, want, binaryPath)
+}
+
+// verifyChecksumManifest checks a manifest (optionally signed) against a
+// downloaded binary. Split from verifyChecksums so the logic is testable
+// without a live release server.
+func verifyChecksumManifest(manifest, sig []byte, key []byte, want, binaryPath string) error {
+	if len(key) == ed25519.PublicKeySize {
+		if sig == nil {
+			return fmt.Errorf(
+				"update: release has no %s; refusing unsigned checksums", checksumsSigAssetName)
+		}
+		if !ed25519.Verify(key, manifest, sig) {
+			return fmt.Errorf("update: %s failed signature verification", checksumsAssetName)
+		}
+	}
+
+	sum, err := fileSHA256(binaryPath)
+	if err != nil {
+		return fmt.Errorf("update: hashing the downloaded binary: %w", err)
+	}
+	matched := false
+	for _, line := range strings.Split(string(manifest), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "sha256  ") {
+			continue
+		}
+		if rest := strings.TrimPrefix(line, "sha256  "); strings.HasPrefix(rest, want+" ") {
+			got := strings.Fields(rest)[1]
+			if got != sum {
+				return fmt.Errorf(
+					"update: %s checksum mismatch: manifest %s, downloaded %s — the asset "+
+						"does not match this release; not installed", want, got, sum)
+			}
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return fmt.Errorf(
+			"update: %s has no checksum entry in %s; not installed", want, checksumsAssetName)
+	}
+	return nil
+}
+
+// fileSHA256 is the hex SHA-256 of a file's contents.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// fetchAsset downloads one release asset into memory, bounded.
+func fetchAsset(rawURL string, limit int64) ([]byte, error) {
+	resp, err := httpGet(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("asset exceeds %d bytes", limit)
+	}
+	return body, nil
 }
 
 // latestRelease fetches and decodes the newest release from Forgejo.
