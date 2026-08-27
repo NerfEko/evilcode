@@ -56,6 +56,15 @@ type Server struct {
 	listener net.Listener
 	closed   bool
 
+	// socketUnlock releases the lifetime claim on the socket path, taken by
+	// Listen and held until Close. A second daemon must fail the claim while
+	// this one lives, even if its socket file has been deleted from under it.
+	socketUnlock func()
+	// socketIno is the inode of the socket file this daemon bound. Close only
+	// removes the path when it still names this inode — a by-name remove from
+	// a daemon whose path was stolen would delete the successor's socket.
+	socketIno uint64
+
 	workerWatchMu   sync.Mutex
 	workerWatchStop chan struct{}
 	workerWatchDone chan struct{}
@@ -525,19 +534,18 @@ func (s *Server) Listen() error {
 		return err
 	}
 
-	// Serialized against other starting daemons. Binding first fixed the
-	// original race but not its sibling: two daemons finding the *same stale*
-	// socket both fail the dial, and the second removes the socket the first
-	// has by then bound. The window between "this is stale" and "I have bound
-	// it" cannot be closed by ordering alone, so it is held under a lock.
+	// Serialized against other starting daemons — and, since the lock is held
+	// for the daemon's lifetime, against any daemon at all: a second daemon on
+	// this path fails the claim even if the first one's socket file was
+	// deleted from under it.
 	unlock, err := lockSocketPath(s.Path)
 	if err != nil {
 		return err
 	}
-	defer unlock()
 
 	ln, err := net.Listen("unix", s.Path)
 	if err != nil {
+		unlock()
 		if !errors.Is(err, syscall.EADDRINUSE) {
 			return err
 		}
@@ -545,7 +553,8 @@ func (s *Server) Listen() error {
 			conn.Close()
 			return fmt.Errorf("a daemon is already listening on %s", s.Path)
 		}
-		// Nothing answered: the socket is a leftover from a daemon that died.
+		// Nothing answered: the socket is a leftover from a daemon that died,
+		// which is exactly when the claim above is free.
 		if rerr := os.Remove(s.Path); rerr != nil {
 			return fmt.Errorf("removing the stale socket %s: %w", s.Path, rerr)
 		}
@@ -558,8 +567,21 @@ func (s *Server) Listen() error {
 	// whole access control.
 	if err := os.Chmod(s.Path, 0o600); err != nil {
 		ln.Close()
+		unlock()
 		return err
 	}
+	// Go's UnixListener unlinks the socket path on Close, by name and with no
+	// ownership check — a daemon whose path was rebound to a successor's socket
+	// would delete the successor's file on its way out, and that is precisely
+	// how one daemon exit took the next daemon's reachability with it. The
+	// guarded remove in Close is the only unlinker.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
+	if ino, ok := socketInode(s.Path); ok {
+		s.socketIno = ino
+	}
+	s.socketUnlock = unlock
 	s.listener = ln
 	s.startWorkerWatchdog()
 	return nil
@@ -631,7 +653,17 @@ func (s *Server) Close() {
 	// closed here to avoid racing that in-flight Build. The leak is benign: this
 	// only runs at shutdown.
 	bankOwned := waitForBuilds(&s.builds, closeBuildBudget)
-	os.Remove(s.Path)
+	// Only remove the path when it still names the socket this daemon bound.
+	// A late-exiting daemon used to delete whatever inode the path named —
+	// after an orphaning, that is the successor's live socket — which is how
+	// one daemon exit took the next one's reachability with it.
+	if ino, ok := socketInode(s.Path); !ok || ino == s.socketIno {
+		os.Remove(s.Path)
+	}
+	if s.socketUnlock != nil {
+		s.socketUnlock()
+		s.socketUnlock = nil
+	}
 	for _, sess := range sessions {
 		sess.close()
 	}

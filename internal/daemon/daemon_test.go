@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -350,9 +351,38 @@ func TestListenRefusesASecondDaemon(t *testing.T) {
 		second.Close()
 		t.Fatal("a second daemon bound the same socket")
 	}
-	if !strings.Contains(err.Error(), "already listening") {
+	if !strings.Contains(err.Error(), "already") {
 		t.Errorf("err = %v", err)
 	}
+}
+
+// The orphan that produced a night of duplicate daemons: the first daemon's
+// socket file is deleted from under it (a by-name remove from a late exit),
+// the next attach finds nothing to dial, and the bind guard saw a missing
+// path — so it bound a fresh socket and the first daemon kept running,
+// unreachable. The lifetime claim on the lock file is what makes this fail
+// instead: the file can be gone, the claim is not.
+func TestListenRefusesWhenTheSocketFileIsDeletedUnderTheDaemon(t *testing.T) {
+	srv, path := testServer(t)
+	defer srv.Close()
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	second := NewServer(&config.Config{}, t.TempDir(), "")
+	second.Path = path
+	err := second.Listen()
+	if err == nil {
+		second.Close()
+		t.Fatal("a second daemon bound a path whose live claim it could not take")
+	}
+	if !strings.Contains(err.Error(), "already") {
+		t.Errorf("err = %v", err)
+	}
+	// The claim, not the socket file, is what one daemon owns: with the file
+	// gone the daemon is unreachable by name, but the second daemon still
+	// fails the claim instead of silently forking a duplicate.
 }
 
 func TestListenClearsAStaleSocket(t *testing.T) {
@@ -394,6 +424,28 @@ func TestCloseRemovesTheSocket(t *testing.T) {
 	srv.Close()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("the socket survived Close: %v", err)
+	}
+}
+
+// A daemon whose socket was stolen must not delete its successor's socket on
+// the way out: the by-name remove only fires when the path still names the
+// inode this daemon bound.
+func TestCloseKeepsASuccessorsSocket(t *testing.T) {
+	srv, path := testServer(t)
+
+	// Simulate a successor: the path is rebound to a different socket.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successor.Close()
+
+	srv.Close()
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("Close deleted the successor's socket: %v", err)
 	}
 }
 
