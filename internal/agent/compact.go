@@ -36,8 +36,7 @@ const CompactMessageCap = 2000
 // RecentTurnsToKeep is the verbatim tail preserved by compaction. Keeping a
 // real working window means a compaction that lands between a prompt and its
 // answer does not make the model rediscover the task it is in the middle of.
-// Ten matches the jcode compaction floor while remaining small enough to leave
-// room for the fresh request.
+// Ten keeps that tail small enough to leave room for the fresh request.
 const RecentTurnsToKeep = 10
 
 // CompactThreshold is the fraction of the context window at which a turn
@@ -49,8 +48,8 @@ const RecentTurnsToKeep = 10
 const CompactThreshold = 0.85
 
 // CompactProjectionLookahead is how many future turns the token-growth
-// projection covers. Fifteen matches jcode's proactive default: a long-running
-// coding session gets time to summarize before the turn that fills the window.
+// projection covers. Fifteen gives a long-running coding session time to
+// summarize before the turn that fills the window.
 const CompactProjectionLookahead = 15
 
 // CompactEWMAAlpha controls how quickly the projected per-turn growth follows
@@ -63,8 +62,8 @@ const CompactEWMAAlpha = 0.3
 const CompactProjectionMinSamples = 2
 
 // CompactProjectionFloor avoids spending a summarizer call on a tiny context
-// merely because an early request was unusually large. This mirrors jcode's
-// proactive floor while the fixed threshold remains the safety fallback.
+// merely because an early request was unusually large. It acts ahead of the
+// fixed threshold, which remains the safety fallback.
 const CompactProjectionFloor = 0.40
 
 // CompactEmbeddingMessageCap bounds the text sent to the embedding provider
@@ -81,8 +80,8 @@ const CompactEmbeddingHistoryWindow = 10
 // non-empty halves instead of treating one pair as a topic boundary.
 const CompactTopicShiftMinSnapshots = 4
 
-// CompactTopicShiftThreshold matches jcode's semantic compaction default:
-// below this cosine similarity, the older and newer halves represent different
+// CompactTopicShiftThreshold is the semantic compaction default: below this
+// cosine similarity, the older and newer halves represent different
 // topics closely enough that the old one is a free compaction point.
 const CompactTopicShiftThreshold = 0.45
 
@@ -95,8 +94,8 @@ const CompactEmbeddingTimeout = 5 * time.Second
 // the work that is still active when choosing a semantic compaction boundary.
 const CompactRelevanceGoalMessages = 5
 
-// CompactRelevanceKeepThreshold matches jcode's default semantic relevance
-// threshold. A message at or above this similarity is kept verbatim.
+// CompactRelevanceKeepThreshold is the default semantic relevance threshold.
+// A message at or above this similarity is kept verbatim.
 const CompactRelevanceKeepThreshold = 0.65
 
 // CompactRelevanceBatchSize keeps each provider request small even when a
@@ -619,8 +618,8 @@ func relevanceAdjustedCutoff(msgs []provider.Message, standardCutoff, earliest i
 }
 
 // relevanceGoalText joins short excerpts from the latest messages. Tool
-// results get a smaller excerpt, matching jcode's goal representation while
-// keeping the embedding request bounded.
+// results get a smaller excerpt, which keeps the embedding request bounded
+// while still representing the goal the work is converging on.
 func relevanceGoalText(msgs []provider.Message) string {
 	indices := make([]int, 0, CompactRelevanceGoalMessages)
 	for i := len(msgs) - 1; i >= 0 && len(indices) < CompactRelevanceGoalMessages; i-- {

@@ -9,8 +9,8 @@ import (
 )
 
 // imageExts are the extensions `read` treats as images rather than text or
-// binary. The set matches jcode's `is_image_file` plus the plan's §1.1 list;
-// anything not here falls through to the binary refusal.
+// binary. The set is the plan's §1.1 list; anything not here falls through to
+// the binary refusal.
 var imageExts = map[string]bool{
 	"png": true, "jpg": true, "jpeg": true, "gif": true,
 	"webp": true, "bmp": true,
@@ -25,8 +25,8 @@ func isImageExt(path string) bool {
 	return false
 }
 
-// visionImageCeiling is the largest image sent to a vision model. jcode uses
-// 20 MB; the session store's blob cap is raised to match so an image this size
+// visionImageCeiling is the largest image sent to a vision model: 20 MB. The
+// session store's blob cap is raised to match so an image this size
 // survives a resume. Above it the bytes are not attached — the model is told
 // the dimensions and size instead, because a model that cannot see the picture
 // must be told that rather than handed nothing.

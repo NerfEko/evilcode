@@ -52,7 +52,7 @@ func TestBackgroundProgressParsing(t *testing.T) {
 		{name: "decimal", out: "1.5/3.0 GiB", want: 50},
 		{name: "phase", out: "Compiling internal/tools", phase: "Compiling internal/tools"},
 		{name: "resolving", out: "Resolving dependencies", phase: "Resolving dependencies"},
-		{name: "jcode-marker", out: `JCODE_PROGRESS {"percent":12}`, want: 12},
+		{name: "evilcode-marker", out: `EVILCODE_PROGRESS {"percent":12}`, want: 12},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,11 +65,11 @@ func TestBackgroundProgressParsing(t *testing.T) {
 }
 
 func TestBackgroundCheckpointProgress(t *testing.T) {
-	p := parseProgress(`JCODE_CHECKPOINT {"message":"tests passed"}`)
+	p := parseProgress(`EVILCODE_CHECKPOINT {"message":"tests passed"}`)
 	if !p.Known || !p.Checkpoint || !p.Indeterminate || p.Message != "tests passed" {
 		t.Fatalf("checkpoint progress = %+v", p)
 	}
-	if p = parseProgress("JCODE_CHECKPOINT tests passed"); !p.Known || p.Message != "tests passed" {
+	if p = parseProgress("EVILCODE_CHECKPOINT tests passed"); !p.Known || p.Message != "tests passed" {
 		t.Fatalf("text checkpoint progress = %+v", p)
 	}
 }

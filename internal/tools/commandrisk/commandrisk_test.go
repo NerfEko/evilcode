@@ -146,7 +146,7 @@ func TestTokenizerHandlesSegmentsAndMalformedQuotes(t *testing.T) {
 	}
 }
 
-func TestJcodeParityCorpus(t *testing.T) {
+func TestDangerousCommandCorpus(t *testing.T) {
 	ctx := Context{WorkspaceRoot: "/home/u/proj", WorkingDir: "/home/u/proj", HomeDir: "/home/u"}
 	catastrophic := []string{
 		"rm -rf ~", "rm -rf $HOME", "rm -rf \"$HOME\"", "rm -rf ${HOME}",

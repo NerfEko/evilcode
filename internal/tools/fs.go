@@ -219,7 +219,7 @@ func (f *FS) rel(full string) string {
 // contain, or are contained by, the requested one, and names up to three. It is
 // one ReadDir on a path that was already an error, so a miss costs almost
 // nothing and a typo gets the model pointed at its neighbour instead of a bare
-// "no such file". Mirrors jcode's `find_similar_files` (read.rs:307-330).
+// "no such file".
 //
 // The scan goes through the confined open when Confine is on, so a symlink
 // swapped into the parent after resolve cannot list names outside the workspace.
@@ -423,9 +423,8 @@ func (f *FS) readTool() Tool {
 
 // MaxLineLen caps a single output line. A minified bundle line of tens of
 // thousands of characters would otherwise consume the whole read budget and
-// drown the rest of the file; jcode truncates at 2000 (read.rs:13), and so does
-// this. Lines past the cap are cut with a marker, and the count is said once at
-// the end rather than per line.
+// drown the rest of the file, so lines truncate at 2000. Lines past the cap are
+// cut with a marker, and the count is said once at the end rather than per line.
 const MaxLineLen = 2000
 
 // truncateLine caps a single line at MaxLineLen bytes, backing up to a UTF-8
@@ -981,7 +980,7 @@ type multiEditArgs struct {
 // back the ones before it, it is reported and the rest continue. This is not
 // new capability — it is the removal of N-1 file rewrites and N-1 round trips.
 // The existing lockPath and writeAtomic invariants hold: one lock, one atomic
-// write (jcode's multiedit writes non-atomically with no lock; this must not).
+// write — multiedit must never write non-atomically or without the lock.
 func (f *FS) multiEditTool() Tool {
 	return Tool{
 		Name: "multiedit",

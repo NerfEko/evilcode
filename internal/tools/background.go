@@ -404,7 +404,7 @@ func looksLikeProgressLine(line string) bool {
 	if strings.ContainsAny(line, "%/") || strings.Contains(line, " of ") {
 		return true
 	}
-	for _, marker := range []string{"EVILCODE_PROGRESS", "JCODE_PROGRESS", "JCODE_CHECKPOINT"} {
+	for _, marker := range []string{"EVILCODE_PROGRESS"} {
 		if hasPrefixFold(line, marker) {
 			return true
 		}
@@ -439,7 +439,7 @@ func looksLikeProgressBytes(line []byte) bool {
 			return true
 		}
 	}
-	for _, marker := range []string{"EVILCODE_PROGRESS", "JCODE_PROGRESS", "JCODE_CHECKPOINT", "compiling", "building", "running", "testing", "linking", "downloading", "installing", "checking", "fetching", "resolving"} {
+	for _, marker := range []string{"EVILCODE_PROGRESS", "compiling", "building", "running", "testing", "linking", "downloading", "installing", "checking", "fetching", "resolving"} {
 		if hasPrefixFoldBytes(line, marker) {
 			return true
 		}
@@ -486,8 +486,8 @@ func hasPrefixFoldBytes(value []byte, prefix string) bool {
 }
 
 var (
-	progressMarker   = regexp.MustCompile(`(?i)(?:EVILCODE_PROGRESS|JCODE_PROGRESS)\s+(\{.*\})\s*$`)
-	checkpointMarker = regexp.MustCompile(`(?i)JCODE_CHECKPOINT(?:\s+(.*))?\s*$`)
+	progressMarker   = regexp.MustCompile(`(?i)EVILCODE_PROGRESS\s+(\{.*\})\s*$`)
+	checkpointMarker = regexp.MustCompile(`(?i)EVILCODE_CHECKPOINT(?:\s+(.*))?\s*$`)
 	percentPattern   = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*%`)
 	fractionPattern  = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)
 	ofPattern        = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s+of\s+([0-9]+(?:\.[0-9]+)?)(?:\s+([[:alnum:]_-]+))?`)

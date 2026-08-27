@@ -290,7 +290,7 @@ var catastrophicSystemExact = []string{
 var catastrophicCredentialNames = []string{".ssh", ".gnupg", ".aws", ".kube", ".docker"}
 
 var catastrophicHomeRoots = []string{
-	".config", ".jcode", ".claude", ".local", ".local/share", "Documents", "Desktop",
+	".config", ".claude", ".local", ".local/share", "Documents", "Desktop",
 }
 
 func isTempPath(target string) bool {

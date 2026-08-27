@@ -8,9 +8,8 @@ import (
 // flexibleMatch explains a failed exact match by trying looser forms, so the
 // model gets an actionable error ("found at line N with different indentation")
 // rather than a bare "not found" it can only answer by re-reading the whole
-// file. Mirrors jcode's `try_flexible_match` (edit.rs:256-290): try the trimmed
-// string, then a line-by-line comparison with whitespace normalized. Unlike
-// jcode it also reports the line for the trimmed case.
+// file: try the trimmed string, then a line-by-line comparison with whitespace
+// normalized, and report the line for the trimmed case too.
 //
 // Returns a human-readable clause ("found … at line N") and ok=true when a
 // looser form matched; the caller folds it into the not-found error.
@@ -111,8 +110,7 @@ func missingTrailingNewline(content, old string) (int, bool) {
 // inclusive [startLine, endLine] region in content, numbered the way `read`
 // numbers them and truncated the way `read` truncates them. The terminal
 // newline is trimmed before splitting, matching `read`, so a newline-terminated
-// file does not print a phantom final line. Mirrors jcode's `extract_context`
-// (edit.rs:234-254) with padding 3.
+// file does not print a phantom final line. Padding is 3.
 func contextAround(content string, startLine, endLine, padding int) string {
 	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 	lo := max(0, startLine-1-padding)

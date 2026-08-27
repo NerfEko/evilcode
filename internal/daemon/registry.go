@@ -87,7 +87,7 @@ func (c Conflict) Notice() string {
 
 // ConflictPreviewMaxLines and ConflictPreviewMaxBytes keep a file notice
 // actionable without turning it into a second tool result. The line limit
-// mirrors the compact preview used by the edit path in jcode.
+// mirrors the compact preview used by the edit path.
 const (
 	ConflictPreviewMaxLines = 6
 	ConflictPreviewMaxBytes = 240

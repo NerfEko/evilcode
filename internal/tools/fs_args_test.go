@@ -76,14 +76,14 @@ func TestGrepPatternUnaffectedByQueryAlias(t *testing.T) {
 	}
 }
 
-func TestMultiEditRepairsNestedJcodeAliases(t *testing.T) {
+func TestMultiEditRepairsNestedAliases(t *testing.T) {
 	f := tempFS(t, map[string]string{"a.txt": "one\none\n"})
 	outcome := f.Tools().RunOne(context.Background(), Call{
 		Name: "multiedit",
 		Args: json.RawMessage(`{"file_path":"a.txt","edits":[{"old_string":"one","new_string":"ONE","replace_all":true}]}`),
 	})
 	if outcome.Err != nil {
-		t.Fatalf("jcode-shaped multiedit rejected: %v", outcome.Err)
+		t.Fatalf("nested-alias multiedit rejected: %v", outcome.Err)
 	}
 	data, err := os.ReadFile(filepath.Join(f.Root, "a.txt"))
 	if err != nil {
