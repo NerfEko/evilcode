@@ -76,13 +76,19 @@ func TestProviderConfigLookup(t *testing.T) {
 	}
 }
 
-func TestPickerSwitchRebindsCompactionEmbedder(t *testing.T) {
+// The compactor's embedder is a build-time decision (R2-11): a dedicated
+// embedding backend keeps its provider and vector space across a chat switch.
+// The old switch overwrote it with whichever chat provider the picker
+// selected, silently re-coupling semantic relevance to the chat choice
+// (R2-13).
+func TestPickerSwitchKeepsTheBuildTimeCompactionEmbedder(t *testing.T) {
 	a := agent.New("bat", provider.NewMock("start", "chat"), "mock-large", nil,
 		agent.NewConversation("system"))
 	t.Cleanup(a.Close)
+	dedicated := provider.NewMock("start", "embed")
 	c := &agent.Compactor{
 		Summarize: func(context.Context, string, string) (string, error) { return "s", nil },
-		Embedding: provider.NewMock("start", "embed"),
+		Embedding: dedicated,
 	}
 	for range 2 {
 		c.AddEmbeddingSnapshot([]float32{1, 0})
@@ -107,8 +113,8 @@ func TestPickerSwitchRebindsCompactionEmbedder(t *testing.T) {
 	if _, _ = m.handlePickerKey("enter"); m.agent.Provider.Name() != "next" {
 		t.Fatalf("active provider = %q, want next", m.agent.Provider.Name())
 	}
-	if c.ShouldCompact(40, 100) {
-		t.Fatal("provider switch left vectors from the old embedding space active")
+	if c.Embedding != agent.EmbeddingProvider(dedicated) {
+		t.Fatal("chat-provider switch replaced the compactor's build-time embedder")
 	}
 }
 

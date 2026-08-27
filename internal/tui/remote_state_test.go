@@ -101,6 +101,12 @@ func TestContextWindowMsgAppliesOnlyToCurrentModel(t *testing.T) {
 
 func TestResolveContextWindowUsesOverrideSynchronously(t *testing.T) {
 	m := newTestModel(t)
+	// The switch crosses to ollama-cloud, which must be buildable: a provider
+	// that cannot build refuses the switch instead of half-applying (R2-13).
+	m.providers = []config.ProviderConfig{
+		{Name: "mock", Kind: config.KindMock},
+		{Name: "ollama-cloud", Kind: config.KindOllama},
+	}
 	m.contextWindowOverride = func(ref string) int {
 		if ref == "deepseek-v4-flash:0731@ollama-cloud" {
 			return 262144

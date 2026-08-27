@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/config"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
 )
@@ -29,17 +30,24 @@ func TestPickerSwitchRecordsModelMeta(t *testing.T) {
 	m := NewModel(a, HeaderState{SessionName: "bat", Model: "mock-large", Provider: "mock"})
 	m.width, m.height = 100, 40
 	m.WithSessions(dir, "", st)
+	// The target must be buildable: a switch to a provider that cannot build
+	// is refused, not half-applied (R2-13). Mock providers keep the flow on
+	// the direct-apply path — no reasoning menu, no effort state to set up.
+	m.providers = []config.ProviderConfig{
+		{Name: "mock", Kind: config.KindMock},
+		{Name: "other", Kind: config.KindMock},
+	}
 
 	// Open the picker on a different model and select it.
 	m.pickerOpen = true
 	m.picker.Entries = []ModelEntry{
 		{Name: "mock-large", Provider: "mock", Current: true},
-		{Name: "deepseek-chat", Provider: "deepseek"},
+		{Name: "mock-small", Provider: "other"},
 	}
 	m.picker.Selected = 1
 
-	if _, _ = m.handlePickerKey("enter"); m.header.Model != "deepseek-chat" {
-		t.Fatalf("header.Model = %q, want deepseek-chat", m.header.Model)
+	if _, _ = m.handlePickerKey("enter"); m.header.Model != "mock-small" {
+		t.Fatalf("header.Model = %q, want mock-small", m.header.Model)
 	}
 
 	// The switch must be on disk: Describe reads the last model meta.
@@ -47,7 +55,7 @@ func TestPickerSwitchRecordsModelMeta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Model != "deepseek-chat@deepseek" {
-		t.Errorf("remembered model = %q, want deepseek-chat@deepseek", info.Model)
+	if info.Model != "mock-small@other" {
+		t.Errorf("remembered model = %q, want mock-small@other", info.Model)
 	}
 }

@@ -3073,18 +3073,28 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 		return nil
 	}
 	if targetProvider != m.header.Provider {
-		// Crossing providers rebuilds the live client. The picker lists
-		// models from every configured provider, so a selection can name
-		// one the session did not start on.
-		if pc := m.providerConfig(targetProvider); pc != nil {
-			if p, err := pc.Build(); err == nil {
-				m.agent.Provider = p
-				m.header.Provider = targetProvider
-				if m.compactor != nil {
-					m.compactor.SetEmbeddingProvider(p)
-				}
-			}
+		// Crossing providers rebuilds the live client BEFORE any visible
+		// state changes. A provider that is unknown or fails to build must
+		// leave the old provider, header, and agent untouched — the old code
+		// ignored build errors and still renamed the visible model, leaving
+		// a header that claimed a model the runtime never had (R2-13).
+		pc := m.providerConfig(targetProvider)
+		if pc == nil {
+			m.notice = "could not switch model: unknown provider " + targetProvider
+			return nil
 		}
+		p, err := pc.Build()
+		if err != nil {
+			m.notice = "could not switch model: " + err.Error()
+			return nil
+		}
+		m.agent.Provider = p
+		m.header.Provider = targetProvider
+		// The compactor's embedder belongs to the build-time embedding
+		// decision (R2-11): a dedicated embedding model keeps its backend
+		// across a chat switch, and without one the compactor has none.
+		// Overwriting it here re-coupled semantic relevance to whichever
+		// chat provider the picker selected.
 	}
 	m.header.Model = sel.Name
 	if targetProvider != "" {

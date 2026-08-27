@@ -45,9 +45,16 @@ func (m *Model) candidateReasoningLevels(sel ModelEntry) []provider.ReasoningEff
 		p := m.agent.Provider
 		if sel.Provider != "" && sel.Provider != m.header.Provider {
 			if pc := m.providerConfig(sel.Provider); pc != nil {
-				if built, err := pc.Build(); err == nil {
-					p = built
+				built, err := pc.Build()
+				if err != nil {
+					// A provider that cannot be built cannot be switched to;
+					// offering the effort menu would offer a state the apply
+					// path must then refuse (R2-13). No levels means the
+					// selection applies directly and surfaces the build
+					// error in the notice instead.
+					return nil
 				}
+				p = built
 			}
 		}
 		levels = provider.ReasoningEffortLevelsForProvider(p, sel.Name)

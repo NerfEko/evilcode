@@ -1698,13 +1698,22 @@ func (sess *Session) SetModelWithEffort(ref string, effort provider.ReasoningEff
 	return sess.setModel(ref, effort)
 }
 
+// setModel switches the session's provider and model as one transition. The
+// candidate — resolved provider, reasoning levels, effort validation, context
+// window — is built without holding controlMu, because resolving a reference
+// and asking an Ollama endpoint for model metadata are network-shaped
+// operations that used to run under the lock — one of them unbounded — and
+// stall snapshots (R2-13). Committing then takes controlMu, re-reads live
+// session state, and swaps every runtime field in one hold of mu: a rejected
+// switch leaves the previous runtime untouched, and an accepted one never
+// publishes a half-updated runtime.
 func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) error {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return fmt.Errorf("model reference is required")
 	}
-	sess.controlMu.Lock()
-	defer sess.controlMu.Unlock()
+	// Candidate phase. A turn that starts here is caught by the commit-time
+	// re-check, not by these early tests.
 	sess.mu.Lock()
 	if sess.closing {
 		sess.mu.Unlock()
@@ -1714,9 +1723,6 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 		sess.mu.Unlock()
 		return fmt.Errorf("finish or interrupt the current turn first")
 	}
-	sess.mu.Unlock()
-
-	sess.mu.Lock()
 	cfg := sess.built.Config.Clone()
 	sess.mu.Unlock()
 	prov, model, err := cfg.Resolve(ref)
@@ -1725,33 +1731,62 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 	}
 	modelRef := config.ModelRef(model, prov.Name())
 	overrides := cfg.ModelOverrides(modelRef)
+	numCtx := config.ContextWindowFor(prov, model, overrides.ContextWindow)
 	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
-	// The name heuristic above only recognizes known thinking families
-	// (gpt-oss, qwen3, glm, ...). A model that advertises a "thinking"
-	// capability over /api/show but whose family is not in that list —
-	// deepseek-v4, kimi, minimax, nemotron — would be rejected here as "not
-	// supported" while the client picker, which derives levels from
-	// capabilities, offered them. Resolve the conflict in favour of the
-	// model's actual capabilities: when the heuristic missed, ask the
-	// provider for the model's details and use its advertised reasoning
-	// efforts. A failed lookup leaves the heuristic result (nil) in place, so
-	// behavior is unchanged when the endpoint is unreachable.
-	if len(levels) == 0 {
-		if o, ok := prov.(*provider.Ollama); ok {
-			if info, err := o.Show(context.Background(), model); err == nil {
-				levels = provider.NormalizeReasoningEfforts(info.ReasoningEfforts)
-			}
-		}
-	}
+	// The name heuristic only recognizes known thinking families (gpt-oss,
+	// qwen3, glm, ...). A model that advertises a "thinking" capability over
+	// /api/show but whose family is not in that list — deepseek-v4, kimi,
+	// minimax, nemotron — would be rejected here as "not supported" while the
+	// client picker, which derives levels from capabilities, offered them. The
+	// provider's level lookup handles that itself: on a heuristic miss it asks
+	// /api/show under its own bounded, memoized request. A failed lookup
+	// leaves the heuristic result (nil) in place, so behavior is unchanged
+	// when the endpoint is unreachable. All of this runs before controlMu:
+	// the candidate phase holds no lock another operation needs, so an
+	// unresponsive endpoint delays one switch instead of stalling snapshots
+	// (R2-13). Normalization keeps heuristic and metadata shapes identical.
+	levels = provider.NormalizeReasoningEfforts(levels)
 	levelNames := make([]string, 0, len(levels))
 	for _, level := range levels {
 		levelNames = append(levelNames, string(level))
 	}
 	effortKnown := len(levels) > 0 && provider.SupportsReasoningEffort(prov)
-	effort := provider.ReasoningEffort("")
 	if requested != "" && (!effortKnown || !containsReasoningEffort(levels, requested)) {
 		return fmt.Errorf("reasoning effort %q is not supported by %s", requested, model)
 	}
+
+	// Commit phase. The levels stay as the candidate computed them: they
+	// describe the model, not the provider instance re-resolved below.
+	sess.controlMu.Lock()
+	defer sess.controlMu.Unlock()
+	sess.mu.Lock()
+	if sess.closing || sess.running {
+		sess.mu.Unlock()
+		return fmt.Errorf("session became busy while switching models")
+	}
+	// Re-resolve against the live config so a credential or provider edit
+	// that landed while the candidate was built is not reverted by the swap.
+	// A different resolved target means the config moved mid-switch; failing
+	// here is cheaper than installing a model nobody asked for.
+	live := sess.built.Config.Clone()
+	commitProv, commitModel, rerr := live.Resolve(ref)
+	if rerr != nil {
+		sess.mu.Unlock()
+		return rerr
+	}
+	if config.ModelRef(commitModel, commitProv.Name()) != modelRef {
+		sess.mu.Unlock()
+		return fmt.Errorf("model configuration changed while switching; try again")
+	}
+	prov, model, cfg = commitProv, commitModel, live
+	// The candidate's overrides and context window were computed off-lock. A
+	// config edit that changed them during the candidate phase re-derives
+	// them here; the context re-ask is bounded and only happens in that race.
+	if liveOverrides := cfg.ModelOverrides(modelRef); liveOverrides != overrides {
+		overrides = liveOverrides
+		numCtx = config.ContextWindowFor(prov, model, overrides.ContextWindow)
+	}
+	effort := provider.ReasoningEffort("")
 	if effortKnown {
 		effort = sess.built.Agent.ReasoningEffort()
 		if requested != "" {
@@ -1761,31 +1796,56 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 		} else if !containsReasoningEffort(levels, effort) {
 			effort = levels[0]
 		}
-	}
-	sess.mu.Lock()
-	if sess.closing || sess.running {
-		sess.mu.Unlock()
-		return fmt.Errorf("session became busy while switching models")
+		// Validate before anything is mutated: SetReasoningEffortQuiet after
+		// the swap would return an error for a runtime that already switched
+		// — exactly the half-committed state this transition exists to
+		// prevent. containsReasoningEffort above makes this unreachable for
+		// normalized levels; the check costs one parse.
+		if _, ok := provider.ParseReasoningEffort(string(effort)); !ok {
+			sess.mu.Unlock()
+			return fmt.Errorf("reasoning effort %q is not supported by %s", effort, model)
+		}
 	}
 	if err := sess.built.Store.WriteModel(modelRef); err != nil {
 		sess.mu.Unlock()
 		return err
 	}
+	vision := overrides.Vision
 	sess.Model = model
 	sess.built.Config = cfg
 	sess.built.Agent.Provider = prov
 	sess.built.Agent.Model = model
-	sess.built.Agent.NumCtx = config.ContextWindowFor(prov, model, overrides.ContextWindow)
+	sess.built.Agent.NumCtx = numCtx
 	sess.built.Agent.MaxSteps = cfg.Features.MaxSteps
+	// Build wiring stamps these per-model overrides too; the old switch left
+	// LenientToolParse describing the previous model (R2-13).
+	sess.built.Agent.LenientToolParse = overrides.LenientToolParse
 	if sess.built.FS != nil {
-		sess.built.FS.WithAnchors(overrides.AnchorEdits).WithVision(overrides.Vision)
+		sess.built.FS.WithAnchors(overrides.AnchorEdits).WithVision(vision)
 	}
+	// Semantic features keep the build-time embedding decision (R2-11): a
+	// dedicated embedding model keeps its own backend and vector-space
+	// identity across a chat switch, and only its absence re-couples the
+	// embedder to the chat provider. The compactor gets the dedicated
+	// backend or nothing — never the chat provider — matching wiring.
 	if sess.built.Memory != nil {
-		sess.built.Memory.Embedder = prov
-		sess.built.Memory.SetEmbeddingModel(prov.Name() + "::embedding")
+		embedder, identity := prov, prov.Name()+"::embedding"
+		if eref := cfg.Features.EmbeddingModel; eref != "" {
+			if ep, _, rerr := cfg.Resolve(eref); rerr == nil {
+				embedder, identity = ep, eref
+			}
+		}
+		sess.built.Memory.Embedder = embedder
+		sess.built.Memory.SetEmbeddingModel(identity)
 	}
 	if sess.built.Agent.Compactor != nil {
-		sess.built.Agent.Compactor.SetEmbeddingProvider(prov)
+		if eref := cfg.Features.EmbeddingModel; eref != "" {
+			ep, _, rerr := cfg.Resolve(eref)
+			if rerr != nil {
+				ep = nil
+			}
+			sess.built.Agent.Compactor.SetEmbeddingProvider(ep)
+		}
 	}
 	sess.mu.Unlock()
 
@@ -1822,9 +1882,9 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 		ReasoningEffort:      effort,
 		ReasoningEfforts:     levelNames,
 		ReasoningEffortKnown: effortKnown,
-		Vision:               overrides.Vision,
+		Vision:               vision,
 		VisionKnown:          true,
-		ContextWindow:        sess.built.Agent.NumCtx,
+		ContextWindow:        numCtx,
 		ContextWindowKnown:   true,
 	})
 	return preferenceErr
