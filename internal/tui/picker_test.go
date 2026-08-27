@@ -23,7 +23,7 @@ func TestPickerHintLivesOutsideTheBox(t *testing.T) {
 	// above it rather than inside its chrome.
 	r := testRenderer(120)
 	rows := plainLines(r.RenderPicker(PickerState{Entries: sampleEntries()}))
-	if !strings.Contains(rows[0], "Ctrl+O set default") {
+	if !strings.Contains(rows[0], "Ctrl+N favorite") {
 		t.Errorf("first row = %q, want the key hints", rows[0])
 	}
 	if strings.HasPrefix(rows[0], "╭") || strings.Contains(rows[0], "│") {
@@ -189,11 +189,11 @@ func TestBoxTitledFitsLongTitles(t *testing.T) {
 	}
 }
 
-// TestPickerSetDefaultAndFavoritePersist drives the Ctrl+O / Ctrl+N bindings
-// the way a keypress does and checks that the saved prefs land in the config
-// saver, the in-memory state, and the row marks the picker renders.
-func TestPickerSetDefaultAndFavoritePersist(t *testing.T) {
-	var savedDefault string
+// TestPickerFavoritePersists drives the Ctrl+N binding the way a keypress does
+// and checks that the saved prefs land in the config saver, the in-memory
+// state, and the row marks the picker renders. The old Ctrl+O default-setter
+// is gone: there is no picker-set default, a new session starts on last_model.
+func TestPickerFavoritePersists(t *testing.T) {
 	var savedFavs []string
 	m := NewModel(nil, HeaderState{Model: "qwen3-coder:480b-cloud", Provider: "ollama-cloud"})
 	m.pickerOpen = true
@@ -203,24 +203,9 @@ func TestPickerSetDefaultAndFavoritePersist(t *testing.T) {
 	}
 	m.models = m.picker.Entries
 	m.picker.Selected = 1
-	m.defaultModel = "qwen3-coder:480b-cloud@ollama-cloud"
-	m.saveModelPrefs = func(defaultModel string, favorites []string) error {
-		savedDefault = defaultModel
+	m.saveModelPrefs = func(favorites []string) error {
 		savedFavs = append([]string(nil), favorites...)
 		return nil
-	}
-
-	if _, _ = m.handlePickerKey("ctrl+o"); savedDefault != "deepseek-chat@deepseek" {
-		t.Errorf("saved default = %q, want deepseek-chat@deepseek", savedDefault)
-	}
-	if m.defaultModel != "deepseek-chat@deepseek" {
-		t.Errorf("in-memory default = %q, want deepseek-chat@deepseek", m.defaultModel)
-	}
-	if !m.picker.Entries[1].Default {
-		t.Error("the new default row should carry the default mark")
-	}
-	if m.notice != "Default model: deepseek-chat" {
-		t.Errorf("notice = %q, want a set-default confirmation", m.notice)
 	}
 
 	if _, _ = m.handlePickerKey("ctrl+n"); len(savedFavs) != 1 || savedFavs[0] != "deepseek-chat@deepseek" {

@@ -310,7 +310,7 @@ func runOnce(args []string) (string, error) {
 		WithDisplay(cfg.Display).
 		WithSessions(dataDir, cwd, store).
 		WithProviders(cfg.Providers).
-		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
+		WithModelPrefs(cfg.FavoriteModels, config.SaveModelPrefs).
 		WithPersistentModelState(cfg.LastModel, cfg.ReasoningEfforts,
 			config.SaveLastModel, config.SaveReasoningEffort).
 		WithBackground(execTools.Bg).

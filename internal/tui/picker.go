@@ -35,7 +35,6 @@ type ModelEntry struct {
 	Recommended bool
 	New         bool
 	Old         bool
-	Default     bool
 
 	// Unavailable and Limited drive the marker gutter.
 	Unavailable bool
@@ -69,10 +68,9 @@ type PickerState struct {
 // pickerHint picks the longest key summary that fits.
 func pickerHint(width int) string {
 	for _, hint := range []string{
-		"keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite",
-		"keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab next favorite",
-		"Ctrl+O set default · Ctrl+N favorite",
-		"Ctrl+O set default",
+		"keys: Ctrl+N favorite · Shift+Tab switch active model to next favorite",
+		"keys: Ctrl+N favorite · Shift+Tab next favorite",
+		"Ctrl+N favorite",
 	} {
 		if lipgloss.Width(hint) <= width {
 			return hint
@@ -262,17 +260,10 @@ func pickerSuffixes(e ModelEntry) string {
 	if e.Old {
 		b.WriteString(" old")
 	}
-	if e.Default {
-		b.WriteString(" default")
-	}
 	return b.String()
 }
 
 // pickerNotice is the caveat line under the header when the selection has one.
-// It also surfaces the picker's default-setter: a selectable model that is not
-// already the default gets a "Ctrl+O set as default" hint, so the binding is
-// discoverable right at the model the cursor is on rather than only in the
-// one-line key summary above the box.
 func pickerNotice(e ModelEntry) string {
 	switch {
 	case e.Unavailable:
@@ -291,9 +282,6 @@ func pickerNotice(e ModelEntry) string {
 	var parts []string
 	if len(e.ReasoningEfforts) > 0 {
 		parts = append(parts, "reasoning: "+reasoningEffortsText(e.ReasoningEfforts))
-	}
-	if !e.Default {
-		parts = append(parts, "Ctrl+O set as default")
 	}
 	if len(parts) == 0 {
 		return ""

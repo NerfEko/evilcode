@@ -765,7 +765,7 @@ api_key_env = "OLLAMA_API_KEY"
 `)
 	t.Setenv(EnvConfigPath, path)
 	t.Setenv(EnvOllamaKey, "")
-	if err := SaveModelPrefs("m2@ollama-cloud", []string{"m1@ollama-local", "m2@ollama-cloud"}); err != nil {
+	if err := SaveModelPrefs([]string{"m1@ollama-local", "m2@ollama-cloud"}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -777,20 +777,24 @@ api_key_env = "OLLAMA_API_KEY"
 		"name = \"ollama-local\"", "api_key_env = \"OLLAMA_API_KEY\"") {
 		t.Fatalf("writer dropped unrelated TOML: %s", text)
 	}
-	if !containsAll(text, "default_model = \"m2@ollama-cloud\"",
-		"favorite_models = [\"m1@ollama-local\", \"m2@ollama-cloud\"]") {
-		t.Fatalf("writer did not update model prefs: %s", text)
+	if !containsAll(text, "favorite_models = [\"m1@ollama-local\", \"m2@ollama-cloud\"]") {
+		t.Fatalf("writer did not update the favorites: %s", text)
 	}
-	// The replaced keys must not linger as duplicates inside the tables.
-	if strings.Count(text, "default_model") != 1 || strings.Count(text, "favorite_models") != 1 {
+	// The picker no longer writes default_model (Ctrl+O is gone): the existing
+	// line must survive byte for byte as the deep fallback it was.
+	if !containsAll(text, "default_model = \"old@ollama-local\"") {
+		t.Fatalf("writer clobbered the existing default_model: %s", text)
+	}
+	// The replaced key must not linger as a duplicate inside the tables.
+	if strings.Count(text, "favorite_models") != 1 {
 		t.Fatalf("old keys not removed: %s", text)
 	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultModel != "m2@ollama-cloud" {
-		t.Errorf("default = %q, want m2@ollama-cloud", cfg.DefaultModel)
+	if cfg.DefaultModel != "old@ollama-local" {
+		t.Errorf("default = %q, want the untouched old@ollama-local", cfg.DefaultModel)
 	}
 	if len(cfg.FavoriteModels) != 2 || cfg.FavoriteModels[1] != "m2@ollama-cloud" {
 		t.Errorf("favorites = %v, want the saved two", cfg.FavoriteModels)
@@ -798,23 +802,22 @@ api_key_env = "OLLAMA_API_KEY"
 }
 
 func TestSaveModelPrefsOnAFreshMachineStillLoads(t *testing.T) {
-	// Ctrl+O on a machine with no config file must write a file the next launch
+	// Ctrl+N on a machine with no config file must write a file the next launch
 	// can load, and must not drag the defaults in (there is nothing to replace).
+	// With no default_model written, a fresh launch still resolves a model from
+	// Default()'s own cloud/local choice — the picker no longer pins one.
 	path := filepath.Join(t.TempDir(), "config.toml")
 	t.Setenv(EnvConfigPath, path)
 	t.Setenv(EnvOllamaKey, "")
-	if err := SaveModelPrefs("glm-5.2:cloud@ollama-cloud", nil); err != nil {
+	if err := SaveModelPrefs([]string{"glm-5.2:cloud@ollama-cloud"}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("config written by the picker does not load: %v", err)
 	}
-	if cfg.DefaultModel != "glm-5.2:cloud@ollama-cloud" {
-		t.Errorf("default = %q, want the saved one", cfg.DefaultModel)
-	}
-	if len(cfg.FavoriteModels) != 0 {
-		t.Errorf("favorites = %v, want none", cfg.FavoriteModels)
+	if len(cfg.FavoriteModels) != 1 || cfg.FavoriteModels[0] != "glm-5.2:cloud@ollama-cloud" {
+		t.Errorf("favorites = %v, want the saved one", cfg.FavoriteModels)
 	}
 }
 
@@ -882,7 +885,7 @@ favorite_models = ["a@ollama-local", "b@ollama-local"]
 `)
 	t.Setenv(EnvConfigPath, path)
 	t.Setenv(EnvOllamaKey, "")
-	if err := SaveModelPrefs("a@ollama-local", nil); err != nil {
+	if err := SaveModelPrefs(nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -892,12 +895,18 @@ favorite_models = ["a@ollama-local", "b@ollama-local"]
 	if strings.Contains(string(data), "favorite_models") {
 		t.Fatalf("empty favorites should drop the key, got: %s", data)
 	}
+	if !strings.Contains(string(data), "default_model = \"a@ollama-local\"") {
+		t.Fatalf("empty favorites must leave default_model alone, got: %s", data)
+	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.FavoriteModels) != 0 {
 		t.Errorf("favorites = %v, want none after clearing", cfg.FavoriteModels)
+	}
+	if cfg.DefaultModel != "a@ollama-local" {
+		t.Errorf("default = %q, want the untouched a@ollama-local", cfg.DefaultModel)
 	}
 }
 

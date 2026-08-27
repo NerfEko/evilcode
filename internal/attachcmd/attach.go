@@ -240,7 +240,7 @@ func run(args []string, autoStart bool) error {
 				RequestID: id, Answers: labels,
 			})
 		}).
-		WithModelPrefs(cfg.DefaultModel, cfg.FavoriteModels, config.SaveModelPrefs).
+		WithModelPrefs(cfg.FavoriteModels, config.SaveModelPrefs).
 		WithGraphics(graphics.Detect(), filepath.Join(config.DataDir(), "diagrams"))
 	m.SetRemoteBackground(snapshotBackground(snap))
 	for _, req := range snap.Pending {

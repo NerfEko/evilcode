@@ -216,13 +216,13 @@ type Model struct {
 	// providers. Empty falls back to the active provider only.
 	providers []config.ProviderConfig
 
-	// modelPrefs are the picker's persisted preferences (§5.3): the default
-	// model ref, the favorite refs in pin order, and the function that writes
-	// them back to the config file. A nil saver means the picker shows the
-	// state but cannot persist changes.
-	defaultModel   string
+	// modelPrefs are the picker's persisted preferences (§5.3): the favorite
+	// refs in pin order, and the function that writes them back to the config
+	// file. A nil saver means the picker shows the state but cannot persist
+	// changes. There is no picker-set default model: a new session starts on
+	// whatever model the user left off at (last_model).
 	favorites      []string
-	saveModelPrefs func(defaultModel string, favorites []string) error
+	saveModelPrefs func(favorites []string) error
 
 	// lastModel and reasoningPrefs are global model state, distinct from the
 	// per-session transcript metadata. They let a fresh launch resume the
@@ -870,12 +870,12 @@ func (m *Model) WithBraveSearch(search *tools.BraveSearch) *Model {
 	return m
 }
 
-// WithModelPrefs wires the picker's persisted preferences (§5.3): the default
-// model ref, the favorite refs in pin order, and the function that writes them
-// back to the config file. Ctrl+O and Ctrl+N in the picker both re-render the
-// list through these and call save, so the change survives the session.
-func (m *Model) WithModelPrefs(defaultModel string, favorites []string, save func(string, []string) error) *Model {
-	m.defaultModel = defaultModel
+// WithModelPrefs wires the picker's persisted preferences (§5.3): the favorite
+// refs in pin order and the function that writes them back to the config file.
+// Ctrl+N in the picker re-renders the list through these and calls save, so the
+// change survives the session. (The old Ctrl+O default-setter is gone: the
+// model a new session starts on is last_model, not a saved default.)
+func (m *Model) WithModelPrefs(favorites []string, save func([]string) error) *Model {
 	m.favorites = append([]string(nil), favorites...)
 	m.saveModelPrefs = save
 	return m
@@ -2879,29 +2879,6 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 		m.picker.Filter = ""
 		return m, nil
 
-	case "ctrl+o":
-		// Set default (§5.3). A no-op on the current default would be noise, so
-		// it returns before touching the file.
-		if len(entries) == 0 {
-			return m, nil
-		}
-		sel := entries[clamp(m.picker.Selected, 0, len(entries)-1)]
-		if sel.Unavailable {
-			m.notice = sel.Name + " is unavailable"
-			return m, nil
-		}
-		ref := config.ModelRef(sel.Name, sel.Provider)
-		if ref == m.defaultModel {
-			return m, nil
-		}
-		if !m.saveModelPrefsRef(ref, m.favorites) {
-			return m, nil
-		}
-		m.defaultModel = ref
-		m.applyModelPrefs()
-		m.notice = "Default model: " + sel.Name
-		return m, nil
-
 	case "ctrl+n":
 		// Toggle favorite (§5.3). The save happens before the in-memory toggle,
 		// so a failed write leaves the picker exactly as it was.
@@ -2921,7 +2898,7 @@ func (m *Model) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 		} else {
 			next = append(next, ref)
 		}
-		if !m.saveModelPrefsRef(m.defaultModel, next) {
+		if !m.saveModelPrefsRef(next) {
 			return m, nil
 		}
 		if wasFavorite {
@@ -3149,18 +3126,16 @@ func (m *Model) resolveContextWindow(ref string) tea.Cmd {
 	}
 }
 
-// applyModelPrefs re-marks the Default and Favorite flags everywhere the
-// picker reads them after Ctrl+O / Ctrl+N changed one, so the row marks
-// follow the saved config without refetching the model list.
+// applyModelPrefs re-marks the Favorite flag everywhere the picker reads it
+// after Ctrl+N changed the set, so the ♥ marks follow the saved config without
+// refetching the model list.
 func (m *Model) applyModelPrefs() {
 	for i := range m.models {
 		ref := config.ModelRef(m.models[i].Name, m.models[i].Provider)
-		m.models[i].Default = ref == m.defaultModel
 		m.models[i].Favorite = m.isFavorite(ref)
 	}
 	for i := range m.picker.Entries {
 		ref := config.ModelRef(m.picker.Entries[i].Name, m.picker.Entries[i].Provider)
-		m.picker.Entries[i].Default = ref == m.defaultModel
 		m.picker.Entries[i].Favorite = m.isFavorite(ref)
 	}
 }
@@ -3190,15 +3165,15 @@ func (m *Model) isFavorite(ref string) bool {
 	return false
 }
 
-// saveModelPrefsRef writes the given prefs through the configured saver and
+// saveModelPrefsRef writes the favorite list through the configured saver and
 // reports whether it succeeded. A nil saver — headless or test builds that
 // never wired one — cannot persist, so it says so rather than pretending.
-func (m *Model) saveModelPrefsRef(defaultModel string, favorites []string) bool {
+func (m *Model) saveModelPrefsRef(favorites []string) bool {
 	if m.saveModelPrefs == nil {
 		m.notice = "cannot save model prefs: no config backend"
 		return false
 	}
-	if err := m.saveModelPrefs(defaultModel, favorites); err != nil {
+	if err := m.saveModelPrefs(favorites); err != nil {
 		m.notice = "could not save model prefs: " + err.Error()
 		return false
 	}
@@ -3325,12 +3300,11 @@ func (m *Model) applyModels(msg modelsLoaded) {
 }
 
 func (m *Model) showPicker(entries []ModelEntry) {
-	// The picker carries the persisted preferences as row marks: the default
-	// model gets the `default` suffix, favorites the ♥ (§5.3). Marked in place
-	// so the stored m.models list and the rendered picker never disagree.
+	// The picker carries the persisted favorite preference as a row mark: the
+	// ♥ suffix (§5.3). Marked in place so the stored m.models list and the
+	// rendered picker never disagree.
 	for i := range entries {
 		ref := config.ModelRef(entries[i].Name, entries[i].Provider)
-		entries[i].Default = ref == m.defaultModel
 		entries[i].Favorite = m.isFavorite(ref)
 	}
 	m.picker = PickerState{Entries: entries, Height: DefaultPickerHeight}
@@ -3366,7 +3340,6 @@ func fetchModels(prov provider.Provider, current, providerName string) []ModelEn
 			Name:     current,
 			Provider: providerName,
 			Current:  true,
-			Default:  true,
 		}}
 	}
 	out := make([]ModelEntry, 0, len(infos))
@@ -3448,7 +3421,7 @@ func fetchAllModels(provs []config.ProviderConfig, current, currentProvider stri
 		}
 	}
 	if len(out) == 0 {
-		return []ModelEntry{{Name: current, Provider: currentProvider, Current: true, Default: true}}
+		return []ModelEntry{{Name: current, Provider: currentProvider, Current: true}}
 	}
 	return out
 }

@@ -469,12 +469,14 @@ func SaveOllamaSessionCookie(cookie string) error {
 	return writeConfigAtomic(path, []byte(updated))
 }
 
-// SaveModelPrefs writes the model picker's preferences — the default model and
-// the favorite list — preserving every other line of the file. A full
-// decode/encode round trip would silently delete settings newer than this
+// SaveModelPrefs writes the model picker's persisted preference — the favorite
+// list — preserving every other line of the file, including any default_model
+// already there (a default can now only come from config or a repo pin; the
+// picker no longer sets one, and a new session simply starts on last_model). A
+// full decode/encode round trip would silently delete settings newer than this
 // binary knows about, so the update is a targeted text edit, exactly like
 // SaveProviderAPIKey.
-func SaveModelPrefs(defaultModel string, favorites []string) error {
+func SaveModelPrefs(favorites []string) error {
 	configWriteMu.Lock()
 	defer configWriteMu.Unlock()
 	path := os.Getenv(EnvConfigPath)
@@ -485,14 +487,14 @@ func SaveModelPrefs(defaultModel string, favorites []string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("config: reading %s: %w", path, err)
 	}
-	updated := updateModelPrefs(string(data), defaultModel, favorites)
+	updated := updateModelPrefs(string(data), favorites)
 	return writeConfigAtomic(path, []byte(updated))
 }
 
 // SaveLastModel records the model the interactive client most recently used.
-// It intentionally does not rewrite default_model: Ctrl+O remains a deliberate
-// default preference, while an ordinary model switch can still be resumed on
-// the next launch.
+// It intentionally does not rewrite default_model: that key is now only a
+// deep fallback (fresh installs, repo pins, the router's default role), while
+// an ordinary model switch is resumed on the next launch via last_model.
 func SaveLastModel(modelRef string) error {
 	configWriteMu.Lock()
 	defer configWriteMu.Unlock()
@@ -655,12 +657,15 @@ func updateTopLevelReasoningEfforts(text string, efforts map[string]string) stri
 	return strings.Join(lines, "")
 }
 
-// updateModelPrefs rewrites the `default_model` and `favorite_models` keys,
-// leaving everything else — comments, unknown keys, provider tables — byte for
-// byte alone. Both keys are top-level, so when absent they are inserted before
-// the first table header: in TOML a bare key after `[[provider]]` would belong
-// to that table and silently never load as the config's own field.
-func updateModelPrefs(text, defaultModel string, favorites []string) string {
+// updateModelPrefs rewrites the `favorite_models` key, leaving everything else
+// — comments, unknown keys, provider tables, and default_model itself — byte
+// for byte alone. The picker no longer writes a default (a new session starts
+// on last_model), so any existing default_model line keeps working as the deep
+// fallback exactly as its author left it. favorite_models is top-level, so when
+// absent it is inserted before the first table header: in TOML a bare key after
+// `[[provider]]` would belong to that table and silently never load as the
+// config's own field.
+func updateModelPrefs(text string, favorites []string) string {
 	if !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
@@ -684,8 +689,8 @@ func updateModelPrefs(text, defaultModel string, favorites []string) string {
 		name, _, ok := strings.Cut(trimmed, "=")
 		if atTopLevel && ok {
 			switch strings.TrimSpace(name) {
-			case "default_model", "favorite_models":
-				continue // replaced by the new values written above the file
+			case "favorite_models":
+				continue // replaced by the new value written above the file
 			}
 		}
 		keep = append(keep, line)
@@ -695,7 +700,6 @@ func updateModelPrefs(text, defaultModel string, favorites []string) string {
 	for _, l := range lead {
 		b.WriteString(l)
 	}
-	b.WriteString("default_model = " + strconv.Quote(defaultModel) + "\n")
 	if len(favorites) > 0 {
 		b.WriteString("favorite_models = [")
 		for i, f := range favorites {
