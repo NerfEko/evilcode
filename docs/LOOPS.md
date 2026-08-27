@@ -6948,3 +6948,33 @@ Verified: `go test -tags probe ./probe/...` green (was 7/7 failing scenarios),
 `go vet ./...`, `go test ./... -count=1 -timeout 300s` green, `gofmt` clean,
 golden diffs reviewed line by line.
 
+## 2026-08-26 — codex review 2, R2-06: the flaky worker-cap test now watches the real counter
+
+Verified: the review's diagnosis was exact. `holdWorkers` re-armed terminal
+sessions — `if sess.closedDone || sess.done == nil { closedDone, done = false,
+make(...) }` — so a worker whose `markFinished` had already run got
+`closedDone` reset and a fresh unclosed channel: `finished()` flipped to false
+(`liveWorkers` counted it live), and cleanup's `markFinished` computed `first`
+true a second time and called `swarm.finished()` twice for one reservation.
+Worse, the condition never touched genuinely live workers (`closedDone==false
+&& done!=nil` → untouched), so the helper's entire effect was the corruption:
+`liveWorkers()` raced with the resurrection loop, and the observed 6-live
+against a cap of 4 was the helper sampling its own corruption. The production
+reservation counter is lock-guarded; the helper was the defect.
+
+Done: `holdWorkers` is deleted. Both tests (`TestConcurrentSpawnsStayUnder
+TheLiveLimit` and `TestSwarmStaysAtItsCapUnderConcurrentSummon`) now pace
+worker turns with `EVILCODE_MOCK_STREAM_DELAY=40ms` so a spawn's turn is
+genuinely in flight during the burst, sample `swarm.live` directly every 2ms
+(`sampleLive` — the admission gate is the thing the cap protects, so the test
+watches the counter, not a reconstruction from sessions), and assert the
+terminal lifecycle afterwards (`waitReservationsDrained`: every reservation
+returns and no session stays unfinished). No test-only mutation of daemon
+session state remains.
+
+Stress: `-count=25` on both tests (50 bursts) green; the review's flake did not
+reproduce because the race it came from no longer exists in the test.
+
+Verified: `go test ./internal/daemon/ -run '...Cap...' -count=25` green,
+`go test ./... -count=1 -timeout 300s` green, `gofmt` clean.
+

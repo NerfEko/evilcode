@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -61,8 +62,10 @@ func TestSwarmStaysAtItsCapUnderConcurrentSummon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	held := holdWorkers(t, srv)
-	defer held()
+	t.Setenv("EVILCODE_MOCK_STREAM_DELAY", "40ms")
+
+	stop, maxLive := sampleLive(t, srv)
+	defer close(stop)
 
 	var wg sync.WaitGroup
 	for range MaxLiveWorkers * 5 {
@@ -74,13 +77,11 @@ func TestSwarmStaysAtItsCapUnderConcurrentSummon(t *testing.T) {
 	}
 	wg.Wait()
 
-	srv.swarm.mu.Lock()
-	live := srv.swarm.live
-	srv.swarm.mu.Unlock()
-	if live > MaxLiveWorkers {
-		t.Errorf("%d workers admitted against a cap of %d", live, MaxLiveWorkers)
+	if got := atomic.LoadInt64(maxLive); got > MaxLiveWorkers {
+		t.Errorf("%d workers were admitted against a cap of %d", got, MaxLiveWorkers)
 	}
 	if n := srv.liveWorkers(); n > MaxLiveWorkers {
 		t.Errorf("%d workers are actually live, past the %d cap", n, MaxLiveWorkers)
 	}
+	waitReservationsDrained(t, srv)
 }

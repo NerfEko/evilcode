@@ -2,26 +2,34 @@ package daemon
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // H2.4: the global and per-session worker limits were checked and then acted
 // on, with nothing reserving in between. Concurrent spawns all read the same
 // count, all pass, and all start — so the two breakers that bound how much a
 // swarm can spend are advisory under exactly the load they exist for.
+//
+// The worker turns are paced with the mock's stream delay so a spawn's turn is
+// genuinely in flight while the burst races the admission gate. The old helper
+// re-armed finished sessions' done channels instead, which resurrected
+// terminal workers into live-looking state and double-released reservations —
+// the count it was holding steady was the count it corrupted (R2-06).
 func TestConcurrentSpawnsStayUnderTheLiveLimit(t *testing.T) {
 	srv, _ := testServer(t)
 	defer srv.Close()
+
+	t.Setenv("EVILCODE_MOCK_STREAM_DELAY", "40ms")
 
 	spawner, err := srv.Open("")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Workers that never finish, so every spawn counts against the live cap for
-	// the whole test.
-	held := holdWorkers(t, srv)
-	defer held()
+	stop, maxLive := sampleLive(t, srv)
+	defer close(stop)
 
 	var wg sync.WaitGroup
 	for range MaxLiveWorkers * 4 {
@@ -33,8 +41,58 @@ func TestConcurrentSpawnsStayUnderTheLiveLimit(t *testing.T) {
 	}
 	wg.Wait()
 
-	if n := srv.liveWorkers(); n > MaxLiveWorkers {
-		t.Errorf("%d workers are live, past the %d limit", n, MaxLiveWorkers)
+	if got := atomic.LoadInt64(maxLive); got > MaxLiveWorkers {
+		t.Errorf("%d workers were live at once, past the %d limit", got, MaxLiveWorkers)
+	}
+	waitReservationsDrained(t, srv)
+}
+
+// sampleLive polls the swarm's live-reservation counter until the returned
+// stop channel closes and reports the highest value it saw. The admission gate
+// is the thing the cap protects, so the test watches the counter itself rather
+// than reconstructing liveness from sessions after the fact.
+func sampleLive(t *testing.T, srv *Server) (chan struct{}, *int64) {
+	t.Helper()
+	var maxLive int64
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			srv.swarm.mu.Lock()
+			n := srv.swarm.live
+			srv.swarm.mu.Unlock()
+			for {
+				old := atomic.LoadInt64(&maxLive)
+				if int64(n) <= old || atomic.CompareAndSwapInt64(&maxLive, old, int64(n)) {
+					break
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	return stop, &maxLive
+}
+
+// waitReservationsDrained pins the terminal lifecycle: every worker eventually
+// marks itself finished and returns its reservation.
+func waitReservationsDrained(t *testing.T, srv *Server) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		srv.swarm.mu.Lock()
+		live := srv.swarm.live
+		srv.swarm.mu.Unlock()
+		if live == 0 && srv.liveWorkers() == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reservations never drained: %d live, %d unfinished sessions", live, srv.liveWorkers())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -66,45 +124,8 @@ func TestConcurrentSpawnsStayUnderThePerSessionLimit(t *testing.T) {
 	}
 }
 
-// holdWorkers keeps every worker spawned during the test unfinished, so the
-// live count reflects what was started rather than what happens to still be
-// running against an instant mock.
-func holdWorkers(t *testing.T, srv *Server) func() {
-	t.Helper()
-	var mu sync.Mutex
-	var held []*Session
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			srv.mu.Lock()
-			for _, sess := range srv.sessions {
-				if !sess.Worker {
-					continue
-				}
-				sess.mu.Lock()
-				if sess.closedDone || sess.done == nil {
-					sess.closedDone, sess.done = false, make(chan struct{})
-					held = append(held, sess)
-				}
-				sess.mu.Unlock()
-			}
-			srv.mu.Unlock()
-		}
-	}()
-	return func() {
-		close(stop)
-		<-done
-		mu.Lock()
-		defer mu.Unlock()
-		for _, sess := range held {
-			sess.markFinished()
-		}
-	}
-}
+// The old holdWorkers helper was deleted with R2-06: it re-armed finished
+// sessions' done channels (closedDone=true → false, fresh channel), which made
+// terminal workers look live and let cleanup's markFinished release the same
+// reservation twice. Both tests now pace worker turns with the mock stream
+// delay and sample the swarm's live counter directly.
