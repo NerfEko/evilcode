@@ -7298,3 +7298,56 @@ Tests: `TestRepairArgsUnwrapStringifiedArgs`,
 Verified: `go test ./internal/tools/ -count=1`, `go vet ./...`,
 `go test ./... -count=1 -timeout 600s` green, `gofmt -l .` clean.
 
+## 2026-08-27 — codex review 2, R2-13: model switching is one bounded, atomic transition
+
+Verified: all three claims held. `setModel` held `controlMu` across the whole
+switch, including `o.Show(context.Background(), model)` — an unbounded
+network call under the lock that serializes model control and snapshots —
+and the Ollama level lookup inside `ReasoningEffortLevelsForProvider` already
+made the same /api/show request (bounded, memoized), so the switch did the
+lookup twice whenever the first attempt failed. The swap mutated provider,
+model, NumCtx, MaxSteps, FS, Memory, Compactor and Config across separate
+steps; the effort was applied after the swap, so its failure returned an
+error for a runtime that had already switched. The standalone TUI path
+ignored `pc.Build()` errors — and a provider missing from `m.providers` fell
+through the rebuild entirely — then renamed the visible model anyway.
+
+Done, three pieces. (1) Daemon: the switch splits into a candidate phase
+(resolve, per-model overrides, context window, reasoning levels, effort
+validation — all network-shaped work bounded by the provider's own show
+timeouts, none of it under `controlMu`) and a commit phase under
+`controlMu` that re-resolves against the live config — so a credential edit
+landing mid-switch is not reverted — validates the effort before any
+mutation, persists the model, and swaps every runtime field in one hold of
+`mu`. The redundant second /api/show lookup is deleted; the per-model
+`LenientToolParse` override now follows the switch; and the embedding
+decision is re-derived the way build wiring does it (R2-11): a dedicated
+embedding model keeps its backend and vector-space identity across a chat
+switch, and the compactor gets the dedicated backend or nothing — never the
+chat provider. (2) Standalone TUI: a provider that is unknown or fails to
+build refuses the switch with a notice and touches nothing; the effort menu
+no longer probes levels through a provider whose build fails (the menu
+would offer a state the apply path must refuse); the compactor's build-time
+embedder is no longer overwritten on a provider crossing. (3) Three tests
+that had quietly depended on the old swallowed-build behavior got real,
+buildable providers.
+
+Tests: `TestModelSwitchSurvivesAnUnresponsiveOllamaEndpoint` (a hung
+endpoint delays one ~6s bounded switch instead of holding `controlMu`
+forever — the old code never returns),
+`TestModelSwitchKeepsTheDedicatedEmbeddingBackend`,
+`TestModelSwitchCarriesThePerModelOverrides`, plus the rewritten
+`TestPickerSwitchKeepsTheBuildTimeCompactionEmbedder` and the
+now-buildable-provider forms of `TestPickerSwitchRecordsModelMeta` and
+`TestResolveContextWindowUsesOverrideSynchronously`.
+
+Known remaining gap, recorded rather than silently dropped: the standalone
+TUI still does not refresh `Memory.Embedder` on a provider crossing without
+a dedicated embedding setting (the daemon path does). The Model has no
+config access, and R2-46's decision on standalone mode's fate should
+precede growing another callback.
+
+Verified: `go test ./internal/daemon/ -count=1`, `go test ./internal/tui/
+-count=1`, `go test -race ./internal/daemon/ ./internal/tui/`, vet, full
+`go test ./... -count=1 -timeout 600s`, probe suite, `gofmt -l .` clean.
+
