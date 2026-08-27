@@ -165,14 +165,18 @@ type Event struct {
 	// history or renames a session. They travel through the same event queue as
 	// ordinary UI updates so Bubble Tea, not a socket goroutine, owns model
 	// mutation.
-	SnapshotSession    string             `json:"snapshot_session,omitempty"`
-	SnapshotModel      string             `json:"snapshot_model,omitempty"`
-	SnapshotProvider   string             `json:"snapshot_provider,omitempty"`
-	SnapshotRunning    bool               `json:"snapshot_running,omitempty"`
-	SnapshotEpoch      int                `json:"snapshot_epoch,omitempty"`
-	SnapshotMessages   []provider.Message `json:"snapshot_messages,omitempty"`
-	SnapshotPending    []AskEvent         `json:"snapshot_pending,omitempty"`
-	SnapshotBackground []BackgroundState  `json:"snapshot_background,omitempty"`
+	SnapshotSession  string             `json:"snapshot_session,omitempty"`
+	SnapshotModel    string             `json:"snapshot_model,omitempty"`
+	SnapshotProvider string             `json:"snapshot_provider,omitempty"`
+	SnapshotRunning  bool               `json:"snapshot_running,omitempty"`
+	SnapshotEpoch    int                `json:"snapshot_epoch,omitempty"`
+	SnapshotMessages []provider.Message `json:"snapshot_messages,omitempty"`
+	// SnapshotIncomplete marks a turn whose history copy was dropped by the
+	// transport size guard. Clients must keep their accumulated mirror instead
+	// of syncing from the absent history.
+	SnapshotIncomplete bool              `json:"snapshot_incomplete,omitempty"`
+	SnapshotPending    []AskEvent        `json:"snapshot_pending,omitempty"`
+	SnapshotBackground []BackgroundState `json:"snapshot_background,omitempty"`
 
 	// Ask carries a persisted interactive request owned by the server. It is
 	// separate from Display because a disconnected client must be able to

@@ -267,7 +267,7 @@ func run(args []string, autoStart bool) error {
 			switch msg.Kind {
 			case daemon.MsgEvent:
 				if msg.Event != nil {
-					if msg.Event.Kind == agent.EventTurnEnd && msg.Event.SnapshotMessages != nil {
+					if msg.Event.Kind == agent.EventTurnEnd && msg.Event.SnapshotMessages != nil && !msg.Event.SnapshotIncomplete {
 						a.Conv.Sync(msg.Event.SnapshotMessages, msg.Event.SnapshotEpoch)
 					}
 					a.Inject(*msg.Event)
@@ -283,7 +283,13 @@ func run(args []string, autoStart bool) error {
 					// Follow a /rename: the new identity is authoritative for every
 					// closure and the roster self-filter from here on (D3).
 					self.set(msg.Snapshot.Session)
-					a.Conv.Sync(snapshotMessages(msg.Snapshot), msg.Snapshot.Epoch)
+					// A transport-truncated snapshot must not replace a mirror
+					// that already holds the older half of the conversation; the
+					// partial list renders, the mirror keeps what it has.
+					trimmed := msg.Snapshot.Truncated
+					if !trimmed {
+						a.Conv.Sync(snapshotMessages(msg.Snapshot), msg.Snapshot.Epoch)
+					}
 					a.Inject(agent.Event{
 						Kind:               agent.EventSnapshot,
 						Session:            msg.Snapshot.Session,
@@ -291,6 +297,7 @@ func run(args []string, autoStart bool) error {
 						SnapshotModel:      msg.Snapshot.Model,
 						SnapshotProvider:   msg.Snapshot.Provider,
 						SnapshotRunning:    msg.Snapshot.Running,
+						SnapshotIncomplete: trimmed,
 						SnapshotMessages:   snapshotMessages(msg.Snapshot),
 						SnapshotPending:    append([]agent.AskEvent(nil), msg.Snapshot.Pending...),
 						SnapshotBackground: snapshotBackground(msg.Snapshot),

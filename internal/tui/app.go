@@ -1798,6 +1798,13 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.ApplyRemoteState(e.SnapshotSession, e.SnapshotModel, e.SnapshotProvider,
 			e.SnapshotRunning, e.SnapshotMessages, e.SnapshotPending,
 			e.SnapshotBackground)
+		if e.SnapshotIncomplete {
+			// The daemon trimmed the frame to keep the connection alive; the
+			// transcript shows the newest history it could carry.
+			m.blocks = append(m.blocks, Block{Kind: BlockNotice,
+				Text: "older history was trimmed by the daemon to fit the transport limit"})
+			m.followIfPinned()
+		}
 
 	case agent.EventError:
 		m.finishStreaming()

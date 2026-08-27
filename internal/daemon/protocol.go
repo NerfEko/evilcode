@@ -34,6 +34,15 @@ const MaxClientFrameBytes = 8 << 20
 // disconnect.
 var ErrFrameTooLarge = errors.New("frame exceeds the daemon's 8 MiB size limit")
 
+// MaxServerFrameBytes bounds one server→client frame. It sits under the
+// client's 8 MiB scanner limit (MaxClientFrameBytes) so the daemon degrades an
+// oversized frame instead of writing one the client must reject — which would
+// disconnect a healthy client mid-session. Snapshot histories therefore carry
+// no image bytes (nothing renders them from history), and the connection
+// writer downgrades what still does not fit rather than dropping protocol
+// framing (R2-01).
+const MaxServerFrameBytes = MaxClientFrameBytes - 512*1024
+
 // ProtocolVersion changes whenever the transport shape changes in a way that
 // an older client cannot safely interpret.
 const ProtocolVersion = 2
@@ -237,8 +246,14 @@ type Snapshot struct {
 	Epoch int `json:"epoch"`
 
 	// Messages is the conversation so far, which is how an attaching client
-	// gets history without replaying every delta that produced it.
-	Messages []Message `json:"messages,omitempty"`
+	// gets history without replaying every delta that produced it. Image bytes
+	// are stripped at the source: history is never re-rendered from its bytes,
+	// so carrying them only risks pushing the frame past the client's limit.
+	// Truncated says the list was cut from the oldest side to fit one frame; a
+	// client that needs older history must read the session store, not assume
+	// the transcript is complete.
+	Messages  []Message `json:"messages,omitempty"`
+	Truncated bool      `json:"truncated,omitempty"`
 
 	// Pending contains interactive requests that are waiting in the server,
 	// including when no TUI was attached when they were created.

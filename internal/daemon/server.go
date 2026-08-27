@@ -1040,6 +1040,13 @@ func (sess *Session) publishEvent(e agent.Event) {
 		if len(history) > 0 && history[0].Role == provider.RoleSystem {
 			history = history[1:]
 		}
+		// Image bytes never travel in the history copy. Nothing re-renders an
+		// image from history — blocks are built from text and tool metadata —
+		// and one 20 MiB read base64-expands past the client's whole frame
+		// limit, disconnecting it at the exact moment a turn completed.
+		for i := range history {
+			history[i].Images = nil
+		}
 		e.SnapshotMessages = history
 		e.SnapshotEpoch = sess.built.Agent.Conv.Epoch()
 	}
@@ -1475,9 +1482,12 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 			ToolName:      m.ToolName,
 			IsError:       m.IsError,
 			Held:          m.Held,
-			Images:        m.Images,
-			Hidden:        m.Hidden,
-			Repairs:       m.Repairs,
+			// No image bytes: history is never re-rendered from its bytes,
+			// and a 20 MiB image would push the attach frame far past the
+			// client's 8 MiB scanner limit (R2-01).
+			Images:  nil,
+			Hidden:  m.Hidden,
+			Repairs: m.Repairs,
 		})
 	}
 	levels := provider.ReasoningEffortLevelsForProvider(
@@ -1944,12 +1954,106 @@ func (sess *Session) Interrupt(text string, urgent bool) {
 	sess.built.Agent.Interject(agent.Interrupt{Source: source, Text: text, Urgent: urgent})
 }
 
+// writeServerFrame writes one server→client frame, bounded by
+// MaxServerFrameBytes. Every frame is marshalled before it is written so an
+// oversized payload is downgraded by fitServerFrame instead of reaching a
+// client whose scanner must reject it and hang up (R2-01).
+func writeServerFrame(conn net.Conn, msg ServerMsg) bool {
+	msg, buf, ok := fitServerFrame(msg)
+	if !ok {
+		// Unreachable in practice: the last downgrade stage shrinks any real
+		// event to its scalar shell. Dropping the frame keeps the connection
+		// and the stream's sequence numbering intact, which is worth more
+		// than delivering a payload nothing can absorb.
+		return true
+	}
+	buf = append(buf, '\n')
+	_, err := conn.Write(buf)
+	return err == nil
+}
+
+// fitServerFrame marshals msg and degrades it when the frame would exceed
+// MaxServerFrameBytes. Stages are ordered by how much a client depends on
+// them: the post-turn history copy goes first (image bytes are already
+// stripped at the source, so only pathological text histories reach here),
+// then live image and display payloads, then the snapshot's message list,
+// newest half at a time. What survives every downgrade carries the event's
+// identity, so sequence numbering and turn lifecycle stay intact.
+func fitServerFrame(msg ServerMsg) (ServerMsg, []byte, bool) {
+	if buf, ok := marshalServerFrame(msg); ok {
+		return msg, buf, true
+	}
+	if msg.Event != nil {
+		e := *msg.Event
+		msg.Event = &e
+		if e.SnapshotMessages != nil {
+			e.SnapshotMessages = nil
+			e.SnapshotIncomplete = true
+			if buf, ok := marshalServerFrame(msg); ok {
+				return msg, buf, true
+			}
+		}
+		if len(e.Images) > 0 {
+			e.Images = nil
+			if buf, ok := marshalServerFrame(msg); ok {
+				return msg, buf, true
+			}
+		}
+		e.Display = nil
+		e.SnapshotMessages = nil
+		e.SnapshotIncomplete = true
+		const textHead = 32 << 10
+		if len(e.Text) > textHead {
+			e.Text = e.Text[:textHead] + "\n\n[truncated by the daemon to fit the client frame limit]"
+		}
+		buf, ok := marshalServerFrame(msg)
+		return msg, buf, ok
+	}
+	if msg.Snapshot != nil {
+		s := *msg.Snapshot
+		msg.Snapshot = &s
+		for len(s.Messages) > 1 {
+			s.Messages = s.Messages[max(1, len(s.Messages)/2):]
+			s.Truncated = true
+			if buf, ok := marshalServerFrame(msg); ok {
+				return msg, buf, true
+			}
+		}
+		// A single message over the frame budget: deliver the envelope so the
+		// client attaches and learns the session exists, without the history.
+		if len(s.Messages) > 0 {
+			s.Messages, s.Truncated = nil, true
+			if buf, ok := marshalServerFrame(msg); ok {
+				return msg, buf, true
+			}
+		}
+	}
+	if msg.Err != "" && len(msg.Err) > MaxServerFrameBytes/2 {
+		msg.Err = msg.Err[:MaxServerFrameBytes/2] + "…[truncated]"
+		if buf, ok := marshalServerFrame(msg); ok {
+			return msg, buf, true
+		}
+	}
+	return msg, nil, false
+}
+
+// marshalServerFrame encodes one frame with its scanner delimiter.
+func marshalServerFrame(msg ServerMsg) ([]byte, bool) {
+	buf, err := json.Marshal(msg)
+	if err != nil {
+		return nil, false
+	}
+	if len(buf) > MaxServerFrameBytes {
+		return nil, false
+	}
+	return buf, true
+}
+
 // handle serves one client connection.
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	s.touch()
 
-	enc := json.NewEncoder(conn)
 	var (
 		sess *Session
 		sub  chan ServerMsg
@@ -1992,7 +2096,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				if msg.Version == 0 {
 					msg.Version = ProtocolVersion
 				}
-				if err := enc.Encode(msg); err != nil {
+				if !writeServerFrame(conn, msg) {
 					drop()
 					return
 				}

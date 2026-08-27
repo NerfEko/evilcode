@@ -6702,3 +6702,49 @@ Verified: `grep -rin jcode` outside markdown, .git, and dist returns zero;
 `go build`/`go vet`/`go test ./internal/tools/... ./internal/agent/` green.
 The full-suite run was inconclusive (5-minute timeout) because a concurrent
 session's in-flight daemon test was in the tree; the affected packages pass.
+
+## 2026-08-26 — codex review 2, R2-01: server frames can no longer exceed the client limit
+
+Verified: every cited line was real. `publishEvent` attached the complete
+post-turn history to every `EventTurnEnd` (server.go:1035-1045); the attach
+snapshot copied all messages *with* `Images` (server.go:1462-1482); the writer
+encoded straight to the socket with no size check; the client scanner caps at
+8 MiB (client.go:38); `readImage` reads up to 20 MiB (fs_image.go:33), which
+base64-expands to ~27 MiB in one frame. So one large image or a long history
+deterministically disconnected a healthy client at the exact moment a turn
+completed. The decisive fact found while verifying: `BlocksFromMessages` — the
+only consumer of history messages in the TUI — never renders `msg.Images`, and
+the attachcmd mirror never does either; historical image bytes were pure wire
+weight.
+
+Done: three layers. (1) Source strip — turn-end history copies and attach
+snapshots now nil out image bytes at the source (server.go), so the common
+case never produces an oversized frame. (2) `MaxServerFrameBytes` =
+MaxClientFrameBytes − 512 KiB in protocol.go, and the connection writer now
+marshals every frame through `writeServerFrame`/`fitServerFrame` before it is
+written: a too-big turn-end history copy is dropped with
+`SnapshotIncomplete` (clients keep their accumulated mirror — attachcmd skips
+the `Conv.Sync`, the TUI shows a notice), live image/display payloads go next,
+a too-big snapshot is cut from the oldest side half at a time with
+`Snapshot.Truncated` (attachcmd keeps its mirror, the TUI notes the trim), a
+single message too big for any frame degrades to the snapshot envelope, and an
+oversized `Err` is truncated. (3) The client-side `ErrFrameTooLarge` path is
+unchanged; both directions now have one explicit limit pair.
+
+First draft bugs caught by the new tests: the snapshot halving loop did not
+make progress on a single oversized message (`len/2 == 0` → infinite loop —
+now `max(1, len/2)` plus an envelope-only fallback), and the downgrade test
+injected history into the event, which `publishEvent` rebuilds from the live
+conversation — moved into `Conv.Append`.
+
+Tests: six new tests in `daemon/server_frame_test.go`, including the
+milestone-1 money test `TestAttachSurvivesImageHeavyHistory` (20 MiB image in
+history, attach succeeds untruncated) and
+`TestTurnEndFrameDowngradeKeepsClientConnected` (7.5 MiB text history arrives
+as `SnapshotIncomplete`, connection survives).
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1` green;
+`gofmt` clean. Deliberate scope line: turn-end history is still a full copy
+(not incremental deltas) — bounded now, never disconnecting; the delta
+protocol remains future work.
+
