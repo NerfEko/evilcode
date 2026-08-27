@@ -777,7 +777,18 @@ func (a *Agent) stream(ctx context.Context) (provider.Message, error) {
 		// TUI appends the second attempt to the same live block and the user
 		// watches the answer restart. Retry only before any content was
 		// shown; a mid-stream failure keeps the partial and surfaces the error.
-		if emitted || !retryable(err) {
+		//
+		// ErrNoOutput is the exception to the emitted gate. Only reasoning
+		// summaries streamed — no answer text, no tool calls, nothing the
+		// reader could act on — so a retry does not replay any answer. The
+		// codex backend ends heavy max-effort responses this way
+		// non-deterministically, and a resend re-reasons from the same input
+		// and typically itemizes output (the recorded owl-5 turns recovered
+		// on exactly such resends).
+		if emitted && !errors.Is(err, provider.ErrNoOutput) {
+			return msg, err
+		}
+		if !retryable(err) {
 			return msg, err
 		}
 		lastErr = err

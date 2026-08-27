@@ -611,11 +611,13 @@ func (f *flakyProvider) ChatStream(ctx context.Context, req provider.Req) (<-cha
 	return ch, nil
 }
 
-// noOutputProvider's first attempt streams reasoning summary deltas, then
-// fails with ErrNoOutput — the codex backend's terminal-but-itemless shape.
-// The retry (attempt 2) streams a real answer.
+// noOutputProvider's first `failAll`-bounded attempts stream reasoning summary
+// deltas, then fail with ErrNoOutput — the codex backend's
+// terminal-but-itemless shape. Once the budget is exhausted (or failAll), the
+// next attempt streams a real answer.
 type noOutputProvider struct {
 	attempts int
+	failAll  bool
 }
 
 func (p *noOutputProvider) Name() string { return "nooutput" }
@@ -625,7 +627,7 @@ func (p *noOutputProvider) Embed(ctx context.Context, t []string) ([][]float32, 
 func (p *noOutputProvider) Models(ctx context.Context) ([]provider.ModelInfo, error) { return nil, nil }
 func (p *noOutputProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
 	ch := make(chan provider.Chunk, 4)
-	if p.attempts == 0 {
+	if p.failAll || p.attempts == 0 {
 		p.attempts++
 		// Reasoning summary streamed, then the terminal chunk itemized nothing.
 		ch <- provider.Chunk{Reasoning: "**Investigating**"}
@@ -639,23 +641,42 @@ func (p *noOutputProvider) ChatStream(ctx context.Context, req provider.Req) (<-
 	return ch, nil
 }
 
-// A reasoning-only empty response after visible deltas is surfaced, not
-// silently committed as a complete turn: retrying would replay the shown
-// reasoning, so the gate holds and the error reaches the user.
-func TestNoOutputAfterReasoningDeltasIsSurfacedNotRetried(t *testing.T) {
+// A reasoning-only empty response recovers instead of ending the turn: only
+// summaries streamed, so the retry gate's no-visible-replay rule does not
+// apply, and a resend of the identical request re-reasons and itemizes.
+func TestNoOutputAfterReasoningDeltasRecoversOnRetry(t *testing.T) {
 	a := newTestAgent(t, &noOutputProvider{}, nil)
 
-	events, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
+	evs, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
+	if err != nil {
+		t.Fatalf("the retry should have recovered: %v", err)
+	}
+	var answer, turnEnd bool
+	for _, ev := range evs {
+		if ev.Kind == EventTextDelta && strings.Contains(ev.Text, "the actual answer") {
+			answer = true
+		}
+		if ev.Kind == EventTurnEnd && ev.Reason == EndComplete {
+			turnEnd = true
+		}
+	}
+	if !answer || !turnEnd {
+		t.Errorf("answer=%v turnEnd=%v, want the retried attempt to complete the turn", answer, turnEnd)
+	}
+}
+
+// With every attempt itemizing nothing, the bounded retries exhaust and the
+// failure still surfaces — the turn never reads as complete.
+func TestNoOutputExhaustsRetriesAndSurfaces(t *testing.T) {
+	a := newTestAgent(t, &noOutputProvider{failAll: true}, nil)
+	a.MaxRetries = 2
+
+	_, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
 	if err == nil {
-		t.Fatal("want the no-output error surfaced")
+		t.Fatal("want the no-output error surfaced after exhausting retries")
 	}
 	if !errors.Is(err, provider.ErrNoOutput) {
 		t.Errorf("err = %v, want ErrNoOutput", err)
-	}
-	for _, ev := range events {
-		if ev.Kind == EventTurnEnd && ev.Reason != EndError {
-			t.Errorf("turn ended %v, want EndError", ev.Reason)
-		}
 	}
 }
 
