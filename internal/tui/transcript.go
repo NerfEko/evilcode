@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+
 	"strings"
 	"time"
 	"unicode/utf8"

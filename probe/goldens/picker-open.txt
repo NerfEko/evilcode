@@ -5,11 +5,10 @@
 
    no other sessions yet — type below to start a new one
  💡 Ctrl+R searches your prompt history
- keys: Ctrl+O set default · Ctrl+N favorite · Shift+Tab switch active model to next favorite
+ keys: Ctrl+N favorite · Shift+Tab switch active model to next favorite
  ╭───────────────────────────────╮
  │ model | provider | via (1/1)  │
  │  ▸ mock-large  mock  loading… │
- │ Ctrl+O set as default         │
  ╰───────────────────────────────╯
 
  1>

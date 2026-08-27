@@ -46,8 +46,8 @@ func TestCancelledToolRoundStillAnswersEveryCall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	entered := make(chan struct{}, 2)
 	blocker := tools.Tool{
-		Name:   "blocker",
-		Desc:   "waits for cancellation",
+		Name: "blocker",
+		Desc: "waits for cancellation",
 		// Read-only: the round must have two calls in flight when cancel lands,
 		// which only read-only calls can be since R2-07's effect scheduling.
 		Effect: tools.EffectReadOnly,

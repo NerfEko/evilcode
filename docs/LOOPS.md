@@ -6908,3 +6908,43 @@ read ends; second read only after the write), and
 Verified: `go test ./internal/tools/ -count=1`, `go test ./internal/agent/
 -count=1`, `go test ./... -count=1 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-05: the probe gate passes — and it caught a real render bug
+
+Verified: the baseline probe run failed exactly the seven scenarios the review
+named — tui-difflong, tui-panel, tui-picker, tui-scroll, tui-swarm (golden
+drift), tui-todos and tui-widgets (timeouts waiting for pane text). The goldens
+were last refreshed at 0abfeef, before several committed TUI changes, so part
+of the drift was expected; the two timeouts were the part that mattered.
+
+Done, in two parts. **Goldens**: `UPDATE_GOLDENS=1` regenerated seven frames;
+every diff was classified before accepting it — picker-open is the committed
+Ctrl+O removal (94138f7) still baked into the old golden, and the other six
+(panel-*, scroll-paged, swarm-conflict, todos-card) are the chat/panel split
+ratio shift from committed layout work (8ec7302 and friends), visible as a
+~13-column chat-column narrowing. No golden changed for any unexplained
+reason. **The real bug behind the timeouts**: instrumenting the probe binary
+temporarily (event log at applyEvent, render dump at transcriptLines and
+renderAssistant — all removed) showed the agent and daemon deliver the full
+"Tracked. Working through the refresh path next." text and the TUI's model
+even held it in block 4 — while the pane painted a truncated prefix forever.
+The poke's boundary notice (`EventNotice`) cleared `streamingIdx` without
+freezing the streamed block: the block stayed flagged `Streaming` with no
+owner, `hasStreamingBlock` (index-based) reported nothing streaming, a settled
+frame cached the pre-notice paint, and the early transcript-cache hit — which
+did not re-check for a streaming block despite its own comment claiming it
+always had — served that stale frame on every tick forever. Three fixes: the
+notice now calls `finishStreaming()` (same freeze path as turn end);
+`finishStreaming` sweeps any streaming block whose index was dropped, so
+orphans cannot survive; and the early cache hit re-checks `hasStreamingBlock()`.
+
+Tests: `TestNoticeBoundaryFreezesTheStreamedBlock` (the poke boundary splits
+the rounds and freezes the first block), `TestTurnEndFreezesOrphanedStream
+Blocks` (the sweep), `TestSettledCacheIsNotServedPastAStreamedBlock` (the
+early-hit guard). The in-process pipeline had passed 5/5 before the fix — the
+probe rig caught what the in-process harness could not, which is exactly why
+it exists.
+
+Verified: `go test -tags probe ./probe/...` green (was 7/7 failing scenarios),
+`go vet ./...`, `go test ./... -count=1 -timeout 300s` green, `gofmt` clean,
+golden diffs reviewed line by line.
+

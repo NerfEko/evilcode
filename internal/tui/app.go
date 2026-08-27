@@ -1798,8 +1798,13 @@ func (m *Model) applyEvent(e agent.Event) {
 		// A notice marks a boundary between two things the model said. Without
 		// closing the streaming block here, an auto-poked turn renders as one
 		// paragraph — "…refresh path next.Done.Done.Done." — because the poke
-		// continues the same Loop and so never emits a fresh turn start.
-		m.streamingIdx = -1
+		// continues the same Loop and so never emits a fresh turn start. It
+		// must close the block the way the turn end does, not just drop the
+		// index: an index-only clear left the block flagged Streaming with
+		// nobody owning it, so the paint cache kept serving the pre-notice
+		// prefix and the round's remaining words never reached the screen
+		// (R2-05: the todos/widgets probe timeouts were this, not drift).
+		m.finishStreaming()
 		if strings.Contains(e.Text, "queued input rejected") {
 			// The daemon refused the newest queued prompt (queue full); its
 			// strip entry will never become a turn.
@@ -2007,6 +2012,17 @@ func (m *Model) finishStreaming() {
 		m.renderDiagrams(block.Text)
 	}
 	m.streamingIdx = -1
+	// An EventNotice between rounds drops the index without a turn end, so a
+	// streamed block can outlive its index. Any block still flagged Streaming
+	// with no live index would never be frozen — its stream cache would keep
+	// serving the pre-boundary render for the rest of the session — so sweep
+	// them. The reasoning trace has its own finisher below.
+	for i := range m.blocks {
+		if m.blocks[i].Streaming && i != m.reasoningIdx {
+			m.blocks[i].Streaming = false
+			m.blocks[i].dropStreamingCache()
+		}
+	}
 
 	m.finishReasoning()
 }
@@ -4441,8 +4457,11 @@ func (m *Model) transcriptLines() Rows {
 	// The cache is only stored when nothing was streaming or animating, and
 	// both conditions invalidate the moment they begin — so the hit can be
 	// taken before the streaming scan, which would otherwise walk every block
-	// on every 80ms tick of an idle long session for nothing.
-	if len(m.blocks) > 0 && m.transcriptCacheValid && m.transcriptCacheWidth == m.renderer.Width {
+	// on every 80ms tick of an idle long session for nothing. The streaming
+	// check still runs here: a boundary notice drops the index without a turn
+	// end, and serving a settled cache past an orphaned stream would freeze
+	// the transcript on a pre-notice frame (R2-05).
+	if len(m.blocks) > 0 && m.transcriptCacheValid && m.transcriptCacheWidth == m.renderer.Width && !m.hasStreamingBlock() {
 		return m.transcriptCache
 	}
 	animT, animating := m.entryAnim.Progress(time.Now())
