@@ -6978,3 +6978,22 @@ reproduce because the race it came from no longer exists in the test.
 Verified: `go test ./internal/daemon/ -run '...Cap...' -count=25` green,
 `go test ./... -count=1 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-40: the repository has a CI gate
+
+Done: `.github/workflows/ci.yml` — the review's minimum gate, on push to main
+and on pull requests: `gofmt -l .` fails the job on any output, `go vet`,
+`go build ./cmd/evilcode`, `go mod verify`, the full suite with
+`-shuffle=on`, the race suite, and the tagged probe suite driven against the
+just-built binary (`EVILCODE_BIN=/tmp/evilcode`), so the probe gate that was
+already failing silently at 02fce08 can never reach main silently again.
+30-minute job timeout; setup-go reads the version from go.mod.
+
+Verified locally, step by step: the workflow YAML parses, gofmt reports zero
+files, vet/build/mod-verify are green, `go test ./... -shuffle=on -count=1`
+green, and the race suite (`go test -race ./... -count=1`) exits 0. The probe
+suite is green as of R2-05. staticcheck/govulncheck/shellcheck remain
+uninstalled locally, so triaging their findings stays a follow-up, exactly as
+the review's note anticipates.
+
+Verified: every gate command run locally and green.
+

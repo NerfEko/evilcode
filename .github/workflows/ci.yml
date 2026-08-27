@@ -1,0 +1,53 @@
+name: ci
+
+# R2-40: the repository had no automation, so the probe failure, the flaky
+# concurrency test, and formatting drift could all reach main. This is the
+# review's minimum gate: format, vet, shuffled suite, race suite, build,
+# module verification, and the full probe suite against a built binary.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt — fail on any output
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::gofmt drift:"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build -o /tmp/evilcode ./cmd/evilcode
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: test (shuffled)
+        run: go test ./... -shuffle=on -count=1 -timeout 20m
+
+      - name: test (race)
+        run: go test -race ./... -count=1 -timeout 30m
+
+      - name: probe suite
+        run: EVILCODE_BIN=/tmp/evilcode go test -tags probe ./probe/... -count=1 -timeout 20m
