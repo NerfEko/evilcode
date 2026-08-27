@@ -1723,7 +1723,13 @@ func (m *Model) applyEvent(e agent.Event) {
 			// fallback or the startup model's value.
 			m.agent.NumCtx = e.ContextWindow
 		}
-		if m.remoteModel != nil && e.Model != "" {
+		// Attached clients switch models through the daemon, and attach wires
+		// only WithRemoteModelEffort — WithRemoteModel stays unset. The mirror
+		// below is then the ONLY place a picker pick is persisted (the local
+		// picker tail never runs), so the guard must accept either remote hook.
+		// Requiring remoteModel made every attach-mode pick vanish, and the next
+		// launch fell back to the stale last_model.
+		if (m.remoteModel != nil || m.remoteModelEffort != nil) && e.Model != "" {
 			if err := m.rememberModel(config.ModelRef(e.Model, e.Provider)); err != nil {
 				m.notice = "model changed, but could not remember it: " + err.Error()
 			}
