@@ -7123,3 +7123,35 @@ stops the walk and both entries are named), and
 Verified: `go test ./internal/config/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-14: compaction checks every round; manual compaction stops eating the auto budget
+
+Verified: both claims held. `autoCompact` ran once per turn, before the first
+provider request — tool results appended between rounds could push the
+context past the window before the next request saw it. And `Compact`
+incremented the single `count` on every success, while `MaxAutoCompactions`
+gated on that same counter: three manual `/compact` calls disabled the
+automatic protection for the rest of the session.
+
+Done, three pieces. (1) The counter splits: `autoCount` is the budget
+`MaxAutoCompactions` gates and only the automatic path increments
+(`noteAutoCompaction`), while `count` stays the lifetime number Count() and
+the /context display report. (2) The check moved into the loop — every round
+is checked before its provider request, not just the first; the check itself
+is a cheap threshold test with no provider call. (3) The check measures what
+the NEXT request will carry: `pendingContextSize` = max(lastCtx, conversation
+estimate) — after a tool round the conversation already includes the results
+while lastCtx still describes the request that preceded them, which is
+exactly the gap between "checked" and "sent" the review pointed at.
+Characters-to-tokens at 4:1, the same rule the status line's live estimate
+uses.
+
+Tests: `TestManualCompactionsDoNotConsumeTheAutoBudget` (three manual
+compactions leave the automatic path armed; the automatic path still trips at
+its own cap) and `TestAutoCompactionIsCheckedEveryRound` (a seeded
+conversation, a 8 Ki-token window, a tool result 8× the window — the
+mid-turn compaction fires). The existing breaker test needed its loop to
+note auto compactions the way the real path now does.
+
+Verified: `go test ./internal/agent/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+

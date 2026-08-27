@@ -443,6 +443,9 @@ func TestAutoCompactHasABreaker(t *testing.T) {
 		if _, err := c.Compact(context.Background(), conv); err != nil {
 			t.Fatal(err)
 		}
+		// The automatic path records its compaction against its own budget
+		// (R2-14); manual /compact calls do not.
+		c.noteAutoCompaction()
 	}
 	if c.Count() > MaxAutoCompactions {
 		t.Errorf("compacted %d times, past the cap of %d", c.Count(), MaxAutoCompactions)

@@ -159,6 +159,13 @@ type Compactor struct {
 	mu    sync.Mutex
 	count int
 
+	// autoCount is the budget MaxAutoCompactions gates: how many times the
+	// AUTOMATIC path has compacted this session. Manual /compact calls used to
+	// consume the same allowance, so three manual compactions disabled the
+	// automatic protection for the rest of the session (R2-14). count remains
+	// the lifetime number Count() reports.
+	autoCount int
+
 	// Projection state is sampled once per turn by ShouldCompact. Keeping the
 	// state on the compactor, rather than the agent, makes all frontends use the
 	// same prediction and keeps it resettable after a successful rewrite.
@@ -184,6 +191,17 @@ type Compactor struct {
 	relevanceEarliest    int
 	relevanceRun         uint64
 	relevanceCancel      context.CancelFunc
+}
+
+// noteAutoCompaction records one automatic compaction against the automatic
+// budget. Manual compactions do not consume it (R2-14).
+func (c *Compactor) noteAutoCompaction() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.autoCount++
+	c.mu.Unlock()
 }
 
 // Count is how many times this session has been compacted.
@@ -586,7 +604,7 @@ func (c *Compactor) relevanceMayBeNeeded(used, window int, msgs []provider.Messa
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.Embedding == nil || c.count >= MaxAutoCompactions {
+	if c.Embedding == nil || c.autoCount >= MaxAutoCompactions {
 		return false
 	}
 	if float64(used) >= CompactThreshold*float64(window) {
@@ -914,7 +932,7 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.count >= MaxAutoCompactions {
+	if c.autoCount >= MaxAutoCompactions {
 		return false
 	}
 

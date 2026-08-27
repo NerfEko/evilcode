@@ -468,7 +468,7 @@ func (a *Agent) autoCompact(ctx context.Context) {
 	if a.Compactor == nil {
 		return
 	}
-	if !a.Compactor.ShouldCompactForConversation(a.ctxUsed(), a.NumCtx, a.Conv) {
+	if !a.Compactor.ShouldCompactForConversation(a.pendingContextSize(), a.NumCtx, a.Conv) {
 		return
 	}
 	// Queue the exact snapshot that will be compacted, including the prompt
@@ -482,6 +482,7 @@ func (a *Agent) autoCompact(ctx context.Context) {
 		a.Notice(LevelWarning, "Could not compact: %v", err)
 		return
 	}
+	a.Compactor.noteAutoCompaction()
 	a.Notice(LevelInfo, "✓ Context compacted. Retrying...")
 }
 
@@ -491,6 +492,26 @@ func (a *Agent) ctxUsed() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.lastCtx
+}
+
+// pendingContextSize estimates what the next provider request will carry.
+// After a tool round the conversation already includes the results, while
+// lastCtx still describes the request that preceded them — the largest gap
+// between "checked" and "sent" a turn can have (R2-14). Characters-to-tokens
+// at four to one, the same rule the status line's live estimate uses.
+func (a *Agent) pendingContextSize() int {
+	used := a.ctxUsed()
+	n := 0
+	for _, m := range a.Conv.Messages() {
+		n += len(m.Content) + len(m.Reasoning) + len(m.ToolCallID) + len(m.ToolName)
+		for _, c := range m.ToolCalls {
+			n += len(c.Args)
+		}
+	}
+	if est := n / 4; est > used {
+		used = est
+	}
+	return used
 }
 
 // noteContext records the newest request's size for the compaction threshold.
@@ -578,6 +599,13 @@ func (a *Agent) loop(ctx context.Context) error {
 	a.emit(start)
 
 	for step := 0; ; {
+		// Checked every round, not once per turn: tool results land in the
+		// conversation between rounds, and a large one can push the context
+		// past the window before the next request even though the turn-start
+		// check saw plenty of headroom (R2-14). The check is cheap — no
+		// provider call — so paying it per round costs nothing.
+		a.autoCompact(ctx)
+
 		msg, err := a.stream(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
