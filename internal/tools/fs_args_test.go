@@ -106,6 +106,34 @@ func TestMultiEditRepairsNestedAliases(t *testing.T) {
 	}
 }
 
+// A model carrying edit's vocabulary into multiedit — op:"replace" in the
+// hunks, intent at the top — gets a successful edit, not a teaching loop: the
+// redundant op is dropped, and intent is a real multiedit field.
+func TestMultiEditSurvivesEditVocabulary(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "one\n"})
+	outcome := f.Tools().RunOne(context.Background(), Call{
+		Name: "multiedit",
+		Args: json.RawMessage(`{"path":"a.txt","intent":"rename marker","edits":[{"op":"replace","old_string":"one","new_string":"ONE"}]}`),
+	})
+	if outcome.Err != nil {
+		t.Fatalf("multiedit with edit vocabulary rejected: %v", outcome.Err)
+	}
+	data, err := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ONE\n" {
+		t.Errorf("file = %q, want the edit applied", data)
+	}
+	if outcome.Result.Intent != "rename marker" {
+		t.Errorf("intent = %q, want the model-provided reason on the result", outcome.Result.Intent)
+	}
+	if !containsJoin(outcome.Result.Repairs, "edits.op: dropped (replace implied)") ||
+		!containsJoin(outcome.Result.Repairs, "edits.old_string→edits.old") {
+		t.Errorf("repairs = %v, want the op drop and the alias recorded", outcome.Result.Repairs)
+	}
+}
+
 // A call that already uses the real name pays no repair.
 func TestNoRepairWhenRealNameUsed(t *testing.T) {
 	f := tempFS(t, map[string]string{"a.txt": "x\n"})

@@ -981,8 +981,9 @@ type multiEditHunk struct {
 }
 
 type multiEditArgs struct {
-	Path  string          `json:"path"`
-	Edits []multiEditHunk `json:"edits"`
+	Path   string          `json:"path"`
+	Edits  []multiEditHunk `json:"edits"`
+	Intent string          `json:"intent,omitempty"`
 }
 
 // multiEditTool applies an ordered list of edits to one file against the
@@ -1001,11 +1002,13 @@ func (f *FS) multiEditTool() Tool {
 			"the accumulating content, so a later edit can touch text an earlier one " +
 			"produced. A failed edit is reported and skipped — it does not roll back the " +
 			"ones before it. Inspect the result and re-read if any edit failed. One atomic " +
-			"write, so the file changes once.",
+			"write, so the file changes once. Optionally provide intent, a short reason " +
+			"other agents can see if their copy conflicts.",
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "path":  {"type": "string", "description": "File path, relative to the workspace root"},
+    "intent": {"type": "string", "description": "Short reason for this edit, for other agents' conflict notices"},
     "edits": {
       "type": "array",
       "description": "Ordered edits, applied sequentially against the accumulating content",
@@ -1091,7 +1094,7 @@ func (f *FS) multiEditTool() Tool {
 				// Nothing changed; do not rewrite the file or touch its mtime.
 				// NoWrite tells swarm coordination not to queue a stale-file
 				// notice for a file that never changed.
-				return Result{Output: b.String(), Intent: fmt.Sprintf("editing %s", name), NoWrite: true}, nil
+				return Result{Output: b.String(), Intent: fileIntent(a.Intent, fmt.Sprintf("editing %s", name)), NoWrite: true}, nil
 			}
 			if err := f.writeConfined(full, []byte(content)); err != nil {
 				return Result{}, err
@@ -1105,7 +1108,7 @@ func (f *FS) multiEditTool() Tool {
 				Output:   b.String(),
 				Diff:     diff,
 				DiffStat: &stat,
-				Intent:   fmt.Sprintf("editing %s", name),
+				Intent:   fileIntent(a.Intent, fmt.Sprintf("editing %s", name)),
 			}, nil
 		},
 	}

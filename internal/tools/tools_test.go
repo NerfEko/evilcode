@@ -1448,4 +1448,137 @@ func TestArgAliasesAreAccepted(t *testing.T) {
 	if err := unmarshalArgs(json.RawMessage(`{"cmd":"real","command":"alias"}`), &a); err == nil {
 		t.Error("cmd and command together should not silently pick one")
 	}
+
+	// Another agent's grep vocabulary: head_limit is limit here.
+	var g struct {
+		Limit int `json:"limit,omitempty"`
+	}
+	if err := unmarshalArgs(json.RawMessage(`{"head_limit":5}`), &g); err != nil || g.Limit != 5 {
+		t.Errorf("head_limit alias rejected: %v (limit=%d)", err, g.Limit)
+	}
+}
+
+// `op` is edit's anchored-form vocabulary; multiedit hunks only replace, so
+// op:"replace" beside old/new is pure noise models carried over from the
+// sibling tool. Dropped with a note; any other op stays a teaching error, and
+// edit's real patch objects (anchor/op/lines) keep their op untouched.
+func TestRepairArgsDropRedundantReplaceOpOnHunks(t *testing.T) {
+	hunkSchema := json.RawMessage(`{"type":"object","properties":{
+	  "old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"}}}`)
+
+	repaired, repairs := repairArgs(json.RawMessage(`{"op":"replace","old":"a","new":"b"}`), hunkSchema)
+	if !strings.Contains(string(repaired), `"old":"a"`) || strings.Contains(string(repaired), `"op"`) {
+		t.Errorf("repaired = %s, want op:\"replace\" dropped and the hunk intact", repaired)
+	}
+	if !containsJoin(repairs, "op: dropped (replace implied)") {
+		t.Errorf("repairs = %v, want the drop recorded", repairs)
+	}
+
+	// An op that names a different operation is information, not noise: it
+	// must survive so the strict decoder's error teaches the model.
+	repaired2, _ := repairArgs(json.RawMessage(`{"op":"insert_after","old":"a","new":"b"}`), hunkSchema)
+	if !strings.Contains(string(repaired2), `"op":"insert_after"`) {
+		t.Errorf("repaired = %s, a non-replace op must be left for the decoder to reject", repaired2)
+	}
+
+	// edit's own anchored patches declare op as a real field — never dropped.
+	patchSchema := json.RawMessage(`{"type":"object","properties":{"anchor":{"type":"string"},"op":{"type":"string"},"lines":{"type":"array","items":{"type":"string"}}}}`)
+	repaired3, repairs3 := repairArgs(json.RawMessage(`{"anchor":"a3f2","op":"replace","lines":["x"]}`), patchSchema)
+	if !strings.Contains(string(repaired3), `"op":"replace"`) || len(repairs3) != 0 {
+		t.Errorf("repaired = %s, repairs = %v; edit's own op must be untouched", repaired3, repairs3)
+	}
+}
+
+// The mirror of string→number: todo ids sent as numbers reach the decoder as
+// strings. A schema that also allows numbers vetoes it, and non-numbers are
+// never rewritten.
+func TestRepairArgsCoerceNumberToString(t *testing.T) {
+	itemSchema := json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}}}`)
+	repaired, repairs := repairArgs(json.RawMessage(`{"id":1}`), itemSchema)
+	if !strings.Contains(string(repaired), `"id":"1"`) {
+		t.Errorf("repaired = %s, want the id as a string", repaired)
+	}
+	if !containsJoin(repairs, "id: number→string") {
+		t.Errorf("repairs = %v, want id: number→string", repairs)
+	}
+
+	// A lexical float stays lexical.
+	repaired2, _ := repairArgs(json.RawMessage(`{"id":1.50}`), itemSchema)
+	if !strings.Contains(string(repaired2), `"id":"1.50"`) {
+		t.Errorf("repaired = %s, want the lexical form preserved", repaired2)
+	}
+
+	// A union that allows numbers must not be rewritten.
+	unionSchema := json.RawMessage(`{"type":"object","properties":{"id":{"type":["string","integer"]}}}`)
+	repaired3, repairs3 := repairArgs(json.RawMessage(`{"id":1}`), unionSchema)
+	if string(repaired3) != `{"id":1}` || len(repairs3) != 0 {
+		t.Errorf("repaired = %s, repairs = %v; a union with number must be left alone", repaired3, repairs3)
+	}
+
+	// Booleans are not numbers.
+	repaired4, repairs4 := repairArgs(json.RawMessage(`{"id":true}`), itemSchema)
+	if string(repaired4) != `{"id":true}` || len(repairs4) != 0 {
+		t.Errorf("repaired = %s, repairs = %v; a boolean must not become a string", repaired4, repairs4)
+	}
+}
+
+// An ollama-routed model can wrap the whole argument object in a JSON string;
+// the strict decoder used to answer "cannot unmarshal string into Go value of
+// type tools.bashArgs" with the alias table never consulted. The repair
+// unwraps it against the schema and the alias still applies.
+func TestRepairArgsUnwrapStringifiedArgs(t *testing.T) {
+	e := NewExec(t.TempDir())
+	outcome := e.Tools().RunOne(context.Background(), Call{
+		ID:   "c",
+		Name: "bash",
+		Args: json.RawMessage(`"{\"command\":\"printf ok\"}"`),
+	})
+	if outcome.Err != nil {
+		t.Fatalf("stringified args rejected: %v", outcome.Err)
+	}
+	if !strings.Contains(outcome.Result.Output, "ok") {
+		t.Errorf("output = %q, want the unwrapped command to have run", outcome.Result.Output)
+	}
+	if !containsJoin(outcome.Result.Repairs, "args: string→object") || !containsJoin(outcome.Result.Repairs, "command→cmd") {
+		t.Errorf("repairs = %v, want args: string→object and command→cmd", outcome.Result.Repairs)
+	}
+}
+
+// The live failure behind the unwrap: glm-5.2 on ollama sent todo's goals as a
+// stringified array ("[{...}]") and every such call died on the strict decode.
+// The schema types goals as an array, so the string is unwrapped and its
+// members still get the ordinary alias/number repairs.
+func TestRepairArgsUnwrapStringifiedTodoGoals(t *testing.T) {
+	goalsSchema := json.RawMessage(`{
+	  "type": "object",
+	  "properties": {
+	    "goals": {"type": "array", "items": {"type": "object",
+	      "properties": {"group": {"type": "string"}}, "required": ["group"]}}
+	  }
+	}`)
+	repaired, repairs := repairArgs(json.RawMessage(`{"goals":"[{\"group\":\"b2\"}]"}`), goalsSchema)
+	if !strings.Contains(string(repaired), `"goals":[{"group":"b2"}]`) {
+		t.Errorf("repaired = %s, want the stringified array unwrapped", repaired)
+	}
+	if !containsJoin(repairs, "goals: string→array") {
+		t.Errorf("repairs = %v, want goals: string→array", repairs)
+	}
+}
+
+// A string-typed field is never unwrapped, even when its content is JSON: a
+// shell brace group or a JSON-in-string parameter is a legal value, and
+// rewriting it would corrupt exactly the calls that were already correct.
+func TestRepairArgsNeverUnwrapAStringTypedField(t *testing.T) {
+	bashSchema := json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}`)
+	repaired, repairs := repairArgs(json.RawMessage(`{"cmd":"{ echo a; }"}`), bashSchema)
+	if string(repaired) != `{"cmd":"{ echo a; }"}` || len(repairs) != 0 {
+		t.Errorf("repaired = %s, repairs = %v; a string-typed field must be left alone", repaired, repairs)
+	}
+
+	// A composite-typed field holding a non-JSON string is also left alone.
+	goalsSchema := json.RawMessage(`{"type":"object","properties":{"goals":{"type":"array"}}}`)
+	repaired2, repairs2 := repairArgs(json.RawMessage(`{"goals":"not json"}`), goalsSchema)
+	if string(repaired2) != `{"goals":"not json"}` || len(repairs2) != 0 {
+		t.Errorf("repaired = %s, repairs = %v; non-JSON content must not be rewritten", repaired2, repairs2)
+	}
 }

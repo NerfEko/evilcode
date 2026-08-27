@@ -417,6 +417,7 @@ var argAliases = map[string]string{
 	"old_string":  "old",
 	"new_string":  "new",
 	"replace_all": "all",
+	"head_limit":  "limit",
 }
 
 // repairAliases extends argAliases with names that are real fields in some
@@ -477,6 +478,20 @@ func strictDecode(raw json.RawMessage, dst any) error {
 func repairArgs(raw json.RawMessage, schema json.RawMessage) (json.RawMessage, []string) {
 	var fields map[string]json.RawMessage
 	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil {
+		// The whole argument object can arrive wrapped in a JSON string — the
+		// ollama adapter forwards arguments in whatever shape the model's
+		// template produced. Unwrap it against the schema so the object still
+		// reaches the strict decoder, and the alias table with it, instead of
+		// dying on "cannot unmarshal string".
+		if unwrapped, note, ok := unwrapSchemaString(raw, schema); ok && json.Unmarshal(unwrapped, &fields) == nil {
+			var repairs []string
+			repairs = append(repairs, "args: "+note)
+			repairObject(fields, schema, "", &repairs)
+			if out, err := json.Marshal(fields); err == nil {
+				return out, repairs
+			}
+			return unwrapped, repairs
+		}
 		return raw, nil
 	}
 	var repairs []string
@@ -527,6 +542,22 @@ func repairObject(obj map[string]json.RawMessage, schema json.RawMessage, prefix
 		*repairs = append(*repairs, name)
 	}
 
+	// `op` is edit's anchored-form vocabulary. A multiedit hunk can only
+	// replace, so an op:"replace" beside old/new carries no information —
+	// models trained on anchored edits carried it over (14 live failures) and
+	// a strict decoder made every such call unescapable. Dropped rather than
+	// aliased: it names no data this hunk can use. Any other op is a real
+	// mismatch and stays an error the model can learn from.
+	if props["old"] && props["new"] {
+		if raw, ok := obj["op"]; ok {
+			var s string
+			if json.Unmarshal(raw, &s) == nil && s == "replace" {
+				delete(obj, "op")
+				*repairs = append(*repairs, joinPath(prefix, "op")+": dropped (replace implied)")
+			}
+		}
+	}
+
 	names := make([]string, 0, len(s.Properties))
 	for name := range s.Properties {
 		names = append(names, name)
@@ -544,6 +575,25 @@ func repairObject(obj map[string]json.RawMessage, schema json.RawMessage, prefix
 				*repairs = append(*repairs, joinPath(prefix, name)+": string→number")
 			}
 			continue
+		}
+		// The mirror case: a number where the schema wants a string (todo ids
+		// sent as 1 instead of "1" — glm-5.2 live failure). Kept lexical so a
+		// model meaning "1.50" is not silently renumbered to "1.5".
+		if stringOnlyType(prop) {
+			if coerced, ok := coerceNumberString(v); ok {
+				obj[name] = coerced
+				*repairs = append(*repairs, joinPath(prefix, name)+": number→string")
+			}
+			continue
+		}
+		// A stringified object or array is unwrapped against the schema before
+		// the recursion sees it, so the value's own members still get the alias
+		// and number repairs. The live case: glm on ollama sent todo's goals as
+		// "[{...}]" and the strict decoder rejected every such call.
+		if un, note, ok := unwrapSchemaString(v, prop); ok {
+			obj[name] = un
+			v = un
+			*repairs = append(*repairs, joinPath(prefix, name)+": "+note)
 		}
 		// Recurse into a nested object or array of objects against the schema's
 		// child definition. The recursion mutates fresh maps, so each level is
@@ -687,6 +737,121 @@ func hasNumericType(prop json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// stringOnlyType reports whether the schema declares a property as a plain
+// string. A union that also allows number/integer/boolean vetoes the
+// number→string coercion: the number may be a legal value there.
+func stringOnlyType(prop json.RawMessage) bool {
+	var p struct {
+		Type any `json:"type"`
+	}
+	if json.Unmarshal(prop, &p) != nil {
+		return false
+	}
+	switch t := p.Type.(type) {
+	case string:
+		return t == "string"
+	case []any:
+		has := false
+		for _, x := range t {
+			s, ok := x.(string)
+			if !ok {
+				continue
+			}
+			if s == "number" || s == "integer" || s == "boolean" {
+				return false
+			}
+			if s == "string" {
+				has = true
+			}
+		}
+		return has
+	}
+	return false
+}
+
+// coerceNumberString turns a JSON number into the string holding its lexical
+// form, so "id": 1 — glm-5.2's live todo failure — reaches the decoder as the
+// string the schema asks for. Non-numbers are untouched.
+func coerceNumberString(v json.RawMessage) (json.RawMessage, bool) {
+	var n any
+	if json.Unmarshal(v, &n) != nil {
+		return nil, false
+	}
+	switch n.(type) {
+	case float64:
+		b, err := json.Marshal(strings.TrimSpace(string(v)))
+		if err != nil {
+			return nil, false
+		}
+		return b, true
+	}
+	return nil, false
+}
+
+// schemaCompositeKind reports the one structural type a schema declares for a
+// value — "object" or "array" — or "" when the field is not a composite. A
+// schema that also allows a plain string ("type": ["string","array"]) vetoes
+// the unwrap: a string is a legal value there, and rewriting it would corrupt
+// exactly the calls that were already correct.
+func schemaCompositeKind(prop json.RawMessage) string {
+	var p struct {
+		Type any `json:"type"`
+	}
+	if json.Unmarshal(prop, &p) != nil {
+		return ""
+	}
+	switch t := p.Type.(type) {
+	case string:
+		if t == "object" || t == "array" {
+			return t
+		}
+	case []any:
+		kind := ""
+		for _, x := range t {
+			s, ok := x.(string)
+			if !ok {
+				continue
+			}
+			if s == "string" {
+				return ""
+			}
+			if (s == "object" || s == "array") && kind == "" {
+				kind = s
+			}
+		}
+		return kind
+	}
+	return ""
+}
+
+// unwrapSchemaString turns a JSON string holding the kind of value the schema
+// declares into that value, reporting the repair note ("string→object") and
+// whether it unwrapped. Some models — glm-5.2 and glm-5.3 on ollama in
+// particular — stringify a structural argument ("goals":
+// "[{\"group\":...}]") — and a strict decoder turns that into an error the
+// model then repeats verbatim. Only a field the schema types as object or
+// array is unwrapped, so a string argument that merely begins with '{' — a
+// shell brace group in bash's cmd — is never touched.
+func unwrapSchemaString(v json.RawMessage, prop json.RawMessage) (json.RawMessage, string, bool) {
+	kind := schemaCompositeKind(prop)
+	if kind == "" {
+		return v, "", false
+	}
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		return v, "", false
+	}
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return v, "", false
+	}
+	b := json.RawMessage(t)
+	if (kind == "object" && !isObject(b)) || (kind == "array" && !isArray(b)) {
+		return v, "", false
+	}
+	return b, "string→" + kind, true
 }
 
 // coerceStringNumber turns a JSON string holding a finite number into a JSON
