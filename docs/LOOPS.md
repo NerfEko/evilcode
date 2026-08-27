@@ -6600,3 +6600,65 @@ output present), and the daemon snapshot decodes the new field.
 
 Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`, probe
 suite green.
+
+## 2026-08-26 — attach-mode model picks never reached last_model
+
+Reported: "picking a new model should make that model the default in a new
+session but it doesn't — glm5.2 is the default model in new sessions no matter
+what." Evidence in the wild: `last_model` sat at `glm-5.2:cloud@ollama-local`
+across launches while every recent session transcript showed the user
+switching to `glm-5.3-flash@ollama-cloud` seconds after start.
+
+Root cause: an attached TUI switches models through the daemon
+(`WithRemoteModelEffort` → MsgModel), so the picker returns at the remote
+branch and the local tail that calls `rememberModel` never runs. Persistence
+was designed to ride the daemon's canonical `EventModel` mirror in
+`applyEvent`, but that mirror was guarded by `m.remoteModel != nil` — and
+attach wires only `WithRemoteModelEffort`, never `WithRemoteModel`. The mirror
+was therefore dead code on the attach path: picks lived only in the daemon
+session, `last_model` kept its attach-time value, and every new session
+resolved from the stale ref. (Standalone `tui` was unaffected — it persists in
+the picker tail directly; that is why the bug only showed under the daemon.)
+
+Fix: the mirror guard now accepts either remote hook
+(`m.remoteModel != nil || m.remoteModelEffort != nil`).
+
+Test: `TestAttachedModelEventRemembersTheModel` drives an `EventModel` through
+a model wired the way attach does (only `WithRemoteModelEffort`) and asserts
+the saver fired with the daemon's canonical ref;
+`TestStandaloneModelEventDoesNotDoubleRemember` pins the standalone side (no
+remote hook → no duplicate save). `TestBuildHonorsTheFilesLastModel` already
+covers the daemon re-reading `last_model` per build.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`, repo
+binary rebuilt; the running daemon needs no restart (fix is client-side).
+
+## 2026-08-26 — the picker no longer sets a default model (Ctrl+O removed)
+
+Request: "just remove the default ctrl+O because there is no default, it
+should just set to whatever model you left off at." With last_model now
+reliable (previous entry), the picker-set default was a second, weaker source
+of truth that never won a resolution and only confused.
+
+Done: the Ctrl+O picker branch, the `ModelEntry.Default` flag with its `default`
+suffix and per-row "Ctrl+O set as default" hint, the footer hint variant, the
+`Model.defaultModel` field, and `WithModelPrefs`' default parameter are gone.
+`WithModelPrefs(favorites, save)` and `config.SaveModelPrefs(favorites)` are
+favorites-only; `updateModelPrefs` now touches only `favorite_models` and
+leaves any existing `default_model` line byte-for-byte alone. `default_model`
+keeps its parser as a deep fallback only: fresh-install bootstrap
+(`preferredDefaultModel`), `LoadRepoOverrides` repo pins, and the router's
+default role chain (`Roles.Default` → `DefaultModel`). Nothing in the
+interactive client writes it anymore, so "the model a new session starts on"
+has exactly one source: `last_model`.
+
+Tests: `TestPickerFavoritePersists` (renamed from
+`TestPickerSetDefaultAndFavoritePersist`) drives Ctrl+N only;
+`picker_default_hint_test.go` deleted with its feature;
+`TestSaveModelPrefsReplacesAndPreserves` now asserts an existing
+`default_model` line survives a favorites write unchanged, and the
+fresh-machine and empty-favorites tests pin the same invariant.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`, repo
+binary rebuilt. The stale `default_model` in the user's own config.toml is
+inert (last_model wins whenever set) and was deliberately left untouched.

@@ -580,3 +580,27 @@ gates, identity migration). Two behavior notes:
 - **Probe goldens now scrub the build version** instead of embedding it, so a
   golden survives a release without churn. Layout goldens were refreshed for
   the v1.1.3 UI (help overlay, context widget, panel widths).
+
+## 2026-08-26 — the picker no longer sets a default model (Ctrl+O removed)
+
+**Spec** (§5.3): Ctrl+O sets the default model; `default_model` pins what a new
+session starts on.
+
+**Built instead**: the Ctrl+O binding, the `default` row mark, the
+"set as default" hint, and `SaveModelPrefs`' default-model parameter are all
+removed. `default_model` remains parsed but is now only a deep fallback —
+fresh-install bootstrap, `LoadRepoOverrides` repo pins, and the router's
+default role — and nothing in the interactive client writes it anymore. What a
+new session starts on is `last_model`, the model the user left off at (the
+attach-mode persistence fix landed the same day made that reliable under the
+daemon). Ctrl+N favorites and Shift+Tab's favorite cycle are unchanged.
+
+**Why**: with last_model working, a picker-set default was redundant and
+actively misleading — the user's complaint ("glm5.2 is the default in new
+sessions no matter what") traced to stale `last_model` state, and the Ctrl+O
+default they had saved never took precedence over it. Keeping one source of
+truth ("whatever you left off at") removes the whole class of confusion.
+
+**Worth revisiting if**: a project genuinely needs a pinned model again — the
+repo-override path (`[roles]`/`default_model` in the repo config) still works
+for that.
