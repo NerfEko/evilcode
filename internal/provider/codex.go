@@ -764,6 +764,10 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 	var providerItems []json.RawMessage
 	completed := false
 	terminal := false
+	// sawText tracks streamed output-text deltas. Reasoning summaries stream
+	// live but are not a response: a terminal chunk whose only content was
+	// summary text carries no output item and must fail (see ErrNoOutput).
+	sawText := false
 
 	send := func(chunk Chunk) bool {
 		select {
@@ -794,6 +798,7 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 			chunk := Chunk{}
 			if kind == "response.output_text.delta" {
 				chunk.Text = delta
+				sawText = true
 			} else {
 				chunk.Reasoning = delta
 			}
@@ -847,6 +852,19 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 					}
 					providerItems = finalItems
 				}
+			}
+			if len(providerItems) == 0 && len(calls.order) == 0 && !sawText {
+				// Observed live on the ChatGPT Codex backend after long
+				// max-effort reasoning: summary deltas streamed, then
+				// response.completed arrived with an empty output array and no
+				// output_item.done events, so nothing was itemized. Sending
+				// Done would commit a turn that never happened; the next
+				// request drops the reasoning-only message on replay and the
+				// model re-reasons into the same empty response — the stall the
+				// user sees as a reasoning loop. Fail loudly instead.
+				send(Chunk{Err: fmt.Errorf("codex: %w", ErrNoOutput)})
+				terminal = true
+				return false
 			}
 			usage := codexUsage(event)
 			completed = true

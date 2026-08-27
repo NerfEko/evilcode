@@ -39,6 +39,17 @@ const (
 // retryable at the agent layer only before any output was shown.
 var ErrStreamTruncated = errors.New("stream closed before a terminal marker")
 
+// ErrNoOutput marks a stream that reached its terminal marker but carried no
+// output items at all — no message, no function_call, not even the reasoning
+// item. The ChatGPT Codex backend can end a response this way after long
+// reasoning consumed the output budget; only the live summary deltas ever
+// streamed. Committing it as a complete turn makes the next request replay a
+// conversation in which the model's only trace is silently dropped, so the
+// model re-reasons from the same state into the same empty response — a stall
+// the user sees as a reasoning loop. It is retryable at the agent layer only
+// before any output was shown, like ErrStreamTruncated.
+var ErrNoOutput = errors.New("response carried no output items")
+
 var standardReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortNone,
 	ReasoningEffortMinimal,

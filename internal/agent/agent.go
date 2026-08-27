@@ -798,6 +798,13 @@ func retryable(err error) bool {
 	if errors.Is(err, provider.ErrStreamTruncated) {
 		return true
 	}
+	// A terminal response that itemized nothing (the codex backend's
+	// mid-reasoning exhaustion signature) may produce output on a resend: the
+	// retry re-reasons from the same input. It is retried only before any
+	// content was shown, like a truncated stream.
+	if errors.Is(err, provider.ErrNoOutput) {
+		return true
+	}
 	// Recognized transient transport failures (DNS, refused, reset, timeout).
 	var netErr net.Error
 	if errors.As(err, &netErr) {

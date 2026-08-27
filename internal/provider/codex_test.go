@@ -307,6 +307,40 @@ func TestCodexRetainsDoneItemsWhenCompletedOutputIsEmpty(t *testing.T) {
 	}
 }
 
+func TestCodexReasoningOnlyResponseIsAnError(t *testing.T) {
+	// Observed live on gpt-5.6-luna at max effort: reasoning summary deltas
+	// stream, then response.completed arrives with an empty output array and no
+	// output_item.done events at all. The turn must fail loudly instead of
+	// committing a reasoning-only message the next request silently drops on
+	// replay — that silent drop is what made codex models appear to stall in
+	// reasoning loops without ever editing.
+	sse := strings.Join([]string{
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"**Investigating**"}`,
+		"",
+		`data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":12,"output_tokens":4096}}}`,
+		"",
+	}, "\n")
+
+	ch := make(chan Chunk, 4)
+	streamCodexSSE(context.Background(), strings.NewReader(sse), ch)
+	close(ch)
+	var gotErr error
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		if chunk.Done {
+			t.Fatal("a reasoning-only response reported Done instead of an error")
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("no error for a terminal response that itemized nothing")
+	}
+	if !errors.Is(gotErr, ErrNoOutput) {
+		t.Errorf("err = %v, want ErrNoOutput", gotErr)
+	}
+}
+
 func jsonEqual(a, b []byte) bool {
 	return bytes.Equal(a, b)
 }

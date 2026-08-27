@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/build"
 	"os"
@@ -608,6 +609,62 @@ func (f *flakyProvider) ChatStream(ctx context.Context, req provider.Req) (<-cha
 	ch <- provider.Chunk{Done: true, Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 1}}
 	close(ch)
 	return ch, nil
+}
+
+// noOutputProvider's first attempt streams reasoning summary deltas, then
+// fails with ErrNoOutput — the codex backend's terminal-but-itemless shape.
+// The retry (attempt 2) streams a real answer.
+type noOutputProvider struct {
+	attempts int
+}
+
+func (p *noOutputProvider) Name() string { return "nooutput" }
+func (p *noOutputProvider) Embed(ctx context.Context, t []string) ([][]float32, error) {
+	return nil, nil
+}
+func (p *noOutputProvider) Models(ctx context.Context) ([]provider.ModelInfo, error) { return nil, nil }
+func (p *noOutputProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk, 4)
+	if p.attempts == 0 {
+		p.attempts++
+		// Reasoning summary streamed, then the terminal chunk itemized nothing.
+		ch <- provider.Chunk{Reasoning: "**Investigating**"}
+		ch <- provider.Chunk{Err: fmt.Errorf("codex: %w", provider.ErrNoOutput)}
+		close(ch)
+		return ch, nil
+	}
+	ch <- provider.Chunk{Text: "the actual answer"}
+	ch <- provider.Chunk{Done: true, Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 1}}
+	close(ch)
+	return ch, nil
+}
+
+// A reasoning-only empty response after visible deltas is surfaced, not
+// silently committed as a complete turn: retrying would replay the shown
+// reasoning, so the gate holds and the error reaches the user.
+func TestNoOutputAfterReasoningDeltasIsSurfacedNotRetried(t *testing.T) {
+	a := newTestAgent(t, &noOutputProvider{}, nil)
+
+	events, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
+	if err == nil {
+		t.Fatal("want the no-output error surfaced")
+	}
+	if !errors.Is(err, provider.ErrNoOutput) {
+		t.Errorf("err = %v, want ErrNoOutput", err)
+	}
+	for _, ev := range events {
+		if ev.Kind == EventTurnEnd && ev.Reason != EndError {
+			t.Errorf("turn ended %v, want EndError", ev.Reason)
+		}
+	}
+}
+
+// With nothing streamed at all, the same failure is retryable: resending the
+// identical request re-reasons from the same input and can itemize output.
+func TestNoOutputWithoutDeltasIsRetryable(t *testing.T) {
+	if !retryable(fmt.Errorf("codex: %w", provider.ErrNoOutput)) {
+		t.Fatal("ErrNoOutput should be retryable before any output was shown")
+	}
 }
 
 func TestPostTurnHookCanAppend(t *testing.T) {
