@@ -6679,3 +6679,26 @@ commit.)
 
 Verified: `gofmt -l` now reports zero files, `go build ./...`,
 `go vet ./...`, and `go test ./... -count=1` all green.
+
+## 2026-08-26 — the last jcode references are out of the source
+
+Request: "review the entire project and make sure there are no more references
+to jcode anywhere in it except maybe md files."
+
+Done: comment attributions (jcode's compaction defaults, edit.rs/read.rs line
+pointers, "mirrors jcode's" phrasing) reworded in agent/compact.go, tools/fs.go,
+fs_edit.go, fs_image.go, and daemon/registry.go; the background progress parser
+now accepts only `EVILCODE_PROGRESS`/`EVILCODE_CHECKPOINT` (the JCODE_PROGRESS
+and JCODE_CHECKPOINT variants are gone from both prefix lists and both regexes,
+with their tests driven through the evilcode markers); commandrisk no longer
+special-cases a `~/.jcode` home root; `TestJcodeParityCorpus` and
+`TestMultiEditRepairsNestedJcodeAliases` renamed. The stale jcode-era probe
+capture directories under probe/frames (untracked, per-run artifacts) were
+cleared; the repo binary rebuilt so its embedded strings no longer carry jcode
+either. docs/LOOPS.md and docs/DEVIATIONS.md keep their historical references
+by design.
+
+Verified: `grep -rin jcode` outside markdown, .git, and dist returns zero;
+`go build`/`go vet`/`go test ./internal/tools/... ./internal/agent/` green.
+The full-suite run was inconclusive (5-minute timeout) because a concurrent
+session's in-flight daemon test was in the tree; the affected packages pass.
