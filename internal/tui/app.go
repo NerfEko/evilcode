@@ -64,6 +64,18 @@ type cloudUsageMsg struct {
 	err  error
 }
 
+// dispatchFailureMsg reports a turn the daemon or agent refused after submit
+// had already committed the user row and consumed the staged attachments.
+// The update loop owns the rollback: restore the text and images, drop the
+// committed row, and surface the error (R2-03).
+type dispatchFailureMsg struct {
+	text   string
+	wpm    int
+	images [][]byte
+	err    error
+	queued bool
+}
+
 // contextWindowMsg carries the context window resolved for a just-switched
 // model. The provider ask is a network call, so it runs off the loop; the ref
 // lets the handler discard a result that a later switch already made stale.
@@ -178,6 +190,11 @@ type Model struct {
 	reasoningIdx int
 
 	pending []PendingMessage
+
+	// dispatchFailures carries turns the daemon or agent refused after submit
+	// already committed the user row (R2-03). The update loop owns the
+	// rollback; the sending goroutine only reports.
+	dispatchFailures chan dispatchFailureMsg
 
 	// queuedTexts holds prompts this window sent to a busy session (attached
 	// clients). The daemon queues them and starts a turn with each once the
@@ -633,6 +650,7 @@ func NewModel(a *agent.Agent, h HeaderState) *Model {
 		agent:               a,
 		renderer:            NewRenderer(p, 80),
 		header:              h,
+		dispatchFailures:    make(chan dispatchFailureMsg, 8),
 		started:             time.Now(),
 		streamingIdx:        -1,
 		reasoningIdx:        -1,
@@ -961,7 +979,23 @@ func (m *Model) WithSkills(skills *tools.SkillSet, pc agent.ProjectContext) *Mod
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.waitForEvent(), m.tick(), m.refreshStartSessions())
+	if m.dispatchFailures == nil {
+		m.dispatchFailures = make(chan dispatchFailureMsg, 8)
+	}
+	return tea.Batch(m.waitForEvent(), m.tick(), m.refreshStartSessions(), m.awaitDispatchFailure())
+}
+
+// awaitDispatchFailure reads one failed dispatch and hands it to the update
+// loop, which rolls the submit back. Re-armed after every delivery, so the
+// pump is exactly one blocked goroutine while idle.
+func (m *Model) awaitDispatchFailure() tea.Cmd {
+	ch := m.dispatchFailures
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return <-ch
+	}
 }
 
 func (m *Model) tick() tea.Cmd {
@@ -1307,6 +1341,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, tea.Batch(cmds...)
+
+	case dispatchFailureMsg:
+		m.rollbackDispatch(msg)
+		return m, m.awaitDispatchFailure()
 
 	case cloudUsageMsg:
 		m.cloudUsagePending = false
@@ -4059,7 +4097,7 @@ func (m *Model) submit(text string, wpm int) {
 		m.clearEditor()
 		m.scroll.FollowBottom()
 		m.notice = ""
-		m.dispatchTurn(text, wpm)
+		m.dispatchTurn(text, wpm, true)
 		return
 	}
 	m.blocks = append(m.blocks, Block{
@@ -4081,17 +4119,57 @@ func (m *Model) submit(text string, wpm int) {
 	m.clearEditor()
 	m.scroll.FollowBottom()
 	m.notice = ""
-	m.dispatchTurn(text, wpm)
+	m.dispatchTurn(text, wpm, false)
+}
+
+// rollbackDispatch undoes a submit the runtime refused: the committed user
+// row (or queued entry) goes away, the text and any staged images return to
+// the composer, and the reason lands in the notice. The user sees a prompt
+// that never started as exactly that, not as a lost message (R2-03).
+func (m *Model) rollbackDispatch(f dispatchFailureMsg) {
+	if f.queued {
+		for i := len(m.queuedTexts) - 1; i >= 0; i-- {
+			if m.queuedTexts[i] == f.text {
+				m.queuedTexts = append(m.queuedTexts[:i], m.queuedTexts[i+1:]...)
+				break
+			}
+		}
+	} else if n := len(m.blocks); n > 0 {
+		if b := m.blocks[n-1]; b.Kind == BlockUser && b.Text == f.text && b.Number == m.promptCount {
+			m.blocks = m.blocks[:n-1]
+			m.promptCount--
+			m.renumberPrompts()
+			m.invalidateTranscriptCache()
+			if _, active := m.entryAnim.Progress(time.Now()); active && m.entryAnim.Block >= n-1 {
+				m.entryAnim = EntryAnimation{Block: -1}
+			}
+		}
+	}
+	m.attachments = nil
+	for _, img := range f.images {
+		// Re-staging cannot fail: the bytes passed the same limits when they
+		// were first attached, and the slot was just vacated.
+		_, _ = m.attachImage(img, "restored after a failed send")
+	}
+	m.editor.Insert(f.text)
+	m.typingStarted = time.Time{}
+	m.notice = fmt.Sprintf("the prompt never reached the model: %v — text and images are back in the composer", f.err)
 }
 
 // dispatchTurn sends text to the model, taking any staged attachments along.
-// It is the tail of submit, shared by the immediate and the queued path.
-func (m *Model) dispatchTurn(text string, wpm int) {
+// It is the tail of submit, shared by the immediate and the queued path. A
+// refused dispatch comes back through dispatchFailureMsg so the update loop
+// can restore what submit already committed (R2-03).
+func (m *Model) dispatchTurn(text string, wpm int, queued bool) {
 	// Attachments ride with this message and are cleared by taking them, so a
 	// second prompt does not silently resend the first one's images. The vision
-	// gate ran above, so every attachment taken here is deliverable.
-	if images := m.TakeAttachments(); len(images) > 0 {
-		m.agent.Attach(images)
+	// gate ran above, so every attachment taken here is deliverable. The copy
+	// rides on the failure message: if the dispatch never starts, the images
+	// come back to the composer instead of disappearing with it.
+	var images [][]byte
+	if taken := m.TakeAttachments(); len(taken) > 0 {
+		images = taken
+		m.agent.Attach(taken)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -4104,6 +4182,16 @@ func (m *Model) dispatchTurn(text string, wpm int) {
 		// end alongside an unattended continuation.
 		if err := m.agent.Run(ctx, text); errors.Is(err, agent.ErrBusy) {
 			m.agent.Interject(agent.Interrupt{Source: agent.SourceUser, Text: text})
+		} else if err != nil {
+			// Transport, protocol, and persistence refusals mean no turn
+			// started. Dropping the error used to leave a committed user row
+			// and consumed images behind a prompt the model never saw.
+			select {
+			case m.dispatchFailures <- dispatchFailureMsg{text: text, wpm: wpm, images: images, err: err, queued: queued}:
+			default:
+				// The pump is gone (shutdown); the failure is logged nowhere
+				// because the process is exiting anyway.
+			}
 		}
 	}()
 }

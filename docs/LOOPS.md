@@ -6791,3 +6791,40 @@ Verified: `go test ./internal/daemon/ -count=1` green (one unrelated flake,
 package run and passed standalone 3× — watch it under R2-06), `go build ./...`
 green, `go test ./... -count=1` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-03: a refused dispatch now rolls back
+
+Verified: the cited code did exactly what the review said. `submit` appended
+the user block, bumped `promptCount`, and cleared the editor *before*
+`dispatchTurn`; `dispatchTurn` consumed the staged attachments
+(`TakeAttachments`) and then ran `agent.Run` in a goroutine that handled only
+`ErrBusy` — every transport, protocol, and persistence error vanished. In
+attach mode that error is real and reachable: `agent.run` returns
+`ForwardHidden`'s error directly (agent.go:400-405), which is the attach
+client's `client.Send` — the same path `client.Send` refuses with
+`ErrFrameTooLarge`. So an oversized attachment or a dead socket presented as a
+submitted turn whose images were gone. (`evilcode run`'s remote path already
+propagates its errors; the interactive path was the gap.)
+
+Done: `dispatchTurn` now takes a `queued` flag, keeps the taken images, and on
+any non-busy error reports a typed `dispatchFailureMsg` through a buffered
+channel; a one-goroutine pump (`awaitDispatchFailure`, armed in `Init`,
+re-armed after every delivery) hands it to the update loop, which owns
+`rollbackDispatch`: drop the committed user row (only the row it committed —
+matching text, number, and the top of the transcript), remove the queued
+entry on the queued path, re-stage the images, put the text back in the
+editor, and surface "the prompt never reached the model: …" in the notice.
+Queued turns get the same treatment; the hidden-continuation path rides the
+same channel.
+
+Tests: `TestFailedDispatchRestoresPromptAndAttachments` (row dropped, count
+restored, text and `[image 1]` back in the composer, error in the notice),
+`TestFailedQueuedDispatchLeavesNoGhostEntry`, and
+`TestFailedDispatchKeepsEarlierTranscript` (the rollback never touches
+earlier rows). First draft of the tests forgot `WithVision(true)` and the
+pre-dispatch vision gate silently blocked the submit — the tests then timed
+out waiting for a failure that was never dispatched, which is the E2 guard
+working as designed.
+
+Verified: `go test ./internal/tui/ -count=1`, `go vet ./...`,
+`go test ./... -count=1` green, `gofmt` clean.
+
