@@ -115,7 +115,9 @@ optional when you do not use the features that need them:
 ## Models and configuration
 
 The config file is `~/.config/evilcode/config.toml`, unless `EVILCODE_CONFIG` points
-somewhere else. A missing config is okay; evilcode starts with sensible defaults.
+somewhere else. A missing config is okay; evilcode starts with sensible defaults. An
+invalid one fails at startup with a single error listing every problem's TOML path,
+so a misconfigured file can be fixed in one edit instead of one restart per field.
 
 Ollama Cloud is the easiest route to try. With `OLLAMA_API_KEY`, the default model is
 `deepseek-v4-flash:0731@ollama-cloud` (reasoning effort high); without a key, the local Ollama route is used when it is
@@ -138,7 +140,7 @@ name = "glm-5.2:cloud"
 context_window = 262144
 
 [display]
-theme = "dracula"       # dracula | nosferatu | gloom | daywalker
+theme = "catppuccin-frappe"  # catppuccin-frappe | dracula | nosferatu | gloom | daywalker
 inline_diffs = true
 centered = false
 
@@ -186,6 +188,9 @@ browser imitation. It includes:
 - streaming Markdown and syntax-highlighted code
 - clickable shell code blocks that copy clean commands to the clipboard
 - inline diffs, a pinned diff view, and whole-file change gutters
+- a split view that follows the agent's file activity: `Ctrl+L` opens a live
+  pane on each touched file scrolled to the change, `Ctrl+Q` closes it, and the
+  wheel scrolls whichever side the mouse is over
 - model and reasoning pickers
 - `/help`, `/theme`, `/diff`, `/compact`, `/rewind`, and history search with `Ctrl+R`
 - Kitty and sixel image display when the terminal supports it
@@ -222,10 +227,13 @@ unavailable, lexical matching remains available.
 `/overnight` works through a todo list without a window attached. It is bounded by turns,
 tokens, wall clock, and stalled progress, and writes a small report when it stops.
 
-Sessions can spawn headless workers through `spawn_worker` or `/summon`. Worker results
-are checked against the schema supplied by the parent, and heartbeats make a silent
-worker visible as stale instead of leaving everyone waiting forever. Shared file and todo
-state lets a small swarm coordinate without each worker keeping a private copy.
+Sessions can delegate work to headless workers through `spawn_worker` or `/summon`.
+`spawn_worker` runs in the foreground: the turn waits, and the worker's result —
+validated against the JSON Schema the parent supplies — comes back directly as the
+tool result, so delegation reads like a blocking call. `/summon` starts a worker
+without waiting; its result arrives as a message when it finishes. Heartbeats make a
+silent worker visible as stale instead of leaving everyone waiting forever. Shared file
+and todo state lets a small swarm coordinate without each worker keeping a private copy.
 
 ## Keys
 
@@ -238,6 +246,8 @@ state lets a small swarm coordinate without each worker keeping a private copy.
 | `Ctrl+R` | search prompt history |
 | `Ctrl+G` | toggle a scroll bookmark |
 | `Alt+B` | send a running tool to the background |
+| `Ctrl+L` | toggle the live split view |
+| `Ctrl+Q` | close the split |
 | `PgUp`, `PgDn` | scroll one page |
 | `↑`, `↓` on empty input | scroll one line |
 
