@@ -7090,3 +7090,36 @@ was right from the start.
 Verified: `go test ./internal/config/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-10: role fallbacks now fire at runtime
+
+Verified: `SideCall` called `For` (a build-time walk — first entry that
+*constructs* wins) and then made exactly one network attempt. Authentication
+failure, rate limiting, model-not-found, timeout, or a mid-stream error never
+reached the next configured entry, despite the type and comments calling it a
+fallback chain.
+
+Done: `SideCall` walks the whole chain itself — resolve, attempt
+(`sideCallOnce`), and on failure continue to the next entry. The shared
+context bounds the walk: a spent deadline or cancelled context stops it, so
+one dead entry cannot spend the caller's budget on every remaining one.
+Diagnostics aggregate every tried entry as `role "smol" failed: <ref>: <err>;
+<ref>: <err>` — per-entry and role-named, and containing nothing a credential
+could be reconstructed from (provider errors carry status text, not keys).
+
+The new empty-config test found a pre-existing panic in `Resolve`: an empty
+provider list with an empty ref indexed `c.Providers[0]`. `Resolve` now
+reports "no model/providers configured" instead. Also learned while writing
+this: `RoleChain` never returns an empty chain (it falls back to
+`[DefaultModel]`), so `For`'s "no usable model" branch and SideCall's were
+effectively unreachable — the aggregated diagnostics are the reachable
+contract, and the tests pin that.
+
+Tests: `TestSideCallFallsThroughToTheNextChainEntryAtRuntime` (an unreachable
+first entry, a reachable second — the answer comes from the second),
+`TestSideCallAggregatesDiagnosticsAndHonorsTheContext` (a cancelled context
+stops the walk and both entries are named), and
+`TestSideCallWithNoUsableModelNamesTheRole`.
+
+Verified: `go test ./internal/config/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+

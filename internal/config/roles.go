@@ -181,19 +181,47 @@ func (r *Router) For(role string) (Resolved, error) {
 
 // SideCall runs a cheap one-shot completion through a role, with no tools and
 // no session. It is the plumbing every ambient feature uses.
+//
+// The fallback chain is a runtime fallback, not just a build-time one (R2-10):
+// an authentication failure, a rate limit, a model-not-found, a timeout, or a
+// mid-stream error all move to the next configured entry instead of failing a
+// call that had alternatives. The shared context bounds the whole chain — a
+// spent deadline stops the walk, and the diagnostics name every entry that was
+// tried without exposing anything a credential could be reconstructed from.
 func (r *Router) SideCall(ctx context.Context, role, system, user string) (string, error) {
-	res, err := r.For(role)
-	if err != nil {
-		return "", err
+	chain := r.cfg.RoleChain(role)
+	var errs []string
+	for _, ref := range chain {
+		p, model, err := r.cfg.Resolve(ref)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ref, err))
+			continue
+		}
+		out, err := sideCallOnce(ctx, p, model, system, user)
+		if err == nil {
+			return out, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", ref, err))
+		if ctx.Err() != nil {
+			// The shared context or deadline is spent; no entry can be
+			// attempted within the caller's budget.
+			break
+		}
 	}
+	if len(errs) == 0 {
+		return "", fmt.Errorf("config: role %q has no usable model", role)
+	}
+	return "", fmt.Errorf("role %q failed: %s", role, strings.Join(errs, "; "))
+}
 
+func sideCallOnce(ctx context.Context, p provider.Provider, model, system, user string) (string, error) {
 	var msgs []provider.Message
 	if system != "" {
 		msgs = append(msgs, provider.Message{Role: provider.RoleSystem, Content: system})
 	}
 	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: user})
 
-	ch, err := res.Provider.ChatStream(ctx, provider.Req{Model: res.Model, Messages: msgs})
+	ch, err := p.ChatStream(ctx, provider.Req{Model: model, Messages: msgs})
 	if err != nil {
 		return "", err
 	}

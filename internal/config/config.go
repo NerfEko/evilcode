@@ -1109,10 +1109,16 @@ func (c *Config) Resolve(ref string) (provider.Provider, string, error) {
 	if ref == "" {
 		ref = c.DefaultModel
 	}
+	if ref == "" {
+		return nil, "", fmt.Errorf("config: no model configured for the request")
+	}
 	model, providerName := SplitModelRef(ref)
 
 	var pc *ProviderConfig
 	if providerName == "" {
+		if len(c.Providers) == 0 {
+			return nil, "", fmt.Errorf("config: no providers configured")
+		}
 		pc = &c.Providers[0]
 	} else {
 		pc = c.findProvider(providerName)
