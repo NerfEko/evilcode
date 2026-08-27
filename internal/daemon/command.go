@@ -250,9 +250,30 @@ func (sess *Session) setCredential(target, key string) error {
 	if sess.busy() {
 		return fmt.Errorf("finish or interrupt the current turn before changing credentials")
 	}
+
+	// Validate before anything is written: an unknown provider name used to be
+	// persisted to the user's config first and discovered missing afterwards,
+	// leaving a saved key for a provider that does not exist (R2-12).
+	sess.srv.mu.Lock()
+	pc := providerConfig(sess.srv.Cfg, target)
+	sess.srv.mu.Unlock()
+	if pc == nil {
+		return fmt.Errorf("config: no provider named %q; not saved", target)
+	}
+	// Build the replacement before committing anything, so a key that produces
+	// an unusable client (bad base URL, refused auth at build) is reported
+	// instead of silently keeping the old provider alive.
+	candidate := *pc
+	candidate.APIKey = key
+	rebuilt, buildErr := candidate.Build()
+	if buildErr != nil {
+		return fmt.Errorf("provider %q rejected the new key: %w", target, buildErr)
+	}
 	if err := config.SaveProviderAPIKey(target, key); err != nil {
 		return err
 	}
+
+	// Commit: the daemon config and every live session's copy move together.
 	sess.srv.mu.Lock()
 	if sess.srv.Cfg != nil {
 		for i := range sess.srv.Cfg.Providers {
@@ -268,25 +289,64 @@ func (sess *Session) setCredential(target, key string) error {
 				live.built.Config.Providers[i].APIKey = key
 			}
 		}
-		if !live.running && !live.built.Agent.Running() &&
-			live.built.Agent.Provider != nil && live.built.Agent.Provider.Name() == target {
-			if pc := providerConfig(live.built.Config, target); pc != nil {
-				if rebuilt, buildErr := pc.Build(); buildErr == nil {
-					live.built.Agent.Provider = rebuilt
-					if live.built.Memory != nil {
-						live.built.Memory.Embedder = rebuilt
-					}
-					if live.built.Agent.Compactor != nil {
-						live.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
-					}
-				}
+		uses := live.built.Agent.Provider != nil && live.built.Agent.Provider.Name() == target
+		if !live.running && !live.built.Agent.Running() && uses {
+			live.built.Agent.Provider = rebuilt
+			if live.built.Memory != nil {
+				live.built.Memory.Embedder = rebuilt
 			}
+			if live.built.Agent.Compactor != nil {
+				live.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
+			}
+		} else if uses {
+			// A busy session keeps its in-flight provider instance; the new key
+			// applies at its next turn boundary (R2-12).
+			live.pendingCredential = target
 		}
 		live.mu.Unlock()
 	}
 	sess.srv.mu.Unlock()
 	sess.notice(target + " API key saved")
 	return nil
+}
+
+// applyPendingCredential swaps in a credential the session could not take
+// mid-turn. Called at the turn boundary, the one safe synchronization point.
+func (sess *Session) applyPendingCredential() {
+	if sess.srv == nil {
+		return
+	}
+	sess.mu.Lock()
+	target := sess.pendingCredential
+	sess.pendingCredential = ""
+	sess.mu.Unlock()
+	if target == "" {
+		return
+	}
+	sess.mu.Lock()
+	pc := providerConfig(sess.built.Config, target)
+	sess.mu.Unlock()
+	if pc == nil {
+		sess.notice("⚠ the new API key for " + target + " could not be applied: provider missing")
+		return
+	}
+	// Built outside the session lock: construction may reach the network, and
+	// the lock is the session's whole world.
+	rebuilt, err := pc.Build()
+	if err != nil {
+		sess.notice("⚠ could not apply the new " + target + " API key: " + err.Error())
+		return
+	}
+	sess.mu.Lock()
+	sess.built.Agent.Provider = rebuilt
+	if sess.built.Memory != nil {
+		sess.built.Memory.Embedder = rebuilt
+	}
+	if sess.built.Agent.Compactor != nil {
+		sess.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
+	}
+	sess.mu.Unlock()
+	sess.notice("✓ new " + target + " API key applied")
 }
 
 func providerConfig(cfg *config.Config, name string) *config.ProviderConfig {

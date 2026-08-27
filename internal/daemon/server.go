@@ -145,6 +145,12 @@ type Session struct {
 	staleNotified   bool
 	failureNotified bool
 
+	// pendingCredential names a provider whose freshly saved API key could not
+	// replace this session's live provider instance because a turn was in
+	// flight. applyPendingCredential consumes it at the next turn boundary
+	// (R2-12).
+	pendingCredential string
+
 	mu sync.Mutex
 	// controlMu serializes runtime configuration changes that must be observed
 	// as one session-wide state transition by every attached client.
@@ -1206,6 +1212,7 @@ func (sess *Session) observe(e agent.Event) {
 		// Safe point D: everything the turn asked for has come back, so a
 		// notice now lands between turns rather than mid-thought (§6.3).
 		sess.deliverConflicts()
+		sess.applyPendingCredential()
 		sess.mu.Lock()
 		sess.turn++
 		sess.mu.Unlock()

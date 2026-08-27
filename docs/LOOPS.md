@@ -7157,6 +7157,44 @@ binaries.
 Verified: `go test ./cmd/evilcode/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-12: credentials are validated, built, then committed
+
+Verified: all four claims held. `setCredential` called
+`config.SaveProviderAPIKey(target, key)` before checking the provider existed —
+a typo'd name persisted a key for a provider that does not exist. Provider
+rebuild errors were swallowed (`if rebuilt, buildErr := pc.Build(); buildErr ==
+nil` — an error silently kept the old client while the UI said saved). Only
+IDLE sessions using the provider were rebuilt; a busy session kept its old
+provider instance indefinitely while holding the new config value. The
+command's report was unconditional.
+
+Done. `setCredential` now: (1) validates the target against the daemon config
+before anything is written; (2) builds the replacement client from the new key
+before committing anything — a provider that rejects construction refuses the
+credential with the build error instead of saving it; (3) commits config +
+every live session's copy together; (4) a session that was BUSY on that
+provider gets `pendingCredential` set instead of silently keeping its old
+instance, and `applyPendingCredential` consumes it at the next turn boundary
+(`observe`'s TurnEnd — the one safe synchronization point), reporting success
+or failure there. The review's "report partial failures" and "pending
+generation" behaviors both land.
+
+Two self-caught bugs while writing: the first `applyPendingCredential` held
+`sess.mu` across `notice` (which takes it again — a self-deadlock the test
+caught with a timeout dump), so the build now happens outside the session
+lock; and my build-rejection test assumed an OpenAI provider with a bad base
+URL fails at Build, which it doesn't (clients are built lazily) — the test
+uses a Codex provider without its auth file, which genuinely fails
+construction.
+
+Tests: `TestSetCredentialRefusesUnknownProviderWithoutPersisting`,
+`TestSetCredentialReportsABrokenProviderInsteadOfSaving`,
+`TestBusySessionRefreshesItsCredentialAtTheNextTurnBoundary`, and the existing
+`TestCredentialUpdateReachesEveryLiveSessionConfig` still passes.
+
+Verified: `go test ./internal/daemon/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+
 Verified: `go test ./internal/config/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
