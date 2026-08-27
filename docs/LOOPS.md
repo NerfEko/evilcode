@@ -6662,3 +6662,20 @@ fresh-machine and empty-favorites tests pin the same invariant.
 Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1`, repo
 binary rebuilt. The stale `default_model` in the user's own config.toml is
 inert (last_model wins whenever set) and was deliberately left untouched.
+
+## 2026-08-26 — codex review 2, R2-41: gofmt baseline restored
+
+Request: "read codex_review2.md. verify all its findings. then, fix everything
+listed. commit, push and update loops.md after every fix."
+
+Verified: `gofmt -l .` listed exactly the 23 files the review claimed
+(production files in tools/provider/tui among them: fs_edit.go, fs_image.go,
+kvcachewidget.go, login_picker.go, mock.go; the rest test/wiring files).
+
+Done: `gofmt -w` on those 23 files as a dedicated change, before any other
+review fix, so later diffs are not polluted by formatting drift. (Fix landed
+in afaea0d before its LOOPS entry; later review fixes ship entry + fix in one
+commit.)
+
+Verified: `gofmt -l` now reports zero files, `go build ./...`,
+`go vet ./...`, and `go test ./... -count=1` all green.
