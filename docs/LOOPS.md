@@ -7413,3 +7413,38 @@ Verified: `go test ./internal/provider/ -count=1`,
 `go test ./internal/agent/ -count=1`, full `go test ./... -count=1 -timeout
 600s` green, `go vet ./...` clean, `gofmt -l .` clean.
 
+## 2026-08-27 — one daemon per socket path: the bind lock now claims for life
+
+Verified from the running system: three daemon processes were alive, all with
+listeners on `/run/user/1000/evilcode.sock` through three different socket
+inodes — only the newest reachable through the path. The bind guard (dial the
+occupied path, refuse when something answers) is correct and reproducibly
+refuses a second daemon, so each successive start must have found the path
+dial-dead — the previous daemon's socket file deleted from under it while its
+process lived. Two deleters by name, both unguarded until now: `Close()`'s
+explicit `os.Remove(s.Path)`, and — the one the tests caught — Go's own
+`UnixListener` unlinks the path on `Close` with no ownership check. A daemon
+that exits after its path was rebound (idle timeout after the last client
+detached, `serve -stop`, SIGTERM) deletes the current owner's socket, the next
+attach spawns a fresh serve that binds the now-missing path, and the old
+daemon lives on unreachable. Repeat and you get the night's three daemons.
+
+Done, two pieces. (1) The bind-time flock becomes a lifetime claim: held from
+a successful bind until `Close`, acquired nonblocking so a second daemon
+refuses fast with a clear error. The socket file can be gone; the claim is
+not — a second daemon on the path fails while the first lives, and a dead
+daemon releases the claim in the kernel, so takeover still works. (2) The
+only unlinker is now the guarded remove in `Close`: `SetUnlinkOnClose(false)`
+disables Go's by-name unlink, and the explicit remove fires only when the
+path still names the inode this daemon bound.
+
+Tests: `TestListenRefusesWhenTheSocketFileIsDeletedUnderTheDaemon` (the
+orphan: file gone, second daemon still fails the claim),
+`TestCloseKeepsASuccessorsSocket` (a stolen path survives Close),
+`TestListenRefusesASecondDaemon` (message relaxed — the lock now refuses
+before the dial probe), plus `TestCloseRemovesTheSocket` and
+`TestListenClearsAStaleSocket` unchanged and green.
+
+Verified: `go test ./internal/daemon/ -count=1`, full `go test ./... -count=1
+-timeout 600s` green, `go vet ./...` clean, `gofmt -l .` clean.
+
