@@ -7379,10 +7379,35 @@ contributes. The backend still burns output budget on reasoning at max effort
 — the fix makes that failure visible and retryable, not impossible; lowering
 effort or bounding steps remains the mitigation on heavy investigation turns.
 
+Follow-up the same night — the fix deployed but did not cure the stall. The
+thorn-7 session (attached to the rebuilt daemon seven seconds after its
+01:12:39 start) worked through dozens of itemized rounds, then hit the same
+itemless terminal response at 01:20:55, and its worker tree (banshee-7,
+banshee-8) reproduced it inside the fixed daemon. So the first fix fired and
+still lost the turn. A direct wire probe against the codex backend then
+established: `response.completed` always carries an empty `output` array on
+this backend (the streaming fallback is load-bearing on every round); the
+codex endpoint rejects `max_output_tokens` outright ("Unsupported
+parameter"), so the output budget cannot be raised from the client; and a
+12-round faithful-replay loop itemized fine — the itemless shape is the
+backend ending a response mid-reasoning, non-deterministically. hermes-agent
+issue #5736 documents the same signature on gpt-5.x over this provider:
+works in an isolated call, fails in the agent loop.
+
+Done, recovery: the stream retry gate's no-visible-replay rule now exempts
+`ErrNoOutput` — only reasoning summaries streamed, so a retry replays no
+answer text, and a resend of the identical request re-reasons from the same
+input and typically itemizes (every owl-5 `resume` poke recovered on exactly
+such a resend). Bounded by `MaxRetries` with backoff; a run that itemizes
+nothing across all attempts still surfaces the error and ends the turn as an
+error. Client-side prevention of the truncation is not possible: the budget
+parameter is rejected by the endpoint.
+
 Tests: `TestCodexReasoningOnlyResponseIsAnError` (the live shape fails with
-ErrNoOutput and no Done), `TestNoOutputAfterReasoningDeltasIsSurfacedNotRetried`
-(agent surfaces the error; the turn ends EndError),
-`TestNoOutputWithoutDeltasIsRetryable`.
+ErrNoOutput and no Done),
+`TestNoOutputAfterReasoningDeltasRecoversOnRetry` (the agent completes the
+turn on the resend), `TestNoOutputExhaustsRetriesAndSurfaces` (all-attempts
+itemless still surfaces), `TestNoOutputWithoutDeltasIsRetryable`.
 
 Verified: `go test ./internal/provider/ -count=1`,
 `go test ./internal/agent/ -count=1`, full `go test ./... -count=1 -timeout
