@@ -7351,3 +7351,40 @@ Verified: `go test ./internal/daemon/ -count=1`, `go test ./internal/tui/
 -count=1`, `go test -race ./internal/daemon/ ./internal/tui/`, vet, full
 `go test ./... -count=1 -timeout 600s`, probe suite, `gofmt -l .` clean.
 
+## 2026-08-27 — codex reasoning-only responses fail loudly instead of stalling
+
+Verified against the recorded owl-5 and nebula-6 sessions (gpt-5.6-luna@codex):
+three turns ended with a reasoning-only assistant message — summary deltas
+streamed live, then `response.completed` arrived with an empty output array and
+no `output_item.done` events, so nothing was itemized. evilcode committed each
+as a complete turn: no error, no tool calls, turn over. `toCodexInput` then
+drops a reasoning-only assistant message on replay (no content, no items, no
+calls to encode), so the next request replayed a conversation in which the
+model's only trace had vanished, and the model re-reasoned from the same state
+into the same empty response. The user sees a reasoning loop that never edits.
+A directive prompt keeps reasoning short enough that output items arrive,
+which is why "write X to Y" always worked while open-ended work stalled.
+
+Done: `provider.ErrNoOutput` marks a terminal response that itemized nothing;
+`streamCodexSSE` fails such a completion instead of sending Done — streamed
+output-text deltas still exempt a stream (text-only content is replayable as
+an assistant message), reasoning summaries are not; `retryable` treats it like
+`ErrStreamTruncated`, so a delta-less failure retries and a post-delta failure
+surfaces to the user instead of dying silently as a completed turn.
+
+Recorded, not changed: the codex request sends `parallel_tool_calls: true`
+where the reference Codex CLI sends false; parallel rounds demonstrably
+succeeded in the same sessions, so it stays until there is evidence it
+contributes. The backend still burns output budget on reasoning at max effort
+— the fix makes that failure visible and retryable, not impossible; lowering
+effort or bounding steps remains the mitigation on heavy investigation turns.
+
+Tests: `TestCodexReasoningOnlyResponseIsAnError` (the live shape fails with
+ErrNoOutput and no Done), `TestNoOutputAfterReasoningDeltasIsSurfacedNotRetried`
+(agent surfaces the error; the turn ends EndError),
+`TestNoOutputWithoutDeltasIsRetryable`.
+
+Verified: `go test ./internal/provider/ -count=1`,
+`go test ./internal/agent/ -count=1`, full `go test ./... -count=1 -timeout
+600s` green, `go vet ./...` clean, `gofmt -l .` clean.
+
