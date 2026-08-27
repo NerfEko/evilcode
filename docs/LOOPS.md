@@ -7064,3 +7064,29 @@ test's own `t.Setenv("TMPDIR", …)` raced `t.TempDir()`'s directory creation
 Verified: `go test ./internal/tools/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — codex review 2, R2-09: repo model blocks actually override global ones
+
+Verified: `LoadRepoOverrides` appended repo `[[model]]` blocks after the
+global ones, and `ModelOverrides` returns the first exact match then the first
+bare match — so a global block for the same model silently beat the repo's
+pin, and a bare global entry masked a repo bare entry, both the opposite of
+what "overrides" documents.
+
+Done: repo model blocks merge by reference with last-wins precedence — a repo
+entry whose name equals an existing one replaces it in place; new names
+append. The resolution rules in `ModelOverrides` (exact provider-qualified
+match first, then bare) are untouched, so a provider-qualified entry still
+beats a bare one for that provider. `Clone()` already copies `Models`, so the
+merge stays per-session safe.
+
+Test: `TestRepoModelBlocksOverrideGlobalEntries` — a repo block with the same
+name replaces the global one (context_window and anchor_edits now come from
+the repo), a repo-only bare name resolves through the bare path, and an
+unrelated global entry is untouched. First draft asserted the wrong values
+twice (`ContextWindow != 0` where the merge had correctly produced the repo's
+123456, and "unchanged" where I expected 0) — both were test bugs, the merge
+was right from the start.
+
+Verified: `go test ./internal/config/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+

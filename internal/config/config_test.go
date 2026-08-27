@@ -436,6 +436,47 @@ scroll_up = "ctrl+shift+k"
 	}
 }
 
+func TestRepoModelBlocksOverrideGlobalEntries(t *testing.T) {
+	// R2-09: a repo [[model]] block with the same name must replace the
+	// global one — the resolution order (first match) used to hand the win to
+	// the global entry merely because it was declared first.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, RepoConfigName), []byte(`
+[[model]]
+name = "glm-5.3@ollama-cloud"
+context_window = 123456
+anchor_edits = true
+`), 0o644)
+
+	cfg := Default()
+	cfg.Models = append(cfg.Models, ModelConfig{Name: "glm-5.3@ollama-cloud", ContextWindow: 4096})
+	if err := cfg.LoadRepoOverrides(dir); err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.ModelOverrides("glm-5.3@ollama-cloud")
+	if got.ContextWindow != 123456 || !got.AnchorEdits {
+		t.Fatalf("overrides = %+v, want the repo block to replace the global one", got)
+	}
+
+	// A new name appends, and the qualified-beats-bare rule is untouched.
+	os.WriteFile(filepath.Join(dir, RepoConfigName), []byte(`
+[[model]]
+name = "repo-only"
+lenient_tool_parse = true
+`), 0o644)
+	cfg2 := Default()
+	cfg2.Models = append(cfg2.Models, ModelConfig{Name: "glm-5.3@ollama-cloud", ContextWindow: 4096})
+	if err := cfg2.LoadRepoOverrides(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg2.ModelOverrides("repo-only@ollama-cloud"); !got.LenientToolParse {
+		t.Errorf("a repo-only bare entry did not resolve: %+v", got)
+	}
+	if got := cfg2.ModelOverrides("glm-5.3@ollama-cloud"); got.ContextWindow != 4096 {
+		t.Errorf("an unrelated global entry changed: %+v", got)
+	}
+}
+
 func TestRepoOverridesAreNarrow(t *testing.T) {
 	// A repo may pin its roles and default model, but checking out a
 	// repository must never be able to redirect the user's API keys.

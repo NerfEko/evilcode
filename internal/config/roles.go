@@ -66,7 +66,26 @@ func (c *Config) LoadRepoOverrides(repoRoot string) error {
 	if repo.Roles.Commit != nil {
 		c.Roles.Commit = repo.Roles.Commit
 	}
-	c.Models = append(c.Models, repo.Models...)
+	// Model blocks merge by reference with last-wins precedence. Appending used
+	// to be the whole story, and ModelOverrides returns the first match — so a
+	// global block for the same model silently beat the repo's pin, the exact
+	// opposite of what "overrides" says. A repo entry with the same name
+	// replaces the global one; new names append. The resolution rule — a
+	// provider-qualified entry beats a bare one for that provider — lives in
+	// ModelOverrides and is untouched (R2-09).
+	for _, m := range repo.Models {
+		replaced := false
+		for i := range c.Models {
+			if c.Models[i].Name == m.Name {
+				c.Models[i] = m
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			c.Models = append(c.Models, m)
+		}
+	}
 	return nil
 }
 
