@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"evilcode/internal/agent"
 	tea "charm.land/bubbletea/v2"
+	"evilcode/internal/agent"
 )
 
 // TestLonePeriodPumpsNoUserBlock reproduces the live path: press "." on an

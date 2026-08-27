@@ -609,7 +609,6 @@ var mockScenarios = map[string][][]Chunk{
 	},
 }
 
-
 // MockScenarios lists the built-in scenario names, for `--help` output and
 // tests that want to sweep all of them.
 func MockScenarios() []string {

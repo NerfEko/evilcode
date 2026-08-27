@@ -112,6 +112,7 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
 // A trailing newline on `new` is a delimiter, not a changed line: the context
 // after the change is three lines, not four.
 func TestEditContextTrailingNewlineOnNew(t *testing.T) {

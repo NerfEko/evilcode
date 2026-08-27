@@ -60,7 +60,7 @@ func TestMultiEditPartialApplication(t *testing.T) {
 		"path": "a.txt",
 		"edits": []map[string]any{
 			{"old": "one", "new": "ONE"},
-			{"old": "nope", "new": "X"},   // fails: not found
+			{"old": "nope", "new": "X"},  // fails: not found
 			{"old": "two", "new": "TWO"}, // still applies
 		},
 	})

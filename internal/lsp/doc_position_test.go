@@ -66,10 +66,10 @@ func TestRuneToUTF16(t *testing.T) {
 		want int
 	}{
 		{"old := 1", 1, 1},
-		{"héllo old", 7, 7},   // é is one rune, one UTF-16 unit: no shift
-		{"🔥 old", 1, 1},       // before the emoji: no shift yet
-		{"🔥 old", 3, 4},       // past the emoji: one rune, two units
-		{"🔥🔥 old", 5, 7},      // two astral characters before: two-unit shift
+		{"héllo old", 7, 7}, // é is one rune, one UTF-16 unit: no shift
+		{"🔥 old", 1, 1},     // before the emoji: no shift yet
+		{"🔥 old", 3, 4},     // past the emoji: one rune, two units
+		{"🔥🔥 old", 5, 7},    // two astral characters before: two-unit shift
 	}
 	for _, tc := range cases {
 		got, err := runeToUTF16(tc.line, tc.col)

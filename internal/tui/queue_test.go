@@ -97,7 +97,7 @@ func TestEditorUpDownMovesBetweenLines(t *testing.T) {
 	e := &Editor{Text: "alpha\nbeta\ngamma"}
 
 	e.Cursor = len("alpha\nbeta\ngamma") - 1 // end of "gamma" (col 4)
-	e.Down()                             // no-op on the last line
+	e.Down()                                 // no-op on the last line
 	if e.Cursor != len("alpha\nbeta\ngamma")-1 {
 		t.Fatalf("Down on last line moved cursor to %d", e.Cursor)
 	}
