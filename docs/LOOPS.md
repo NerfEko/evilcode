@@ -7261,3 +7261,40 @@ note auto compactions the way the real path now does.
 Verified: `go test ./internal/agent/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 
+## 2026-08-26 — chronic tool-arg repairs: stringified args, number ids, multiedit op/intent
+
+Verified: the claims came from live replays in the nebula-4 postmortem
+(docs/nebula4_postmortem.md). Four real failure shapes reached the strict
+decoder and died there: (1) an ollama-routed model can wrap the whole argument
+object in a JSON string, so `repairArgs` answered "cannot unmarshal string"
+before the alias table was ever consulted; (2) glm-5.2 sent todo's `goals` as a
+stringified array (`"[{...}]"`); (3) todo ids arrived as JSON numbers (`1` not
+`"1"`); (4) models trained on edit's vocabulary sent multiedit hunks with
+`op:"replace"` (14 live failures) and no way to attach an intent.
+
+Done, six pieces. (1) `repairArgs` unwraps a top-level stringified args object
+against the schema, so the object reaches the strict decoder and the alias
+table with it. (2) `unwrapSchemaString` unwraps a stringified object/array
+value when — and only when — the schema types that field as exactly object or
+array; a union that also allows string vetoes the unwrap, and a string-typed
+field (a shell brace group, a JSON-in-string parameter) is never touched.
+(3) `stringOnlyType` + `coerceNumberString` turn a JSON number into its lexical
+string for string-only fields, so `"id": 1` reaches the decoder as `"1"`;
+unions allowing numbers are exempt. (4) `op:"replace"` beside `old`/`new` on a
+multiedit hunk is dropped with a repair note — it names no data the hunk can
+use — while any other op survives as the decoder's teaching error, and edit's
+own anchored patches keep their op untouched. (5) `head_limit` joins the alias
+table as `limit`, another agent's grep vocabulary. (6) multiedit grows an
+`intent` field routed through `fileIntent` onto the result, matching edit.
+
+Tests: `TestRepairArgsUnwrapStringifiedArgs`,
+`TestRepairArgsUnwrapStringifiedTodoGoals`,
+`TestRepairArgsNeverUnwrapAStringTypedField`,
+`TestRepairArgsCoerceNumberToString`,
+`TestRepairArgsDropRedundantReplaceOpOnHunks`,
+`TestMultiEditSurvivesEditVocabulary`, and the `head_limit` case inside
+`TestArgAliasesAreAccepted`.
+
+Verified: `go test ./internal/tools/ -count=1`, `go vet ./...`,
+`go test ./... -count=1 -timeout 600s` green, `gofmt -l .` clean.
+
