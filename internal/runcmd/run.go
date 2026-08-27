@@ -186,7 +186,7 @@ func Run(args []string) (int, error) {
 				execTools.WithLSP(lsps)
 			}
 			ts = append(tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
+				WithConfine(cfg.Features.ConfineToWorkspace).WithWeakConfine(cfg.Features.ConfineWeak).WithVision(overrides.Vision).
 				WithExposure(exposure).Tools(),
 				execTools.Tools()...)
 			ts = append(ts, tools.NewGit(pc.Root).Tools()...)

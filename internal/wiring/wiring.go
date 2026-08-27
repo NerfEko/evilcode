@@ -273,7 +273,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 				execTools.WithLSP(lsps)
 			}
 			fsTools = tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-				WithConfine(cfg.Features.ConfineToWorkspace).WithVision(overrides.Vision).
+				WithConfine(cfg.Features.ConfineToWorkspace).WithWeakConfine(cfg.Features.ConfineWeak).WithVision(overrides.Vision).
 				WithExposure(exposure)
 			ts = append(fsTools.Tools(),
 				execTools.Tools()...)

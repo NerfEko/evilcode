@@ -171,7 +171,7 @@ func run(args []string, autoStart bool) error {
 		fmt.Fprintln(os.Stderr, "evilcode: "+problem)
 	}
 	fsTools := tools.NewFS(snap.Cwd).
-		WithConfine(cfg.Features.ConfineToWorkspace).
+		WithConfine(cfg.Features.ConfineToWorkspace).WithWeakConfine(cfg.Features.ConfineWeak).
 		WithVision(cfg.ModelOverrides(config.ModelRef(snap.Model, snap.Provider)).Vision)
 	braveSearch := tools.NewBraveSearch(cfg.BraveSearchAPIKey())
 	m.WithSkills(skills, pc).

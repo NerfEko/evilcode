@@ -6997,3 +6997,39 @@ the review's note anticipates.
 
 Verified: every gate command run locally and green.
 
+## 2026-08-26 — codex review 2, R2-08: confinement fails closed, and directory creation is a descriptor walk
+
+Verified: both claims held. `openBeneath`'s no-openat2 branch was a silent
+`os.OpenFile(full, flags, perm)` — an unconfined open while every caller
+believed the boundary was enforced. `mkdirAllConfined` did resolve →
+`os.MkdirAll` (which follows symlinks) → post-hoc verify: a component swapped
+for a symlink during MkdirAll created directories outside the workspace before
+the verify ran, and the verify's own probe degraded to that same unconfined
+open on an old kernel.
+
+Done, three pieces. (1) `openBeneath` fails closed: on a kernel without
+openat2 it returns a typed `ErrWeakConfinementUnavailable` refusal that names
+the remedy, and falls back to the older resolve-then-open path only when the
+caller set the new `[features] confine_weak` opt-in — the explicit weak mode
+the review asked for. (2) `FS` gains `WeakConfinement` +
+`WithWeakConfine(...)`, threaded through every open/write/list call site and
+wired from the four construction sites (wiring, tuicmd, runcmd, attachcmd)
+via the new `Features.ConfineWeak` (toml `confine_weak`). (3) Directory
+creation is `mkdirAllBeneath`: a walk from a descriptor on the verified root
+using `mkdirat`/`openat` with `O_NOFOLLOW` on every component — the check and
+the creation are one walk over pinned descriptors, so the post-hoc verify (and
+its own weak-kernel degradation) is gone.
+
+Tests: `TestMkdirAllBeneathCreatesNestedDirectories` (creation, idempotence,
+root), `TestMkdirAllBeneathRefusesASymlinkComponent` (a symlinked component
+stops the walk and nothing is created on its far side),
+`TestMkdirAllBeneathRefusesEscape`, `TestConfinedWriteStillCreatesParents
+ThroughTheWalk` (the real confined `write` tool through created parents), and
+`TestWeakConfineIsInertWhereOpenat2Exists` / `TestOpenBeneathRefusesOutside
+PathsRegardlessOfWeak`. The fail-closed branch itself is only reachable on a
+sub-5.6 kernel, so the openat2-present path is what the tests pin; the refusal
+text names the kernel requirement and the opt-in.
+
+Verified: `go test ./internal/tools/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+

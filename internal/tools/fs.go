@@ -31,6 +31,13 @@ type FS struct {
 	// session you want kept inside one tree (`[features] confine_to_workspace`).
 	Confine bool
 
+	// WeakConfinement is the explicit opt-in to confinement that cannot be
+	// kernel-enforced. On kernels without openat2 (Linux < 5.6) strong
+	// confinement is impossible, so confined opens refuse rather than
+	// silently degrade — unless the user set `[features] confine_weak`, which
+	// accepts the older resolve-then-open behavior (R2-08).
+	WeakConfinement bool
+
 	// MaxReadBytes caps a single file read before truncation.
 	MaxReadBytes int
 
@@ -118,6 +125,14 @@ func (f *FS) WithAnchors(on bool) *FS {
 // WithConfine restricts paths to the workspace root.
 func (f *FS) WithConfine(on bool) *FS {
 	f.Confine = on
+	return f
+}
+
+// WithWeakConfine is the explicit opt-in to resolve-then-open confinement on
+// kernels without openat2. Without it a confined session on such a kernel
+// refuses filesystem work instead of silently dropping the guarantee.
+func (f *FS) WithWeakConfine(on bool) *FS {
+	f.WeakConfinement = on
 	return f
 }
 
@@ -263,7 +278,7 @@ func (f *FS) readDirConfined(parent string) ([]os.DirEntry, error) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	dir, err := openBeneath(root, resolveExisting(parent), os.O_RDONLY, 0)
+	dir, err := openBeneath(root, resolveExisting(parent), os.O_RDONLY, 0, f.WeakConfinement)
 	if err != nil {
 		return nil, err
 	}
@@ -630,21 +645,16 @@ func (f *FS) mkdirAllConfined(full string) error {
 	if _, err := f.resolve(dir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	// And verify what was actually created is where it was meant to be:
-	// MkdirAll follows symlinks, so the check above describes intent and this
-	// describes the result.
+	// Component-by-component mkdirat from a descriptor on the verified root.
+	// The previous shape — os.MkdirAll (which follows symlinks) and a post-hoc
+	// verify — could create directories outside the workspace before the
+	// verify detected it, and the verify itself degraded to an unconfined open
+	// on kernels without openat2. The descriptor walk closes both (R2-08).
 	root := f.Root
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	probe, err := openBeneath(root, resolveExisting(dir), os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	return probe.Close()
+	return mkdirAllBeneath(root, resolveExisting(dir))
 }
 
 // openConfined opens a file for reading, atomically bounded to the workspace
@@ -662,7 +672,7 @@ func (f *FS) openConfined(full string) (*os.File, error) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	return openBeneath(root, resolveExisting(full), os.O_RDONLY, 0)
+	return openBeneath(root, resolveExisting(full), os.O_RDONLY, 0, f.WeakConfinement)
 }
 
 // readConfined reads a whole file through the confined open.
@@ -715,7 +725,7 @@ func (f *FS) writeConfined(full string, data []byte) error {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	return writeAtomicBeneath(root, resolveExisting(full), data)
+	return writeAtomicBeneath(root, resolveExisting(full), data, f.WeakConfinement)
 }
 
 func writeAtomic(path string, data []byte) error {

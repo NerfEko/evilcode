@@ -273,7 +273,7 @@ func runOnce(args []string) (string, error) {
 	// broken when it was simply never switched on.
 	overrides := cfg.ModelOverrides(config.ModelRef(modelName, prov.Name()))
 	fsTools := tools.NewFS(cwd).WithAnchors(overrides.AnchorEdits).
-		WithConfine(cfg.Features.ConfineToWorkspace).WithExposure(exposure)
+		WithConfine(cfg.Features.ConfineToWorkspace).WithWeakConfine(cfg.Features.ConfineWeak).WithExposure(exposure)
 	execTools := tools.NewExec(cwd).
 		WithExposure(exposure).
 		WithScratchDir(filepath.Join(dataDir, "scratch")).

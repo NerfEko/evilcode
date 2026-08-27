@@ -165,6 +165,13 @@ type Features struct {
 	// tree — reviewing an unfamiliar repo, say.
 	ConfineToWorkspace bool `toml:"confine_to_workspace"`
 
+	// ConfineWeak opts into confinement that cannot be kernel-enforced. On
+	// kernels without openat2 (Linux < 5.6) a confined session refuses
+	// filesystem work rather than silently dropping the guarantee; setting
+	// this accepts the older resolve-then-open behavior instead. It matters
+	// only when confine_to_workspace is on (R2-08).
+	ConfineWeak bool `toml:"confine_weak"`
+
 	// MaxSteps bounds tool-call rounds in a single turn. Zero — the default —
 	// means unbounded: a long refactor converges slowly and legitimately, and a
 	// fixed cap cuts off exactly the turns least able to afford losing the
