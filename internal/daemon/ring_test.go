@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/provider"
 )
 
 // D2: the ring's byte budget must evict the oldest events when a session
@@ -72,4 +74,60 @@ func textLen(e agent.Event) string {
 		return e.Text[:8] + "…"
 	}
 	return e.Text
+}
+
+// R2-02: wrapping must subtract the replaced slot's bytes. Before the fix the
+// retained total grew by the size of every event that ever sat in a slot, so
+// past RingSize the ring evicted history the budget still had room for.
+func TestRingWrapAccountsForReplacedEvents(t *testing.T) {
+	r := NewRing()
+	one := strings.Repeat("a", 1024)
+	r.Add(agent.Event{Text: one}) // seeds the account without wrap
+	for i := 0; i < RingSize+64; i++ {
+		r.Add(agent.Event{Text: one})
+	}
+	// Every slot has been overwritten at least once; the retained total must
+	// be exactly the payload of the RingSize events still held.
+	if got, want := r.Bytes(), RingSize*1024; got != want {
+		t.Fatalf("ring accounts %d bytes, want %d (%d events)", got, want, r.Len())
+	}
+	if r.Len() != RingSize {
+		t.Fatalf("ring holds %d events, want %d", r.Len(), RingSize)
+	}
+}
+
+// R2-02: the deep fields — the turn-end history copy above all — count toward
+// the budget. A ring fed only turn-end events must evict instead of retaining
+// several budgets' worth of uncounted history.
+func TestRingCountsSnapshotHistoryTowardBudget(t *testing.T) {
+	r := NewRing()
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: strings.Repeat("h", RingMaxBytes/2+1)},
+	}
+	r.Add(agent.Event{Kind: agent.EventTurnEnd, SnapshotMessages: history})
+	r.Add(agent.Event{Kind: agent.EventTurnEnd, SnapshotMessages: history})
+
+	if got := r.Bytes(); got > RingMaxBytes+RingMaxBytes/2 {
+		t.Fatalf("ring retains %d bytes; the history copy was not counted", got)
+	}
+	// The newest event survives; the first was evicted under the budget.
+	got, _ := r.Since(0)
+	if len(got) != 1 || len(got[0].SnapshotMessages) != 1 {
+		t.Fatalf("retained %d events, want the newest turn end only", len(got))
+	}
+}
+
+// R2-02: tool-call arguments, ask payloads, and background state are retained
+// memory too, so they count.
+func TestRingCountsToolArgsAndAskPayloads(t *testing.T) {
+	r := NewRing()
+	args := json.RawMessage(strings.Repeat("a", 1<<20))
+	r.Add(agent.Event{Call: &provider.ToolCall{ID: "1", Name: "edit", Args: args}})
+	if got := r.Bytes(); got < 1<<20 {
+		t.Fatalf("tool args not counted: %d bytes", got)
+	}
+	r.Add(agent.Event{Ask: &agent.AskEvent{Question: strings.Repeat("q", 1<<20)}})
+	if got := r.Bytes(); got < 2<<20 {
+		t.Fatalf("ask payload not counted: %d bytes", got)
+	}
 }

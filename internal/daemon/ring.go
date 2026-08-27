@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/provider"
 )
 
 // RingSize is how many events a session keeps for reconnect replay.
@@ -51,9 +52,18 @@ func (r *Ring) Add(e agent.Event) int {
 	defer r.mu.Unlock()
 	r.seq++
 	e.Seq = r.seq
+	// Once the buffer has wrapped, the slot about to be replaced still holds
+	// an event whose bytes are part of r.bytes. Forgetting to subtract it
+	// made the retained total grow by the size of every event that ever sat
+	// in the slot, so the ring evicted far more history than the budget
+	// requires (R2-02).
+	replaced := agent.Event{}
+	if r.count == len(r.buf) {
+		replaced = r.buf[r.next]
+	}
 	r.buf[r.next] = e
 	r.seqs[r.next] = r.seq
-	r.bytes += eventBytes(e)
+	r.bytes += eventBytes(e) - eventBytes(replaced)
 	r.next = (r.next + 1) % len(r.buf)
 	if r.count < len(r.buf) {
 		r.count++
@@ -68,18 +78,64 @@ func (r *Ring) Add(e agent.Event) int {
 	return r.seq
 }
 
+// Bytes is the ring's own estimate of the payload it currently retains.
+func (r *Ring) Bytes() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bytes
+}
+
 // eventBytes approximates how much memory an event's payload retains: its
-// text fields, image bytes, and the JSON encoding of its display payload.
-// Seq/Session/Call pointers are shared and counted once at the struct level.
+// text fields, image bytes, the JSON encoding of its display payload, and the
+// bulk fields a reconnecting client resyncs from — the turn-end history copy
+// (the largest field a turn-end carries), tool-call arguments, ask payloads,
+// and background state. Undercounting any of them let the ring hold several
+// times its budget without ever evicting (R2-02). Seq/Session/Call pointers
+// are shared and counted once at the struct level.
 func eventBytes(e agent.Event) int {
 	n := len(e.Text) + len(e.Output) + len(e.Diff) + len(e.Intent) + len(e.Session) + len(e.RequestID)
 	for _, img := range e.Images {
 		n += len(img)
 	}
+	for _, m := range e.SnapshotMessages {
+		n += messageBytes(m)
+	}
+	if e.Call != nil {
+		n += len(e.Call.ID) + len(e.Call.Name) + len(e.Call.Args)
+	}
 	if e.Display != nil {
 		if b, err := json.Marshal(e.Display); err == nil {
 			n += len(b)
 		}
+	}
+	if e.Ask != nil {
+		if b, err := json.Marshal(*e.Ask); err == nil {
+			n += len(b)
+		}
+	}
+	if e.Background != nil {
+		if b, err := json.Marshal(*e.Background); err == nil {
+			n += len(b)
+		}
+	}
+	return n
+}
+
+// messageBytes is the conservative deep size of one conversation message: the
+// fields the daemon actually retains on it.
+func messageBytes(m provider.Message) int {
+	n := len(m.Content) + len(m.Reasoning) + len(m.ToolCallID) + len(m.ToolName)
+	for _, img := range m.Images {
+		n += len(img)
+	}
+	for _, c := range m.ToolCalls {
+		n += len(c.ID) + len(c.Name) + len(c.Args)
+	}
+	for _, item := range m.ProviderItems {
+		n += len(item)
+	}
+	for _, r := range m.Repairs {
+		n += len(r)
 	}
 	return n
 }

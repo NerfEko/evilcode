@@ -6748,3 +6748,46 @@ Verified: `go build ./...`, `go vet ./...`, `go test ./... -count=1` green;
 (not incremental deltas) — bounded now, never disconnecting; the delta
 protocol remains future work.
 
+## 2026-08-26 — codex review 2, R2-02: replay-ring byte accounting is correct now
+
+Verified: all three claims held. `Ring.Add` overwrote `r.buf[r.next]` and
+added the replacement's bytes without subtracting the replaced event's, so
+`r.bytes` grew by the size of every event that ever occupied a slot — past
+`RingSize`, the ring evicted history the 16 MiB budget still had room for
+(ring.go:54-56). `eventBytes` counted only Text/Output/Diff/Intent/Session/
+RequestID/Images/Display and missed the largest retained fields entirely: the
+turn-end history copy (`SnapshotMessages`), the event's tool-call pointer,
+ask payloads, and background state. The subscriber and connection channels are
+indeed 256 *items* deep, not bytes.
+
+Done: `Add` now subtracts `eventBytes` of the slot occupant it is about to
+replace (guarded on `count == len(buf)`, so it costs nothing before wrap);
+`eventBytes` counts the deep fields — per-message
+Content/Reasoning/ToolCall args/ProviderItems/Repairs/Images via a new
+`messageBytes`, plus `e.Call`, `*e.Ask` and `*e.Background` as JSON — and a
+`Ring.Bytes()` accessor exposes the running total for tests. The eviction
+floor (a single event larger than the whole budget is retained so a
+reconnecting client still gets the in-flight turn) stays, as the existing
+`TestRingKeepsSingleOversizedEvent` documents; the write path already
+downgrades any oversized frame (R2-01), so a retained monster costs memory
+once, not a disconnect.
+
+Not done, deliberately: byte-budgeted per-client subscriber queues (256 large
+events per slow client is still possible) need a queue type with a resync
+policy — logged as future work, not smuggled into this fix.
+
+First draft bugs caught by tests: my boundary test used exactly
+`RingMaxBytes/2` history so two events summed to exactly the budget and the
+`>` eviction never fired (off-by-exactly, now `/2+1`); `agent.Event` has `Call
+*provider.ToolCall`, not a `ToolCalls` slice, which also exposed that the
+event-level call args were uncounted — now included in `eventBytes`.
+
+Tests: `TestRingWrapAccountsForReplacedEvents` (RingSize+64 identical events
+must leave `bytes == RingSize*1024` exactly), `TestRingCountsSnapshotHistory
+TowardBudget`, `TestRingCountsToolArgsAndAskPayloads`.
+
+Verified: `go test ./internal/daemon/ -count=1` green (one unrelated flake,
+`TestSessionRenameKeepsItsPrivateTodoState`, failed once inside the full
+package run and passed standalone 3× — watch it under R2-06), `go build ./...`
+green, `go test ./... -count=1` green, `gofmt` clean.
+
