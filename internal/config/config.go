@@ -179,6 +179,13 @@ type Features struct {
 	// an explicit name here (R2-16).
 	EnvPassthrough []string `toml:"env_passthrough"`
 
+	// EmbeddingModel is the model that powers semantic memory and compaction
+	// relevance, as its own `model@provider` reference. Empty means the chat
+	// provider is used, which is what silently degraded those features on
+	// providers without an embeddings endpoint (R2-11); naming one decouples
+	// the vector space from whichever chat model happens to be active.
+	EmbeddingModel string `toml:"embedding_model"`
+
 	// MaxSteps bounds tool-call rounds in a single turn. Zero — the default —
 	// means unbounded: a long refactor converges slowly and legitimately, and a
 	// fixed cap cuts off exactly the turns least able to afford losing the

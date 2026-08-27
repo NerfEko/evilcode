@@ -7154,6 +7154,37 @@ server. First draft pointed the mismatch tests at `/nonexistent`, which fails
 at hashing before it reaches the entry check — the tests now write real
 binaries.
 
+## 2026-08-26 — codex review 2, R2-11: semantic memory gets its own embedding backend
+
+Verified: compaction's `Embedding` field and the memory manager's embedder
+were both the active CHAT provider. OpenAI-compatible and Codex providers
+return "embeddings not wired", so memory and compaction relevance silently
+degraded to lexical/recency based on an unrelated chat choice — while the UI
+presented semantic memory as enabled. Ollama was the only wired embedder.
+
+Done: `[features] embedding_model` — a dedicated `model@provider` reference
+for the semantic backend. When set, `Build` resolves it independently and the
+vector-space identity (`memory.Manager.EmbeddingModel`, already stored with
+every vector since J5.6) follows the actual embedder instead of the chat
+model. When the reference fails to resolve, semantic embeddings are disabled
+with an explicit startup line ("semantic embeddings disabled: … lexical
+recall still works") instead of a silent coupling. Chat-credential rotation no
+longer clobbers the dedicated embedder (guarded in both `setCredential` and
+`applyPendingCredential`). Without the setting the legacy coupling remains,
+now named as such in the wiring comment; the existing `/memory` status
+already surfaces the pending-re-embedding count and the last embedder error,
+which is the explicit degradation surface.
+
+Tests: `TestDedicatedEmbeddingModelResolvesIndependently` (the resolved
+backend and the memory identity follow the configured reference),
+`TestUnknownEmbeddingModelDisablesSemanticsInsteadOfFailing` (the build
+succeeds, semantics off), and `TestLegacyEmbeddingCouplingIsExplicit` (no
+setting → chat-provider default, unchanged). First draft forgot that
+`config.Default()` has no mock provider — the test adds one.
+
+Verified: `go test ./internal/wiring/ -count=1`, `go test ./... -count=1
+-timeout 300s` green, `gofmt` clean.
+
 Verified: `go test ./cmd/evilcode/ -count=1`, `go test ./... -count=1
 -timeout 300s` green, `gofmt` clean.
 

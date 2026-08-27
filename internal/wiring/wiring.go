@@ -118,6 +118,13 @@ type Session struct {
 	// Model is the resolved model name, which is not always the requested one.
 	Model string
 
+	// EmbeddingProvider and EmbeddingID are the dedicated semantic-features
+	// backend and its vector-space identity when `[features] embedding_model`
+	// names one (R2-11). Both are empty when the chat provider is the
+	// embedder, and credential rotation must not clobber it.
+	EmbeddingProvider provider.Provider
+	EmbeddingID       string
+
 	// Prior is how many messages a resumed session replayed.
 	Prior int
 
@@ -200,6 +207,21 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 
 	out := &Session{Config: cfg, Model: modelName, Project: pc}
+
+	// Semantic features get their own embeddings backend when one is
+	// configured (R2-11). Without a dedicated setting the chat provider is the
+	// embedder — the legacy coupling; on a provider without an embeddings
+	// endpoint memory and compaction relevance degrade to lexical/recency, and
+	// now say so instead of presenting semantic memory as available.
+	if ref := cfg.Features.EmbeddingModel; ref != "" {
+		ep, _, rerr := cfg.Resolve(ref)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "evilcode: semantic embeddings disabled: %s: %v (lexical recall still works)\n", ref, rerr)
+		} else {
+			out.EmbeddingProvider = ep
+			out.EmbeddingID = ref
+		}
+	}
 	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
 	out.Skills = skills
 	var promptSkills []agent.Skill
@@ -328,7 +350,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
-		Embedding: prov,
+		Embedding: out.EmbeddingProvider,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
@@ -381,7 +403,19 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 	}
 	if bank != nil {
-		mem := memory.NewManagerWithModelAndScope(bank, prov, cfg.Router(), store.Name, cfg.Features.Memory, prov.Name()+"::embedding", pc.Root)
+		// Semantic memory rides the dedicated embedding provider when one is
+		// configured, and the vector-space identity follows it. Without one the
+		// chat provider is the embedder — the coupling R2-11 calls out — so a
+		// provider without an embeddings endpoint degrades memory to lexical
+		// only, and the identity still names the actual embedder rather than
+		// the chat model.
+		var embedder provider.Provider = prov
+		identity := prov.Name() + "::embedding"
+		if out.EmbeddingProvider != nil {
+			embedder = out.EmbeddingProvider
+			identity = out.EmbeddingID
+		}
+		mem := memory.NewManagerWithModelAndScope(bank, embedder, cfg.Router(), store.Name, cfg.Features.Memory, identity, pc.Root)
 		out.Memory = mem
 		if owned {
 			out.closers = append(out.closers, func() { bank.Close() })

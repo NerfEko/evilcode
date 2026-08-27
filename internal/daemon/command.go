@@ -292,10 +292,12 @@ func (sess *Session) setCredential(target, key string) error {
 		uses := live.built.Agent.Provider != nil && live.built.Agent.Provider.Name() == target
 		if !live.running && !live.built.Agent.Running() && uses {
 			live.built.Agent.Provider = rebuilt
-			if live.built.Memory != nil {
+			// A dedicated embedding provider must not be clobbered by the chat
+			// credential rotation (R2-11).
+			if live.built.Memory != nil && live.built.EmbeddingProvider == nil {
 				live.built.Memory.Embedder = rebuilt
 			}
-			if live.built.Agent.Compactor != nil {
+			if live.built.Agent.Compactor != nil && live.built.EmbeddingProvider == nil {
 				live.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
 			}
 		} else if uses {
@@ -339,11 +341,15 @@ func (sess *Session) applyPendingCredential() {
 	}
 	sess.mu.Lock()
 	sess.built.Agent.Provider = rebuilt
-	if sess.built.Memory != nil {
-		sess.built.Memory.Embedder = rebuilt
-	}
-	if sess.built.Agent.Compactor != nil {
-		sess.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
+	if sess.built.EmbeddingProvider == nil {
+		// Without a dedicated embedding provider the chat provider was the
+		// embedder, so it follows; with one, rotation leaves it alone.
+		if sess.built.Memory != nil {
+			sess.built.Memory.Embedder = rebuilt
+		}
+		if sess.built.Agent.Compactor != nil {
+			sess.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
+		}
 	}
 	sess.mu.Unlock()
 	sess.notice("✓ new " + target + " API key applied")
