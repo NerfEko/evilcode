@@ -98,6 +98,76 @@ func (g *gzipResponseWriter) close() {
 	}
 }
 
+// webAPIMessages serves the deep-history pager (§6): `before` is an exclusive
+// upper bound into the shaped conversation list (0-based, oldest = 0), so a
+// client scrolling up passes the index of its oldest rendered message and gets
+// the page directly above it. `limit` defaults to 50 and caps at
+// webHistoryLimitMax. The live transcript's seam merges on these boundaries.
+func (s *Server) webAPIMessages(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := session.ValidName(name); err != nil {
+		webErrorf(w, http.StatusNotFound, "no session named %q", name)
+		return
+	}
+	limit := intQuery(r, "limit", webHistoryLimitDefault)
+	if limit > webHistoryLimitMax {
+		limit = webHistoryLimitMax
+	}
+	if limit == 0 {
+		limit = webHistoryLimitDefault
+	}
+	msgs, err := s.sessionLogMessages(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			webErrorf(w, http.StatusNotFound, "no session named %q", name)
+			return
+		}
+		// The log exists but cannot be parsed; that is mid-log corruption the
+		// resume path would also hit. Name the failure, stay 5xx-free.
+		webErrorf(w, http.StatusUnprocessableEntity, "session %q history is unreadable: %v", name, err)
+		return
+	}
+	shaped := shapeConversationMessages(msgs)
+
+	// Omitted before means the newest page. An explicit before is an exclusive
+	// upper bound (§6): 0 names the oldest message, so before=0 legitimately
+	// returns an empty page.
+	before := len(shaped)
+	if r.URL.Query().Has("before") {
+		before = intQuery(r, "before", 0)
+	}
+	// Clamp rather than 404 so a client that raced a compaction gets the
+	// newest page instead of nothing.
+	if before > len(shaped) {
+		before = len(shaped)
+	}
+	start := before - limit
+	if start < 0 {
+		start = 0
+	}
+	writeJSON(w, webHistoryPage{
+		Messages: shaped[start:before],
+		HasMore:  start > 0,
+		Oldest:   start,
+	})
+}
+
+// History page bounds (§6): the default page is what a screen of scrollback
+// needs; the cap keeps one request from marshaling a whole multi-megabyte log.
+const (
+	webHistoryLimitDefault = 50
+	webHistoryLimitMax     = 200
+)
+
+// webHistoryPage is one page of durable history.
+type webHistoryPage struct {
+	Messages []Message `json:"messages"`
+	HasMore  bool      `json:"hasMore"`
+	// Oldest is the shaped-list index of Messages[0]; the next request passes
+	// it as before.
+	Oldest int `json:"oldest"`
+}
+
 // webErrorf is webError with formatting: uniform body, caller picks the code.
 func webErrorf(w http.ResponseWriter, code int, format string, args ...any) {
 	webError(w, code, fmt.Sprintf(format, args...))
@@ -185,6 +255,11 @@ func (s *Server) storedSessionView(name string) (*StoredSession, error) {
 	}, nil
 }
 
+// loadSessionMessages is the durable-log loader seam. Production always
+// uses the resume-path loader; tests substitute a flaky first read to drive
+// the torn-read retry deterministically.
+var loadSessionMessages = session.Messages
+
 // sessionLogMessages loads a session's durable conversation through the
 // resume-path loader — the same session.Messages call a resume uses, so the
 // log's only parser stays in internal/session. The one retry covers reads that
@@ -194,10 +269,10 @@ func (s *Server) storedSessionView(name string) (*StoredSession, error) {
 func (s *Server) sessionLogMessages(name string) ([]provider.Message, error) {
 	// ValidName has already run in every caller; the join mirrors pathFor.
 	path := filepath.Join(session.Dir(config.DataDir()), name+".jsonl")
-	msgs, err := session.Messages(path)
+	msgs, err := loadSessionMessages(path)
 	if err != nil && !os.IsNotExist(err) {
 		time.Sleep(webTornReadRetryDelay)
-		msgs, err = session.Messages(path)
+		msgs, err = loadSessionMessages(path)
 	}
 	if err != nil {
 		return nil, err
