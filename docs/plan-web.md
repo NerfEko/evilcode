@@ -318,7 +318,7 @@ setups.
 - [x] **P1.3** `internal/daemon/web.go` `listenWeb` — listener lifecycle,
   mux, shutdown inside `Server.Close()`, independence from the unix socket
   (either can fail without taking the other down).
-- [ ] **P1.4** `internal/daemon/webauth.go` — token file mint/load (0600,
+- [x] **P1.4** `internal/daemon/webauth.go` — token file mint/load (0600,
   `crypto/rand`, chmod-on-load), cookie/bearer check, Origin+Host check on
   mutating verbs.
 - [ ] **P1.5** `internal/daemon/webassets/` — `index.html` shell + manifest +

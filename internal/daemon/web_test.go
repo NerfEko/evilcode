@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,9 +36,28 @@ func webGet(t *testing.T, url string) *http.Response {
 func TestListenWebServesAndCloses(t *testing.T) {
 	srv, addr := webTestServer(t)
 
+	// No routes registered yet: authenticated requests reach the mux and get
+	// 404, unauthenticated ones stop at the auth wrapper with 401.
 	resp := webGet(t, "http://"+addr+"/")
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("GET / before routes exist: status %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("GET / unauthenticated: status %d, want 401", resp.StatusCode)
+	}
+	tok, _, err := loadOrMintWebToken(srv.webTokenPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	authed, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authed.Body.Close()
+	if authed.StatusCode != http.StatusNotFound {
+		t.Errorf("GET / authenticated: status %d, want 404", authed.StatusCode)
 	}
 
 	srv.Close()
@@ -100,19 +120,35 @@ func TestListenWebAfterCloseIsRefused(t *testing.T) {
 	}
 }
 
-// The mux is the only thing reachable on the web port: a request that is not a
-// registered route must fall through to 404 rather than panic or echo.
+// The mux is the only thing reachable on the web port. Auth runs before
+// routing: an unauthenticated request is 401 even for unknown paths, and an
+// authenticated request that matches no route is 404.
 func TestWebMuxUnknownPathIs404(t *testing.T) {
-	_, addr := webTestServer(t)
+	srv, addr := webTestServer(t)
 	resp := webGet(t, "http://"+addr+"/definitely/not/here")
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("unknown path: status %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unknown path unauthenticated: status %d, want 401", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"error"`) {
+		t.Errorf("401 body %q is not the uniform error shape", body)
+	}
+
+	tok, _, err := loadOrMintWebToken(srv.webTokenPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body) == 0 {
-		t.Error("404 with an empty body gives a browser nothing to render")
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/definitely/not/here", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown path authenticated: status %d, want 404", resp.StatusCode)
 	}
 }

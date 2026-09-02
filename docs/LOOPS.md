@@ -7863,3 +7863,27 @@ Codex verdict: n/a (CLI absent, per P0.3). Deviations: task order swapped with
 P1.2 for compile order; the plan's `listenWeb` name is `ListenWeb` (exported,
 matching `Listen`).
 
+## 2026-08-24 web-1 P1.4 — web auth: token file, cookie/bearer, Origin+Host
+
+Done: `webauth.go` — `loadOrMintWebToken` (crypto/rand 32 bytes → 64 hex,
+0600, re-chmod on load, corrupt file = hard error instead of silent rotation),
+`webAuth.wrap` (constant-time cookie/`Bearer` check on every route, handoff
+`GET /?token=` → 302 `/` with HttpOnly SameSite=Strict cookie, Origin/Referer
+host == Host plus a bound-address/loopback Host allowlist on mutating verbs).
+Auth wraps the whole mux, so unknown paths are 401 unauthenticated and 404
+authenticated. Uniform `{"error": ...}` bodies from `webError`.
+
+Verified: `TestWebTokenMintAndLoad` (mint, reuse, 0600 re-chmod),
+`TestWebTokenCorruptFileIsAnError`, `TestWebTokenSurvivesRestart`,
+`TestWebAuthRequiresToken`, `TestWebAuthAcceptsCookieAndBearer`,
+`TestWebAuthHandoffRejectsWrongToken`,
+`TestWebAuthMutatingVerbsRequireSameOrigin` (no-origin, cross-origin, same
+origin, localhost spelling, Referer fallback),
+`TestWebAuthRejectsRebindingHost`, `TestWebAuthOriginHostMustMatchHostHeader`;
+full daemon suite plus `-race` green.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: static routes also sit
+behind auth (plan only mandates /api/*); fail-closed keeps an unauthenticated
+browser from rendering half a shell. Mutating-verb check extended to
+PUT/PATCH/DELETE so a future handler cannot forget it.
+

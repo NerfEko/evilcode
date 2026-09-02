@@ -33,6 +33,11 @@ type webState struct {
 	// what the Host allowlist is built from. It is a copy, not the listener,
 	// so Close can still be called after the listener is gone.
 	addr string
+	// token is the surface's bearer secret, minted or loaded at start (§3).
+	token string
+	// minted records whether this start created the token file, which decides
+	// whether startup may print the full tokenized URL (once, ever).
+	minted bool
 }
 
 // errServerClosed is returned by ListenWeb when the daemon is already tearing
@@ -46,6 +51,13 @@ var errServerClosed = errors.New("daemon: the server is shutting down")
 func (s *Server) ListenWeb(addr string) error {
 	if addr == "" {
 		addr = config.DefaultWebUIAddr
+	}
+	// The token is minted (or loaded and re-secured) before the bind: auth
+	// without a secret is impossible, so a token failure must not start a
+	// listener that would then 401 on everything.
+	token, minted, err := loadOrMintWebToken(s.webTokenPath())
+	if err != nil {
+		return err
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -67,12 +79,12 @@ func (s *Server) ListenWeb(addr string) error {
 		ln.Close()
 		return fmt.Errorf("daemon: the web UI is already listening on %s", old)
 	}
-	w := &webState{ln: ln, addr: bound}
+	w := &webState{ln: ln, addr: bound, token: token, minted: minted}
 	s.web = w
 	s.mu.Unlock()
 
 	srv := &http.Server{
-		Handler:           s.webMux(),
+		Handler:           w.mux(s),
 		ReadHeaderTimeout: webReadHeaderTimeout,
 	}
 	w.srv = srv
@@ -84,12 +96,22 @@ func (s *Server) ListenWeb(addr string) error {
 	return nil
 }
 
-// webMux builds the HTTP surface's routes. Handlers are added as the phases
-// land; webauth.go wraps the whole thing once auth exists, so an
-// unauthenticated request reaches nothing.
-func (s *Server) webMux() http.Handler {
+// webMux builds the HTTP surface's routes and wraps them in webauth: token
+// authentication on every request, Origin+Host discipline on mutating verbs.
+// Routes are registered as the phases land.
+func (w *webState) mux(s *Server) http.Handler {
 	mux := http.NewServeMux()
-	return mux
+	auth := &webAuth{token: w.token, addr: w.addr}
+	return auth.wrap(mux)
+}
+
+// webError writes the uniform error shape every web handler answers with
+// (plan-web.md §4): {"error": "..."}. A bare 500 stays a bug; these are the
+// 4xx users can act on.
+func webError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	fmt.Fprintf(w, "{\"error\": %q}\n", msg)
 }
 
 // webAddr reports the bound host:port, or "" when the web surface is off.
