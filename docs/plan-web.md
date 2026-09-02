@@ -324,7 +324,7 @@ setups.
 - [ ] **P1.5** `internal/daemon/webassets/` — `index.html` shell + manifest +
   icons, `go:embed`, asset handler, security headers (§3), template injection
   of palette-derived `theme-color`.
-- [ ] **P1.6** `internal/daemon/webtheme.go` — `renderThemeCSS` over
+- [x] **P1.6** `internal/daemon/webtheme.go` — `renderThemeCSS` over
   `AllRoles()` + `Prose` + `TintDiff`; test asserts every role is emitted and
   the Frappé defaults come out byte-identical to the palette spec.
 - [ ] **P1.7** `internal/daemon/web.go` — startup print line; token provenance

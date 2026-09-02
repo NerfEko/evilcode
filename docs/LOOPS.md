@@ -7887,3 +7887,23 @@ behind auth (plan only mandates /api/*); fail-closed keeps an unauthenticated
 browser from rendering half a shell. Mutating-verb check extended to
 PUT/PATCH/DELETE so a future handler cannot forget it.
 
+## 2026-08-24 web-1 P1.6 — palette → CSS token generator
+
+Done: `webtheme.go` — `renderThemeCSS(p)` emits `--<role-kebab>` for all 22
+roles (snake→kebab via `webRoleVar`), the 14 `--prose-*` tokens, and
+`--diff-add`/`--diff-del` as `TintDiff(text, DiffAdd/Del)` — the same 70/30
+blend the TUI applies to diff lines, with the palette's text color as the
+syntax side. The only hex on the web path.
+
+Verified: `TestRenderThemeCSSEmitsEveryToken` (redundant copy of the 22 role
+spellings + 14 prose names + 2 diff tokens, no strays),
+`TestRenderThemeCSSValuesMatchThePalette` (byte-identical per role),
+`TestRenderThemeCSSFrappePublishedSpec` (mauve/text/lavender surface values),
+`TestRenderThemeCSSDiffPairIsTinted`, `TestRenderThemeCSSFollowsPaletteSwap`
+(dracula ≠ frappé), `TestRenderThemeCSSIsDeterministic`.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: the plan quotes Frappé
+base `#303446` in §7's prose, but no role carries it; the app background is
+composed from emitted tokens in P4.1 rather than adding an off-contract
+`--base` token.
+
