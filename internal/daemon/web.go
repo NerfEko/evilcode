@@ -129,6 +129,7 @@ func (w *webState) mux(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.webAPISessions)
 	mux.HandleFunc("GET /api/sessions/{name}", s.webAPISession)
 	mux.HandleFunc("GET /api/sessions/{name}/messages", s.webAPIMessages)
+	mux.HandleFunc("GET /api/sessions/{name}/events", s.webEvents)
 	// Anything else under /api/ — unknown routes, cleaned-away paths like
 	// "/api/sessions/.." — answers the uniform error shape rather than the
 	// mux's plain-text 404, so clients have exactly one failure format.

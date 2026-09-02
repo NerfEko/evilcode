@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"evilcode/internal/agent"
 	"evilcode/internal/config"
 	"evilcode/internal/provider"
 	"evilcode/internal/session"
@@ -90,6 +92,24 @@ func (g *gzipResponseWriter) Write(b []byte) (int, error) {
 	return g.ResponseWriter.Write(b)
 }
 
+// Flush and Unwrap keep streaming handlers working underneath this wrapper:
+// the SSE route passes through uncompressed but still needs a working
+// Flusher, and http.NewResponseController unwraps via Unwrap to reach the
+// real writer's deadline support.
+func (g *gzipResponseWriter) Flush() {
+	if g.active {
+		g.gz.Flush()
+	}
+	if f, ok := g.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the underlying writer for http.ResponseController.
+func (g *gzipResponseWriter) Unwrap() http.ResponseWriter {
+	return g.ResponseWriter
+}
+
 // close flushes the encoder when compression was active. A passthrough
 // response was written directly; closing an unused encoder is a no-op anyway.
 func (g *gzipResponseWriter) close() {
@@ -166,6 +186,156 @@ type webHistoryPage struct {
 	// Oldest is the shaped-list index of Messages[0]; the next request passes
 	// it as before.
 	Oldest int `json:"oldest"`
+}
+
+// The live-event stream (plan-web.md §5). One EventSource per open transcript:
+// the connect sequence mirrors the unix protocol's MsgAttach — subscribe, send
+// a snapshot (always; it is self-healing), replay the ring from the client's
+// last seen sequence, then tail live frames. `id:` is the ring sequence, so a
+// reconnecting browser carries Last-Event-ID automatically and the replay
+// covers exactly the gap.
+
+// Web SSE tuning. Package vars so tests can shrink the deadlines; production
+// values are the plan's contract.
+var (
+	webSSEHeartbeat    = 15 * time.Second
+	webSSEWriteTimeout = 10 * time.Second
+)
+
+// webEvents serves GET /api/sessions/{name}/events.
+//
+// Slow-client rule (§5): Session.broadcast already drops for a full
+// subscription queue without ever blocking the session's pump — verified in
+// TestWebEventsSlowClientDoesNotStallTheSession. On this side, each frame
+// write runs under a deadline: a client whose TCP buffer is full is
+// disconnected rather than buffered without bound, and it reconnects with its
+// last sequence, which the ring replays.
+func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := session.ValidName(name); err != nil {
+		webErrorf(w, http.StatusNotFound, "no session named %q", name)
+		return
+	}
+	sess := s.lookupLiveSession(name)
+	if sess == nil {
+		// A stored session has no live ring to tail; reopening it is the
+		// Phase 3 command surface's job, not a silent empty stream.
+		webErrorf(w, http.StatusNotFound, "no live session named %q (stored sessions stream nothing until reopened)", name)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		webError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	rc := http.NewResponseController(w)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Subscribe before the snapshot, exactly like MsgAttach: an event landing
+	// mid-sequence queues instead of falling into the gap.
+	sub := sess.subscribe()
+	defer sess.unsubscribe(sub)
+
+	write := func(frame string) bool {
+		rc.SetWriteDeadline(time.Now().Add(webSSEWriteTimeout))
+		if _, err := io.WriteString(w, frame); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	sendSnapshot := func() bool {
+		snap := sess.snapshot()
+		return write(sseFrame(snap.Seq, "snapshot", ServerMsg{
+			Version: ProtocolVersion, Kind: MsgSnapshot, Snapshot: snap,
+		}))
+	}
+	if !sendSnapshot() {
+		return
+	}
+
+	// Replay: an explicit since (query param or the browser's automatic
+	// Last-Event-ID) gets exactly the gap; a fresh connect replays only the
+	// turn in flight, matching MsgAttach so completed history is not drawn
+	// twice on top of the snapshot.
+	since := intQuery(r, "since", 0)
+	if since == 0 {
+		// The browser replays its last seen id automatically on reconnect.
+		if last := r.Header.Get("Last-Event-ID"); last != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(last)); err == nil && n > 0 {
+				since = n
+			}
+		}
+	}
+	var replay []agent.Event
+	if since > 0 {
+		replay, _ = sess.ring.Since(since)
+	} else {
+		replay = sess.ring.SinceLastTurn()
+	}
+	for i := range replay {
+		if !write(sseEvent(&replay[i])) {
+			return
+		}
+	}
+
+	heartbeat := time.NewTicker(webSSEHeartbeat)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case msg, ok := <-sub:
+			if !ok {
+				return
+			}
+			switch {
+			case msg.Kind == MsgEvent && msg.Event != nil:
+				if !write(sseEvent(msg.Event)) {
+					return
+				}
+			case msg.Kind == MsgSnapshot && msg.Snapshot != nil:
+				// Compact, rewind, or rename republished durable state; the
+				// client resets its mirror from this frame (§5, epoch rule).
+				if !write(sseFrame(msg.Snapshot.Seq, "snapshot", msg)) {
+					return
+				}
+			default:
+				if !write(sseFrame(0, "message", msg)) {
+					return
+				}
+			}
+		case <-heartbeat.C:
+			if !write(": ping\n\n") {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// sseEvent renders one agent event as an SSE frame carrying the daemon's
+// standard ServerMsg JSON, with the ring sequence as the EventSource id.
+func sseEvent(e *agent.Event) string {
+	return sseFrame(e.Seq, "event", ServerMsg{
+		Version: ProtocolVersion, Kind: MsgEvent, Event: e,
+	})
+}
+
+// sseFrame renders one SSE frame: id for reconnect replay, event for the
+// client's dispatch, data as one line of JSON.
+func sseFrame(id int, kind string, msg ServerMsg) string {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		// A ServerMsg always marshals; if one ever does not, send the failure
+		// as an error frame rather than killing the stream silently.
+		b = []byte(fmt.Sprintf(`{"version":%d,"kind":"error","error":%q}`,
+			ProtocolVersion, err.Error()))
+	}
+	return fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", id, kind, b)
 }
 
 // webErrorf is webError with formatting: uniform body, caller picks the code.
