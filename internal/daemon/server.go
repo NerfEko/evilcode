@@ -560,20 +560,26 @@ func (s *Server) Listen() error {
 
 	ln, err := net.Listen("unix", s.Path)
 	if err != nil {
-		unlock()
 		if !errors.Is(err, syscall.EADDRINUSE) {
+			unlock()
 			return err
 		}
 		if conn, derr := net.Dial("unix", s.Path); derr == nil {
 			conn.Close()
+			unlock()
 			return fmt.Errorf("a daemon is already listening on %s", s.Path)
 		}
 		// Nothing answered: the socket is a leftover from a daemon that died,
-		// which is exactly when the claim above is free.
+		// which is exactly when the claim above is free. The lock stays held
+		// through the recovery — releasing it here (as it once was) let a
+		// second starter acquire the claim and remove the fresh socket this
+		// daemon was about to rebind, leaving two live daemons on one path.
 		if rerr := os.Remove(s.Path); rerr != nil {
+			unlock()
 			return fmt.Errorf("removing the stale socket %s: %w", s.Path, rerr)
 		}
 		if ln, err = net.Listen("unix", s.Path); err != nil {
+			unlock()
 			return err
 		}
 	}
