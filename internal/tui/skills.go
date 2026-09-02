@@ -35,10 +35,7 @@ func (m *Model) skillsCommand(arg string) tea.Cmd {
 	case "reload":
 		m.skills.Reload()
 		m.header.Skills = m.skills.Names()
-		if m.agent != nil && m.agent.Conv != nil {
-			m.agent.Conv.SetSystemPrompt(agent.BuildSystemPrompt(
-				m.skillContext, skillPromptEntries(m.skills), ""))
-		}
+		m.refreshSystemPrompt()
 		if m.remoteCommand != nil {
 			if err := m.remoteCommand("skills", "reload", ""); err != nil {
 				m.notice = "skills reloaded locally; server update failed"
@@ -50,6 +47,15 @@ func (m *Model) skillsCommand(arg string) tea.Cmd {
 		m.notice = "usage: /skills [reload]"
 	}
 	return nil
+}
+
+func (m *Model) refreshSystemPrompt() {
+	if m == nil || m.agent == nil || m.agent.Conv == nil {
+		return
+	}
+	m.agent.Conv.SetSystemPrompt(agent.BuildSystemPromptForProvider(
+		m.skillContext, skillPromptEntries(m.skills), "", m.agent.Provider,
+		m.header.Provider, m.header.Model))
 }
 
 func formatSkills(skills *tools.SkillSet) string {

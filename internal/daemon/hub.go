@@ -128,20 +128,61 @@ func (w *swarmState) finished() {
 	}
 }
 
-// SpawnFor starts a worker on behalf of a session and records where its result
-// should be reported.
+// SpawnFor starts an asynchronous worker on behalf of a session and records
+// where its result should be reported. The model-facing tool uses
+// SpawnForForeground below so delegation has the same blocking result semantics
+// as OpenCode's task tool.
 func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawMessage) (string, error) {
+	name, _, err := s.spawnForSession(spawner, task, files, schema, false)
+	return name, err
+}
+
+// SpawnForForeground starts a worker on behalf of a session and waits for its
+// validated result. Explicit asynchronous callers keep the old SpawnFor API;
+// only the model-facing tool takes this path.
+func (s *Server) SpawnForForeground(ctx context.Context, spawner, task string, files []string, schema json.RawMessage) (string, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	name, sess, err := s.spawnForSession(spawner, task, files, schema, true)
+	if err != nil {
+		return "", "", err
+	}
+
+	select {
+	case <-sess.done:
+	case <-ctx.Done():
+		sess.cancelTurn()
+		// A provider should honor cancellation promptly. Give the worker a
+		// short cleanup window, but do not turn a cancelled parent turn into an
+		// unbounded wait on a broken provider.
+		select {
+		case <-sess.done:
+		case <-time.After(5 * time.Second):
+		}
+		return name, "", ctx.Err()
+	}
+	if err := sess.failure(); err != nil {
+		return name, "", err
+	}
+	return name, lastAssistantText(sess), nil
+}
+
+func (s *Server) spawnForSession(spawner, task string, files []string, schema json.RawMessage, foreground bool) (string, *Session, error) {
 	// A schema that does not compile is refused up front. Sending a worker off
 	// with an unusable contract means discovering it only when the worker
 	// finishes, after the tokens are already spent.
 	if len(schema) > 0 {
 		if _, err := compileSchema(schema); err != nil {
-			return "", fmt.Errorf("the result schema is not valid JSON Schema: %w", err)
+			return "", nil, fmt.Errorf("the result schema is not valid JSON Schema: %w", err)
 		}
 	}
 
 	if err := s.swarm.reserve(spawner); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	cwd := s.Cwd
 	s.mu.Lock()
@@ -151,6 +192,9 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 	s.mu.Unlock()
 
 	sess, err := s.spawn(task, files, schema, func(sess *Session) {
+		sess.mu.Lock()
+		sess.foreground = foreground
+		sess.mu.Unlock()
 		s.swarm.mu.Lock()
 		s.swarm.spawnedBy[sess.Name] = spawner
 		if len(schema) > 0 {
@@ -165,12 +209,12 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 		// would double-count it. There is no name to report; the caller learns
 		// the daemon is shutting down.
 		if errors.Is(err, errPublishedWorker) {
-			return "", err
+			return "", nil, err
 		}
 		s.swarm.release(spawner)
-		return "", err
+		return "", nil, err
 	}
-	return sess.Name, nil
+	return sess.Name, sess, nil
 }
 
 // reportWorkerResult routes a finished worker's output back to its spawner.
@@ -243,21 +287,30 @@ func (s *Server) reportWorkerResult(worker *Session) bool {
 					// that could not run at all emits none, so it finishes here
 					// rather than leaving a slot held for the daemon's life.
 					if err != nil {
+						worker.notifyWorkerFailure(err)
 						worker.markFinished()
 					}
 				}()
 				return false
 			}
-			s.deliver(spawner, fmt.Sprintf(
-				"⚠ worker %s finished but its result did not match the schema: %v\nIt said:\n%s",
-				worker.Name, err, tools.Truncate(output)))
+			failure := fmt.Errorf("worker %s finished but its result did not match the schema: %v\nIt said:\n%s",
+				worker.Name, err, tools.Truncate(output))
+			worker.mu.Lock()
+			worker.workerFailure = failure
+			foreground := worker.foreground
+			worker.mu.Unlock()
+			if !foreground {
+				s.deliver(spawner, "⚠ "+failure.Error())
+			}
 			return true
 		}
 		output = validated
 	}
 
-	s.deliver(spawner, fmt.Sprintf("✓ worker %s finished %q:\n%s",
-		worker.Name, worker.Task, tools.Truncate(output)))
+	if !worker.isForeground() {
+		s.deliver(spawner, fmt.Sprintf("✓ worker %s finished %q:\n%s",
+			worker.Name, worker.Task, tools.Truncate(output)))
+	}
 	return true
 }
 
@@ -364,4 +417,8 @@ func (v *agentView) Peers() []tools.Peer { return v.srv.Peers(v.self) }
 
 func (v *agentView) SpawnWorker(task string, files []string, schema json.RawMessage) (string, error) {
 	return v.srv.SpawnFor(v.self, task, files, schema)
+}
+
+func (v *agentView) SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage) (string, string, error) {
+	return v.srv.SpawnForForeground(ctx, v.self, task, files, schema)
 }

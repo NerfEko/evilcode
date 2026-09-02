@@ -13,16 +13,32 @@ import (
 	"evilcode/internal/provider"
 )
 
+const compactionFixtureTurns = 12
+
 func summarizer(reply string, err error) Summarizer {
 	return func(context.Context, string, string) (string, error) { return reply, err }
 }
 
 func compactableConversation() *Conversation {
 	conv := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep+2; i++ {
+	for i := 0; i < compactionFixtureTurns; i++ {
 		conv.Append(
 			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn %02d prompt", i)},
 			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("turn %02d answer", i)},
+		)
+	}
+	return conv
+}
+
+func largeCompactionConversation() *Conversation {
+	conv := NewConversation("sys")
+	for i := 0; i < 4; i++ {
+		conv.Append(
+			provider.Message{
+				Role:    provider.RoleUser,
+				Content: fmt.Sprintf("large turn %02d %s", i, strings.Repeat("context ", 625)),
+			},
+			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
 		)
 	}
 	return conv
@@ -118,12 +134,12 @@ func TestCompactUsesWhatPersistWithTailReturned(t *testing.T) {
 
 func TestCompactKeepsARelevantOlderMessage(t *testing.T) {
 	conv := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep+2; i++ {
+	for i := 0; i < compactionFixtureTurns; i++ {
 		user := fmt.Sprintf("ordinary setup turn %02d", i)
 		if i == 1 {
 			user = "critical OAuth migration requirement"
 		}
-		if i >= RecentTurnsToKeep {
+		if i >= compactionFixtureTurns-2 {
 			user = fmt.Sprintf("current OAuth migration work turn %02d", i)
 		}
 		conv.Append(
@@ -175,9 +191,9 @@ func TestCompactFallsBackToTheRecencyCutoffWhenRelevanceFails(t *testing.T) {
 
 func TestCompactKeepsARelevantToolPairTogether(t *testing.T) {
 	conv := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep+2; i++ {
+	for i := 0; i < compactionFixtureTurns; i++ {
 		user := fmt.Sprintf("ordinary turn %02d", i)
-		if i >= RecentTurnsToKeep {
+		if i >= compactionFixtureTurns-2 {
 			user = fmt.Sprintf("current OAuth turn %02d", i)
 		}
 		conv.Append(provider.Message{
@@ -286,7 +302,7 @@ func (r *recordingRelevanceEmbedder) Embed(_ context.Context, texts []string) ([
 
 func TestRelevanceEmbeddingBatchesAreBounded(t *testing.T) {
 	conv := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep+300; i++ {
+	for i := 0; i < compactionFixtureTurns+300; i++ {
 		conv.Append(
 			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("setup %03d", i)},
 			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
@@ -306,12 +322,12 @@ func TestRelevanceEmbeddingBatchesAreBounded(t *testing.T) {
 func TestCompactScoresCandidatesBeyondTheOldestBatchWindow(t *testing.T) {
 	conv := NewConversation("sys")
 	const relevantTurn = 150
-	for i := 0; i < RecentTurnsToKeep+170; i++ {
+	for i := 0; i < compactionFixtureTurns+170; i++ {
 		user := fmt.Sprintf("ordinary setup turn %03d", i)
 		if i == relevantTurn {
 			user = "critical OAuth migration requirement"
 		}
-		if i >= RecentTurnsToKeep+165 {
+		if i >= compactionFixtureTurns+165 {
 			user = fmt.Sprintf("current OAuth migration work turn %03d", i)
 		}
 		conv.Append(
@@ -466,7 +482,7 @@ func TestCompactionDoesNotSplitToolCallResult(t *testing.T) {
 	}
 
 	conv := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep+1; i++ {
+	for i := 0; i < compactionFixtureTurns+1; i++ {
 		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
 	}
 	conv.Append(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "unfinished", Name: "read"}}})
@@ -478,12 +494,46 @@ func TestCompactionDoesNotSplitToolCallResult(t *testing.T) {
 
 func TestCompactRequiresAnOlderTurn(t *testing.T) {
 	conv := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep; i++ {
+	for i := 0; i < 1; i++ {
 		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
 	}
 	c := &Compactor{Summarize: summarizer("summary", nil)}
 	if _, err := c.Compact(context.Background(), conv); err == nil {
 		t.Fatal("compaction should not summarize an empty old prefix")
+	}
+}
+
+func TestCompactUsesATokenTailBeforeTenTurns(t *testing.T) {
+	conv := NewConversation("sys")
+	for i := 0; i < 3; i++ {
+		conv.Append(
+			provider.Message{
+				Role:    provider.RoleUser,
+				Content: fmt.Sprintf("turn %02d %s", i, strings.Repeat("context ", 625)),
+			},
+			provider.Message{Role: provider.RoleAssistant, Content: "answer"},
+		)
+	}
+
+	var summarized string
+	c := &Compactor{
+		ContextWindow: 10_000,
+		Summarize: func(_ context.Context, _, user string) (string, error) {
+			summarized = user
+			return "summary", nil
+		},
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summarized, "turn 00") {
+		t.Fatalf("the old prefix was not summarized: %q", summarized)
+	}
+	if strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "turn 00") {
+		t.Fatal("the oldest turn survived instead of being compacted")
+	}
+	if !strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "turn 02") {
+		t.Fatal("the newest turn was not preserved")
 	}
 }
 
@@ -585,7 +635,7 @@ func TestShouldCompactForConversationRequiresAnOlderPrefix(t *testing.T) {
 	if c.ShouldCompactForConversation(40, 100, short) {
 		t.Fatal("a topic shift should not fire when there is no prefix to summarize")
 	}
-	if !c.ShouldCompactForConversation(40, 100, compactableConversation()) {
+	if !c.ShouldCompactForConversation(40, 100, largeCompactionConversation()) {
 		t.Fatal("a topic shift should fire once an older prefix can be compacted")
 	}
 }
@@ -593,7 +643,7 @@ func TestShouldCompactForConversationRequiresAnOlderPrefix(t *testing.T) {
 func TestShouldCompactForConversationKeepsGrowthHistoryBeforePrefix(t *testing.T) {
 	c := &Compactor{Summarize: summarizer("s", nil)}
 	short := NewConversation("sys")
-	for i := 0; i < RecentTurnsToKeep; i++ {
+	for i := 0; i < compactionFixtureTurns; i++ {
 		short.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
 	}
 
@@ -603,7 +653,7 @@ func TestShouldCompactForConversationKeepsGrowthHistoryBeforePrefix(t *testing.T
 	if c.ShouldCompactForConversation(55, 100, short) {
 		t.Fatal("an uncompactable conversation should still suppress the action")
 	}
-	if !c.ShouldCompactForConversation(55, 100, compactableConversation()) {
+	if !c.ShouldCompactForConversation(55, 100, largeCompactionConversation()) {
 		t.Fatal("predictive history was lost before the conversation became compactable")
 	}
 }

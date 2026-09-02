@@ -134,6 +134,16 @@ type Session struct {
 	// against the schema. Asking forever is the loop §12.6 exists to prevent.
 	retried bool
 
+	// foreground means the worker was created by the spawn_worker tool. Those
+	// calls follow OpenCode's task semantics: the parent waits for the worker's
+	// result instead of continuing to spend model turns beside it.
+	foreground bool
+
+	// workerFailure is returned to a foreground spawner. Async workers still
+	// receive the same failure as an inbox message, so this is not a second
+	// reporting path for them.
+	workerFailure error
+
 	// retrying is true while that second attempt is in flight. The spawn
 	// goroutine used to call markFinished as soon as Run returned, which freed
 	// the worker's slot under MaxLiveWorkers while the retry was still
@@ -1249,9 +1259,9 @@ func (sess *Session) observe(e agent.Event) {
 		sess.turn++
 		sess.mu.Unlock()
 		if sess.Worker {
-			// A worker's turn ending is the worker finishing. Its result goes
-			// back to whoever summoned it as a message, so the spawner never
-			// had to block on it.
+			// A worker's turn ending is the worker finishing. Async workers send
+			// their result to whoever summoned them; foreground workers suppress
+			// that duplicate message because the tool call is waiting for it.
 			// A worker asked to retry its output is not finished: its next turn
 			// end is the one that reports.
 			sess.mu.Lock()
@@ -1280,15 +1290,29 @@ func (sess *Session) notifyWorkerFailure(err error) {
 		return
 	}
 	sess.failureNotified = true
+	sess.workerFailure = err
+	foreground := sess.foreground
 	sess.mu.Unlock()
 
 	sess.srv.swarm.mu.Lock()
 	spawner := sess.srv.swarm.spawnedBy[sess.Name]
 	sess.srv.swarm.mu.Unlock()
-	if spawner != "" {
+	if spawner != "" && !foreground {
 		sess.srv.deliver(spawner, fmt.Sprintf(
 			"⚠ worker %s stopped before reporting a result: %v", sess.Name, err))
 	}
+}
+
+func (sess *Session) isForeground() bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.foreground
+}
+
+func (sess *Session) failure() error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.workerFailure
 }
 
 func (sess *Session) heartbeat(now time.Time) {
@@ -1763,7 +1787,10 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 	}
 	modelRef := config.ModelRef(model, prov.Name())
 	overrides := cfg.ModelOverrides(modelRef)
-	numCtx := config.ContextWindowFor(prov, model, overrides.ContextWindow)
+	limits := config.ContextLimitsFor(prov, model, overrides.ContextWindow)
+	numCtx := limits.ContextWindow
+	compactionWindow := agent.EffectiveCompactionWindow(
+		limits.ContextWindow, limits.InputLimit, limits.OutputLimit)
 	levels := provider.ReasoningEffortLevelsForProvider(prov, model)
 	// The name heuristic only recognizes known thinking families (gpt-oss,
 	// qwen3, glm, ...). A model that advertises a "thinking" capability over
@@ -1816,7 +1843,10 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 	// them here; the context re-ask is bounded and only happens in that race.
 	if liveOverrides := cfg.ModelOverrides(modelRef); liveOverrides != overrides {
 		overrides = liveOverrides
-		numCtx = config.ContextWindowFor(prov, model, overrides.ContextWindow)
+		limits = config.ContextLimitsFor(prov, model, overrides.ContextWindow)
+		numCtx = limits.ContextWindow
+		compactionWindow = agent.EffectiveCompactionWindow(
+			limits.ContextWindow, limits.InputLimit, limits.OutputLimit)
 	}
 	effort := provider.ReasoningEffort("")
 	if effortKnown {
@@ -1848,7 +1878,11 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 	sess.built.Agent.Provider = prov
 	sess.built.Agent.Model = model
 	sess.built.Agent.NumCtx = numCtx
+	sess.built.Agent.CompactionWindow = compactionWindow
 	sess.built.Agent.MaxSteps = cfg.Features.MaxSteps
+	if sess.built.Agent.Compactor != nil {
+		sess.built.Agent.Compactor.ContextWindow = sess.built.Agent.EffectiveCompactionWindow()
+	}
 	// Build wiring stamps these per-model overrides too; the old switch left
 	// LenientToolParse describing the previous model (R2-13).
 	sess.built.Agent.LenientToolParse = overrides.LenientToolParse
@@ -1880,6 +1914,7 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 		}
 	}
 	sess.mu.Unlock()
+	sess.refreshSystemPrompt()
 
 	if effortKnown {
 		if err := sess.built.Agent.SetReasoningEffortQuiet(effort); err != nil {

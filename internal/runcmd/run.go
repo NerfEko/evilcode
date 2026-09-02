@@ -151,7 +151,8 @@ func Run(args []string) (int, error) {
 	for _, sk := range skills.Index() {
 		promptSkills = append(promptSkills, agent.Skill{Name: sk.Name, Desc: sk.Desc, Path: sk.Path})
 	}
-	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
+	conv := agent.NewConversation(agent.BuildSystemPromptForProvider(
+		pc, promptSkills, "", prov, prov.Name(), modelName))
 	if len(priorMessages) > 0 {
 		// The messages from the resume above, not a second one. Resuming twice
 		// re-parsed the whole file and discarded the store it returned, leaking
@@ -207,16 +208,19 @@ func Run(args []string) (int, error) {
 	a := agent.New(store.Name, prov, modelName, ts, conv)
 	skills.SetOnLoad(a.SetToolPolicy)
 	applySavedReasoningEffort(a, cfg, prov, modelName)
-	// An explicit [[model]] context_window wins; otherwise the provider is
-	// asked, so a discovered window drives the meter and compaction instead
-	// of the hardcoded guess behind them.
-	a.NumCtx = config.ContextWindowFor(prov, modelName, overrides.ContextWindow)
+	// Keep the total window for the provider, but compact against the smaller
+	// input budget when the provider exposes one (Codex OAuth does).
+	limits := config.ContextLimitsFor(prov, modelName, overrides.ContextWindow)
+	a.NumCtx = limits.ContextWindow
+	a.CompactionWindow = agent.EffectiveCompactionWindow(
+		limits.ContextWindow, limits.InputLimit, limits.OutputLimit)
 	a.MaxSteps = cfg.Features.MaxSteps
 
 	// Compaction reaches headless and the daemon too. It was a *tui.Model
 	// method, so a long daemon session, an overnight run and every spawned
 	// worker had no way to compact at all.
 	a.Compactor = &agent.Compactor{
+		ContextWindow: a.EffectiveCompactionWindow(),
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},

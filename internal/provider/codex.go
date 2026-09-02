@@ -391,13 +391,20 @@ func (c *Codex) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-func (c *Codex) requestHeaders(token string) http.Header {
+func (c *Codex) requestHeaders(token, sessionID string) http.Header {
 	h := make(http.Header)
 	h.Set("Authorization", "Bearer "+token)
 	h.Set("ChatGPT-Account-Id", c.accountID)
 	h.Set("OAI-Product-Sku", "codex")
 	h.Set("Originator", "codex_cli_rs")
 	h.Set("User-Agent", "evilcode-codex/"+codexClientVersion)
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		// The ChatGPT Codex backend uses these headers for the same stable
+		// session affinity that OpenCode supplies through its OpenAI adapter.
+		h.Set("session-id", sessionID)
+		h.Set("x-session-affinity", sessionID)
+		h.Set("X-Session-Id", sessionID)
+	}
 	return h
 }
 
@@ -412,6 +419,7 @@ type codexRequest struct {
 	Store             bool              `json:"store"`
 	Stream            bool              `json:"stream"`
 	Include           []string          `json:"include,omitempty"`
+	PromptCacheKey    string            `json:"prompt_cache_key,omitempty"`
 }
 
 type codexReasoning struct {
@@ -450,6 +458,7 @@ func (c *Codex) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 		Store:             false,
 		Stream:            true,
 		Include:           []string{"reasoning.encrypted_content"},
+		PromptCacheKey:    strings.TrimSpace(req.SessionID),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -460,7 +469,7 @@ func (c *Codex) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codex: create request: %w", err)
 	}
-	httpReq.Header = c.requestHeaders(token)
+	httpReq.Header = c.requestHeaders(token, req.SessionID)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	resp, err := c.httpClient().Do(httpReq)
@@ -764,10 +773,6 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 	var providerItems []json.RawMessage
 	completed := false
 	terminal := false
-	// sawText tracks streamed output-text deltas. Reasoning summaries stream
-	// live but are not a response: a terminal chunk whose only content was
-	// summary text carries no output item and must fail (see ErrNoOutput).
-	sawText := false
 
 	send := func(chunk Chunk) bool {
 		select {
@@ -798,7 +803,6 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 			chunk := Chunk{}
 			if kind == "response.output_text.delta" {
 				chunk.Text = delta
-				sawText = true
 			} else {
 				chunk.Reasoning = delta
 			}
@@ -853,19 +857,10 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 					providerItems = finalItems
 				}
 			}
-			if len(providerItems) == 0 && len(calls.order) == 0 && !sawText {
-				// Observed live on the ChatGPT Codex backend after long
-				// max-effort reasoning: summary deltas streamed, then
-				// response.completed arrived with an empty output array and no
-				// output_item.done events, so nothing was itemized. Sending
-				// Done would commit a turn that never happened; the next
-				// request drops the reasoning-only message on replay and the
-				// model re-reasons into the same empty response — the stall the
-				// user sees as a reasoning loop. Fail loudly instead.
-				send(Chunk{Err: fmt.Errorf("codex: %w", ErrNoOutput)})
-				terminal = true
-				return false
-			}
+			// response.completed is the provider's terminal marker even when
+			// this backend reports an empty response.output array. Completed
+			// output items are retained from their individual done events above;
+			// an itemless completion is a completed no-op, not a transport error.
 			usage := codexUsage(event)
 			completed = true
 			terminal = true
@@ -1005,7 +1000,7 @@ func (c *Codex) Models(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codex: create models request: %w", err)
 	}
-	req.Header = c.requestHeaders(token)
+	req.Header = c.requestHeaders(token, "")
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.httpClient().Do(req)
 	if err != nil {

@@ -7413,6 +7413,21 @@ Verified: `go test ./internal/provider/ -count=1`,
 `go test ./internal/agent/ -count=1`, full `go test ./... -count=1 -timeout
 600s` green, `go vet ./...` clean, `gofmt -l .` clean.
 
+Follow-up — an OpenCode source comparison found that the recovery above was
+itself the user-visible stall. OpenCode treats `response.completed` as a
+terminal event even when `response.output` is empty; evilcode was converting
+that same completed event into `ErrNoOutput`, then resending the identical
+long-reasoning request. The parser now commits the terminal event as a
+completed no-op, and the agent's ordinary emitted-content retry gate is back
+in force. This stops repeated planning without changing the configured
+reasoning effort. Codex requests also carry the session affinity headers and
+`prompt_cache_key` used by OpenCode, while itemized encrypted reasoning and
+tool output replay remain unchanged.
+
+Tests: `TestCodexReasoningOnlyResponseCompletes`,
+`TestReasoningOnlyTerminalDoesNotRetry`, plus the Codex request-envelope
+assertions for session identity and prompt caching.
+
 ## 2026-08-27 — one daemon per socket path: the bind lock now claims for life
 
 Verified from the running system: three daemon processes were alive, all with
@@ -7447,4 +7462,82 @@ before the dial probe), plus `TestCloseRemovesTheSocket` and
 
 Verified: `go test ./internal/daemon/ -count=1`, full `go test ./... -count=1
 -timeout 600s` green, `go vet ./...` clean, `gofmt -l .` clean.
+
+## 2026-08-27 — codex review 2, R2-17: configuration validation is aggregate and path-addressable
+
+The old validator stopped after provider names/kinds and the default provider
+reference. Empty model-reference halves, malformed endpoints, invalid display
+values, duplicate metadata and MCP entries, bad limits, role typos, invalid
+reasoning preferences, key collisions, and broken LSP commands all reached a
+later runtime path — and only the first problem was reported.
+
+Done. `Config.Validate` now walks the effective value without network or process
+side effects and collects deterministic diagnostics with TOML paths. It checks
+provider URLs and environment names, model-reference syntax, strict default and
+role providers, duplicate model/MCP names, stale-but-valid convenience refs,
+reasoning values, display enums, bounded context/step/trace limits, keymap
+collisions, MCP environment assignments, and LSP/dictate argv shapes. Empty
+LSP commands and keybinding values remain intentional disable operations. Repo
+overrides re-run validation after their model/role merge so a repository pin
+cannot bypass the same checks.
+
+Tests: `TestValidateAggregatesProblemsWithTOMLPaths`,
+`TestValidateAcceptsACompleteConfig`, `TestValidateProviderURLs`,
+`TestValidateAllowsIntentionalIntegrationDisables`, and
+`TestLoadRepoOverridesValidatesTheEffectiveConfig`.
+
+Verified: `go test ./internal/config/... -count=1`, `go vet ./internal/config/...`,
+full `go test ./... -count=1`, `git diff --check`, and `gofmt` on changed Go files.
+
+## 2026-08-27 — compaction follows OpenCode's token-budget tail
+
+The old compaction boundary required ten recent user turns before it could
+summarize anything. That left most short sessions unable to compact even when
+their context was near the model limit.
+
+Done. Automatic and manual compaction now select the recent tail by estimated
+tokens: the default keeps 25% of the usable window, bounded to 2k–15k tokens,
+and can split a large turn like OpenCode. If the newest turn alone exceeds that
+tail, the summary replaces the full transcript so an oversized tool result
+cannot make compaction impossible. Compaction markers are excluded from turn
+selection, and unknown provider windows use the existing 200k meter fallback.
+Codex model catalog metadata now supplies its real context window when
+available.
+
+Tests: `TestCompactUsesATokenTailBeforeTenTurns`,
+`TestAutoCompactionIsCheckedEveryRound`, and
+`TestContextWindowForDiscoversCodexCatalogWindow`.
+
+Verified: `go test ./... -count=1 -timeout 600s`, affected-package race tests,
+`go vet ./...`, the probe suite, `git diff --check`, and the installed binary
+SHA-256 `e334ca322e42d095d9d1e99b11d9fe93a3bfdec57147d5f96ca8cbbfc581c81c`.
+
+## 2026-08-27 — Codex stalls: remove the gate and fix the actual loop shape
+
+The six-round implementation gate was a bad workaround. The `bat-5` trace
+showed that the parent had already delegated at `spawn_worker`, then continued
+issuing broad reads while the asynchronous worker ran; the gate only blocked a
+later edit and did not cause the exploration. OpenCode's `task` tool is
+foreground by default, so the parent receives a worker result before it can
+continue.
+
+Done. The daemon's model-facing `spawn_worker` now waits for the worker's
+validated result; the explicit `SpawnFor` API remains asynchronous for callers
+that need it. Provider requests now use an OpenCode-style projection that
+clears old completed tool output after the protected 40k-token tail while
+leaving the durable transcript unchanged. Codex OAuth GPT-5.5/5.6 models use
+the limits OpenCode exposes — 400k total, 272k input, 128k output — so
+automatic compaction protects a 252k usable input budget instead of treating a
+1.05M catalogue value as the compaction target. The Codex prompt also uses
+OpenCode's explicit default-to-action contract for completion/fix/update
+requests.
+
+Tests: foreground worker result delivery, durable-versus-projected tool
+history, skill-result protection, Codex limit clamping, full suite, focused
+race tests, and `go vet ./...`.
+
+Installed SHA-256: `75270f30f9302eef6197c6fcaab99cb67fbccba6b8693d71e19c8af4aa4dd9aa`.
+Both `/home/eko/.local/bin/ec` and `/home/eko/.local/bin/evilcode` resolve to
+the updated checkout binary; the previous daemon was stopped so the next
+attach starts the new code.
 

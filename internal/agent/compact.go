@@ -33,12 +33,6 @@ without restarting a broad exploration.`
 // summariser, so a single pasted file cannot crowd out the conversation.
 const CompactMessageCap = 2000
 
-// RecentTurnsToKeep is the verbatim tail preserved by compaction. Keeping a
-// real working window means a compaction that lands between a prompt and its
-// answer does not make the model rediscover the task it is in the middle of.
-// Ten keeps that tail small enough to leave room for the fresh request.
-const RecentTurnsToKeep = 10
-
 // CompactThreshold is the fraction of the context window at which a turn
 // compacts before dispatching when the projection has not fired first
 // (plan.md §9.9).
@@ -46,6 +40,21 @@ const RecentTurnsToKeep = 10
 // A constant rather than a config knob: it is the kind of setting nobody tunes
 // and everybody would have to understand to tune correctly.
 const CompactThreshold = 0.85
+
+// CompactPreserveRecentFraction is the default share of the usable context
+// reserved for the verbatim tail. This mirrors OpenCode's default selection:
+// choose recent content by token budget rather than by a fixed number of
+// turns, so a three-turn session can compact when a large tool result fills
+// the window.
+const CompactPreserveRecentFraction = 0.25
+
+// CompactMinPreserveTokens and CompactMaxPreserveTokens bound the default
+// recent-tail budget, matching OpenCode's 2k/15k defaults. A model-specific
+// configuration can be added later without changing the selection algorithm.
+const (
+	CompactMinPreserveTokens = 2_000
+	CompactMaxPreserveTokens = 15_000
+)
 
 // CompactProjectionLookahead is how many future turns the token-growth
 // projection covers. Fifteen gives a long-running coding session time to
@@ -134,6 +143,12 @@ type EmbeddingProvider interface {
 type Compactor struct {
 	// Summarize produces the summary. Nil disables compaction entirely.
 	Summarize Summarizer
+
+	// ContextWindow is the active model's context limit. It lets manual
+	// compaction use the same token-budget tail selection as automatic
+	// compaction; automatic callers can also pass a fresh window directly to
+	// CompactWithWindow after a model transition.
+	ContextWindow int
 
 	// Embedding supplies optional per-turn vectors for semantic topic-shift and
 	// relevance detection. RecordEmbeddingSnapshot and PrepareRelevance invoke
@@ -309,6 +324,17 @@ func compactionMessageText(msg provider.Message) string {
 // history is replaced, so a failure to persist leaves the conversation intact
 // rather than dropping it on the floor with nothing on disk to recover from.
 func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, error) {
+	window := 0
+	if c != nil {
+		window = c.ContextWindow
+	}
+	return c.CompactWithWindow(ctx, conv, window)
+}
+
+// CompactWithWindow compacts using window as the active model context limit.
+// The explicit argument keeps the automatic preflight and the actual rewrite
+// on the same model boundary even when a caller has just switched models.
+func (c *Compactor) CompactWithWindow(ctx context.Context, conv *Conversation, window int) (string, error) {
 	if !c.Enabled() {
 		return "", fmt.Errorf("no summarizer is configured")
 	}
@@ -317,9 +343,9 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 	}
 
 	msgs := conv.Messages()
-	cutoff := compactionCutoff(msgs, RecentTurnsToKeep)
+	cutoff := compactionCutoffForWindow(msgs, window)
 	if cutoff == 0 {
-		return "", fmt.Errorf("not enough history to compact while keeping the most recent %d turns", RecentTurnsToKeep)
+		return "", fmt.Errorf("not enough history to compact while preserving a usable recent context tail")
 	}
 	cutoff = c.relevanceCutoff(ctx, msgs, cutoff)
 	old := msgs[:cutoff]
@@ -372,7 +398,7 @@ func (c *Compactor) PrepareRelevance(ctx context.Context, msgs []provider.Messag
 	if c == nil {
 		return
 	}
-	standardCutoff := compactionCutoff(msgs, RecentTurnsToKeep)
+	standardCutoff := compactionCutoffForWindow(msgs, c.ContextWindow)
 	if standardCutoff == 0 {
 		return
 	}
@@ -409,7 +435,7 @@ func (c *Compactor) WaitForRelevance(
 	if c == nil || wait <= 0 {
 		return false
 	}
-	request, ok := buildRelevanceRequest(msgs, compactionCutoff(msgs, RecentTurnsToKeep))
+	request, ok := buildRelevanceRequest(msgs, compactionCutoffForWindow(msgs, c.ContextWindow))
 	if !ok {
 		return false
 	}
@@ -599,7 +625,7 @@ func (c *Compactor) queueRelevance(ctx context.Context, request relevanceRequest
 
 func (c *Compactor) relevanceMayBeNeeded(used, window int, msgs []provider.Message) bool {
 	if !c.Enabled() || used <= 0 || window <= 0 ||
-		compactionCutoff(msgs, RecentTurnsToKeep) == 0 {
+		compactionCutoffForWindow(msgs, window) == 0 {
 		return false
 	}
 	c.mu.Lock()
@@ -817,20 +843,158 @@ func cloneMessages(msgs []provider.Message) []provider.Message {
 	return out
 }
 
-// compactionCutoff returns the prefix that can be summarized while retaining
-// the latest user turns. The cutoff is conservative around tool calls: if the
-// requested boundary would leave a tool result without its assistant call, it
-// moves backward to keep the whole pair in the live suffix. A malformed or
-// unanswered pair aborts compaction rather than handing a strict provider an
-// invalid transcript.
-func compactionCutoff(msgs []provider.Message, keepTurns int) int {
+// compactPreserveBudget returns the recent-tail budget for a model window.
+// OpenCode derives this from the usable input window, with a 25% default share
+// bounded to 2k..15k tokens. Evilcode's 85% preflight threshold is the usable
+// input approximation because its provider interface does not expose a
+// separate max-output limit.
+func compactPreserveBudget(window int) int {
+	if window <= 0 {
+		return 0
+	}
+	usable := int(CompactThreshold * float64(window))
+	if usable <= 0 {
+		return 0
+	}
+	budget := int(CompactPreserveRecentFraction * float64(usable))
+	if budget < CompactMinPreserveTokens {
+		budget = CompactMinPreserveTokens
+	}
+	if budget > CompactMaxPreserveTokens {
+		budget = CompactMaxPreserveTokens
+	}
+	return budget
+}
+
+// compactMessageTokens is the same deliberately conservative estimate used by
+// the live pending-context check. Provider-specific tokenizers are not part of
+// the provider interface, so byte length divided by four keeps selection
+// deterministic and errs toward preserving too much recent context.
+func compactMessageTokens(msg provider.Message) int {
+	n := len(msg.Content) + len(msg.Reasoning) + len(msg.ToolCallID) + len(msg.ToolName)
+	for _, call := range msg.ToolCalls {
+		n += len(call.ID) + len(call.Name) + len(call.Args)
+	}
+	for _, item := range msg.ProviderItems {
+		n += len(item)
+	}
+	for _, repair := range msg.Repairs {
+		n += len(repair)
+	}
+	// Images are encoded separately on the wire; reserve a small stable amount
+	// for each attachment rather than treating its compressed bytes as tokens.
+	n += len(msg.Images) * 256
+	if n <= 0 {
+		return 1
+	}
+	return (n + 3) / 4
+}
+
+func compactMessagesTokens(msgs []provider.Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += compactMessageTokens(msg)
+	}
+	return total
+}
+
+type compactTurn struct {
+	start int
+	end   int
+}
+
+// compactTurns groups the linear provider transcript into user turns. A turn
+// includes its assistant response and any tool results up to the next user
+// message, which lets selection preserve recent work without counting turns
+// as the compaction trigger.
+func compactTurns(msgs []provider.Message) []compactTurn {
+	var out []compactTurn
+	for i, msg := range msgs {
+		if msg.Role != provider.RoleUser || isCompactionMarker(msg) {
+			continue
+		}
+		if len(out) > 0 {
+			out[len(out)-1].end = i
+		}
+		out = append(out, compactTurn{start: i, end: len(msgs)})
+	}
+	return out
+}
+
+// splitCompactTurn finds the earliest message inside a too-large turn whose
+// suffix fits the remaining tail budget. This is OpenCode's fallback for a
+// single large turn; the user message may be summarized while the newest
+// assistant/tool work remains verbatim.
+func splitCompactTurn(msgs []provider.Message, turn compactTurn, budget int) (int, bool) {
+	if budget <= 0 || turn.end-turn.start <= 1 {
+		return 0, false
+	}
+	for start := turn.start + 1; start < turn.end; start++ {
+		if compactMessagesTokens(msgs[start:turn.end]) <= budget {
+			return start, true
+		}
+	}
+	return 0, false
+}
+
+// compactionCutoffByBudget returns the prefix that can be summarized while
+// retaining the newest content within budget. Unlike the old fixed ten-turn
+// rule, a large tool result can make even a short session eligible. The
+// cutoff is conservative around tool calls: if it would leave a tool result
+// without its assistant call, safeToolBoundary moves it back to the call.
+func compactionCutoffByBudget(msgs []provider.Message, budget int) int {
+	if budget <= 0 {
+		return 0
+	}
+	turns := compactTurns(msgs)
+	if len(turns) == 0 {
+		return 0
+	}
+
+	total := 0
+	cutoff := len(msgs)
+	kept := false
+	for i := len(turns) - 1; i >= 0; i-- {
+		turn := turns[i]
+		size := compactMessagesTokens(msgs[turn.start:turn.end])
+		if total+size <= budget {
+			total += size
+			cutoff = turn.start
+			kept = true
+			continue
+		}
+		if start, ok := splitCompactTurn(msgs, turn, budget-total); ok {
+			cutoff = start
+			kept = true
+		}
+		break
+	}
+	if !kept {
+		// OpenCode still runs compaction when the newest turn alone is larger
+		// than the recent-tail budget; it simply has no tail_start and lets the
+		// summary replace the whole transcript. A cutoff at len(msgs) is that
+		// representation in Evilcode. Without it, one enormous tool result can
+		// make a short session permanently uncompacting.
+		cutoff = len(msgs)
+	}
+	cutoff = safeToolBoundary(msgs, cutoff)
+	if cutoff <= 0 || !hasSummarizableContent(msgs[:cutoff]) {
+		return 0
+	}
+	return cutoff
+}
+
+// compactionCutoffByTurns is the compatibility fallback for manual callers
+// that do not know a model context window. It keeps one current turn, which is
+// enough to preserve the active exchange without imposing a ten-turn gate.
+func compactionCutoffByTurns(msgs []provider.Message, keepTurns int) int {
 	if keepTurns <= 0 {
 		return 0
 	}
 	users := 0
 	cutoff := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != provider.RoleUser {
+		if msgs[i].Role != provider.RoleUser || isCompactionMarker(msgs[i]) {
 			continue
 		}
 		users++
@@ -843,17 +1007,46 @@ func compactionCutoff(msgs []provider.Message, keepTurns int) int {
 		return 0
 	}
 	old := msgs[:cutoff]
-	oldContent := false
-	for _, msg := range old {
-		if msg.Role != provider.RoleSystem {
-			oldContent = true
-			break
-		}
-	}
-	if !oldContent {
+	// The no-window path is retained for older/manual callers. A prior summary
+	// is useful input for another manual summary even when no unsummarized turn
+	// precedes the current one.
+	if !hasSummarizableContent(old) && !hasCompactionHistory(old) {
 		return 0
 	}
 	return safeToolBoundary(msgs, cutoff)
+}
+
+func isCompactionMarker(msg provider.Message) bool {
+	return msg.Role == provider.RoleUser && strings.HasPrefix(msg.Content, CompactedPrefix)
+}
+
+func hasSummarizableContent(msgs []provider.Message) bool {
+	for _, msg := range msgs {
+		if msg.Role == provider.RoleSystem || isCompactionMarker(msg) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func hasCompactionHistory(msgs []provider.Message) bool {
+	for _, msg := range msgs {
+		if msg.Role != provider.RoleSystem {
+			return true
+		}
+	}
+	return false
+}
+
+func compactionCutoffForWindow(msgs []provider.Message, window int) int {
+	if budget := compactPreserveBudget(window); budget > 0 {
+		return compactionCutoffByBudget(msgs, budget)
+	}
+	// Manual callers may not know the provider's window. They still get a
+	// useful one-turn fallback, while all automatic paths have a real window
+	// and use the OpenCode-style token budget above.
+	return compactionCutoffByTurns(msgs, 1)
 }
 
 // safeToolBoundary keeps tool-call/result pairs on one side of the cutoff.
@@ -992,8 +1185,8 @@ func (c *Compactor) ShouldCompact(used, window int) bool {
 
 // ShouldCompactForConversation is the automatic-turn entry point. Semantic
 // compaction only makes sense when the conversation has an older prefix to
-// summarize while keeping RecentTurnsToKeep turns; otherwise Compact would
-// fail and the same topic-shift signal would fire again on every turn.
+// summarize while preserving a recent token-budget tail; otherwise Compact
+// would fail and the same topic-shift signal would fire again on every turn.
 func (c *Compactor) ShouldCompactForConversation(used, window int, conv *Conversation) bool {
 	if c == nil || conv == nil {
 		return false
@@ -1001,7 +1194,7 @@ func (c *Compactor) ShouldCompactForConversation(used, window int, conv *Convers
 	// Always sample the context first so an uncompactable early transcript does
 	// not erase the predictive history that J6.2 needs once a prefix exists.
 	shouldCompact := c.ShouldCompact(used, window)
-	if compactionCutoff(conv.Messages(), RecentTurnsToKeep) == 0 {
+	if compactionCutoffForWindow(conv.Messages(), window) == 0 {
 		return false
 	}
 	return shouldCompact

@@ -14,6 +14,28 @@ import (
 	"evilcode/internal/session"
 )
 
+func (sess *Session) refreshSystemPrompt() {
+	if sess == nil || sess.built == nil || sess.built.Agent == nil ||
+		sess.built.Agent.Conv == nil {
+		return
+	}
+	var entries []agent.Skill
+	if sess.built.Skills != nil {
+		for _, skill := range sess.built.Skills.Index() {
+			entries = append(entries, agent.Skill{
+				Name: skill.Name, Desc: skill.Desc, Path: skill.Path,
+			})
+		}
+	}
+	var providerName string
+	if sess.built.Agent.Provider != nil {
+		providerName = sess.built.Agent.Provider.Name()
+	}
+	sess.built.Agent.Conv.SetSystemPrompt(agent.BuildSystemPromptForProvider(
+		sess.built.Project, entries, "", sess.built.Agent.Provider,
+		providerName, sess.built.Agent.Model))
+}
+
 // Command applies a UI action to the server-owned runtime. Commands are
 // deliberately named: credentials and maintenance operations must not be
 // smuggled through ordinary prompts, where they would become conversation
@@ -88,12 +110,7 @@ func (sess *Session) Command(kind, arg, secret string) error {
 			return fmt.Errorf("skills are not configured for this session")
 		}
 		sess.built.Skills.Reload()
-		var entries []agent.Skill
-		for _, skill := range sess.built.Skills.Index() {
-			entries = append(entries, agent.Skill{Name: skill.Name, Desc: skill.Desc, Path: skill.Path})
-		}
-		sess.built.Agent.Conv.SetSystemPrompt(agent.BuildSystemPrompt(
-			sess.built.Project, entries, ""))
+		sess.refreshSystemPrompt()
 		sess.notice(fmt.Sprintf("Skills reloaded · %d available", len(sess.built.Skills.Index())))
 		return nil
 
@@ -396,7 +413,9 @@ func (sess *Session) compact() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	before := sess.built.Agent.Conv.Len()
-	summary, err := sess.built.Agent.Compactor.Compact(ctx, sess.built.Agent.Conv)
+	summary, err := sess.built.Agent.Compactor.CompactWithWindow(
+		ctx, sess.built.Agent.Conv,
+		sess.built.Agent.EffectiveCompactionWindow())
 	if err != nil {
 		return err
 	}

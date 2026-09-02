@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -302,6 +304,146 @@ func TestValidate(t *testing.T) {
 				t.Error("Validate() = nil, want an error")
 			}
 		})
+	}
+}
+
+func TestValidateAggregatesProblemsWithTOMLPaths(t *testing.T) {
+	cfg := Config{
+		DefaultModel: "@",
+		LastModel:    "model@",
+		Providers: []ProviderConfig{
+			{Name: "", Kind: "", BaseURL: "not a url", APIKeyEnv: "BAD-NAME"},
+			{Name: "a", Kind: KindOllama, BaseURL: "https://"},
+			{Name: "a", Kind: KindCodex, APIKeyEnv: "CODEX_KEY"},
+		},
+		Models: []ModelConfig{
+			{Name: "m@a", ContextWindow: -1},
+			{Name: "m@a", ContextWindow: maxConfigContextWindow + 1},
+		},
+		Roles:            Roles{Smol: []string{"@a", "x@ghost"}},
+		ReasoningEfforts: map[string]string{"m": "bogus"},
+		Display: Display{
+			Theme:           "unknown",
+			Overscroll:      "unknown",
+			ThinkingDisplay: "unknown",
+			ThinkingLines:   -1,
+		},
+		Features: Features{
+			MaxSteps:       -1,
+			EnvPassthrough: []string{"BAD-NAME", "PATH", "PATH"},
+		},
+		Keybindings: map[string]string{
+			"not_an_action": "ctrl+q",
+			"scroll_up":     "ctrl+j",
+		},
+		MCP: []MCPServer{
+			{Name: "server", Command: "echo"},
+			{Name: "server", Command: " "},
+		},
+		LSP: map[string][]string{"go": {" "}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want aggregate diagnostics")
+	}
+	validation, ok := err.(*ValidationErrors)
+	if !ok {
+		t.Fatalf("Validate() error = %T, want *ValidationErrors: %v", err, err)
+	}
+	if len(validation.Problems) < 15 {
+		t.Fatalf("got %d validation problems, want the independent invalid fields collected: %v", len(validation.Problems), validation.Problems)
+	}
+	for _, path := range []string{
+		"default_model", "last_model", "provider[0].base_url", "provider[0].api_key_env",
+		"provider[1].base_url", "provider[2].name", "provider[2]", "model[0].context_window",
+		"model[1].name", "model[1].context_window", "roles.smol[0]", "roles.smol[1]",
+		"reasoning_efforts.m", "display.theme", "display.overscroll", "display.thinking_display",
+		"display.thinking_lines", "features.env_passthrough[0]", "features.env_passthrough[2]",
+		"features.max_steps", "keybindings.not_an_action", "keybindings.scroll_up", "mcp[1].name",
+		"mcp[1].command", "lsp.go",
+	} {
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("aggregate error does not name %s: %v", path, err)
+		}
+	}
+}
+
+func TestValidateAcceptsACompleteConfig(t *testing.T) {
+	cfg := Config{
+		DefaultModel: "model@openai",
+		Providers: []ProviderConfig{{
+			Name: "openai", Kind: KindOpenAI, BaseURL: "https://api.example.test/v1", APIKeyEnv: "OPENAI_API_KEY",
+		}},
+		Models:           []ModelConfig{{Name: "model@openai", ContextWindow: 4096}},
+		Roles:            Roles{Default: []string{"model@openai"}, Smol: []string{"small@openai"}},
+		ReasoningEfforts: map[string]string{"model@openai": "high"},
+		Display:          Display{Theme: "catppuccin-frappe", Overscroll: "overscroll", ThinkingDisplay: "current", ThinkingLines: 6},
+		Features:         Features{EnvPassthrough: []string{"PATH", "HOME"}, MaxSteps: 10},
+		Keybindings:      map[string]string{"scroll_up": "ctrl+shift+k"},
+		MCP:              []MCPServer{{Name: "docs", Command: "mcp-docs", Env: []string{"MODE=stdio"}}},
+		LSP:              map[string][]string{"go": {"gopls"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("complete config rejected: %v", err)
+	}
+}
+
+func TestValidateAllowsStaleConvenienceReferences(t *testing.T) {
+	cfg := Config{
+		DefaultModel:   "live@provider",
+		LastModel:      "old@removed-provider",
+		FavoriteModels: []string{"old@removed-provider"},
+		Models:         []ModelConfig{{Name: "old@removed-provider", ContextWindow: 4096}},
+		Providers:      []ProviderConfig{{Name: "provider", Kind: KindMock}},
+		Features:       Features{EmbeddingModel: "embed@removed-provider"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("stale convenience references must not block startup: %v", err)
+	}
+}
+
+func TestValidateAllowsIntentionalIntegrationDisables(t *testing.T) {
+	cfg := Config{
+		DefaultModel: "m@mock",
+		Providers:    []ProviderConfig{{Name: "mock", Kind: KindMock}},
+		Keybindings:  map[string]string{"scroll_up": ""},
+		LSP:          map[string][]string{"go": nil},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("intentional key/LSP disables must validate: %v", err)
+	}
+}
+
+func TestValidateProviderURLs(t *testing.T) {
+	for _, value := range []string{
+		"http://localhost", "https://example.test/api/", "http://[::1]:11434",
+	} {
+		if err := validateProviderURL(value); err != "" {
+			t.Errorf("validateProviderURL(%q) = %q, want valid", value, err)
+		}
+	}
+	for _, value := range []string{
+		"localhost:11434", "ftp://example.test", "https://", "https://user:pass@example.test",
+		"https://example.test:0", "https://example.test:65536", "https://example.test?token=x",
+		"https://example.test#fragment", "https://example.test:bad",
+	} {
+		if err := validateProviderURL(value); err == "" {
+			t.Errorf("validateProviderURL(%q) = empty, want invalid", value)
+		}
+	}
+}
+
+func TestLoadRepoOverridesValidatesTheEffectiveConfig(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, RepoConfigName), []byte(`
+[roles]
+smol = ["small@missing"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Default().LoadRepoOverrides(root); err == nil || !strings.Contains(err.Error(), "roles.smol[0]") {
+		t.Fatalf("repo override validation error = %v, want the role path", err)
 	}
 }
 
@@ -1124,6 +1266,31 @@ func TestContextWindowForPrefersAnExplicitOverride(t *testing.T) {
 	// request finding that out.
 	if got := ContextWindowFor(nil, "any", 4096); got != 4096 {
 		t.Errorf("ContextWindowFor = %d, want the override", got)
+	}
+}
+
+func TestContextLimitsForClampsCodexOAuthGPT56CatalogWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.6-luna","context_window":1050000}]}`))
+	}))
+	defer server.Close()
+
+	codex := provider.NewCodex("codex", server.URL, provider.CodexAuthInfo{
+		AccessToken: "access-token",
+		AccountID:   "account-id",
+	})
+	codex.HTTP = server.Client()
+	limits := ContextLimitsFor(codex, "gpt-5.6-luna", 0)
+	if limits.ContextWindow != 400_000 || limits.InputLimit != 272_000 || limits.OutputLimit != 128_000 {
+		t.Errorf("ContextLimitsFor = %+v, want OpenCode's Codex OAuth limits", limits)
+	}
+	if got := ContextWindowFor(codex, "gpt-5.6-luna", 0); got != 400_000 {
+		t.Errorf("ContextWindowFor = %d, want the OpenCode Codex OAuth window", got)
 	}
 }
 

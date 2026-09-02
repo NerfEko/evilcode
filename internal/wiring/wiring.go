@@ -256,7 +256,8 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		return nil, err
 	}
 
-	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
+	conv := agent.NewConversation(agent.BuildSystemPromptForProvider(
+		pc, promptSkills, "", prov, prov.Name(), modelName))
 	conv.Append(prior...)
 	// Registered *after* the replay: a resumed session appends what it just
 	// read, and persisting that would double the file on every resume.
@@ -337,9 +338,12 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	}
 	skills.SetOnLoad(a.SetToolPolicy)
 	// An explicit [[model]] context_window wins; otherwise the provider is
-	// asked, so a discovered window drives the meter and compaction instead
-	// of the hardcoded guess behind them.
-	a.NumCtx = config.ContextWindowFor(prov, modelName, overrides.ContextWindow)
+	// asked. Keep the total window for the meter/provider, but use a provider's
+	// smaller input limit for compaction when it exposes one (Codex OAuth does).
+	limits := config.ContextLimitsFor(prov, modelName, overrides.ContextWindow)
+	a.NumCtx = limits.ContextWindow
+	a.CompactionWindow = agent.EffectiveCompactionWindow(
+		limits.ContextWindow, limits.InputLimit, limits.OutputLimit)
 	a.MaxSteps = cfg.Features.MaxSteps
 	a.LenientToolParse = overrides.LenientToolParse
 
@@ -347,6 +351,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 	// method, so a long daemon session, an overnight run and every spawned
 	// worker had no way to compact at all.
 	a.Compactor = &agent.Compactor{
+		ContextWindow: a.EffectiveCompactionWindow(),
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},

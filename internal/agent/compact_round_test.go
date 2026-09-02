@@ -55,7 +55,7 @@ func TestAutoCompactionIsCheckedEveryRound(t *testing.T) {
 	}
 	compacted := 0
 	conv := NewConversation("system")
-	for i := 0; i < RecentTurnsToKeep+2; i++ {
+	for i := 0; i < compactionFixtureTurns; i++ {
 		conv.Append(
 			provider.Message{Role: provider.RoleUser, Content: "prompt"},
 			provider.Message{Role: provider.RoleAssistant, Content: "ok"},

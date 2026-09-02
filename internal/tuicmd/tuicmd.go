@@ -171,7 +171,8 @@ func runOnce(args []string) (string, error) {
 		fmt.Fprintln(os.Stderr, "evilcode:", err)
 	}
 	defer mcpClient.Close()
-	conv := agent.NewConversation(agent.BuildSystemPrompt(pc, promptSkills, ""))
+	conv := agent.NewConversation(agent.BuildSystemPromptForProvider(
+		pc, promptSkills, "", prov, prov.Name(), modelName))
 	if len(priorMessages) > 0 {
 		// The messages from the resume above, not a second one. Resuming twice
 		// re-parsed the whole file and discarded the store it returned, leaking
@@ -355,10 +356,11 @@ func runOnce(args []string) (string, error) {
 	ts = append(ts, mcpClient.Tools()...)
 	a.Tools = ts
 
-	// An explicit [[model]] context_window wins; otherwise the provider is
-	// asked, so a discovered window drives the meter and compaction instead
-	// of the hardcoded guess behind them.
-	a.NumCtx = config.ContextWindowFor(prov, modelName, overrides.ContextWindow)
+	limits := config.ContextLimitsFor(prov, modelName, overrides.ContextWindow)
+	a.NumCtx = limits.ContextWindow
+	a.CompactionWindow = agent.EffectiveCompactionWindow(
+		limits.ContextWindow, limits.InputLimit, limits.OutputLimit)
+	compactor.ContextWindow = a.EffectiveCompactionWindow()
 	a.MaxSteps = cfg.Features.MaxSteps
 	defer a.Close()
 

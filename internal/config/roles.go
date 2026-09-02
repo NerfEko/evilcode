@@ -86,6 +86,12 @@ func (c *Config) LoadRepoOverrides(repoRoot string) error {
 			c.Models = append(c.Models, m)
 		}
 	}
+	// LoadFrom validates the global file before this merge. Validate again here
+	// because a repository can replace default_model, role chains, or model
+	// metadata and the runtime must only see the merged effective value.
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("config: validating %s: %w", path, err)
+	}
 	return nil
 }
 

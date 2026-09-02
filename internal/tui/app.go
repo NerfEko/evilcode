@@ -80,8 +80,9 @@ type dispatchFailureMsg struct {
 // model. The provider ask is a network call, so it runs off the loop; the ref
 // lets the handler discard a result that a later switch already made stale.
 type contextWindowMsg struct {
-	ref    string
-	window int
+	ref              string
+	window           int
+	compactionWindow int
 }
 
 type transcriptHeightEntry struct {
@@ -821,6 +822,7 @@ func (m *Model) ApplyRemoteState(sessionName, modelName, providerName string,
 	if providerName != "" {
 		m.header.Provider = providerName
 	}
+	m.refreshSystemPrompt()
 	m.processing = running
 	m.streamingIdx, m.reasoningIdx = -1, -1
 	if !running {
@@ -1365,6 +1367,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// flight; only a result for the current model applies.
 		if m.agent != nil && config.ModelRef(m.agent.Model, m.header.Provider) == msg.ref {
 			m.agent.NumCtx = msg.window
+			m.agent.CompactionWindow = msg.compactionWindow
+			if m.compactor != nil {
+				m.compactor.ContextWindow = m.agent.EffectiveCompactionWindow()
+			}
 			m.invalidateTranscriptCache()
 		}
 		return m, nil
@@ -1760,6 +1766,9 @@ func (m *Model) applyEvent(e agent.Event) {
 			// the context meter tracks the active model instead of the 200k
 			// fallback or the startup model's value.
 			m.agent.NumCtx = e.ContextWindow
+			if m.compactor != nil {
+				m.compactor.ContextWindow = agent.EffectiveContextWindow(e.ContextWindow)
+			}
 		}
 		// Attached clients switch models through the daemon, and attach wires
 		// only WithRemoteModelEffort — WithRemoteModel stays unset. The mirror
@@ -3166,6 +3175,7 @@ func (m *Model) applyModelWithEffort(sel ModelEntry, effort provider.ReasoningEf
 			m.notice = "could not record model: " + werr.Error()
 		}
 	}
+	m.refreshSystemPrompt()
 	m.applyModelCurrent()
 	return m.resolveContextWindow(targetRef)
 }
@@ -3183,6 +3193,10 @@ func (m *Model) resolveContextWindow(ref string) tea.Cmd {
 	if m.contextWindowOverride != nil {
 		if override := m.contextWindowOverride(ref); override > 0 {
 			m.agent.NumCtx = override
+			m.agent.CompactionWindow = 0
+			if m.compactor != nil {
+				m.compactor.ContextWindow = m.agent.EffectiveCompactionWindow()
+			}
 			return nil
 		}
 	}
@@ -3190,9 +3204,11 @@ func (m *Model) resolveContextWindow(ref string) tea.Cmd {
 	prov := m.agent.Provider
 	model := m.agent.Model
 	return func() tea.Msg {
+		limits := config.ContextLimitsFor(prov, model, 0)
 		return contextWindowMsg{
-			ref:    ref,
-			window: config.ContextWindowFor(prov, model, 0),
+			ref:              ref,
+			window:           limits.ContextWindow,
+			compactionWindow: agent.EffectiveCompactionWindow(limits.ContextWindow, limits.InputLimit, limits.OutputLimit),
 		}
 	}
 }
@@ -5540,7 +5556,7 @@ func (m *Model) contextMax() int {
 	if m.agent != nil && m.agent.NumCtx > 0 {
 		return m.agent.NumCtx
 	}
-	return 200_000
+	return agent.DefaultContextWindow
 }
 
 // cacheProviderActive reports whether the active provider is one that reports

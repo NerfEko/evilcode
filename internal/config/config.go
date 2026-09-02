@@ -5,6 +5,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -940,41 +942,566 @@ func applyEnv(cfg *Config) {
 	}
 }
 
-// Validate reports configuration that cannot work, before anything tries to use
-// it. A misconfigured provider should fail at startup with a clear message, not
-// mid-turn with a nil dereference.
-func (c *Config) Validate() error {
-	if len(c.Providers) == 0 {
-		return fmt.Errorf("config: no providers configured")
+// ValidationErrors is the aggregate returned by Config.Validate when one or
+// more fields cannot work. Problems use TOML paths so a user can fix every
+// reported issue in one edit instead of repeatedly restarting for the next one.
+type ValidationErrors struct {
+	Problems []string
+}
+
+func (e *ValidationErrors) Error() string {
+	if e == nil || len(e.Problems) == 0 {
+		return ""
 	}
-	seen := map[string]bool{}
-	for _, p := range c.Providers {
-		if p.Name == "" {
-			return fmt.Errorf("config: a provider is missing its name")
+	var b strings.Builder
+	b.WriteString("config: invalid configuration")
+	for _, problem := range e.Problems {
+		b.WriteString("\n- ")
+		b.WriteString(problem)
+	}
+	return b.String()
+}
+
+// Validate reports configuration that cannot work, before anything tries to use
+// it. Validation deliberately walks the complete normalized value and collects
+// all problems: a malformed config should be one actionable startup error, not a
+// sequence of one-line surprises.
+func (c *Config) Validate() error {
+	if c == nil {
+		return &ValidationErrors{Problems: []string{"config: configuration is nil"}}
+	}
+
+	var problems []string
+	add := func(path, message string) {
+		problems = append(problems, path+": "+message)
+	}
+
+	providerNames := make(map[string]struct{}, len(c.Providers))
+	if len(c.Providers) == 0 {
+		add("provider", "at least one provider is required")
+	}
+	for i, p := range c.Providers {
+		path := fmt.Sprintf("provider[%d]", i)
+		name := strings.TrimSpace(p.Name)
+		switch {
+		case name == "":
+			add(path+".name", "must not be empty")
+		case name != p.Name:
+			add(path+".name", "must not have leading or trailing whitespace")
+		case !validConfigName(p.Name):
+			add(path+".name", "must not contain whitespace, control characters, or '@'")
+		default:
+			if _, exists := providerNames[p.Name]; exists {
+				add(path+".name", fmt.Sprintf("duplicates provider %q", p.Name))
+			} else {
+				providerNames[p.Name] = struct{}{}
+			}
 		}
-		if seen[p.Name] {
-			return fmt.Errorf("config: duplicate provider name %q", p.Name)
+
+		if err := validateProviderURL(p.BaseURL); err != "" {
+			add(path+".base_url", err)
 		}
-		seen[p.Name] = true
+		if p.APIKeyEnv != "" && !validEnvName(p.APIKeyEnv) {
+			add(path+".api_key_env", "must be a valid environment variable name")
+		}
+
 		switch p.Kind {
 		case KindOllama, KindOpenAI, KindDeepSeek, KindMock:
 		case KindCodex:
 			if p.APIKey != "" || p.APIKeyEnv != "" {
-				return fmt.Errorf("config: codex provider %q uses Codex OAuth, not api_key/api_key_env", p.Name)
+				add(path, fmt.Sprintf("Codex provider %q uses OAuth; remove api_key and api_key_env", p.Name))
 			}
 		case "":
-			return fmt.Errorf("config: provider %q is missing its kind (ollama|openai|deepseek|codex|mock)", p.Name)
+			add(path+".kind", "must be one of ollama, openai, deepseek, codex, or mock")
 		default:
-			return fmt.Errorf("config: provider %q has unknown kind %q", p.Name, p.Kind)
+			add(path+".kind", fmt.Sprintf("unknown provider kind %q", p.Kind))
 		}
 	}
-	if c.DefaultModel == "" {
-		return fmt.Errorf("config: default_model is not set")
+
+	validateRef := func(path, ref string, checkProvider bool) {
+		validateModelRef(path, ref, providerNames, checkProvider, add)
 	}
-	if _, prov := SplitModelRef(c.DefaultModel); prov != "" && c.findProvider(prov) == nil {
-		return fmt.Errorf("config: default_model %q names unknown provider %q", c.DefaultModel, prov)
+
+	if strings.TrimSpace(c.DefaultModel) == "" {
+		add("default_model", "must name a model (model or model@provider)")
+	} else {
+		validateRef("default_model", c.DefaultModel, true)
 	}
-	return nil
+	// last_model is a convenience preference and may intentionally be stale after
+	// a provider is removed; the run path falls back to default_model. Its shape
+	// still needs to be valid so it cannot become an unusable request silently.
+	if c.LastModel != "" {
+		validateRef("last_model", c.LastModel, false)
+	}
+
+	validateModelRefList := func(path string, refs []string, checkProvider bool, rejectDuplicates bool) {
+		seen := make(map[string]int, len(refs))
+		for i, ref := range refs {
+			itemPath := fmt.Sprintf("%s[%d]", path, i)
+			validateRef(itemPath, ref, checkProvider)
+			canonical := strings.TrimSpace(ref)
+			if canonical == "" {
+				continue
+			}
+			if previous, exists := seen[canonical]; exists && rejectDuplicates {
+				add(itemPath, fmt.Sprintf("duplicates %s[%d]", path, previous))
+			} else if _, exists := seen[canonical]; !exists {
+				seen[canonical] = i
+			}
+		}
+	}
+
+	validateModelRefList("favorite_models", c.FavoriteModels, false, true)
+	validateModelRefList("roles.default", c.Roles.Default, true, true)
+	validateModelRefList("roles.smol", c.Roles.Smol, true, true)
+	validateModelRefList("roles.plan", c.Roles.Plan, true, true)
+	validateModelRefList("roles.commit", c.Roles.Commit, true, true)
+	if c.Features.EmbeddingModel != "" {
+		// An embedding backend can be unavailable by design; wiring disables
+		// semantic recall and keeps lexical recall. Validate its shape, but do not
+		// reject a stale provider name here.
+		validateRef("features.embedding_model", c.Features.EmbeddingModel, false)
+	}
+
+	modelNames := make(map[string]int, len(c.Models))
+	for i, m := range c.Models {
+		path := fmt.Sprintf("model[%d]", i)
+		if strings.TrimSpace(m.Name) == "" {
+			add(path+".name", "must name a model (model or model@provider)")
+		} else {
+			// Model metadata may outlive a provider entry (for example after a
+			// provider is removed from a global config). The override is simply
+			// ignored until that provider returns, so validate its shape but not
+			// provider existence.
+			validateRef(path+".name", m.Name, false)
+			canonical := strings.TrimSpace(m.Name)
+			if previous, exists := modelNames[canonical]; exists {
+				add(path+".name", fmt.Sprintf("duplicates model[%d].name", previous))
+			} else {
+				modelNames[canonical] = i
+			}
+		}
+		if m.ContextWindow < 0 {
+			add(path+".context_window", "must be 0 (provider default) or a positive token count")
+		} else if m.ContextWindow > maxConfigContextWindow {
+			add(path+".context_window", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigContextWindow))
+		}
+	}
+
+	for key, raw := range c.ReasoningEfforts {
+		path := "reasoning_efforts." + tomlMapKey(key)
+		validateRef(path, key, false)
+		if _, ok := provider.ParseReasoningEffort(raw); !ok {
+			add(path, fmt.Sprintf("has invalid reasoning effort %q (want none, minimal, low, medium, high, xhigh, or max)", raw))
+		}
+	}
+
+	if c.Display.Theme != "" && !validDisplayThemes[c.Display.Theme] {
+		add("display.theme", fmt.Sprintf("unknown theme %q (want catppuccin-frappe, dracula, nosferatu, gloom, or daywalker)", c.Display.Theme))
+	}
+	if c.Display.Overscroll != "" && !validOverscrollModes[c.Display.Overscroll] {
+		add("display.overscroll", fmt.Sprintf("unknown mode %q (want off, on, or overscroll)", c.Display.Overscroll))
+	}
+	if c.Display.ThinkingDisplay != "" && !validThinkingDisplays[c.Display.ThinkingDisplay] {
+		add("display.thinking_display", fmt.Sprintf("unknown mode %q (want off, full, or current)", c.Display.ThinkingDisplay))
+	}
+	if c.Display.ThinkingLines < 0 {
+		add("display.thinking_lines", "must not be negative (0 uses the default)")
+	} else if c.Display.ThinkingLines > maxConfigThinkingLines {
+		add("display.thinking_lines", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigThinkingLines))
+	}
+
+	if c.Features.MaxSteps < 0 {
+		add("features.max_steps", "must be 0 (unlimited) or a positive number of tool rounds")
+	} else if c.Features.MaxSteps > maxConfigSteps {
+		add("features.max_steps", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigSteps))
+	}
+	validateEnvList("features.env_passthrough", c.Features.EnvPassthrough, add)
+
+	validateKeybindings(c.Keybindings, add)
+
+	mcpNames := make(map[string]int, len(c.MCP))
+	for i, server := range c.MCP {
+		path := fmt.Sprintf("mcp[%d]", i)
+		name := strings.TrimSpace(server.Name)
+		switch {
+		case name == "":
+			add(path+".name", "must not be empty")
+		case name != server.Name:
+			add(path+".name", "must not have leading or trailing whitespace")
+		case !validConfigName(server.Name):
+			add(path+".name", "must not contain whitespace, control characters, or '@'")
+		case strings.Contains(server.Name, "__"):
+			add(path+".name", "must not contain '__' because MCP tools use it as a namespace separator")
+		default:
+			if previous, exists := mcpNames[server.Name]; exists {
+				add(path+".name", fmt.Sprintf("duplicates mcp[%d].name", previous))
+			} else {
+				mcpNames[server.Name] = i
+			}
+		}
+		validateCommand(path+".command", []string{server.Command}, true, add)
+		for j, arg := range server.Args {
+			if strings.ContainsRune(arg, '\x00') {
+				add(fmt.Sprintf("%s.args[%d]", path, j), "must not contain NUL")
+			}
+		}
+		validateEnvAssignments(path+".env", server.Env, add)
+	}
+
+	validateCommand("dictate", c.Dictate, false, add)
+	validateLSP(c.LSP, add)
+
+	if len(problems) == 0 {
+		return nil
+	}
+	// Map-backed fields are visited in sorted order below, but sort the aggregate
+	// too so diagnostics remain stable if another validation pass is added later.
+	sort.Strings(problems)
+	return &ValidationErrors{Problems: problems}
+}
+
+const (
+	maxConfigContextWindow = 1 << 30
+	maxConfigThinkingLines = 1 << 16
+	maxConfigSteps         = 1 << 20
+)
+
+var validDisplayThemes = map[string]bool{
+	"catppuccin-frappe": true,
+	"dracula":           true,
+	"nosferatu":         true,
+	"gloom":             true,
+	"daywalker":         true,
+}
+
+var validOverscrollModes = map[string]bool{
+	"off": true, "on": true, "overscroll": true,
+}
+
+var validThinkingDisplays = map[string]bool{
+	"off": true, "full": true, "current": true,
+}
+
+func validConfigName(value string) bool {
+	// Provider and MCP names are extension points. Keep the grammar broad rather
+	// than rejecting a gateway's unusual but usable identifier; only whitespace,
+	// controls, and '@' (the model-ref separator) make a name ambiguous.
+	if value == "" || value != strings.TrimSpace(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == '@' {
+			return false
+		}
+	}
+	return true
+}
+
+func validEnvName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		if i == 0 {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' {
+				continue
+			}
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateProviderURL(value string) string {
+	if value == "" {
+		return ""
+	}
+	if value != strings.TrimSpace(value) {
+		return "must not have leading or trailing whitespace"
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return "must not contain whitespace or control characters"
+		}
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return fmt.Sprintf("is not a valid URL: %v", err)
+	}
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return "must use the http or https scheme"
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return "must include a host"
+	}
+	if u.User != nil {
+		return "must not include userinfo; put credentials in the provider fields"
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return "must use a port between 1 and 65535"
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil {
+			return "must use a numeric port"
+		}
+		if n < 1 || n > 65535 {
+			return "must use a port between 1 and 65535"
+		}
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "must not include a query or fragment; put credentials in the provider fields"
+	}
+	return ""
+}
+
+func validateModelRef(path, ref string, providers map[string]struct{}, checkProvider bool, add func(string, string)) {
+	if strings.TrimSpace(ref) == "" {
+		add(path, "must not be empty")
+		return
+	}
+	if ref != strings.TrimSpace(ref) {
+		add(path, "must not have leading or trailing whitespace")
+	}
+	for _, r := range ref {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			add(path, "must not contain whitespace or control characters")
+			break
+		}
+	}
+	model, providerName := SplitModelRef(ref)
+	if strings.TrimSpace(model) == "" {
+		add(path, "is missing the model name before '@'")
+	}
+	if strings.Contains(ref, "@") && providerName == "" {
+		add(path, "is missing the provider name after '@'")
+	}
+	if providerName == "" {
+		return
+	}
+	if !validConfigName(providerName) {
+		add(path, fmt.Sprintf("has invalid provider name %q", providerName))
+		return
+	}
+	// Codex is an intentionally lazy provider: an installed OAuth account may be
+	// discovered after config loading, or may be absent until the user selects it.
+	if checkProvider && providerName != "codex" {
+		if _, ok := providers[providerName]; !ok {
+			add(path, fmt.Sprintf("names unknown provider %q", providerName))
+		}
+	}
+}
+
+func validateEnvList(path string, values []string, add func(string, string)) {
+	seen := make(map[string]int, len(values))
+	for i, value := range values {
+		itemPath := fmt.Sprintf("%s[%d]", path, i)
+		if !validEnvName(value) {
+			add(itemPath, fmt.Sprintf("%q is not a valid environment variable name", value))
+			continue
+		}
+		if previous, exists := seen[value]; exists {
+			add(itemPath, fmt.Sprintf("duplicates %s[%d]", path, previous))
+		} else {
+			seen[value] = i
+		}
+	}
+}
+
+func validateEnvAssignments(path string, values []string, add func(string, string)) {
+	seen := make(map[string]int, len(values))
+	for i, value := range values {
+		itemPath := fmt.Sprintf("%s[%d]", path, i)
+		key, _, ok := strings.Cut(value, "=")
+		if !ok || !validEnvName(key) {
+			add(itemPath, "must be KEY=VALUE with a valid environment variable name")
+			continue
+		}
+		if strings.ContainsRune(value, '\x00') {
+			add(itemPath, "must not contain NUL")
+		}
+		if previous, exists := seen[key]; exists {
+			add(itemPath, fmt.Sprintf("duplicates environment key in %s[%d]", path, previous))
+		} else {
+			seen[key] = i
+		}
+	}
+}
+
+func validateCommand(path string, command []string, required bool, add func(string, string)) {
+	if len(command) == 0 {
+		// An empty configured command is an intentional disable for optional
+		// integrations (notably an LSP entry overriding a built-in default).
+		if required {
+			add(path, "must name an executable")
+		}
+		return
+	}
+	if strings.TrimSpace(command[0]) == "" {
+		add(path+"[0]", "must name an executable")
+	}
+	for i, part := range command {
+		if strings.ContainsRune(part, '\x00') {
+			add(fmt.Sprintf("%s[%d]", path, i), "must not contain NUL")
+		}
+	}
+}
+
+func validateLSP(commands map[string][]string, add func(string, string)) {
+	languages := make([]string, 0, len(commands))
+	for language := range commands {
+		languages = append(languages, language)
+	}
+	sort.Strings(languages)
+	for _, language := range languages {
+		path := "lsp." + tomlMapKey(language)
+		if strings.TrimSpace(language) == "" {
+			add(path, "language id must not be empty")
+		} else if language != strings.TrimSpace(language) || hasWhitespaceOrControl(language) {
+			add(path, "language id must not contain whitespace or control characters")
+		}
+		command := commands[language]
+		if len(command) == 0 {
+			// NewManager treats an empty configured command as an explicit disable;
+			// do not replace that valid choice with the built-in default here.
+			continue
+		}
+		if strings.TrimSpace(command[0]) == "" {
+			add(path+"[0]", "must name an executable command")
+		}
+		for i, part := range command {
+			if strings.ContainsRune(part, '\x00') {
+				add(fmt.Sprintf("%s[%d]", path, i), "must not contain NUL")
+			}
+		}
+	}
+}
+
+func hasWhitespaceOrControl(value string) bool {
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// configKeybindingDefaults mirrors the key strings consumed by tui.NewKeymap.
+// Keeping this small table here avoids an import cycle (config is loaded before
+// tui) while allowing invalid overrides to fail at config-load time.
+var configKeybindingDefaults = map[string][]string{
+	"scroll_up":              {"ctrl+shift+k"},
+	"scroll_down":            {"ctrl+shift+j"},
+	"page_up":                {"pgup", "alt+u"},
+	"page_down":              {"pgdown", "alt+d"},
+	"prev_prompt":            {"ctrl+k", "ctrl+["},
+	"next_prompt":            {"ctrl+j", "ctrl+]"},
+	"scroll_bookmark":        {"ctrl+g"},
+	"centered_toggle":        {"alt+c"},
+	"info_widget_toggle":     {"alt+i"},
+	"todo_card_toggle":       {"alt+x"},
+	"diff_mode_cycle":        {"alt+g"},
+	"images_toggle":          {"alt+shift+i"},
+	"side_panel_toggle":      {"alt+m"},
+	"typing_scroll_lock":     {"alt+s"},
+	"auto_poke_toggle":       {"ctrl+p"},
+	"history_search":         {"ctrl+r"},
+	"retrieve_pending":       {"ctrl+up", "alt+up"},
+	"thinking_display_cycle": {"alt+t"},
+	"reasoning_effort_cycle": {"alt+r"},
+	"background_task":        {"alt+b"},
+}
+
+func validateKeybindings(overrides map[string]string, add func(string, string)) {
+	effective := make(map[string][]string, len(configKeybindingDefaults))
+	for action, keys := range configKeybindingDefaults {
+		effective[action] = append([]string(nil), keys...)
+	}
+
+	actions := make([]string, 0, len(overrides))
+	for action := range overrides {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+	for _, action := range actions {
+		path := "keybindings." + tomlMapKey(action)
+		if _, known := configKeybindingDefaults[action]; !known {
+			add(path, fmt.Sprintf("unknown action %q", action))
+			continue
+		}
+		keys, err := parseKeybindingValue(overrides[action])
+		if err != "" {
+			add(path, err)
+			continue
+		}
+		effective[action] = keys
+	}
+
+	owners := make(map[string]string)
+	actionNames := make([]string, 0, len(effective))
+	for action := range effective {
+		actionNames = append(actionNames, action)
+	}
+	sort.Strings(actionNames)
+	for _, action := range actionNames {
+		for _, key := range effective[action] {
+			canonical := strings.ToLower(key)
+			if previous, exists := owners[canonical]; exists {
+				add("keybindings."+tomlMapKey(action), fmt.Sprintf("key %q is also bound to %s", key, previous))
+			} else {
+				owners[canonical] = action
+			}
+		}
+	}
+}
+
+func parseKeybindingValue(raw string) ([]string, string) {
+	if strings.TrimSpace(raw) == "" {
+		// NewKeymap replaces an action's defaults rather than merging them, so an
+		// empty value is the documented way to deliberately unbind an action.
+		return []string{}, ""
+	}
+	var keys []string
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(raw, ",") {
+		key := strings.TrimSpace(part)
+		if key == "" {
+			return nil, "contains an empty key; separate bindings with commas"
+		}
+		if hasWhitespaceOrControl(key) {
+			return nil, fmt.Sprintf("key %q must not contain whitespace or control characters", key)
+		}
+		// Bubble Tea owns the key-string vocabulary. Do not reject a future
+		// modifier or a terminal-specific key here; only whitespace/control input
+		// and empty comma-separated entries are structurally ambiguous.
+		canonical := strings.ToLower(key)
+		if _, exists := seen[canonical]; exists {
+			return nil, fmt.Sprintf("key %q is listed more than once", key)
+		}
+		seen[canonical] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys, ""
+}
+
+func tomlMapKey(value string) string {
+	// Dots are TOML's dotted-key separator, and TOML bare keys are ASCII. Quote
+	// dotted, reference-shaped, or otherwise unusual map keys so the diagnostic
+	// points at the actual entry a user can edit.
+	if value != "" {
+		for i, r := range value {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (i > 0 && r >= '0' && r <= '9') || (i > 0 && (r == '_' || r == '-'))) {
+				return strconv.Quote(value)
+			}
+		}
+		return value
+	}
+	return strconv.Quote(value)
 }
 
 // SplitModelRef splits a `model@provider` reference. A bare model name yields
@@ -1038,28 +1565,85 @@ func (c *Config) ModelOverrides(ref string) ModelConfig {
 // launching slow.
 const ContextWindowDiscovery = 3 * time.Second
 
-// ContextWindowFor resolves a model's context window. An explicit
+// ContextLimits describes the provider limits relevant to request sizing.
+// ContextWindow is the total model window shown to the user; InputLimit and
+// OutputLimit are optional separate limits used by automatic compaction.
+type ContextLimits struct {
+	ContextWindow int
+	InputLimit    int
+	OutputLimit   int
+}
+
+const (
+	// The Codex OAuth plugin in OpenCode deliberately exposes these limits for
+	// GPT-5.5/5.6 even when the authenticated catalogue advertises a larger
+	// internal window. Matching that contract keeps Luna from spending almost a
+	// million tokens exploring before Evilcode decides it is time to compact.
+	codexOAuthGPT56ContextWindow = 400_000
+	codexOAuthGPT56InputLimit    = 272_000
+	codexOAuthGPT56OutputLimit   = 128_000
+)
+
+func isCodexOAuthClampedModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "gpt-5.5") || strings.Contains(lower, "gpt-5.6")
+}
+
+// ContextLimitsFor resolves a model's context limits. An explicit
 // `[[model]] context_window` wins; otherwise the provider is asked, which is
 // what saves hand-writing a block per model for a catalogue of seventeen. Zero
 // means nobody knew and the caller's own default stands.
 //
-// Only Ollama can answer today, so this type-asserts rather than widening the
-// Provider interface with a method the other two would have to stub.
-func ContextWindowFor(prov provider.Provider, model string, override int) int {
+// Provider metadata is intentionally queried through concrete types rather than
+// widening the Provider interface with a method every backend would have to
+// implement. Ollama exposes it through /api/show and Codex publishes it in its
+// authenticated model catalogue.
+func ContextLimitsFor(prov provider.Provider, model string, override int) ContextLimits {
 	if override > 0 {
-		return override
+		return ContextLimits{ContextWindow: override}
+	}
+	model = strings.TrimSpace(model)
+	if _, ok := prov.(*provider.Codex); ok && isCodexOAuthClampedModel(model) {
+		return ContextLimits{
+			ContextWindow: codexOAuthGPT56ContextWindow,
+			InputLimit:    codexOAuthGPT56InputLimit,
+			OutputLimit:   codexOAuthGPT56OutputLimit,
+		}
+	}
+	if prov == nil {
+		return ContextLimits{}
 	}
 	o, ok := prov.(*provider.Ollama)
-	if !ok {
-		return 0
+	if ok {
+		ctx, cancel := context.WithTimeout(context.Background(), ContextWindowDiscovery)
+		defer cancel()
+		info, err := o.Show(ctx, model)
+		if err != nil {
+			return ContextLimits{}
+		}
+		return ContextLimits{ContextWindow: info.ContextWindow}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ContextWindowDiscovery)
-	defer cancel()
-	info, err := o.Show(ctx, model)
-	if err != nil {
-		return 0
+	if codex, ok := prov.(*provider.Codex); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), ContextWindowDiscovery)
+		defer cancel()
+		infos, err := codex.Models(ctx)
+		if err != nil {
+			return ContextLimits{}
+		}
+		for _, info := range infos {
+			if info.Name == model {
+				return ContextLimits{ContextWindow: info.ContextWindow}
+			}
+		}
 	}
-	return info.ContextWindow
+	return ContextLimits{}
+}
+
+// ContextWindowFor resolves the total context window used by the meter and by
+// providers that accept a context-size hint. It intentionally does not expose
+// the smaller input budget used for compaction.
+func ContextWindowFor(prov provider.Provider, model string, override int) int {
+	return ContextLimitsFor(prov, model, override).ContextWindow
 }
 
 // APIKey resolves a provider's key, preferring the environment.

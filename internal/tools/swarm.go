@@ -21,6 +21,19 @@ type Spawner interface {
 	SpawnWorker(task string, files []string, schema json.RawMessage) (string, error)
 }
 
+// ForegroundSpawner is implemented by runtimes that can wait for a worker's
+// answer. OpenCode's task tool is foreground by default: delegation is a tool
+// call with a result, not an instruction for the parent to keep exploring in
+// parallel. Keeping this as an optional interface preserves the small async
+// Spawner contract for other runtimes and tests.
+type ForegroundSpawner interface {
+	Spawner
+
+	// SpawnWorkerForeground starts a worker and waits for its validated final
+	// answer. The returned name is the same stable worker name as SpawnWorker.
+	SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage) (name, output string, err error)
+}
+
 // NewSpawn returns the spawn_worker tool (plan.md §20).
 //
 // Registered only inside the daemon: outside one there is nothing to spawn
@@ -39,8 +52,9 @@ right now belongs in this conversation, where you can see it.
 The worker does NOT share your conversation. The task text is all it gets, so
 write it as a complete brief.
 
-This returns as soon as the worker starts. Its result arrives later as a message
-— keep working, do not poll.
+In the daemon this call waits for the worker's validated answer and returns it
+here. Continue only after you have that result; do not duplicate the worker's
+task while it is running.
 
 Supply result_schema and the worker's answer is validated against it before you
 see it, so you can rely on its shape instead of parsing prose. Do that whenever
@@ -66,7 +80,7 @@ func spawnWorkerTool(s Spawner) Tool {
   },
   "required": ["task"]
 }`),
-		Run: func(_ context.Context, raw json.RawMessage) (Result, error) {
+		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
 			var args struct {
 				Task         string          `json:"task"`
 				FilesHint    []string        `json:"files_hint"`
@@ -78,6 +92,18 @@ func spawnWorkerTool(s Spawner) Tool {
 			if strings.TrimSpace(args.Task) == "" {
 				return Result{}, fmt.Errorf("spawn_worker needs a task")
 			}
+			if foreground, ok := s.(ForegroundSpawner); ok {
+				name, output, err := foreground.SpawnWorkerForeground(
+					ctx, args.Task, args.FilesHint, args.ResultSchema)
+				if err != nil {
+					return Result{}, err
+				}
+				return Result{
+					Output: fmt.Sprintf("Worker %s completed:\n%s", name, output),
+					Intent: fmt.Sprintf("%s · %s", name, shortTask(args.Task)),
+				}, nil
+			}
+
 			name, err := s.SpawnWorker(args.Task, args.FilesHint, args.ResultSchema)
 			if err != nil {
 				return Result{}, err

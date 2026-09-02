@@ -71,7 +71,7 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), CompactTimeout)
 		defer cancel()
-		summary, err := m.compactor.Compact(ctx, m.agent.Conv)
+		summary, err := m.compactor.CompactWithWindow(ctx, m.agent.Conv, m.contextMax())
 		return compactDone{summary: summary, before: before, err: err}
 	}
 }
@@ -422,8 +422,7 @@ func (m *Model) contextCommand() tea.Cmd {
 			fmt.Fprintf(&b, "compacted %d %s this session\n", n, timeNoun(n))
 		}
 		if m.compactor.Enabled() {
-			fmt.Fprintf(&b, "\nAuto-compacts at %d%% or on projected growth · /compact to do it now",
-				int(agent.CompactThreshold*100))
+			b.WriteString("\nAuto-compacts near the context limit or on projected growth · /compact to do it now")
 		} else {
 			b.WriteString("\nCompaction is not configured")
 		}

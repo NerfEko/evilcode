@@ -106,6 +106,91 @@ func (c *Conversation) Messages() []provider.Message {
 	return append(out, c.messages...)
 }
 
+const (
+	// modelToolOutputProtectTokens keeps the newest completed tool output in
+	// full. This is the same protection window OpenCode uses before clearing
+	// older tool results from a model request.
+	modelToolOutputProtectTokens = 40_000
+
+	// modelToolOutputMinimumPruneTokens avoids rewriting the request for a
+	// negligible saving. The durable transcript is never changed by this
+	// projection, so the threshold is only about request stability.
+	modelToolOutputMinimumPruneTokens = 20_000
+
+	modelToolOutputPlaceholder = "[Old tool result content cleared]"
+)
+
+// MessagesForModel returns a request-safe projection of the conversation.
+// Conversation.Messages remains the complete durable history; this view
+// follows OpenCode's tool-result pruning rule and clears only old completed
+// tool output after at least one newer user turn exists. Keeping the full
+// transcript for the UI, compaction summary, and resume while sending a small
+// projection to the provider is what prevents repeated file reads from
+// consuming the entire Codex context.
+func (c *Conversation) MessagesForModel() []provider.Message {
+	// Messages returns a distinct slice of message values. The projection only
+	// replaces fields on those values, so there is no need to deep-copy every
+	// tool-call argument and image on every provider request.
+	return pruneModelToolResults(c.Messages())
+}
+
+func pruneModelToolResults(msgs []provider.Message) []provider.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	var candidates []int
+	total, pruned := 0, 0
+	userTurns := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg.Role == provider.RoleUser {
+			userTurns++
+		}
+		// Do not revisit history that has already been represented by a
+		// compaction summary. The summary is itself small, and the tail after
+		// it is the only part that can still contain live tool output.
+		if isCompactionMarker(msg) {
+			break
+		}
+		if userTurns < 2 || msg.Role != provider.RoleTool || msg.ToolName == "skill" {
+			continue
+		}
+
+		total += modelToolOutputTokens(msg)
+		if total > modelToolOutputProtectTokens {
+			candidates = append(candidates, i)
+			pruned += modelToolOutputTokens(msg)
+		}
+	}
+	if pruned <= modelToolOutputMinimumPruneTokens {
+		return msgs
+	}
+	for _, i := range candidates {
+		msgs[i].Content = modelToolOutputPlaceholder
+		msgs[i].Images = nil
+		// Tool results do not normally carry provider items, but clearing them
+		// here keeps a custom tool from smuggling the same large payload through
+		// a second field after its visible output was pruned.
+		msgs[i].ProviderItems = nil
+	}
+	return msgs
+}
+
+func modelToolOutputTokens(msg provider.Message) int {
+	n := len(msg.Content)
+	if len(msg.Images) > 0 {
+		// Images are encoded separately by providers. Reserve a stable small
+		// estimate so an old image-only result can still be selected, without
+		// pretending compressed bytes are text tokens.
+		n += len(msg.Images) * 256 * 4
+	}
+	if n <= 0 {
+		return 1
+	}
+	return (n + 3) / 4
+}
+
 // Len reports how many non-system messages are held.
 func (c *Conversation) Len() int {
 	c.mu.RLock()
@@ -253,14 +338,67 @@ type Skill struct {
 	Path string
 }
 
+// PromptProfile selects the stable system-prompt contract for a model family.
+// Codex gets a compact execution-oriented contract; the default keeps the
+// fuller provider-neutral contract used by other backends.
+type PromptProfile string
+
+const (
+	PromptProfileDefault PromptProfile = "default"
+	PromptProfileCodex   PromptProfile = "codex"
+)
+
+// PromptProfileForProvider chooses the profile from the resolved backend and
+// model reference. The provider type is authoritative for a model such as
+// gpt-5.6-luna, while the name fallback also covers a Codex-named model routed
+// through an OpenAI-compatible provider and an attached client whose concrete
+// provider has not been rebuilt yet.
+func PromptProfileForProvider(p provider.Provider, providerName, model string) PromptProfile {
+	name := strings.TrimSpace(providerName)
+	providerMatches := false
+	if p != nil {
+		if name == "" {
+			name = p.Name()
+			providerMatches = true
+		} else {
+			providerMatches = strings.EqualFold(name, strings.TrimSpace(p.Name()))
+		}
+	}
+	_, concreteCodex := p.(*provider.Codex)
+	if (providerMatches && concreteCodex) || strings.EqualFold(name, "codex") ||
+		strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex") {
+		return PromptProfileCodex
+	}
+	return PromptProfileDefault
+}
+
 // BuildSystemPrompt assembles the stable system prompt. Skills contribute only
 // their names and one-liners; bodies load on demand through the skill tool,
 // which is what keeps the prompt cacheable as the skill set grows.
 func BuildSystemPrompt(pc ProjectContext, skills []Skill, extra string) string {
+	return BuildSystemPromptForProfile(pc, skills, extra, PromptProfileDefault)
+}
+
+// BuildSystemPromptForProvider selects the prompt profile for a resolved
+// provider/model pair. Keeping this at the prompt boundary makes every
+// frontend (headless, TUI, and daemon) apply the same model-specific contract.
+func BuildSystemPromptForProvider(pc ProjectContext, skills []Skill, extra string,
+	p provider.Provider, providerName, model string) string {
+	return BuildSystemPromptForProfile(pc, skills, extra,
+		PromptProfileForProvider(p, providerName, model))
+}
+
+// BuildSystemPromptForProfile assembles the stable system prompt for profile.
+func BuildSystemPromptForProfile(pc ProjectContext, skills []Skill, extra string,
+	profile PromptProfile) string {
 	var b strings.Builder
-	b.WriteString(identity)
-	b.WriteString("\n\n")
-	b.WriteString(toolGuidance)
+	if profile == PromptProfileCodex {
+		b.WriteString(codexPrompt)
+	} else {
+		b.WriteString(identity)
+		b.WriteString("\n\n")
+		b.WriteString(toolGuidance)
+	}
 
 	if pc.Root != "" {
 		fmt.Fprintf(&b, "\n\nWorking directory: %s", pc.Root)

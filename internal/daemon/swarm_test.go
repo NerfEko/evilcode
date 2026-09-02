@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -9,6 +10,33 @@ import (
 	"evilcode/internal/agent"
 	"evilcode/internal/provider"
 )
+
+func TestSpawnWorkerToolWaitsForForegroundResult(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+	provider.ResetMockRotation()
+
+	spawner, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := srv.AgentTools(spawner.Name).Find("spawn_worker")
+	if !ok {
+		t.Fatal("spawn_worker tool is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := tool.Run(ctx, json.RawMessage(`{"task":"answer this small task"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Output, "completed") {
+		t.Errorf("foreground result = %q, want a completed worker result", result.Output)
+	}
+	if messages := spawner.built.Agent.DrainInterrupts(false); len(messages) != 0 {
+		t.Errorf("foreground worker also delivered an async inbox message: %v", messages)
+	}
+}
 
 // toolResult builds the event a finished tool call produces, which is what the
 // session's observer reads. Driving the observer with real events rather than

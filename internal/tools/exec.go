@@ -279,6 +279,8 @@ func (e *Exec) bashTool() Tool {
 			"reading, searching, and editing. The working directory persists between calls, " +
 			"so cd carries over. Output combines stdout and stderr. Set background for a " +
 			"long-running command, then use bg wait; commands needing input can use stdin. " +
+			"Do not use cat, sed, head, tail, grep, rg, or find for file inspection; use " +
+			"read, grep, or glob instead. " +
 			"After a mutation, use this to run the most relevant check and act on its output; " +
 			"do not rerun an unchanged command just to fill a turn. Child temporary files use " +
 			"the configured scratch directory. A destructive-command gate may hold a command " +

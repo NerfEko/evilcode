@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"go/build"
 	"os"
@@ -611,80 +610,51 @@ func (f *flakyProvider) ChatStream(ctx context.Context, req provider.Req) (<-cha
 	return ch, nil
 }
 
-// noOutputProvider's first `failAll`-bounded attempts stream reasoning summary
-// deltas, then fail with ErrNoOutput — the codex backend's
-// terminal-but-itemless shape. Once the budget is exhausted (or failAll), the
-// next attempt streams a real answer.
-type noOutputProvider struct {
+// reasoningOnlyProvider emits the Codex backend's terminal-but-itemless shape:
+// a reasoning summary followed by a valid terminal chunk. The agent must not
+// turn that completed response into a second provider request.
+type reasoningOnlyProvider struct {
 	attempts int
-	failAll  bool
 }
 
-func (p *noOutputProvider) Name() string { return "nooutput" }
-func (p *noOutputProvider) Embed(ctx context.Context, t []string) ([][]float32, error) {
+func (p *reasoningOnlyProvider) Name() string { return "reasoning-only" }
+func (p *reasoningOnlyProvider) Embed(ctx context.Context, t []string) ([][]float32, error) {
 	return nil, nil
 }
-func (p *noOutputProvider) Models(ctx context.Context) ([]provider.ModelInfo, error) { return nil, nil }
-func (p *noOutputProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
-	ch := make(chan provider.Chunk, 4)
-	if p.failAll || p.attempts == 0 {
-		p.attempts++
-		// Reasoning summary streamed, then the terminal chunk itemized nothing.
-		ch <- provider.Chunk{Reasoning: "**Investigating**"}
-		ch <- provider.Chunk{Err: fmt.Errorf("codex: %w", provider.ErrNoOutput)}
-		close(ch)
-		return ch, nil
-	}
-	ch <- provider.Chunk{Text: "the actual answer"}
-	ch <- provider.Chunk{Done: true, Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 1}}
+func (p *reasoningOnlyProvider) Models(ctx context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *reasoningOnlyProvider) ChatStream(ctx context.Context, req provider.Req) (<-chan provider.Chunk, error) {
+	p.attempts++
+	ch := make(chan provider.Chunk, 2)
+	ch <- provider.Chunk{Reasoning: "**Investigating**"}
+	ch <- provider.Chunk{Done: true, Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 4096}}
 	close(ch)
 	return ch, nil
 }
 
-// A reasoning-only empty response recovers instead of ending the turn: only
-// summaries streamed, so the retry gate's no-visible-replay rule does not
-// apply, and a resend of the identical request re-reasons and itemizes.
-func TestNoOutputAfterReasoningDeltasRecoversOnRetry(t *testing.T) {
-	a := newTestAgent(t, &noOutputProvider{}, nil)
+func TestReasoningOnlyTerminalDoesNotRetry(t *testing.T) {
+	p := &reasoningOnlyProvider{}
+	a := newTestAgent(t, p, nil)
 
 	evs, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
 	if err != nil {
-		t.Fatalf("the retry should have recovered: %v", err)
+		t.Fatalf("reasoning-only terminal should complete: %v", err)
 	}
-	var answer, turnEnd bool
+	if p.attempts != 1 {
+		t.Fatalf("provider attempts = %d, want exactly one", p.attempts)
+	}
+	var reasoning, turnEnd bool
 	for _, ev := range evs {
-		if ev.Kind == EventTextDelta && strings.Contains(ev.Text, "the actual answer") {
-			answer = true
+		if ev.Kind == EventReasoningDelta && strings.Contains(ev.Text, "Investigating") {
+			reasoning = true
 		}
 		if ev.Kind == EventTurnEnd && ev.Reason == EndComplete {
 			turnEnd = true
 		}
 	}
-	if !answer || !turnEnd {
-		t.Errorf("answer=%v turnEnd=%v, want the retried attempt to complete the turn", answer, turnEnd)
-	}
-}
-
-// With every attempt itemizing nothing, the bounded retries exhaust and the
-// failure still surfaces — the turn never reads as complete.
-func TestNoOutputExhaustsRetriesAndSurfaces(t *testing.T) {
-	a := newTestAgent(t, &noOutputProvider{failAll: true}, nil)
-	a.MaxRetries = 2
-
-	_, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
-	if err == nil {
-		t.Fatal("want the no-output error surfaced after exhausting retries")
-	}
-	if !errors.Is(err, provider.ErrNoOutput) {
-		t.Errorf("err = %v, want ErrNoOutput", err)
-	}
-}
-
-// With nothing streamed at all, the same failure is retryable: resending the
-// identical request re-reasons from the same input and can itemize output.
-func TestNoOutputWithoutDeltasIsRetryable(t *testing.T) {
-	if !retryable(fmt.Errorf("codex: %w", provider.ErrNoOutput)) {
-		t.Fatal("ErrNoOutput should be retryable before any output was shown")
+	if !reasoning || !turnEnd {
+		t.Errorf("reasoning=%v turnEnd=%v, want the terminal response to complete once", reasoning, turnEnd)
 	}
 }
 
@@ -897,6 +867,76 @@ func TestSystemPromptHasAStableSize(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "evilcode") {
 		t.Error("prompt should establish identity")
+	}
+}
+
+func TestCodexPromptProfileIsCompactAndExecutionOriented(t *testing.T) {
+	defaultPrompt := BuildSystemPrompt(ProjectContext{}, nil, "")
+	codexPromptText := BuildSystemPromptForProfile(
+		ProjectContext{}, nil, "", PromptProfileCodex)
+
+	if len(codexPromptText) >= len(defaultPrompt) {
+		t.Fatalf("Codex prompt is %d chars, default is %d; model-specific profile should be leaner",
+			len(codexPromptText), len(defaultPrompt))
+	}
+	compact := strings.Join(strings.Fields(codexPromptText), " ")
+	for _, want := range []string{
+		"Unless the user explicitly asks for a plan",
+		"Do not return a plan in place of an authorized implementation",
+		"Make one focused discovery pass",
+		"make the smallest complete edit",
+		"After a mutation, run the narrowest relevant check",
+		"never claim work that was not done",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("Codex prompt is missing execution contract %q:\n%s", want, codexPromptText)
+		}
+	}
+}
+
+func TestPromptProfileForProviderRecognizesCodexBackendsAndModels(t *testing.T) {
+	tests := []struct {
+		name         string
+		p            provider.Provider
+		providerName string
+		model        string
+		want         PromptProfile
+	}{
+		{
+			name:         "luna through Codex backend",
+			p:            provider.NewCodex("codex", "", provider.CodexAuthInfo{}),
+			providerName: "codex",
+			model:        "gpt-5.6-luna",
+			want:         PromptProfileCodex,
+		},
+		{
+			name:         "Codex model through OpenAI backend",
+			p:            provider.NewOpenAI("openai", "", ""),
+			providerName: "openai",
+			model:        "gpt-5.3-codex",
+			want:         PromptProfileCodex,
+		},
+		{
+			name:         "ordinary OpenAI model",
+			p:            provider.NewOpenAI("openai", "", ""),
+			providerName: "openai",
+			model:        "gpt-5.6-luna",
+			want:         PromptProfileDefault,
+		},
+		{
+			name:         "stale Codex client after remote switch",
+			p:            provider.NewCodex("codex", "", provider.CodexAuthInfo{}),
+			providerName: "openai",
+			model:        "gpt-5.6-luna",
+			want:         PromptProfileDefault,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PromptProfileForProvider(tt.p, tt.providerName, tt.model); got != tt.want {
+				t.Fatalf("PromptProfileForProvider() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -155,6 +155,7 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	c.HTTP = server.Client()
 	stream, err := c.ChatStream(context.Background(), Req{
 		Model:           "gpt-5.3-codex",
+		SessionID:       "snake-6",
 		ReasoningEffort: ReasoningEffortHigh,
 		Messages: []Message{
 			{Role: RoleSystem, Content: "be concise"},
@@ -213,8 +214,16 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	if headers.Get("ChatGPT-Account-Id") != account || headers.Get("OAI-Product-Sku") != "codex" || headers.Get("Originator") != "codex_cli_rs" {
 		t.Errorf("Codex headers = account %q, sku %q, originator %q", headers.Get("ChatGPT-Account-Id"), headers.Get("OAI-Product-Sku"), headers.Get("Originator"))
 	}
+	for _, key := range []string{"session-id", "x-session-affinity", "X-Session-Id"} {
+		if got := headers.Get(key); got != "snake-6" {
+			t.Errorf("%s = %q, want session id", key, got)
+		}
+	}
 	if body["model"] != "gpt-5.3-codex" || body["instructions"] != "be concise" || body["stream"] != true {
 		t.Errorf("request envelope = %+v", body)
+	}
+	if body["prompt_cache_key"] != "snake-6" {
+		t.Errorf("prompt_cache_key = %#v, want session id", body["prompt_cache_key"])
 	}
 	reasoningBody, ok := body["reasoning"].(map[string]any)
 	if !ok || reasoningBody["effort"] != "high" {
@@ -307,13 +316,11 @@ func TestCodexRetainsDoneItemsWhenCompletedOutputIsEmpty(t *testing.T) {
 	}
 }
 
-func TestCodexReasoningOnlyResponseIsAnError(t *testing.T) {
+func TestCodexReasoningOnlyResponseCompletes(t *testing.T) {
 	// Observed live on gpt-5.6-luna at max effort: reasoning summary deltas
 	// stream, then response.completed arrives with an empty output array and no
-	// output_item.done events at all. The turn must fail loudly instead of
-	// committing a reasoning-only message the next request silently drops on
-	// replay — that silent drop is what made codex models appear to stall in
-	// reasoning loops without ever editing.
+	// output_item.done events at all. response.completed is still the terminal
+	// event; it must not trigger a second full reasoning request in the agent.
 	sse := strings.Join([]string{
 		`data: {"type":"response.reasoning_summary_text.delta","delta":"**Investigating**"}`,
 		"",
@@ -324,20 +331,25 @@ func TestCodexReasoningOnlyResponseIsAnError(t *testing.T) {
 	ch := make(chan Chunk, 4)
 	streamCodexSSE(context.Background(), strings.NewReader(sse), ch)
 	close(ch)
-	var gotErr error
+	var done Chunk
+	var reasoning string
 	for chunk := range ch {
 		if chunk.Err != nil {
-			gotErr = chunk.Err
+			t.Fatalf("reasoning-only response failed: %v", chunk.Err)
 		}
 		if chunk.Done {
-			t.Fatal("a reasoning-only response reported Done instead of an error")
+			done = chunk
 		}
+		reasoning += chunk.Reasoning
 	}
-	if gotErr == nil {
-		t.Fatal("no error for a terminal response that itemized nothing")
+	if !done.Done {
+		t.Fatal("response.completed did not report Done")
 	}
-	if !errors.Is(gotErr, ErrNoOutput) {
-		t.Errorf("err = %v, want ErrNoOutput", gotErr)
+	if reasoning != "**Investigating**" {
+		t.Errorf("reasoning = %q, want streamed summary", reasoning)
+	}
+	if done.Usage == nil || done.Usage.CompletionTokens != 4096 {
+		t.Errorf("usage = %+v, want terminal usage", done.Usage)
 	}
 }
 

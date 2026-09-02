@@ -26,6 +26,53 @@ import (
 // Set `max_steps` in `[features]` to reinstate a limit.
 const DefaultMaxSteps = 0
 
+// DefaultContextWindow is the fallback used for compaction when a provider
+// does not publish model metadata. It matches the TUI's existing meter
+// fallback; NumCtx remains zero in that case so the provider keeps its own
+// server-side default.
+const DefaultContextWindow = 200_000
+
+// EffectiveContextWindow gives compaction a usable limit even when the
+// provider's metadata endpoint was unavailable. A discovered or explicitly
+// configured window always wins.
+func EffectiveContextWindow(window int) int {
+	if window > 0 {
+		return window
+	}
+	return DefaultContextWindow
+}
+
+const (
+	// DefaultOutputTokenMax mirrors OpenCode's provider-wide output cap. It is
+	// used only to reserve room for a response when a provider exposes a
+	// separate input limit.
+	DefaultOutputTokenMax = 32_000
+
+	// CompactionBuffer is the headroom OpenCode leaves between the usable input
+	// limit and the point at which it starts automatic compaction.
+	CompactionBuffer = 20_000
+)
+
+// EffectiveCompactionWindow converts provider limits into the input budget
+// automatic compaction should protect. When a provider exposes no separate
+// input limit, the historical context-window behavior is retained.
+func EffectiveCompactionWindow(contextWindow, inputLimit, outputLimit int) int {
+	if inputLimit <= 0 {
+		return EffectiveContextWindow(contextWindow)
+	}
+	reserved := outputLimit
+	if reserved <= 0 || reserved > DefaultOutputTokenMax {
+		reserved = DefaultOutputTokenMax
+	}
+	if reserved > CompactionBuffer {
+		reserved = CompactionBuffer
+	}
+	if inputLimit <= reserved {
+		return 0
+	}
+	return inputLimit - reserved
+}
+
 // Agent runs the conversation loop. It is a plain struct driving a plain
 // function — not an actor system — so the whole flow reads top to bottom.
 type Agent struct {
@@ -65,6 +112,12 @@ type Agent struct {
 
 	// NumCtx requests a context window from providers that accept one.
 	NumCtx int
+
+	// CompactionWindow is the effective input budget used by automatic and
+	// manual compaction. It is separate from NumCtx because providers such as
+	// Codex expose a larger total context window and a smaller input limit.
+	// Zero derives the historical budget from NumCtx.
+	CompactionWindow int
 
 	// reasoningEffort is guarded by mu because the TUI can change it while a
 	// tool round is still running. The next provider request sees the new
@@ -468,7 +521,11 @@ func (a *Agent) autoCompact(ctx context.Context) {
 	if a.Compactor == nil {
 		return
 	}
-	if !a.Compactor.ShouldCompactForConversation(a.pendingContextSize(), a.NumCtx, a.Conv) {
+	window := a.effectiveCompactionWindow()
+	// Keep the relevance prewarm and the actual rewrite on the same effective
+	// window, including the fallback used when model discovery was unavailable.
+	a.Compactor.ContextWindow = window
+	if !a.Compactor.ShouldCompactForConversation(a.pendingContextSize(), window, a.Conv) {
 		return
 	}
 	// Queue the exact snapshot that will be compacted, including the prompt
@@ -478,7 +535,7 @@ func (a *Agent) autoCompact(ctx context.Context) {
 	msgs := a.Conv.Messages()
 	a.Compactor.PrepareRelevance(ctx, msgs)
 	a.Compactor.WaitForRelevance(ctx, msgs, CompactRelevanceWait)
-	if _, err := a.Compactor.Compact(ctx, a.Conv); err != nil {
+	if _, err := a.Compactor.CompactWithWindow(ctx, a.Conv, window); err != nil {
 		a.Notice(LevelWarning, "Could not compact: %v", err)
 		return
 	}
@@ -501,17 +558,24 @@ func (a *Agent) ctxUsed() int {
 // at four to one, the same rule the status line's live estimate uses.
 func (a *Agent) pendingContextSize() int {
 	used := a.ctxUsed()
-	n := 0
-	for _, m := range a.Conv.Messages() {
-		n += len(m.Content) + len(m.Reasoning) + len(m.ToolCallID) + len(m.ToolName)
-		for _, c := range m.ToolCalls {
-			n += len(c.Args)
-		}
-	}
-	if est := n / 4; est > used {
+	if est := compactMessagesTokens(a.Conv.MessagesForModel()); est > used {
 		used = est
 	}
 	return used
+}
+
+func (a *Agent) effectiveCompactionWindow() int {
+	if a.CompactionWindow > 0 {
+		return a.CompactionWindow
+	}
+	return EffectiveContextWindow(a.NumCtx)
+}
+
+// EffectiveCompactionWindow returns the active input budget used by the
+// agent's compaction paths. It is exported for frontends that invoke manual
+// compaction directly.
+func (a *Agent) EffectiveCompactionWindow() int {
+	return a.effectiveCompactionWindow()
 }
 
 // noteContext records the newest request's size for the compaction threshold.
@@ -597,7 +661,6 @@ func (a *Agent) loop(ctx context.Context) error {
 	start := a.newEvent(EventTurnStart)
 	start.Text = a.takePrompt()
 	a.emit(start)
-
 	for step := 0; ; {
 		// Checked every round, not once per turn: tool results land in the
 		// conversation between rounds, and a large one can push the context
@@ -695,7 +758,7 @@ func (a *Agent) loop(ctx context.Context) error {
 				}
 			}
 			if a.Compactor != nil {
-				a.Compactor.PrepareRelevanceIfNeeded(ctx, a.ctxUsed(), a.NumCtx, a.Conv)
+				a.Compactor.PrepareRelevanceIfNeeded(ctx, a.ctxUsed(), a.effectiveCompactionWindow(), a.Conv)
 			}
 			a.endTurn(EndComplete)
 			return nil
@@ -778,14 +841,7 @@ func (a *Agent) stream(ctx context.Context) (provider.Message, error) {
 		// watches the answer restart. Retry only before any content was
 		// shown; a mid-stream failure keeps the partial and surfaces the error.
 		//
-		// ErrNoOutput is the exception to the emitted gate. Only reasoning
-		// summaries streamed — no answer text, no tool calls, nothing the
-		// reader could act on — so a retry does not replay any answer. The
-		// codex backend ends heavy max-effort responses this way
-		// non-deterministically, and a resend re-reasons from the same input
-		// and typically itemizes output (the recorded owl-5 turns recovered
-		// on exactly such resends).
-		if emitted && !errors.Is(err, provider.ErrNoOutput) {
+		if emitted {
 			return msg, err
 		}
 		if !retryable(err) {
@@ -809,13 +865,6 @@ func retryable(err error) bool {
 	if errors.Is(err, provider.ErrStreamTruncated) {
 		return true
 	}
-	// A terminal response that itemized nothing (the codex backend's
-	// mid-reasoning exhaustion signature) may produce output on a resend: the
-	// retry re-reasons from the same input. It is retried only before any
-	// content was shown, like a truncated stream.
-	if errors.Is(err, provider.ErrNoOutput) {
-		return true
-	}
 	// Recognized transient transport failures (DNS, refused, reset, timeout).
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -830,7 +879,8 @@ func retryable(err error) bool {
 func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) {
 	req := provider.Req{
 		Model:           a.Model,
-		Messages:        a.Conv.Messages(),
+		SessionID:       a.Session,
+		Messages:        a.Conv.MessagesForModel(),
 		Tools:           toolDefs(a.Tools),
 		NumCtx:          a.NumCtx,
 		ReasoningEffort: a.configuredReasoningEffort(),
