@@ -7810,3 +7810,23 @@ one), so it was deliberately left running the previous build
 respawns it from disk, which now serves the new build — or simply exit and
 re-attach; the next daemon start runs `fa1a7316…`.
 
+## 2026-09-01 — install: rebuilt with the image layout fix (50a526f), daemon left running
+
+Rebuilt from HEAD (`50a526f` — image placeholder, caption, and mermaid hint
+now wrap/truncate instead of overflowing the terminal) with
+`go build -o .evilcode-install.tmp ./cmd/evilcode` and `mv -f` into place,
+the same rename-the-inode swap as the previous install. `~/.local/bin/ec`
+and `~/.local/bin/evilcode` are symlinks to this checkout binary; both were
+smoke-checked through the symlink (`help` exit 0, `completions bash` emits).
+Installed SHA-256:
+`c14fc37248d773bdf591f183bf10f5f428a1b4d413c3ffffdca39f46f1d9ac3b`
+(33,261,964 bytes; previous install was `fa1a7316…851e2`, 33,265,239).
+
+Two things noticed while checking: the daemon (PID 457599, spawned 22:07)
+was not restarted, per request — it still executes the build it started
+with (`75270f30…`, held as a deleted inode) and picks `c14fc372…` up when it
+respawns from disk. And `./evilcode --help` exits 1: a leading-dash arg is
+never taken as the subcommand, so it reaches the tui flag parser instead of
+the `help` case — pre-existing dispatch behavior, not a property of this
+build; `./evilcode help` is the form that works.
+
