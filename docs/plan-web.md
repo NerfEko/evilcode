@@ -321,7 +321,7 @@ setups.
 - [x] **P1.4** `internal/daemon/webauth.go` — token file mint/load (0600,
   `crypto/rand`, chmod-on-load), cookie/bearer check, Origin+Host check on
   mutating verbs.
-- [ ] **P1.5** `internal/daemon/webassets/` — `index.html` shell + manifest +
+- [x] **P1.5** `internal/daemon/webassets/` — `index.html` shell + manifest +
   icons, `go:embed`, asset handler, security headers (§3), template injection
   of palette-derived `theme-color`.
 - [x] **P1.6** `internal/daemon/webtheme.go` — `renderThemeCSS` over

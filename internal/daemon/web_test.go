@@ -55,9 +55,10 @@ func TestListenWebServesAndCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The shell route exists from P1.5 on: authenticated GET / serves 200.
 	authed.Body.Close()
-	if authed.StatusCode != http.StatusNotFound {
-		t.Errorf("GET / authenticated: status %d, want 404", authed.StatusCode)
+	if authed.StatusCode != http.StatusOK {
+		t.Errorf("GET / authenticated: status %d, want 200", authed.StatusCode)
 	}
 
 	srv.Close()

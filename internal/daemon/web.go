@@ -1,14 +1,25 @@
 package daemon
 
 import (
+	"embed"
 	"errors"
 	"fmt"
+	htmltemplate "html/template"
+	"io/fs"
 	"net"
 	"net/http"
+	texttemplate "text/template"
 	"time"
 
 	"evilcode/internal/config"
+	"evilcode/internal/theme"
 )
+
+// webAssets is the embedded app shell (plan-web.md §2): no build step, no
+// npm — the first embed in the repo. Served under /assets/.
+//
+//go:embed webassets
+var webAssets embed.FS
 
 // The web surface is the daemon's opt-in HTTP listener beside its unix socket
 // (plan-web.md §2). It is an adapter over the same session surface the unix
@@ -96,13 +107,102 @@ func (s *Server) ListenWeb(addr string) error {
 	return nil
 }
 
-// webMux builds the HTTP surface's routes and wraps them in webauth: token
-// authentication on every request, Origin+Host discipline on mutating verbs.
-// Routes are registered as the phases land.
+// webMux builds the HTTP surface: routes wrapped in webauth (token
+// authentication on every request, Origin+Host discipline on mutating verbs)
+// and the §3 security headers on every response.
 func (w *webState) mux(s *Server) http.Handler {
 	mux := http.NewServeMux()
+
+	assets, err := fs.Sub(webAssets, "webassets")
+	if err != nil {
+		// An embed layout mistake is a programming error; nothing serves.
+		panic("daemon: webassets embed broken: " + err.Error())
+	}
+	indexTmpl := htmltemplate.Must(htmltemplate.ParseFS(webAssets, "webassets/index.html"))
+	manifestTmpl := texttemplate.Must(texttemplate.ParseFS(webAssets, "webassets/manifest.webmanifest"))
+
+	mux.HandleFunc("GET /{$}", s.webIndex(indexTmpl))
+	mux.Handle("GET /assets/", webNoStore(http.StripPrefix("/assets", http.FileServerFS(assets))))
+	mux.HandleFunc("GET /theme.css", s.webThemeCSS)
+	mux.HandleFunc("GET /manifest.webmanifest", s.webManifest(manifestTmpl))
+
 	auth := &webAuth{token: w.token, addr: w.addr}
-	return auth.wrap(mux)
+	return securityHeaders(auth.wrap(mux))
+}
+
+// webCSP is the plan's Content-Security-Policy, verbatim (§3). Everything is
+// 'self'; inline script cannot exist, so a sanitizer gap in vendored markdown
+// rendering cannot execute code either.
+const webCSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
+	"img-src 'self' data: blob:; connect-src 'self'; manifest-src 'self'; " +
+	"base-uri 'none'; frame-ancestors 'none'"
+
+// securityHeaders stamps the §3 headers on every response, errors included.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", webCSP)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// webNoStore marks static assets uncacheable. The binary may be replaced
+// underneath a long-lived daemon (self-update), and a stale cached app.js
+// pairing with a fresh daemon is worse than always re-fetching a few KB.
+func webNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// webThemeColor is the palette color the browser chrome and the PWA
+// background use: the card surface (user-bg), so the installed app sits in
+// the theme rather than beside it.
+func (s *Server) webThemeColor() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := ""
+	if s.Cfg != nil {
+		name = s.Cfg.Display.Theme
+	}
+	return theme.Hex(theme.ByName(name).Get(theme.RoleUserBg))
+}
+
+// webIndex serves the app shell with the palette-derived theme-color
+// injected. The template is parsed once per listener start.
+func (s *Server) webIndex(tmpl *htmltemplate.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := tmpl.Execute(w, struct{ ThemeColor string }{s.webThemeColor()}); err != nil {
+			webError(w, http.StatusInternalServerError, "the app shell failed to render")
+		}
+	}
+}
+
+// webThemeCSS serves the generated palette tokens (§7).
+func (s *Server) webThemeCSS(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	name := ""
+	if s.Cfg != nil {
+		name = s.Cfg.Display.Theme
+	}
+	css := renderThemeCSS(theme.ByName(name))
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Write([]byte(css))
+}
+
+// webManifest serves the PWA manifest with colors from the same palette.
+func (s *Server) webManifest(tmpl *texttemplate.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/manifest+json")
+		if err := tmpl.Execute(w, struct{ ThemeColor string }{s.webThemeColor()}); err != nil {
+			webError(w, http.StatusInternalServerError, "the manifest failed to render")
+		}
+	}
 }
 
 // webError writes the uniform error shape every web handler answers with

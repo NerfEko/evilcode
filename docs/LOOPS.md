@@ -7907,3 +7907,22 @@ base `#303446` in §7's prose, but no role carries it; the app background is
 composed from emitted tokens in P4.1 rather than adding an off-contract
 `--base` token.
 
+## 2026-08-24 web-1 P1.5 — embedded app shell, manifest, icons, security headers
+
+Done: `internal/daemon/webassets/` (index.html shell, manifest.webmanifest,
+css/app.css placeholder on tokens only, js/app.js module stub, icons 192/512/
+180 generated from the Frappé surface0 + mauve). `web.go` embeds the tree
+(first `go:embed` in the repo), registers `GET /{$}` (html/template with
+palette `theme-color` = user-bg), `/assets/` (FileServerFS + `no-store`),
+`/theme.css`, `/manifest.webmanifest` (text/template), and stamps the §3 CSP
+verbatim + nosniff + no-referrer on every response including errors.
+
+Verified: `TestWebIndexServesShell` (mount point, manifest link, palette
+theme-color, viewport-fit), `TestWebSecurityHeadersOnEveryResponse` (4 paths,
+error included), `TestWebAssetsAreServedNoStore` (5 assets + PNG type),
+`TestWebThemeCSSEndpoint` (tokens present; follows a config palette swap),
+`TestWebManifestEndpoint` (valid JSON, standalone, surface colors, 2 icons);
+full daemon suite + `-race` on the web tests green.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
+
