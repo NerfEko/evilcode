@@ -67,6 +67,9 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 
 	before := m.agent.Conv.Len()
 	m.notice = "📦 Compacting…"
+	m.compacting = true
+	m.compactingSince = time.Now()
+	m.compactingCount = before
 
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), CompactTimeout)
@@ -82,6 +85,7 @@ const CompactTimeout = 60 * time.Second
 // applyCompaction folds a finished compaction into the transcript.
 func (m *Model) applyCompaction(done compactDone) {
 	m.notice = ""
+	m.compacting = false
 	if done.err != nil {
 		m.blocks = append(m.blocks, Block{Kind: BlockError,
 			Text: "could not compact: " + done.err.Error()})
@@ -101,10 +105,14 @@ func (m *Model) applyCompaction(done compactDone) {
 	// The meter reflected the pre-compaction size until the next turn reported
 	// usage, which made a compaction look like it had done nothing.
 	m.ctxUsed = 0
+	// The summary rides a clickable record: collapsed, one row saying what
+	// happened; expanded, the exact context the next prompt is answered with.
 	m.blocks = append(m.blocks, Block{
-		Kind: BlockNotice,
-		Text: fmt.Sprintf("📦 Compacted %d messages into a summary (context epoch %d)\n\n%s",
-			done.before, m.agent.Conv.Epoch(), done.summary),
+		Kind:          BlockCompacted,
+		Text:          done.summary,
+		CompactedFrom: done.before,
+		Epoch:         m.agent.Conv.Epoch(),
+		Collapsed:     true,
 	})
 	m.scroll.FollowBottom()
 }

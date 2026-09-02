@@ -31,6 +31,7 @@ const (
 	BlockTodoDelta
 	BlockMemory
 	BlockImage
+	BlockCompacted
 )
 
 // Block is one renderable transcript entry.
@@ -92,6 +93,12 @@ type Block struct {
 	// old thinking does not dominate the transcript (§9.7). The block stays in
 	// the transcript — the text is retained so a future expand can restore it.
 	Collapsed bool
+
+	// CompactedFrom and Epoch describe a BlockCompacted: how many messages
+	// the summary replaced and which context epoch the rewrite produced.
+	// They are display data for the collapsed row, not conversation state.
+	CompactedFrom int
+	Epoch         int
 
 	// Hovered and HoverCodeSegment are transient paint state. The model supplies
 	// them for the block under the mouse; they are not persisted with a session.
@@ -381,6 +388,8 @@ func (r *Renderer) render(b *Block) []string {
 		return r.RenderMemoryTile(b.Memories)
 	case BlockImage:
 		return r.RenderImagePlaceholder(b.Image, r.Graphics, r.ImagesOn)
+	case BlockCompacted:
+		return r.renderCompacted(b)
 	default:
 		return r.renderAssistant(b)
 	}
@@ -747,6 +756,38 @@ func (r *Renderer) renderNotice(b *Block) []string {
 	for _, line := range wrapPlain(b.Text, max(r.Width-2, 8)) {
 		out = append(out, "  "+style.Render(line))
 	}
+	return out
+}
+
+// renderCompacted draws the record of a compaction (plan.md §10).
+//
+// Collapsed it is one dim row — what happened, and that it is clickable.
+// Expanded it is the summary the model will actually see, because "context
+// compacted" means nothing until you can read what your next prompt is
+// being answered with. The summary is retained either way; the toggle only
+// changes how much of the transcript it occupies.
+func (r *Renderer) renderCompacted(b *Block) []string {
+	system := r.style(theme.RoleSystem)
+	dim := r.style(theme.RoleDim)
+	label := fmt.Sprintf("📦 context compacted — %d messages → summary", b.CompactedFrom)
+	if b.Epoch > 0 {
+		label += fmt.Sprintf(" (context epoch %d)", b.Epoch)
+	}
+
+	if b.Collapsed {
+		line := system.Render("▸ "+label) + dim.Render(" · click to view")
+		if b.Hovered {
+			line = jaggedUnderline(line)
+		}
+		return []string{"  " + line}
+	}
+
+	inner := max(r.Width-6, 8)
+	out := []string{"  " + dim.Render("┌─ "+label+" ─ click to collapse")}
+	for _, line := range wrapPlain(strings.TrimRight(b.Text, "\n"), inner) {
+		out = append(out, "  "+dim.Render("│")+" "+system.Render(line))
+	}
+	out = append(out, "  "+dim.Render("└─ "+strings.Repeat("─", max(inner-len("click to collapse")-2, 0))+" click to collapse"))
 	return out
 }
 

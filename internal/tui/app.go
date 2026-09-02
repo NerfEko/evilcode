@@ -109,6 +109,7 @@ const (
 	hoverReasoning
 	hoverTool
 	hoverShellCode
+	hoverCompacted
 )
 
 // hoverTarget is intentionally small and transient. A mouse motion only
@@ -324,6 +325,20 @@ type Model struct {
 	dock      *Dock
 	widgetsOn bool
 
+	// mousePassthrough, when set by Alt+Shift+M, stops evilcode from
+	// reporting the mouse at all: the terminal then handles selection itself,
+	// which is the only way to highlight and copy transcript text in a
+	// terminal whose mouse an app has captured. The zero value keeps the app
+	// capturing — clicks, hover, and the wheel — as it always has.
+	mousePassthrough bool
+
+	// compacting tracks the local /compact summarising side-call: the dock
+	// shows an indeterminate bar while it runs, and the tick cadence speeds up
+	// to animate it. compactingCount is the message count being folded.
+	compacting      bool
+	compactingSince time.Time
+	compactingCount int
+
 	// centered is the Alt+C layout toggle, and overscroll drives the elastic
 	// pull-to-reveal facts line (§4.4).
 	centered   bool
@@ -464,10 +479,15 @@ type Model struct {
 	// if they are handed to it inside a view. needsRepaint asks for a full
 	// redraw, which is the only way to take a sixel raster off the screen —
 	// there is no delete-by-id outside the kitty protocol. imageWidth is the
-	// chat width the current image boxes were computed against.
+	// chat width the current image boxes were computed against. frameWidth and
+	// frameHeight are the terminal geometry those pictures were drawn into:
+	// a font-size change rescales the cell grid underneath them while the
+	// placements here are in cells and can come out identical.
 	rawOut       string
 	needsRepaint bool
 	imageWidth   int
+	frameWidth   int
+	frameHeight  int
 
 	// sixelCache holds encoded sixel payloads by image id and cell box.
 	// Encoding shells out to img2sixel, and placement changes on every scrolled
@@ -1033,7 +1053,7 @@ func (m *Model) tick() tea.Cmd {
 	// picked up promptly on the slower cadence; an in-flight turn keeps the
 	// normal spinner cadence.
 	interval := IdleTickInterval
-	if m.processing || m.hasRunningBackground() || m.startPageVisible() {
+	if m.processing || m.hasRunningBackground() || m.startPageVisible() || m.compacting {
 		interval = SpinnerInterval
 	}
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -1440,10 +1460,22 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.toggleReasoningAt(mouse) {
 			return m, nil
 		}
+		// A click on the compaction record expands or collapses the summary
+		// the conversation was rewritten into.
+		if m.toggleCompactedAt(mouse) {
+			return m, nil
+		}
 		m.openQuickViewAt(mouse)
 
 	case tea.MouseMotionMsg:
-		m.updateHover(msg.Mouse())
+		// Hover is an idle-pointer affordance. A drag reports motion with the
+		// button held; re-targeting hover on every step invalidated the whole
+		// transcript cache per event and repainted the frame under the drag —
+		// the flicker seen while selecting text. Freeze hover until the
+		// buttons are released.
+		if msg.Button == tea.MouseNone {
+			m.updateHover(msg.Mouse())
+		}
 
 	case tea.MouseWheelMsg:
 		return m.handleWheel(msg)
@@ -2410,6 +2442,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.drainDiagrams()
 		return m, nil
 
+	case "alt+shift+m":
+		// Fixed fallback: the keymap resolves first, so this fires only when it
+		// is absent or the action was rebound away (plan.md §11).
+		m.toggleMouseCapture()
+		return m, nil
+
 	case "ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4":
 		// Ctrl+1..4 snap the split to quarters (§11).
 		m.panelRatio = 25 * (int(key[len(key)-1] - '0'))
@@ -2650,10 +2688,37 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 		m.cycleReasoningEffort()
 	case ActionRetrievePending:
 		return m.retrievePending()
+	case ActionMouseToggle:
+		m.toggleMouseCapture()
+	case ActionImages:
+		// The binding existed in the keymap and the config defaults, but no
+		// dispatch case ever handled it: Alt+Shift+I did nothing.
+		return true, m, m.toggleImages()
 	default:
 		return false, m, nil
 	}
 	return true, m, nil
+}
+
+// toggleMouseCapture switches the terminal's mouse between evilcode and the
+// terminal itself (Alt+Shift+M).
+//
+// While evilcode reports the mouse it gets clicks, hover, and the wheel — and
+// the terminal's own text selection is dead, because a terminal that reports
+// events does not select. Off, the events stop entirely and highlight-and-copy
+// works the way it does in a plain shell. Transient hover paint cannot survive
+// the switch: the rows the pointer used to decorate are about to be redrawn
+// without any pointer state at all.
+func (m *Model) toggleMouseCapture() {
+	m.mousePassthrough = !m.mousePassthrough
+	m.clearHover()
+	if !m.mousePassthrough {
+		m.notice = "🖱 Mouse: app — hover, click, wheel · " +
+			PrettyKey("alt+shift+m") + " to select text"
+	} else {
+		m.notice = "🖱 Mouse: terminal — highlight & copy · " +
+			PrettyKey("alt+shift+m") + " to give it back"
+	}
 }
 
 // retrievePending pulls staged messages back for editing (plan.md §6.4).
@@ -4637,7 +4702,8 @@ func (m *Model) stack() Stack {
 func (m *Model) stackFor(contentHeight int) Stack {
 	s := Stack{Available: m.height, ContentHeight: contentHeight}
 	s.Heights[SlotStatus] = 1
-	if m.notice != "" {
+	if m.notice != "" || m.compacting {
+		// Compaction reuses the notice row for its dedicated progress bar.
 		s.Heights[SlotNotice] = 1
 	}
 	s.Heights[SlotQueued] = min(len(m.pending), MaxPendingRows)
@@ -4937,6 +5003,18 @@ func (m *Model) View() tea.View {
 		m.relayoutImages(w)
 	}
 
+	// A terminal geometry change — a window resize, a font-size change — moves
+	// every cell a picture was painted into. The placements here are in cells,
+	// so after a font change they can compare equal while the terminal is
+	// showing neither the old raster nor the new one: the block kept reserving
+	// its rows and the transcript showed a blank hole with a floating caption
+	// until the block happened to scroll. Take every picture down and let the
+	// frame below retransmit the visible ones.
+	if m.width != m.frameWidth || m.height != m.frameHeight {
+		m.frameWidth, m.frameHeight = m.width, m.height
+		m.clearDrawnImages()
+	}
+
 	// The session picker and help take the whole screen and return before the
 	// transcript is laid out at all, so the pictures have to be taken down here
 	// — imageGraphics, which normally does it, is never reached.
@@ -5047,6 +5125,11 @@ func (m *Model) View() tea.View {
 		}
 	}
 
+	if m.compacting {
+		// The compacting bar occupies the notice slot reserved by stackFor;
+		// do not also paint the old one-line notice below it.
+		rows = append(rows, m.renderer.RenderCompacting(time.Since(m.compactingSince), m.compactingCount)...)
+	}
 	rows = append(rows, m.renderer.RenderPending(m.pending)...)
 
 	m.status.Animate = !Deterministic()
@@ -5068,7 +5151,7 @@ func (m *Model) View() tea.View {
 		}
 	}
 
-	if m.notice != "" {
+	if m.notice != "" && !m.compacting {
 		// Sanitized at the draw rather than at each of the hundred-odd
 		// assignments: a notice is usually ours, but some carry text straight
 		// from elsewhere — a renderer's stderr, a provider's error, a tool's
@@ -5165,7 +5248,12 @@ func (m *Model) View() tea.View {
 	// Hover affordances need motion events even when no button is pressed.
 	// All-motion still reports cell coordinates (not pixel noise), and the
 	// update path is a no-op while the pointer remains over the same target.
-	v.MouseMode = tea.MouseModeAllMotion
+	// Off (Alt+Shift+M), nothing is requested and the terminal keeps the mouse
+	// for text selection — MouseModeNone is the zero, so the field is simply
+	// left alone.
+	if !m.mousePassthrough {
+		v.MouseMode = tea.MouseModeAllMotion
+	}
 	// Shift+Enter needs the kitty keyboard protocol to be distinguishable from
 	// a plain Enter. Terminals without it fall back to Alt+Enter or the
 	// trailing backslash (plan.md §6.2).
@@ -5813,6 +5901,24 @@ func (m *Model) toggleReasoningAt(mouse tea.Mouse) bool {
 	return true
 }
 
+// toggleCompactedAt expands or collapses the compaction record under a click,
+// reporting whether the click landed on one. The block holds the summary text
+// either way; the toggle only trades transcript rows for context legibility.
+func (m *Model) toggleCompactedAt(mouse tea.Mouse) bool {
+	idx := m.transcriptBlockAt(mouse)
+	if idx < 0 || idx >= len(m.blocks) {
+		return false
+	}
+	b := &m.blocks[idx]
+	if b.Kind != BlockCompacted {
+		return false
+	}
+	b.Collapsed = !b.Collapsed
+	b.dropCache()
+	m.invalidateTranscriptCache()
+	return true
+}
+
 func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 	idx := m.transcriptBlockAt(mouse)
 	if idx < 0 || idx >= len(m.blocks) || m.blocks[idx].Kind != BlockTool {
@@ -6221,6 +6327,8 @@ func (m *Model) hoverAt(mouse tea.Mouse) hoverTarget {
 		if segment := m.shellSegmentAtLine(b, relative); segment >= 0 {
 			return hoverTarget{valid: true, block: idx, kind: hoverShellCode, segment: segment}
 		}
+	case BlockCompacted:
+		return hoverTarget{valid: true, block: idx, kind: hoverCompacted}
 	}
 	return hoverTarget{}
 }
