@@ -706,3 +706,107 @@ func TestStatusPrefersTheRightError(t *testing.T) {
 		t.Errorf("up server status = %+v, want the refresh error", srv.status())
 	}
 }
+
+// Gap 8: a server declaring resources and prompts gets them adapted into
+// namespaced tools; a server without the capabilities gets none.
+func TestCapabilityToolsAppearOnlyWhenDeclared(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "rich", Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{
+			Resources: &sdk.ResourceCapabilities{},
+			Prompts:   &sdk.PromptCapabilities{},
+		},
+	})
+	server.AddResource(&sdk.Resource{URI: "file:///notes.txt", Name: "notes", MIMEType: "text/plain"},
+		func(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+			return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{
+				{URI: "file:///notes.txt", Text: "note body"},
+			}}, nil
+		})
+	server.AddPrompt(&sdk.Prompt{Name: "greet", Description: "a greeting"},
+		func(ctx context.Context, req *sdk.GetPromptRequest) (*sdk.GetPromptResult, error) {
+			return &sdk.GetPromptResult{Messages: []*sdk.PromptMessage{
+				{Role: "user", Content: &sdk.TextContent{Text: "hello " + req.Params.Arguments["who"]}},
+			}}, nil
+		})
+
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+	names := toolsSetNames(srv.toolsSnapshot())
+	if len(names) != 3 {
+		t.Fatalf("tools = %v, want read_resource + list_resources + get_prompt", names)
+	}
+
+	set := tools.Set(srv.toolsSnapshot())
+	rt, ok := set.Find("srv__read_resource")
+	if !ok {
+		t.Fatalf("read_resource missing: %v", names)
+	}
+	res, err := rt.Run(context.Background(), json.RawMessage(`{"uri":"file:///notes.txt"}`))
+	if err != nil {
+		t.Fatalf("read_resource: %v", err)
+	}
+	if res.Output != "note body" {
+		t.Errorf("read_resource output = %q", res.Output)
+	}
+
+	// get_prompt end to end.
+	pt, ok := set.Find("srv__get_prompt")
+	if !ok {
+		t.Fatalf("get_prompt missing: %v", names)
+	}
+	res, err = pt.Run(context.Background(), json.RawMessage(`{"name":"greet","arguments":{"who":"world"}}`))
+	if err != nil {
+		t.Fatalf("get_prompt: %v", err)
+	}
+	if !strings.Contains(res.Output, "[user] hello world") {
+		t.Errorf("get_prompt output = %q", res.Output)
+	}
+
+	// list_resources end to end.
+	lt, ok := set.Find("srv__list_resources")
+	if !ok {
+		t.Fatalf("list_resources missing: %v", names)
+	}
+	res, err = lt.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list_resources: %v", err)
+	}
+	if !strings.Contains(res.Output, "file:///notes.txt — notes") {
+		t.Errorf("list_resources output = %q", res.Output)
+	}
+}
+
+func TestCapabilityToolsAbsentWithoutCapabilities(t *testing.T) {
+	server := newTestServer(t, "plain", func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	}, nil)
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+	for _, name := range toolsSetNames(srv.toolsSnapshot()) {
+		if strings.HasSuffix(name, "read_resource") || strings.HasSuffix(name, "get_prompt") || strings.HasSuffix(name, "list_resources") {
+			t.Errorf("adapter tool %s present without the capability", name)
+		}
+	}
+}
+
+// A server's own tool of an adapter name wins; the adapter never shadows it.
+func TestServerToolWinsOverAdapterName(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "own", Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{Resources: &sdk.ResourceCapabilities{}},
+	})
+	server.AddTool(&sdk.Tool{Name: "read_resource", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "server's own"}}}, nil
+	})
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+
+	set := tools.Set(srv.toolsSnapshot())
+	rt, ok := set.Find("srv__read_resource")
+	if !ok {
+		t.Fatal("server's own read_resource went missing")
+	}
+	res, err := rt.Run(context.Background(), json.RawMessage(`{"uri":"x"}`))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Output != "server's own" {
+		t.Errorf("adapter shadowed the server's tool: %q", res.Output)
+	}
+}

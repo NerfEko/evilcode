@@ -7732,3 +7732,28 @@ Verified: `go test ./internal/mcp/... -count=1 -race` and the full
 `TestConcurrentStartsOnAStaleSocketLeaveOneReachable` daemon flake again;
 passes standalone).
 
+## 2026-09-01 — MCP gap 8: prompts and resources become tools
+
+`mcp_gaps.md` #8 (Medium). Only `ListTools`/`CallTool` were used, so a server
+exposing prompts or resources — git, filesystem, most real servers — kept
+those features invisible to the model; only its tools worked.
+
+Done. When the server's initialize result declares the capabilities, they are
+adapted into namespaced tools the model can call: `read_resource(uri)` and
+`list_resources` for resources, `get_prompt(name, arguments)` for prompts.
+They declare `EffectReadOnly`, so the batch scheduler overlaps them like
+other reads. A server that ships its own tool of an adapter name always wins
+— the adapter checks the loaded names and never shadows it. Resource contents
+render like tool results: text is output, image blobs attach as images,
+opaque blobs are named with mime and size; prompts render `[role] text` with
+non-text content named. The list walks the pagination cursor under the same
+100-page bound.
+
+Tests: a server declaring both capabilities exposes the three adapters, and
+each is exercised end to end (read by URI, render a prompt with arguments,
+list with name/mime/description); a server without the capabilities exposes
+none; a server's own `read_resource` tool survives untouched.
+
+Verified: `go test ./internal/mcp/... -count=1 -race` and the full
+`go test ./... -count=1` green.
+

@@ -349,6 +349,7 @@ func (s *Server) loadTools(ctx context.Context) error {
 // reload from the new session before it becomes current.
 func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) error {
 	var out []tools.Tool
+	seen := make(map[string]bool)
 	cursor := ""
 	for page := 1; ; page++ {
 		if page > maxListPages {
@@ -361,6 +362,7 @@ func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) 
 
 		for _, t := range res.Tools {
 			remote := t.Name
+			seen[remote] = true
 			schema := json.RawMessage(`{"type":"object","properties":{}}`)
 			if t.InputSchema != nil {
 				if raw, err := json.Marshal(t.InputSchema); err == nil {
@@ -389,6 +391,10 @@ func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) 
 		}
 		cursor = res.NextCursor
 	}
+
+	// Prompts and resources become tools too, but only when the server
+	// declares the capabilities, and never over a same-named tool of its own.
+	out = append(out, s.capabilityTools(session, seen)...)
 
 	s.mu.Lock()
 	s.tools = out
