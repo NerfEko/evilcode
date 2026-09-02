@@ -120,6 +120,49 @@ secure context). A browser sitting on the roster holds no stream, so a phone-fir
 setup should run `evilcode serve -idle 0` to keep the daemon alive. The blessed
 remote path is Tailscale to the loopback bind, not a LAN bind.
 
+### Test from another Tailscale device
+
+Keep evilcode on its loopback bind and let Tailscale provide the tailnet-only
+HTTPS proxy. On the daemon machine:
+
+```sh
+evilcode serve -status                 # check whether a daemon is already running
+evilcode serve -web -idle 0             # start with web access and no idle exit
+tailscale serve --bg 7749               # proxy HTTPS on this node to 127.0.0.1:7749
+tailscale serve status                  # copy the https://<node>.<tailnet>.ts.net URL
+```
+
+If a daemon is already running without web access, stop it only between turns and
+restart it with the second command:
+
+```sh
+evilcode serve -stop
+evilcode serve -web -idle 0
+```
+
+On the first web start, evilcode prints a one-time tokenized URL. Replace its
+`http://127.0.0.1:7749` origin with the HTTPS URL from `tailscale serve status`,
+then open `https://<node>.<tailnet>.ts.net/?token=<token>` on the other device.
+The redirect removes `token` from the address bar and stores an HttpOnly cookie.
+If the token was minted previously, read the 64-character value from
+`<socket>.web-token` on the daemon machine; the default is
+`$XDG_RUNTIME_DIR/evilcode.sock.web-token` when `XDG_RUNTIME_DIR` is set. Treat
+the token like a password and do not paste it into shell history, issues, or logs.
+
+The other device must be signed in to the same tailnet and allowed by its ACLs.
+From the page, exercise a new session, a prompt, an ask, an interrupt, and a
+reload/reconnect. Use `evilcode serve -status` on the daemon machine to watch the
+session and client counts. Do not use `tailscale funnel` and do not bind evilcode
+to a LAN or Tailscale IP for this test.
+
+When finished, remove the proxy (use this only if the node has no other Serve
+routes) and stop the test daemon:
+
+```sh
+tailscale serve reset
+evilcode serve -stop
+```
+
 ## Requirements
 
 Linux only.
