@@ -56,6 +56,11 @@ type Server struct {
 	listener net.Listener
 	closed   bool
 
+	// web is the optional HTTP surface (plan-web.md §2). It is independent of
+	// the unix listener: binding it can fail without affecting the socket, and
+	// Close shuts it down with everything else.
+	web *webState
+
 	// socketUnlock releases the lifetime claim on the socket path, taken by
 	// Listen and held until Close. A second daemon must fail the claim while
 	// this one lives, even if its socket file has been deleted from under it.
@@ -639,6 +644,8 @@ func (s *Server) Close() {
 	}
 	s.closed = true
 	ln := s.listener
+	web := s.web
+	s.web = nil
 	bank := s.bank
 	s.bank = nil
 	sessions := make([]*Session, 0, len(s.sessions))
@@ -652,6 +659,15 @@ func (s *Server) Close() {
 
 	if ln != nil {
 		ln.Close()
+	}
+	// The web listener has no handshake to unwind — hard-close it. SSE streams
+	// (Phase 2) end with the connection, which is what a daemon shutdown means
+	// for every other client too.
+	if web != nil && web.srv != nil {
+		web.srv.Close()
+	}
+	if web != nil && web.ln != nil {
+		web.ln.Close()
 	}
 	// A build may have opened the shared bank before Close took the lock. Let it
 	// finish (or observe the closed flag and clean itself up) before closing the

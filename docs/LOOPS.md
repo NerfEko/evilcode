@@ -7844,3 +7844,22 @@ Verified: `TestWebUIDefaultsAreLoopbackAndOff`, `TestValidateWebUI` (12 cases),
 
 Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
 
+## 2026-08-24 web-1 P1.3 — daemon web listener skeleton
+
+Done: `internal/daemon/web.go` — `Server.ListenWeb(addr)` binds TCP (default
+`127.0.0.1:7749`), records the resolved host:port, refuses double-start and
+post-Close starts (`errServerClosed`); `Server.Close` hard-closes the HTTP
+server and listener; `webAddr()` accessor. Independent of the unix socket by
+construction (bind failure returns; nothing else tears down). Implemented
+before P1.2 because the flag wiring calls `ListenWeb`.
+
+Verified: `TestListenWebServesAndCloses`, `TestListenWebRefusesSecondListener`,
+`TestListenWebDefaultsToLoopback7749`, `TestWebBindFailureKeepsSocketWorking`
+(occupied port → web fails, `Status` over the socket still answers),
+`TestListenWebAfterCloseIsRefused`, `TestWebMuxUnknownPathIs404`. Plain and
+`-race` runs green.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: task order swapped with
+P1.2 for compile order; the plan's `listenWeb` name is `ListenWeb` (exported,
+matching `Listen`).
+
