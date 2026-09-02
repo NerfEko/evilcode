@@ -273,3 +273,51 @@ func TestWebEventsStoredSessionIs404(t *testing.T) {
 		t.Errorf("stored session events: status %d, want 404 (no live ring to tail)", resp.StatusCode)
 	}
 }
+
+// TestWebSubscriptionAccountsForIdleExpiry follows the existing watchdog
+// harness (session_idle_test.go): the SSE subscription's presence in
+// sess.subs is what makes a browser tab a window, so an open stream keeps the
+// hydrated runtime alive and a closed one starts the countdown (decision 9).
+func TestWebSubscriptionAccountsForIdleExpiry(t *testing.T) {
+	srv, addr := webTestServer(t)
+	sess, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := sess.Name
+
+	stream := openSSE(t, srv, addr, name, "", "")
+	stream.next() // snapshot: the subscription is established
+
+	now := time.Now()
+	expired := func() bool {
+		sess.mu.Lock()
+		sess.idleSince = now.Add(-SessionIdleTimeout - time.Second)
+		sess.mu.Unlock()
+		srv.expireIdleSessions(now)
+		srv.mu.Lock()
+		_, live := srv.sessions[name]
+		srv.mu.Unlock()
+		return live
+	}
+	if live := expired(); !live {
+		t.Fatal("the watchdog expired a session with an open web stream")
+	}
+
+	// The tab goes away: the request context ends, the handler unsubscribes,
+	// and the next sweep tears the runtime down like any windowless session.
+	stream.resp.Body.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		subs := len(sess.subs)
+		sess.mu.Unlock()
+		if subs == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if live := expired(); live {
+		t.Fatal("a closed web subscription kept the session hydrated past its idle timeout")
+	}
+}
