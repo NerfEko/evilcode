@@ -7973,6 +7973,59 @@ baseline worktree (bash cwd carry-over), which made them meaningless; caught
 by an instrumented trace test producing "no tests to run", re-run in the
 workspace. Evidence above is from workspace runs.
 
+## 2026-08-24 web-2 — Phase 2: read-only surface (roster, snapshot, SSE, deep history)
+
+Done, one commit per task:
+- P2.1/P2.2 `GET /api/status` and `GET /api/sessions` (the exact `Status()`/
+  `Sessions()` payloads), plus §3 gzip for JSON GET responses only
+  (content-type-driven passthrough; SSE never compressed; the wrapper gained
+  `Flush`/`Unwrap` so streams and `ResponseController` work beneath it).
+- P2.3 `GET /api/sessions/{name}` — live branch is `Session.snapshot()`
+  verbatim; stored branch is `Describe` metadata + durable history, read-only,
+  no agent built (asserted: the sessions map stays empty). Extracted
+  `shapeConversationMessages` so the socket snapshot and every web payload
+  share one shaper (system/empty dropped, image bytes stripped). Uniform JSON
+  404s for unmatched `/api/*` (the mux default is plain text).
+- P2.4 SSE `GET .../events` mirroring MsgAttach: subscribe → snapshot →
+  `ring.Since(since)` (query param or the browser's automatic Last-Event-ID;
+  fresh connects replay only the turn in flight) → live tail; `: ping`
+  heartbeat; snapshot frames ride epoch republications; write-deadline
+  drop-close per §5's bounded-per-stream rule; unsubscribe on context done.
+- P2.5/P2.6 `GET .../messages?before=B&limit=L` over the resume-path loader
+  (`session.Messages`, the only parser), one torn-read retry (loader seam made
+  the retry testable — the first draft retried via the unseamed direct call,
+  which the test caught), no `sess.mu` across reads, limit default 50 cap 200,
+  omitted before = newest page, before=0 = empty page (exclusive bound).
+- P2.7 idle-watchdog accounting: an open web subscription keeps the runtime
+  hydrated, a closed one starts the countdown (the `sess.subs` membership is
+  the shared mechanism; test follows the `expireIdleSessions` harness).
+
+Verified live (isolated daemon, port 7801, mock provider, two `run` turns):
+- Two concurrent SSE readers through one live turn produced identical logical
+  event streams (seq-normalized diff empty); frames carried turn_start,
+  text_delta, token_usage, turn_end with ring `id:`s.
+- A reconnecting reader with `?since=31` replayed exactly the same gap as the
+  fresh reader saw live.
+- Browser (zen-agent): token handoff → `/api/sessions/hex` renders the live
+  snapshot with all four messages; after a daemon restart the same URL renders
+  the stored read-only view (stored=true, crashed=true from the hard kill) and
+  `.../events` is 404 — while `-status` shows `sessions=0`, proving no agent
+  booted for a stored view.
+- Deep history: newest-2 page with `oldest:2, hasMore:true`; the
+  walk-to-message-zero tiling is covered by
+  `TestWebHistoryPaginationWalksToMessageZero`.
+
+Gates: `go build ./...`, `go vet ./...`, `go test -count=1 ./...` (22
+packages, 0 failures), `go test -race ./internal/daemon/... ./internal/config/...`
+green. Tag `web-2`.
+
+Deferred to the UI phases (server contracts done here): the DOM-level halves
+of the verify items — roster poll pausing on `visibilitychange` (P4.4), the
+deep-history scroll UI (P5.4), and an in-browser `EventSource` reconnect with
+Last-Event-ID against a killed tab mid-turn (P5.2 `sse.js`).
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
+
 ## 2026-08-24 web-1 P1.7 — startup line and token provenance
 
 Done: `Server.WebInfo()` (addr, token path, token, minted) and the serve

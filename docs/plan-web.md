@@ -337,21 +337,21 @@ setups.
 
 ## Phase 2 — Read-only surface: roster, snapshot, SSE, deep history
 
-- [ ] **P2.1** `GET /api/status` → `Server.Status()` (+ test).
-- [ ] **P2.2** `GET /api/sessions` → `Server.Sessions()` (+ test).
-- [ ] **P2.3** `GET /api/sessions/{name}` — live snapshot vs stored
+- [x] **P2.1** `GET /api/status` → `Server.Status()` (+ test).
+- [x] **P2.2** `GET /api/sessions` → `Server.Sessions()` (+ test).
+- [x] **P2.3** `GET /api/sessions/{name}` — live snapshot vs stored
   metadata+history; `session.ValidName` first (+ tests for both branches and
   404s).
-- [ ] **P2.4** SSE endpoint — subscribe → snapshot → `ring.Since` replay → tail;
+- [x] **P2.4** SSE endpoint — subscribe → snapshot → `ring.Since` replay → tail;
   `Last-Event-ID`/`since`; heartbeat; drop-close on overflow; unsubscribe on
   context done (+ tests incl. the slow-client rule from §5).
-- [ ] **P2.5** durable history reader — resume-path loader reuse, append/compact
+- [x] **P2.5** durable history reader — resume-path loader reuse, append/compact
   tolerance, no `sess.mu` across reads (+ tests incl. a torn-read retry).
-- [ ] **P2.6** `GET .../messages` endpoint (+ pagination tests, `limit` cap).
-- [ ] **P2.7** idle-watchdog accounting — an open web subscription keeps the
+- [x] **P2.6** `GET .../messages` endpoint (+ pagination tests, `limit` cap).
+- [x] **P2.7** idle-watchdog accounting — an open web subscription keeps the
   daemon alive; a closed one does not (+ test following the existing watchdog
   harness).
-- [ ] Verify Phase 2: TUI attach + two browsers on one session see identical
+- [x] Verify Phase 2: TUI attach + two browsers on one session see identical
   logical events; kill the tab mid-turn → work continues → reconnect with
   `since` replays exactly the gap; deep-history scroll to message 0 on a
   session longer than the snapshot window; a stored (not live) session renders
