@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"evilcode/internal/config"
 )
 
 // stubMux is a stand-in for the real routes: it 200s everything that reaches
@@ -312,4 +314,58 @@ func readAll(t *testing.T, resp *http.Response) string {
 	buf := make([]byte, 4096)
 	n, _ := resp.Body.Read(buf)
 	return string(buf[:n])
+}
+
+func TestWebInfoMintProvenance(t *testing.T) {
+	srv, path := testServer(t)
+	if err := srv.ListenWeb("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	info := srv.WebInfo()
+	if info == nil {
+		t.Fatal("the web surface is on but WebInfo() is nil")
+	}
+	if !info.Minted {
+		t.Error("the first start must report minted=true")
+	}
+	if info.TokenPath != path+".web-token" {
+		t.Errorf("TokenPath = %q, want the file beside the socket", info.TokenPath)
+	}
+	if info.Addr == "" || info.Token == "" {
+		t.Fatalf("WebInfo is incomplete: %+v", info)
+	}
+	srv.Close()
+
+	// A second lifetime over the same socket path reuses the token file: the
+	// tokenized URL must not print again, and the cookie keeps working.
+	cfg, err := config.Load() // testServer's env is still in effect
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2 := NewServer(cfg, srv.Cwd, "")
+	srv2.Path = path
+	if err := srv2.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv2.Close)
+	if err := srv2.ListenWeb("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	info2 := srv2.WebInfo()
+	if info2 == nil {
+		t.Fatal("the restarted daemon reports no web surface")
+	}
+	if info2.Minted {
+		t.Error("a restart must not report minted — the tokenized URL prints once")
+	}
+	if info2.Token != info.Token {
+		t.Error("the restart rotated the token, which would break every browser cookie")
+	}
+}
+
+func TestWebInfoNilWhenWebOff(t *testing.T) {
+	srv, _ := testServer(t)
+	if info := srv.WebInfo(); info != nil {
+		t.Errorf("WebInfo with no web listener = %+v, want nil", info)
+	}
 }

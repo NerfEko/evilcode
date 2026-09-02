@@ -90,6 +90,14 @@ func Run(args []string) error {
 		// The user asked for the web UI, so the failure is loud, not swallowed.
 		if err := srv.ListenWeb(webBind); err != nil {
 			fmt.Fprintf(os.Stderr, "evilcode: web UI unavailable: %v\n", err)
+		} else if info := srv.WebInfo(); info != nil {
+			fmt.Fprintf(os.Stderr, "evilcode web: http://%s (token: %s)\n", info.Addr, info.TokenPath)
+			// The full tokenized URL is printed exactly once — at first mint
+			// (§3). Every later start names the file instead; deleting the
+			// file rotates the token and reprints the URL on the next start.
+			if info.Minted {
+				fmt.Fprintf(os.Stderr, "evilcode web: open http://%s/?token=%s once to hand the token to your browser\n", info.Addr, info.Token)
+			}
 		}
 	}
 	if !*quiet {

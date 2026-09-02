@@ -327,7 +327,7 @@ setups.
 - [x] **P1.6** `internal/daemon/webtheme.go` — `renderThemeCSS` over
   `AllRoles()` + `Prose` + `TintDiff`; test asserts every role is emitted and
   the Frappé defaults come out byte-identical to the palette spec.
-- [ ] **P1.7** `internal/daemon/web.go` — startup print line; token provenance
+- [x] **P1.7** `internal/daemon/web.go` — startup print line; token provenance
   (minted vs reused) logged once.
 - [ ] Verify Phase 1: httptest — no token → 401; wrong token → 401; cross-origin
   POST → 403; rebinding Host → 403; token survives a daemon restart; token file

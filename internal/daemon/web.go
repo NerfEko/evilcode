@@ -224,3 +224,29 @@ func (s *Server) webAddr() string {
 	}
 	return s.web.addr
 }
+
+// WebInfo is what startup reports about the web surface (§3, §10): the
+// address, where the token lives, the token itself, and whether this start
+// minted the token file. The full tokenized URL may be printed only when
+// Minted is true — once, ever; every later start just names the file.
+type WebInfo struct {
+	Addr      string
+	TokenPath string
+	Token     string
+	Minted    bool
+}
+
+// WebInfo returns nil while the web surface is off.
+func (s *Server) WebInfo() *WebInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.web == nil {
+		return nil
+	}
+	return &WebInfo{
+		Addr:      s.web.addr,
+		TokenPath: s.webTokenPath(),
+		Token:     s.web.token,
+		Minted:    s.web.minted,
+	}
+}

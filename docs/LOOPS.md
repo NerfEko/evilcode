@@ -7922,6 +7922,21 @@ HTTP, `-status` line).
 
 Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
 
+## 2026-08-24 web-1 P1.7 — startup line and token provenance
+
+Done: `Server.WebInfo()` (addr, token path, token, minted) and the serve
+startup lines: `evilcode web: http://<addr> (token: <path>)` on every start,
+plus `evilcode web: open http://<addr>/?token=<hex> once to hand the token to
+your browser` only when the token file was first minted. Deleting the file
+rotates the token and the URL prints again on the next start.
+
+Verified: `TestWebInfoMintProvenance` (first start minted=true, path beside
+the socket; restarted daemon on the same path minted=false with an unchanged
+token), `TestWebInfoNilWhenWebOff`; full daemon suite green. The printed
+lines are checked in the browser smoke test below.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
+
 ## 2026-08-24 web-1 P1.5 — embedded app shell, manifest, icons, security headers
 
 Done: `internal/daemon/webassets/` (index.html shell, manifest.webmanifest,
