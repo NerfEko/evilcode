@@ -464,10 +464,15 @@ type Model struct {
 	// if they are handed to it inside a view. needsRepaint asks for a full
 	// redraw, which is the only way to take a sixel raster off the screen —
 	// there is no delete-by-id outside the kitty protocol. imageWidth is the
-	// chat width the current image boxes were computed against.
+	// chat width the current image boxes were computed against. frameWidth and
+	// frameHeight are the terminal geometry those pictures were drawn into:
+	// a font-size change rescales the cell grid underneath them while the
+	// placements here are in cells and can come out identical.
 	rawOut       string
 	needsRepaint bool
 	imageWidth   int
+	frameWidth   int
+	frameHeight  int
 
 	// sixelCache holds encoded sixel payloads by image id and cell box.
 	// Encoding shells out to img2sixel, and placement changes on every scrolled
@@ -4935,6 +4940,18 @@ func (m *Model) View() tea.View {
 	if w := m.chatWidth(); w != m.imageWidth {
 		m.imageWidth = w
 		m.relayoutImages(w)
+	}
+
+	// A terminal geometry change — a window resize, a font-size change — moves
+	// every cell a picture was painted into. The placements here are in cells,
+	// so after a font change they can compare equal while the terminal is
+	// showing neither the old raster nor the new one: the block kept reserving
+	// its rows and the transcript showed a blank hole with a floating caption
+	// until the block happened to scroll. Take every picture down and let the
+	// frame below retransmit the visible ones.
+	if m.width != m.frameWidth || m.height != m.frameHeight {
+		m.frameWidth, m.frameHeight = m.width, m.height
+		m.clearDrawnImages()
 	}
 
 	// The session picker and help take the whole screen and return before the

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"evilcode/internal/graphics"
@@ -353,5 +354,36 @@ func TestMermaidCacheKeyDependsOnSource(t *testing.T) {
 	source := strings.Join([]string{"x"}, "")
 	if hashSource(source) != hashSource(strings.Clone(source)) {
 		t.Error("the same diagram hashed differently twice")
+	}
+}
+
+func TestFontResizeRepaintsThePictures(t *testing.T) {
+	// A font-size change rescales the cell grid a picture was painted into,
+	// while the placements here are in cells and can compare equal afterwards.
+	// With only that comparison the picture was never retransmitted: the block
+	// kept reserving its rows and the transcript showed a blank hole with a
+	// floating caption until the block happened to scroll. A geometry change
+	// has to take the pictures down and draw the visible ones again.
+	m := newTestModel(t)
+	m.width, m.height = 80, 30
+	m.WithGraphics(graphics.ProtoKitty, t.TempDir())
+	m.blocks = []Block{{Kind: BlockImage, Image: ImageBlock{
+		Path: "card.png", PNG: pngOfSize(t, 96, 48), Cols: 12, Rows: 3, ID: 5}}}
+
+	m.View()
+	if _, ok := m.drawnImages[5]; !ok {
+		t.Fatalf("the first frame did not draw the picture (rawOut %q)", m.rawOut)
+	}
+
+	// Same width, fewer rows — exactly what a font-size change does to a window.
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.rawOut = ""
+	m.View()
+
+	if !strings.Contains(m.rawOut, graphics.DeleteSequence(5)) {
+		t.Errorf("the resize did not take the stale picture down: %q", m.rawOut)
+	}
+	if !strings.Contains(m.rawOut, "i=5") {
+		t.Errorf("the resize did not draw the picture again: %q", m.rawOut)
 	}
 }
