@@ -101,7 +101,7 @@ func TestRejectedModelEffortLeavesSessionUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sess.SetModelWithEffort("mock-small@mock", provider.ReasoningEffortHigh); err == nil {
+	if err := sess.SetModelWithEffort("mock-small@mock", provider.ReasoningEffort("extreme")); err == nil {
 		t.Fatal("unsupported reasoning effort was accepted")
 	}
 	if sess.Model != "mock-large" || sess.built.Agent.Model != "mock-large" {

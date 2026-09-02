@@ -32,7 +32,8 @@ func TestModelSwitchUpdatesPickerCurrentMarker(t *testing.T) {
 	m.pickerOpen = true
 	m.picker.Selected = 1 // hovering mock-large@next
 
-	if _, _ = m.handlePickerKey("enter"); m.header.Model != "mock-large" {
+	applyPickerSelection(m)
+	if m.header.Model != "mock-large" {
 		t.Fatalf("switch did not apply: header.Model = %q, want mock-large", m.header.Model)
 	}
 

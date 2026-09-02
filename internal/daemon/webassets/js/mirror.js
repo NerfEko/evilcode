@@ -825,11 +825,24 @@ function reduceEvent(state, event) {
       if (ask?.id) next.pending[ask.id] = ask;
       break;
     }
-    case "ask_resolved":
-      if (event.request_id ?? event.requestId) {
-        delete next.pending[event.request_id ?? event.requestId];
+    case "ask_resolved": {
+      const id = String(event.request_id ?? event.requestId ?? "");
+      if (!id) break;
+      const ask = next.pending[id];
+      delete next.pending[id];
+      // The resolution becomes a transcript card: the question rode in the
+      // pending map, so the flow keeps the asked-and-answered shape even
+      // though the wire event only names the id.
+      if (ask && typeof ask === "object") {
+        next.messages.push(item("ask", {
+          role: "system", question: text(ask.question),
+          options: Array.isArray(ask.options) ? cloneJSON(ask.options) : [],
+          multi: !!ask.multi, askId: id, resolved: true,
+          turn: next.turns.length,
+        }, `ask-${id}`));
       }
       break;
+    }
     case "model":
       if (has(event, "model")) next.model = text(event.model);
       if (has(event, "provider")) next.provider = text(event.provider);

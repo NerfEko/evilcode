@@ -88,6 +88,29 @@ body {
   display: none; /* the phone's top bar; the <=900px block shows it (P4.3) */
 }
 
+.backbar-spacer {
+  flex: 1;
+}
+
+.chat-head-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.chat-actions {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .chat-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-shrink: 0;
+  }
+}
+
 .chat-chips {
   display: flex;
   flex-wrap: wrap;
@@ -534,6 +557,242 @@ label {
   overflow-y: auto;
   padding: 1rem 0.25rem 2rem;
   position: relative;
+}
+
+/* ---- P6.1/P6.2/P6.5: the composer -------------------------------------- */
+
+.composer {
+  border-top: 1px solid var(--border);
+  padding: 0.6rem 0.85rem calc(0.6rem + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 0.45rem;
+  background: var(--user-bg);
+}
+
+.composer[hidden] {
+  display: none;
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.45rem;
+}
+
+.composer-text {
+  flex: 1;
+  resize: none;
+  max-height: 160px;
+  min-height: 2.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--prose-code-bg);
+  color: var(--fg, inherit);
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.composer-text:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-secret {
+  width: 10rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--prose-code-bg);
+  color: var(--fg, inherit);
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+}
+
+.composer-secret[hidden] {
+  display: none;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.composer-attachments[hidden] {
+  display: none;
+}
+
+.composer-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.3rem 0.15rem 0.6rem;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.composer input[type="file"] {
+  display: none;
+}
+
+.composer-note {
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.palette {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: grid;
+}
+
+.palette[hidden] {
+  display: none;
+}
+
+.palette-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.45rem 0.6rem;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette-row:focus-visible,
+.palette-row:hover {
+  background: var(--selection-bg);
+}
+
+.palette-kind {
+  font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.palette-hint {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* ---- P6.3: the ask dock and resolved ask cards -------------------------- */
+
+.ask-dock {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.35rem 0.85rem;
+  border-top: 1px solid var(--border);
+  background: var(--user-bg);
+}
+
+.ask-dock[hidden] {
+  display: none;
+}
+
+.ask-card .ask-question {
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+label.ask-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.45rem;
+  align-items: baseline;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+}
+
+.ask-description {
+  grid-column: 1 / -1;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.ask-answered-labels {
+  color: var(--dim);
+  font-size: 13px;
+  margin: 0.25rem 0 0;
+}
+
+.ask-stale {
+  color: var(--warning);
+}
+
+.ask-card--answered .card-head,
+.msg--ask .msg-meta {
+  color: var(--dim);
+}
+
+/* ---- P6.4: model rows in the picker sheet and rail ---------------------- */
+
+.model-list {
+  display: grid;
+  gap: 0.2rem;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.model-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-row:focus-visible,
+.model-row:hover {
+  background: var(--selection-bg);
+}
+
+.model-main {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.model-name {
+  font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 13.5px;
+}
+
+.rail-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.rail-efforts {
+  margin-top: 0.45rem;
+}
+
+.effort-chip.is-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* Center the conversation like a document column (§9). */

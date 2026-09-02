@@ -189,9 +189,28 @@ func (m *Mock) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 
 func (m *Mock) Models(ctx context.Context) ([]ModelInfo, error) {
 	return []ModelInfo{
-		{Name: "mock-small", ContextWindow: 8192, Size: "1b"},
-		{Name: "mock-large", ContextWindow: 200000, Size: "480b"},
+		{Name: "mock-small", ContextWindow: 8192, Size: "1b", ReasoningEfforts: mockEfforts},
+		{Name: "mock-large", ContextWindow: 200000, Size: "480b", ReasoningEfforts: mockEfforts, Vision: true},
 	}, nil
+}
+
+// mockEfforts is the canned capability list the mock advertises; it keeps the
+// web model/effort pickers exercisable without a live provider.
+var mockEfforts = []ReasoningEffort{ReasoningEffortMinimal, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh}
+
+// reasoningEffortLevelsForModel resolves the advertised levels for one model.
+// The catalogue is static, so this never touches the network.
+func (m *Mock) reasoningEffortLevelsForModel(model string) []ReasoningEffort {
+	models, err := m.Models(context.Background())
+	if err != nil {
+		return nil
+	}
+	for _, info := range models {
+		if info.Name == model && len(info.ReasoningEfforts) > 0 {
+			return NormalizeReasoningEfforts(info.ReasoningEfforts)
+		}
+	}
+	return nil
 }
 
 // text builds the chunk sequence for a message streamed word by word, which is

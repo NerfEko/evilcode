@@ -78,8 +78,10 @@ export function storedBanner(name) {
 }
 
 // renderRail draws the ≥1280px right rail. A stored view has none of this
-// state; it says so instead of inventing numbers.
-export function renderRail(container, data, row) {
+// state; it says so instead of inventing numbers. `actions` carries the P6.4
+// picker callbacks ({onPickModel, onPickEffort}); absent actions simply hide
+// their affordances.
+export function renderRail(container, data, row, actions = {}) {
   container.replaceChildren();
   const stored = data.session ? data.session.live === false : row?.live === false;
   if (stored) {
@@ -101,6 +103,48 @@ export function renderRail(container, data, row) {
   ctxBody.appendChild(el("div", "meter-readout", `— / ${data.context_window ?? "?"} tokens · no usage yet`));
   ctx.appendChild(ctxBody);
   container.appendChild(ctx);
+
+  // Model + reasoning effort (P6.4). The picker reads GET /api/models; the
+  // effort chips come from Snapshot.ReasoningEfforts, the daemon's own list.
+  const modelCard = el("section", "card");
+  modelCard.appendChild(el("div", "card-head", "Model"));
+  const modelBody = el("div", "card-body");
+  const modelRow = el("div", "rail-model");
+  modelRow.appendChild(chip(data.model ?? "?", "model"));
+  if (typeof actions.onPickModel === "function") {
+    const pick = el("button", "btn btn--small", "Switch…");
+    pick.type = "button";
+    pick.addEventListener("click", actions.onPickModel);
+    modelRow.appendChild(pick);
+  }
+  modelBody.appendChild(modelRow);
+  const effortLevels = Array.isArray(data.reasoning_efforts) ? data.reasoning_efforts : [];
+  if (effortLevels.length) {
+    const effortRow = el("div", "rail-model rail-efforts");
+    effortRow.appendChild(el("span", "rail-dim", "effort"));
+    for (const level of effortLevels) {
+      const btn = el("button", "btn btn--small effort-chip", level);
+      btn.type = "button";
+      if (level === data.reasoning_effort) btn.classList.add("is-active");
+      if (typeof actions.onPickEffort === "function") {
+        btn.addEventListener("click", () => actions.onPickEffort(level));
+      } else {
+        btn.disabled = true;
+      }
+      effortRow.appendChild(btn);
+    }
+    modelBody.appendChild(effortRow);
+  }
+  if (typeof actions.onSpawn === "function") {
+    const spawnRow = el("div", "rail-model rail-efforts");
+    const spawn = el("button", "btn btn--small", "Spawn worker…");
+    spawn.type = "button";
+    spawn.addEventListener("click", actions.onSpawn);
+    spawnRow.appendChild(spawn);
+    modelBody.appendChild(spawnRow);
+  }
+  modelCard.appendChild(modelBody);
+  container.appendChild(modelCard);
 
   const list = (heading, rows, emptyText) => {
     const card = el("section", "card");

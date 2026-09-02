@@ -228,21 +228,23 @@ func TestPickerReasoningMenuHighlightsLastUsedLevel(t *testing.T) {
 }
 
 // TestPickerSkipsReasoningMenuForNonReasoningModel checks that a model with no
-// reasoning levels is applied directly, with no second menu.
+// reasoning levels is applied directly, with no second menu. The OpenAI
+// provider's family heuristic yields no levels for a legacy model name, which
+// is exactly the level-less case.
 func TestPickerSkipsReasoningMenuForNonReasoningModel(t *testing.T) {
-	a := agent.New("s", provider.NewMock("mock", "chat"), "mock-large", nil,
+	a := agent.New("s", provider.NewOpenAI("openai", "http://example.invalid", ""), "text-legacy-3", nil,
 		agent.NewConversation("system"))
 	t.Cleanup(a.Close)
-	m := NewModel(a, HeaderState{Model: "mock-large", Provider: "mock"})
+	m := NewModel(a, HeaderState{Model: "text-legacy-3", Provider: "openai"})
 	m.pickerOpen = true
 	m.picker.Entries = []ModelEntry{
-		{Name: "mock-large", Provider: "mock", Current: true},
-		{Name: "mock-small", Provider: "mock"},
+		{Name: "text-legacy-3", Provider: "openai", Current: true},
+		{Name: "text-legacy-4", Provider: "openai"},
 	}
 	m.picker.Selected = 1
 
-	if _, _ = m.handlePickerKey("enter"); m.header.Model != "mock-small" {
-		t.Fatalf("header.Model = %q, want mock-small applied directly", m.header.Model)
+	if _, _ = m.handlePickerKey("enter"); m.header.Model != "text-legacy-4" {
+		t.Fatalf("header.Model = %q, want text-legacy-4 applied directly", m.header.Model)
 	}
 	if m.reasoningPickerOpen {
 		t.Error("a non-reasoning model should not open the reasoning menu")

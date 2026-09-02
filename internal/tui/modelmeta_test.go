@@ -46,7 +46,8 @@ func TestPickerSwitchRecordsModelMeta(t *testing.T) {
 	}
 	m.picker.Selected = 1
 
-	if _, _ = m.handlePickerKey("enter"); m.header.Model != "mock-small" {
+	applyPickerSelection(m)
+	if m.header.Model != "mock-small" {
 		t.Fatalf("header.Model = %q, want mock-small", m.header.Model)
 	}
 

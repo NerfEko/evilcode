@@ -415,16 +415,16 @@ setups.
 
 ## Phase 6 — Interaction surface
 
-- [ ] **P6.1** composer: auto-grow textarea, paste/file image attach with 6 MiB
+- [x] **P6.1** composer: auto-grow textarea, paste/file image attach with 6 MiB
   pre-check, send/stop states tied to `running`.
-- [ ] **P6.2** interrupt affordance (soft; urgent behind a confirm).
-- [ ] **P6.3** ask cards: options as buttons, resolved state, multi-ask support.
-- [ ] **P6.4** model/effort pickers from `/api/models` + `Snapshot.ReasoningEfforts`.
-- [ ] **P6.5** command row: slash palette, `arg` field, `secret` password field.
-- [ ] **P6.6** spawn dialog: workspace picker, files, schema JSON textarea.
-- [ ] **P6.7** poke/message affordance while busy; new-session + reopen-stored
+- [x] **P6.2** interrupt affordance (soft; urgent behind a confirm).
+- [x] **P6.3** ask cards: options as buttons, resolved state, multi-ask support.
+- [x] **P6.4** model/effort pickers from `/api/models` + `Snapshot.ReasoningEfforts`.
+- [x] **P6.5** command row: slash palette, `arg` field, `secret` password field.
+- [x] **P6.6** spawn dialog: workspace picker, files, schema JSON textarea.
+- [x] **P6.7** poke/message affordance while busy; new-session + reopen-stored
   flows.
-- [ ] Verify Phase 6: the full chat+roster capability matrix — every row gets a
+- [x] Verify Phase 6: the full chat+roster capability matrix — every row gets a
   scripted HTTP round-trip plus a manual click-through on both breakpoints.
   Tag `web-6`.
 

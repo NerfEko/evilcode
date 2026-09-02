@@ -377,12 +377,13 @@ func TestWebModelAndEffort(t *testing.T) {
 	resp = webPostJSON(t, srv, addr, "/api/sessions/"+sess.Name+"/model", map[string]any{"model": "nope@nothere"})
 	webErrorOf(t, resp, http.StatusBadRequest, "/model")
 
-	// The mock has no effort control; the daemon stays the authority.
+	// The mock advertises [minimal low medium high]; the daemon stays the
+	// authority and still refuses anything outside that set.
 	resp = webPostJSON(t, srv, addr, "/api/sessions/"+sess.Name+"/model", map[string]any{
-		"model": "mock-small@mock", "effort": "high",
+		"model": "mock-small@mock", "effort": "extreme",
 	})
 	webErrorOf(t, resp, http.StatusBadRequest, "/model")
-	resp = webPostJSON(t, srv, addr, "/api/sessions/"+sess.Name+"/effort", map[string]any{"effort": "high"})
+	resp = webPostJSON(t, srv, addr, "/api/sessions/"+sess.Name+"/effort", map[string]any{"effort": "extreme"})
 	webErrorOf(t, resp, http.StatusBadRequest, "/effort")
 
 	// Switch to a provider that supports efforts, then set one.

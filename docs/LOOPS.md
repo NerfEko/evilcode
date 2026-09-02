@@ -8249,3 +8249,62 @@ rendered the same notices, diff previews, and turn structure. Screenshots:
 desktop transcript, 390×844 phone breakpoint via responsive design mode, and
 the TUI capture, all in `shots/`. Gates: `go build ./...`, `go vet ./...`,
 `go test -count=1 ./...`, node tests above. Tag `web-5`.
+
+## 2026-09-02 — web-6: interaction surface (plan-web.md Phase 6)
+
+**Goal:** the browser can drive everything the chat+roster capability matrix
+names: compose with images, interrupt (soft and urgent), answer the agent's
+asks, switch model and reasoning effort, run server commands through a slash
+palette, spawn workers, and poke a busy agent.
+
+**Built:** `webassets/js/views/composer.js` — one form owning the whole
+interaction state machine: idle Send posts `/input`; running Send becomes
+Poke (`/message`, queued for the next safe point); Stop posts an empty
+interrupt; ⚡ urgent opens a confirm sheet and posts `{text, urgent:true}`;
+images attach by file picker or paste, each pre-checked against 6 MiB (per
+file and running total) before any encoding, previewed as removable pills,
+and sent as bare base64; typing `/` opens the slash palette (the server
+command vocabulary from `Session.Command`, prefix-then-substring filtering,
+keyboard-navigable) and commands that take an argument or a credential get
+the `arg` field and a real password field. `views/asks.js` — the ask dock
+pinned above the composer: options as buttons, checkbox + submit for
+`multi`, a stale/409 answer says so and reconciles from the next snapshot,
+and the dock only repaints when the pending signature changes so an open
+card is never destroyed under the cursor. `mirror.js` now turns
+`ask_resolved` into a transcript card (the question rode in the pending
+map). `sheets.js` — `openConfirmSheet` (the urgent stop), `openModelsSheet`
+(GET `/api/models`, provider-grouped with a filter and an effort second
+step), and `openSpawnSheet` (task, files, schema JSON validated client-side;
+the workspace is shown read-only because `SpawnFor` inherits the spawner's).
+`chat.js` rail gains the Model card with effort chips from
+`Snapshot.ReasoningEfforts`; the chat head carries Model/Spawn actions for
+the 900–1280px band where neither backbar nor rail exists, and the phone
+backbar keeps them below 900.
+
+**Fixed along the way:** the web model picker sent bare model names, which
+resolve against the config's first provider — with an auto-discovered Ollama
+installed, switching to `mock-small` targeted `ollama-local` and failed
+("reasoning effort not supported"); the picker now sends qualified refs
+(`name@provider`). The mock provider now advertises reasoning-effort levels
+(catalogue + `SupportsReasoningEffort`/`ReasoningEffortLevelsForProvider`
+Mock cases) so the effort UI is exercisable offline; four TUI picker tests
+that assumed "mock = no effort menu" were updated to complete the two-step
+flow (the level-less direct-apply path is now covered by an OpenAI fixture
+with a family the heuristic does not know).
+
+**Verified (capability matrix — HTTP round-trip + click-through):** input ✓
+(`{"ok":true}` + live user card with image and placeholder), interrupt ✓
+(empty text cancels mid-ask; the tool card shows "Error: interrupted /
+[Skipped: user interrupted]"), answer ✓ + stale repeat 409 ✓ (UI: dock card,
+option click, "The user chose: …" in the tool output), model ✓ + effort ✓
+(UI: sheet → filter → pick → effort step → `mock-small` + `high`), effort
+outside the advertised set → 400 ✓ (in-sheet error surface), command ✓
+(`/poke on` → "Auto-poke is ON" notice card; unknown command while busy →
+409 by the documented mapping), message-while-busy ✓ (queued placeholder,
+Poke button, interject row delivered at the next safe point), spawn ✓
+(worker running with task + schema), malformed inputs → 400 ✓. Click-through
+on desktop (1275px) and phone (390×844 via responsive design mode): palette,
+ask dock, urgent confirm sheet, model sheet, spawn dialog, secret password
+field for `/connect`. Screenshots in `shots/P6-*.png`. Gates: `go build
+./...`, `go vet ./...`, `go test -count=1 ./...`, node tests 30/30. Tag
+`web-6`.

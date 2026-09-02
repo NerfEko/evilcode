@@ -397,6 +397,8 @@ func SupportsReasoningEffort(p Provider) bool {
 	switch p := p.(type) {
 	case *Codex:
 		return true
+	case *Mock:
+		return true
 	case *OpenAI:
 		return p.supportsReasoningEffort
 	case *Ollama:
@@ -413,6 +415,8 @@ func SupportsReasoningEffort(p Provider) bool {
 func ReasoningEffortLevelsForProvider(p Provider, model string) []ReasoningEffort {
 	switch p := p.(type) {
 	case *Codex:
+		return p.reasoningEffortLevelsForModel(model)
+	case *Mock:
 		return p.reasoningEffortLevelsForModel(model)
 	case *OpenAI:
 		return p.reasoningEffortLevelsForModel(model)

@@ -651,11 +651,32 @@ function plainCard(doc, message, kind, options) {
   return card;
 }
 
+// askCard renders a resolved ask (kind "ask", mirror ask_resolved): the
+// question stays visible with the chosen labels when this client made the
+// choice (options.answered[askId]), else a plain "resolved" note.
+function askCard(doc, message, options) {
+  const card = element(doc, "article", "msg msg--system msg--ask ask-card ask-card--resolved");
+  appendMeta(card, doc, "ask · answered");
+  const body = element(doc, "div", "msg-body");
+  body.appendChild(element(doc, "p", "ask-question", asText(message.question)));
+  const answered = options?.answered?.[asText(message.askId)];
+  const labels = Array.isArray(answered) && answered.length
+    ? answered.join(", ")
+    : "";
+  const readout = labels
+    ? `→ ${labels}`
+    : (message.multi ? "→ resolved (multi-select)" : "→ resolved");
+  body.appendChild(element(doc, "p", "ask-answered-labels", readout));
+  card.appendChild(body);
+  return card;
+}
+
 export function renderMessage(message = {}, options = {}) {
   const doc = documentFor(options?.parent, options);
   const value = message && typeof message === "object" ? message : { content: message };
   const kind = normalizeKind(value);
   if (kind === "tool") return toolCard(doc, value, options);
+  if (kind === "ask") return askCard(doc, value, options);
   if (kind === "usage") {
     const card = element(doc, "article", "msg msg--system msg--usage usage-card");
     appendMeta(card, doc, "usage");

@@ -110,7 +110,8 @@ func TestPickerSwitchKeepsTheBuildTimeCompactionEmbedder(t *testing.T) {
 	}
 	m.picker.Selected = 1
 
-	if _, _ = m.handlePickerKey("enter"); m.agent.Provider.Name() != "next" {
+	applyPickerSelection(m)
+	if m.agent.Provider.Name() != "next" {
 		t.Fatalf("active provider = %q, want next", m.agent.Provider.Name())
 	}
 	if c.Embedding != agent.EmbeddingProvider(dedicated) {

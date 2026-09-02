@@ -12,12 +12,14 @@
 // while the page is visible, fires immediately on focus/visibilitychange, and
 // pauses entirely when hidden.
 
-import { getJSON } from "./api.js";
+import { getJSON, postJSON } from "./api.js";
 import { openSessionStream, readSessionCursor, writeSessionCursor } from "./sse.js";
 import { createMirror, reduceMirror } from "./mirror.js";
 import { renderRoster } from "./views/roster.js";
 import { chipsFor, renderChatHead, renderRail, renderTranscript, storedBanner } from "./views/chat.js";
-import { openNewSessionSheet } from "./sheets.js";
+import { mountComposer } from "./views/composer.js";
+import { answerAsk, renderAsks } from "./views/asks.js";
+import { openConfirmSheet, openModelsSheet, openNewSessionSheet, openSpawnSheet } from "./sheets.js";
 
 const POLL_INTERVAL_MS = 2000;
 const LAST_OPEN_KEY = "evilcode:last-open";
@@ -42,6 +44,30 @@ let historyLoading = false;
 const TRANSCRIPT_BOTTOM_GAP = 48;
 const HISTORY_TOP_GAP = 72;
 const HISTORY_PAGE_LIMIT = 50;
+
+// The composer is mounted once and rebound per route; the ask dock only
+// repaints when the pending signature changes so an open ask card is never
+// destroyed under the cursor by a coalesced mirror render.
+const composer = mountComposer({
+  onUrgent: ({ text, clear }) => {
+    openConfirmSheet({
+      title: "Interrupt urgently",
+      body: text
+        ? `Inject this text as an URGENT interrupt at the next safe point:\n\n“${text}”`
+        : "Cancel the running turn urgently? The agent unwinds at the next safe point.",
+      confirmLabel: "Interrupt urgently",
+      danger: true,
+      onConfirm: async () => {
+        await postJSON(`/api/sessions/${encodeURIComponent(route.name)}/interrupt`, {
+          text, urgent: true,
+        });
+        clear();
+      },
+    });
+  },
+});
+let answeredAsks = {}; // per open session: ask id → labels this tab chose
+let lastAskSignature = "";
 
 // ---- the sidebar: status line + roster ------------------------------------
 
@@ -253,6 +279,11 @@ function mirrorData(snapshot, state) {
   };
 }
 
+function askSignature(pending) {
+  const asks = Array.isArray(pending) ? pending : [];
+  return asks.map((a) => `${a?.id}:${a?.multi ? "m" : "s"}:${(a?.options ?? []).map((o) => o?.label ?? "").join("|")}`).join(";");
+}
+
 function renderMirrorState(name, snapshot, row, state, generation, options = {}) {
   if (generation !== renderGeneration || generation !== streamGeneration) return;
   const scroll = transcriptScroll();
@@ -267,8 +298,37 @@ function renderMirrorState(name, snapshot, row, state, generation, options = {})
     sub: [data.model ?? info.model, data.cwd ?? info.cwd, row?.task ? `▸ ${row.task}` : ""].filter(Boolean).join(" · "),
   });
   const transcript = document.getElementById("transcript");
-  renderTranscript(transcript, messagesFromMirror(state), { stateHistory: state.history, mirror: state });
-  renderRail(document.getElementById("rail-body"), data, row);
+  renderTranscript(transcript, messagesFromMirror(state), { stateHistory: state.history, mirror: state, answered: answeredAsks });
+  composer.setRunning(data.running);
+  renderRail(document.getElementById("rail-body"), data, row, {
+    onPickModel: () => openModelsSheet({
+      session: route.name,
+      currentModel: data.model,
+      currentEffort: data.reasoning_effort,
+      efforts: Array.isArray(data.reasoning_efforts) && data.reasoning_efforts.length
+        ? data.reasoning_efforts
+        : undefined,
+      onPicked: () => composer.note("Model switched."),
+    }),
+    onPickEffort: (level) => {
+      postJSON(`/api/sessions/${encodeURIComponent(route.name)}/effort`, { effort: level })
+        .then(() => composer.note(`Reasoning effort: ${level}`))
+        .catch((err) => composer.note(String(err.message ?? err)));
+    },
+    onSpawn: () => document.getElementById("chat-spawn").click(),
+  });
+  const dock = document.getElementById("ask-dock");
+  if (dock) {
+    const signature = askSignature(data.pending);
+    if (signature !== lastAskSignature) {
+      lastAskSignature = signature;
+      renderAsks(dock, data.pending, answeredAsks, (ask, labels, card) => {
+        answerAsk(route.name, ask, labels, card).then((result) => {
+          if (result.ok) answeredAsks[ask.id] = labels;
+        });
+      });
+    }
+  }
   if (scroll) {
     if (previousHeight != null && previousTop != null) {
       scroll.scrollTop = previousTop + (scroll.scrollHeight - previousHeight);
@@ -352,6 +412,7 @@ async function render() {
 
   if (route.view === "home") {
     localStorage.removeItem(LAST_OPEN_KEY);
+    composer.bind("");
     return;
   }
 
@@ -374,12 +435,18 @@ async function render() {
 
     const transcript = document.getElementById("transcript");
     if (info.live === false) {
+      composer.bind(""); // stored views stay read-only; Reopen is the door back
+      lastAskSignature = "";
       renderTranscript(transcript, data.messages, { before: storedBanner(info.name), history: true });
       renderRail(document.getElementById("rail-body"), data, row);
     } else {
       const cursor = readSessionCursor(route.name);
       mirrorState = createMirror(data);
       rememberMirrorCursor(route.name, mirrorState);
+      answeredAsks = {};
+      lastAskSignature = "";
+      composer.bind(route.name);
+      composer.setRunning(mirrorState.running || data.running);
       const streamEpoch = streamGeneration;
       liveSnapshot = data;
       liveRow = row;
@@ -462,6 +529,47 @@ document.getElementById("new-session").addEventListener("click", () => {
 document.getElementById("chat-back").addEventListener("click", () => {
   location.hash = "#/";
 });
+
+function openSpawnSheetForRoute() {
+  if (route.view !== "chat" || !route.name) return;
+  openSpawnSheet({
+    session: route.name,
+    cwd: liveSnapshot?.cwd ?? liveRow?.cwd ?? "",
+    onSpawned: (info) => {
+      if (info?.name) composer.note(`Worker ${info.name} started.`);
+      refreshSidebar().catch(() => {});
+    },
+  });
+}
+
+document.getElementById("chat-spawn").addEventListener("click", () => {
+  openSpawnSheetForRoute();
+});
+
+document.getElementById("chat-spawn-wide").addEventListener("click", () => {
+  openSpawnSheetForRoute();
+});
+
+document.getElementById("chat-model").addEventListener("click", () => {
+  openModelSheet();
+});
+
+document.getElementById("chat-model-wide").addEventListener("click", () => {
+  openModelSheet();
+});
+
+function openModelSheet() {
+  const data = liveSnapshot ?? {};
+  openModelsSheet({
+    session: route.name,
+    currentModel: data.model,
+    currentEffort: data.reasoning_effort,
+    efforts: Array.isArray(data.reasoning_efforts) && data.reasoning_efforts.length
+      ? data.reasoning_efforts
+      : undefined,
+    onPicked: () => composer.note("Model switched."),
+  });
+}
 
 transcriptScroll()?.addEventListener("scroll", () => {
   const scroll = transcriptScroll();
