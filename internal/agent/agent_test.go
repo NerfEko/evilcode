@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/build"
 	"os"
@@ -633,13 +634,13 @@ func (p *reasoningOnlyProvider) ChatStream(ctx context.Context, req provider.Req
 	return ch, nil
 }
 
-func TestReasoningOnlyTerminalDoesNotRetry(t *testing.T) {
+func TestReasoningOnlyTerminalSurfacesWithoutRetry(t *testing.T) {
 	p := &reasoningOnlyProvider{}
 	a := newTestAgent(t, p, nil)
 
 	evs, err := collect(t, a, func() error { return a.Run(context.Background(), "hi") })
-	if err != nil {
-		t.Fatalf("reasoning-only terminal should complete: %v", err)
+	if !errors.Is(err, provider.ErrNoOutput) {
+		t.Fatalf("reasoning-only terminal error = %v, want ErrNoOutput", err)
 	}
 	if p.attempts != 1 {
 		t.Fatalf("provider attempts = %d, want exactly one", p.attempts)
@@ -649,12 +650,57 @@ func TestReasoningOnlyTerminalDoesNotRetry(t *testing.T) {
 		if ev.Kind == EventReasoningDelta && strings.Contains(ev.Text, "Investigating") {
 			reasoning = true
 		}
-		if ev.Kind == EventTurnEnd && ev.Reason == EndComplete {
+		if ev.Kind == EventTurnEnd && ev.Reason == EndError {
 			turnEnd = true
 		}
 	}
 	if !reasoning || !turnEnd {
-		t.Errorf("reasoning=%v turnEnd=%v, want the terminal response to complete once", reasoning, turnEnd)
+		t.Errorf("reasoning=%v turnEnd=%v, want one surfaced incomplete response", reasoning, turnEnd)
+	}
+}
+
+type requiredToolProvider struct {
+	requests []provider.Req
+	calls    int
+}
+
+func (p *requiredToolProvider) Name() string { return "codex" }
+func (p *requiredToolProvider) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, nil
+}
+func (p *requiredToolProvider) Models(context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *requiredToolProvider) ChatStream(_ context.Context, req provider.Req) (<-chan provider.Chunk, error) {
+	p.requests = append(p.requests, req)
+	p.calls++
+	ch := make(chan provider.Chunk, 2)
+	if p.calls == 1 {
+		ch <- provider.Chunk{ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "act", Args: json.RawMessage(`{}`)}}}
+	} else {
+		ch <- provider.Chunk{Text: "finished"}
+	}
+	ch <- provider.Chunk{Done: true}
+	close(ch)
+	return ch, nil
+}
+
+func TestImplementationRequestContinuesAfterToolCall(t *testing.T) {
+	p := &requiredToolProvider{}
+	act := tools.Set{{
+		Name:   "act",
+		Desc:   "make the requested change",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run: func(context.Context, json.RawMessage) (tools.Result, error) {
+			return tools.Result{Output: "changed"}, nil
+		},
+	}}
+	a := newTestAgent(t, p, act)
+	if _, err := collect(t, a, func() error { return a.Run(context.Background(), "fix the bug") }); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.requests) != 2 {
+		t.Fatalf("provider requests = %d, want initial tool request plus continuation", len(p.requests))
 	}
 }
 

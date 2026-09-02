@@ -24,6 +24,12 @@ type Conversation struct {
 	messages []provider.Message
 	epoch    int
 
+	// compactionMu makes the one wholesale rewrite a transaction from the
+	// conversation's point of view. Appends and reads wait for it, so a manual
+	// compaction cannot snapshot an old suffix, rewrite storage, and then erase
+	// a prompt that arrived during the side-call.
+	compactionMu sync.RWMutex
+
 	// onAppend persists each message as it lands. It is here rather than in
 	// each frontend because §18 makes the JSONL file the source of truth —
 	// "resume = replay" — and a frontend that forgets to write is a session
@@ -53,6 +59,8 @@ func NewConversation(system string) *Conversation {
 // Replay is deliberately not persisted: a resumed session appends the messages
 // it just read, and writing them again would double the file on every resume.
 func (c *Conversation) Persist(sink func(provider.Message) error) {
+	c.compactionMu.Lock()
+	defer c.compactionMu.Unlock()
 	c.mu.Lock()
 	c.onAppend = sink
 	c.mu.Unlock()
@@ -60,6 +68,8 @@ func (c *Conversation) Persist(sink func(provider.Message) error) {
 
 // Append adds messages to the tail.
 func (c *Conversation) Append(msgs ...provider.Message) {
+	c.compactionMu.RLock()
+	defer c.compactionMu.RUnlock()
 	c.mu.Lock()
 	c.messages = append(c.messages, msgs...)
 	sink := c.onAppend
@@ -97,6 +107,15 @@ func (c *Conversation) PersistErr() error {
 // Messages returns the full list to send, system prompt first. The slice is a
 // copy, so a caller cannot mutate history by accident.
 func (c *Conversation) Messages() []provider.Message {
+	c.compactionMu.RLock()
+	defer c.compactionMu.RUnlock()
+	return c.messagesSnapshot()
+}
+
+// messagesSnapshot returns a copy of the conversation. Callers that already
+// hold compactionMu use this helper so the rewrite does not try to take the
+// same lock recursively.
+func (c *Conversation) messagesSnapshot() []provider.Message {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]provider.Message, 0, len(c.messages)+1)
@@ -121,12 +140,11 @@ const (
 )
 
 // MessagesForModel returns a request-safe projection of the conversation.
-// Conversation.Messages remains the complete durable history; this view
-// follows OpenCode's tool-result pruning rule and clears only old completed
-// tool output after at least one newer user turn exists. Keeping the full
-// transcript for the UI, compaction summary, and resume while sending a small
-// projection to the provider is what prevents repeated file reads from
-// consuming the entire Codex context.
+// Before a compaction it follows OpenCode's tool-result pruning rule and
+// clears only old completed tool output after at least one newer user turn
+// exists. After a compaction the history already contains a provider-neutral
+// checkpoint, so no raw pre-boundary reasoning or continuation item can reach
+// the provider.
 func (c *Conversation) MessagesForModel() []provider.Message {
 	// Messages returns a distinct slice of message values. The projection only
 	// replaces fields on those values, so there is no need to deep-copy every
@@ -193,6 +211,8 @@ func modelToolOutputTokens(msg provider.Message) int {
 
 // Len reports how many non-system messages are held.
 func (c *Conversation) Len() int {
+	c.compactionMu.RLock()
+	defer c.compactionMu.RUnlock()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.messages)
@@ -200,6 +220,8 @@ func (c *Conversation) Len() int {
 
 // Epoch reports the compaction generation.
 func (c *Conversation) Epoch() int {
+	c.compactionMu.RLock()
+	defer c.compactionMu.RUnlock()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.epoch
@@ -207,6 +229,8 @@ func (c *Conversation) Epoch() int {
 
 // Last returns the final message, or false when the conversation is empty.
 func (c *Conversation) Last() (provider.Message, bool) {
+	c.compactionMu.RLock()
+	defer c.compactionMu.RUnlock()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if len(c.messages) == 0 {
@@ -221,6 +245,13 @@ func (c *Conversation) Last() (provider.Message, bool) {
 // Like Compact it bumps the epoch, since anything caching by message index is
 // now looking at a different conversation.
 func (c *Conversation) Reset(msgs []provider.Message) {
+	c.compactionMu.Lock()
+	defer c.compactionMu.Unlock()
+	c.resetMessages(msgs)
+}
+
+// resetMessages replaces the history while compactionMu is already held.
+func (c *Conversation) resetMessages(msgs []provider.Message) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.messages = append([]provider.Message(nil), msgs...)
@@ -231,6 +262,8 @@ func (c *Conversation) Reset(msgs []provider.Message) {
 // epoch or persisting anything. The daemon is the owner of the transcript; an
 // attached client only needs a current read model for /context and diagnostics.
 func (c *Conversation) Sync(msgs []provider.Message, epoch ...int) {
+	c.compactionMu.Lock()
+	defer c.compactionMu.Unlock()
 	c.mu.Lock()
 	c.messages = append([]provider.Message(nil), msgs...)
 	if len(epoch) > 0 {
@@ -242,13 +275,32 @@ func (c *Conversation) Sync(msgs []provider.Message, epoch ...int) {
 // CompactedPrefix marks the synthetic message a compaction leaves behind.
 const CompactedPrefix = "[conversation compacted]\n\n"
 
+// CompactedRecentPrefix marks the serialized recent context kept beside the
+// summary. It is deliberately a user message with no provider-native fields:
+// it can cross a model/provider boundary without replaying thinking items,
+// tool-call envelopes, or opaque continuation state.
+const CompactedRecentPrefix = "[conversation recent context]\n\n"
+
 // CompactMessage is what a compacted history collapses to.
 func CompactMessage(summary string) provider.Message {
 	return provider.Message{Role: provider.RoleUser, Content: CompactedPrefix + summary}
 }
 
+// CompactRecentMessage turns the recent tail into historical text. Hidden is
+// display metadata only; provider adapters still receive the message content,
+// while transcript rebuilds avoid showing the same context twice.
+func CompactRecentMessage(recent string) provider.Message {
+	return provider.Message{
+		Role:    provider.RoleUser,
+		Content: CompactedRecentPrefix + recent,
+		Hidden:  true,
+	}
+}
+
 // SystemPrompt returns the stable system prompt.
 func (c *Conversation) SystemPrompt() string {
+	c.compactionMu.RLock()
+	defer c.compactionMu.RUnlock()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.system
@@ -258,6 +310,8 @@ func (c *Conversation) SystemPrompt() string {
 // append-only conversation. Skill reload uses this to publish a new index while
 // preserving every user, assistant, and tool message already in the session.
 func (c *Conversation) SetSystemPrompt(system string) {
+	c.compactionMu.Lock()
+	defer c.compactionMu.Unlock()
 	c.mu.Lock()
 	c.system = system
 	c.mu.Unlock()

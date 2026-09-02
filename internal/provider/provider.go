@@ -39,6 +39,11 @@ const (
 // retryable at the agent layer only before any output was shown.
 var ErrStreamTruncated = errors.New("stream closed before a terminal marker")
 
+// ErrNoOutput marks a terminal response that contained neither user-visible
+// text nor a tool call. It is not retryable: resending the same request is the
+// loop that turns a Codex reasoning-only response into endless reasoning.
+var ErrNoOutput = errors.New("response completed without text or tool calls")
+
 var standardReasoningEffortLevels = [...]ReasoningEffort{
 	ReasoningEffortNone,
 	ReasoningEffortMinimal,

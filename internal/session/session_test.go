@@ -667,6 +667,9 @@ func TestRewindPointsSkipHarnessMessages(t *testing.T) {
 	st.WriteMessage(provider.Message{
 		Role: provider.RoleUser, Content: "[automated todo completion gate] keep going",
 	})
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: "hidden harness prompt", Hidden: true})
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: CompactedPrefix + "summary"})
+	st.WriteMessage(provider.Message{Role: provider.RoleUser, Content: CompactedRecentPrefix + "history", Hidden: true})
 	st.Close()
 
 	points, _ := RewindPoints(st.Path)

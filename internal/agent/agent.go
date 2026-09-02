@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -560,6 +561,10 @@ func (a *Agent) autoCompact(ctx context.Context) {
 		return
 	}
 	a.Compactor.noteAutoCompaction()
+	// The next request starts from the new checkpoint. Keeping the old
+	// provider usage here makes the next loop iteration compact the checkpoint
+	// again before the model gets a chance to answer.
+	a.ResetContextUsage()
 	a.Notice(LevelInfo, "✓ Context compacted. Retrying...")
 }
 
@@ -603,6 +608,15 @@ func (a *Agent) noteContext(n int) {
 	a.mu.Lock()
 	a.lastCtx = n
 	a.mu.Unlock()
+}
+
+// ResetContextUsage forgets provider usage from before a compaction. Frontends
+// that invoke manual compaction need the same reset as the automatic loop.
+func (a *Agent) ResetContextUsage() {
+	if a == nil {
+		return
+	}
+	a.noteContext(0)
 }
 
 // ErrBusy is returned by Loop when a turn is already running on this agent.
@@ -720,7 +734,6 @@ func (a *Agent) loop(ctx context.Context) error {
 				msg.Content = stripped
 			}
 		}
-
 		a.Conv.Append(msg)
 		// A tool-call assistant message is an intermediate step, not the
 		// completed turn. Snapshot only the final assistant response so the
@@ -762,6 +775,10 @@ func (a *Agent) loop(ctx context.Context) error {
 			// This is the default injection point.
 			a.injectInterrupts(false)
 			continue
+		}
+
+		if a.Compactor != nil {
+			a.Compactor.noteModelOutput()
 		}
 
 		// Safe point B: the stream ended with no tool calls — always safe.
@@ -981,7 +998,31 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 		// without a terminal chunk must not read as a completed turn.
 		return msg, emitted, fmt.Errorf("%s: stream closed without a terminal done chunk", a.Provider.Name())
 	}
+	if !hasUsableOutput(msg) {
+		return msg, emitted, fmt.Errorf("%s: %w", a.Provider.Name(), provider.ErrNoOutput)
+	}
 	return msg, emitted, nil
+}
+
+// hasUsableOutput distinguishes a real assistant result from a reasoning-only
+// terminal response. Codex provider items include encrypted reasoning records;
+// those preserve continuity but are not a user-visible answer or an action.
+func hasUsableOutput(msg provider.Message) bool {
+	if strings.TrimSpace(msg.Content) != "" || len(msg.ToolCalls) > 0 {
+		return true
+	}
+	for _, raw := range msg.ProviderItems {
+		var item struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return true
+		}
+		if item.Type != "" && item.Type != "reasoning" {
+			return true
+		}
+	}
+	return false
 }
 
 func toolDefs(ts tools.Set) []provider.ToolDef {

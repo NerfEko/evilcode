@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -70,6 +71,109 @@ func TestCompactReplacesTheConversation(t *testing.T) {
 	}
 	if c.Count() != 1 {
 		t.Errorf("count = %d, want 1", c.Count())
+	}
+}
+
+func TestCompactDropsProviderStateFromTheCheckpointTail(t *testing.T) {
+	conv := compactableConversation()
+	conv.Append(
+		provider.Message{Role: provider.RoleUser, Content: "current request"},
+		provider.Message{
+			Role:      provider.RoleAssistant,
+			Content:   "visible answer",
+			Reasoning: "private model thinking that must not cross the boundary",
+			ProviderItems: []json.RawMessage{
+				json.RawMessage(`{"type":"reasoning","encrypted_content":"secret continuation"}`),
+			},
+			Images:  [][]byte{[]byte("raw image bytes")},
+			Repairs: []string{"display-only repair"},
+			Diff:    "display-only diff",
+		},
+	)
+
+	var persisted []provider.Message
+	c := &Compactor{
+		Summarize: summarizer("summary", nil),
+		PersistWithTail: func(_ string, tail []provider.Message) ([]provider.Message, error) {
+			persisted = cloneMessages(tail)
+			return tail, nil
+		},
+	}
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"durable", "model"} {
+		msgs := conv.Messages()
+		if name == "model" {
+			msgs = conv.MessagesForModel()
+		}
+		for _, msg := range msgs {
+			if msg.Reasoning != "" || len(msg.ProviderItems) > 0 ||
+				len(msg.ToolCalls) > 0 || msg.Role == provider.RoleTool {
+				t.Fatalf("%s checkpoint retained provider-native state: %#v", name, msg)
+			}
+		}
+		joined := strings.Join(messageContents(msgs), "\n")
+		if strings.Contains(joined, "private model thinking") ||
+			strings.Contains(joined, "secret continuation") ||
+			strings.Contains(joined, "raw image bytes") {
+			t.Fatalf("%s checkpoint exposed discarded provider state: %q", name, joined)
+		}
+		if !strings.Contains(joined, "visible answer") {
+			t.Fatalf("%s checkpoint lost visible recent context: %q", name, joined)
+		}
+	}
+	if len(persisted) != 1 || !persisted[0].Hidden ||
+		!strings.HasPrefix(persisted[0].Content, CompactedRecentPrefix) {
+		t.Fatalf("persisted tail = %#v, want one hidden serialized checkpoint", persisted)
+	}
+}
+
+func TestCompactDoesNotLoseAnAppendDuringSummarization(t *testing.T) {
+	conv := compactableConversation()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	c := &Compactor{Summarize: func(context.Context, string, string) (string, error) {
+		close(started)
+		<-release
+		return "summary", nil
+	}}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Compact(context.Background(), conv)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("compaction did not reach the summarizer")
+	}
+
+	appendDone := make(chan struct{})
+	go func() {
+		conv.Append(provider.Message{Role: provider.RoleUser, Content: "arrived during compaction"})
+		close(appendDone)
+	}()
+	select {
+	case <-appendDone:
+		t.Fatal("append was allowed to race the compaction rewrite")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-appendDone:
+	case <-time.After(time.Second):
+		t.Fatal("append stayed blocked after compaction completed")
+	}
+	last, ok := conv.Last()
+	if !ok || last.Content != "arrived during compaction" {
+		t.Fatalf("last message = %#v, want the post-compaction append", last)
 	}
 }
 
@@ -230,18 +334,15 @@ func TestCompactKeepsARelevantToolPairTogether(t *testing.T) {
 	if strings.Contains(summarized, "critical OAuth migration details") {
 		t.Fatal("the relevant tool result was summarized away")
 	}
-	msgs := conv.Messages()
-	foundCall, foundResult := false, false
-	for _, msg := range msgs {
-		if msg.Role == provider.RoleAssistant && len(msg.ToolCalls) == 1 && msg.ToolCalls[0].ID == "oauth-call" {
-			foundCall = true
-		}
-		if msg.Role == provider.RoleTool && msg.ToolCallID == "oauth-call" {
-			foundResult = true
-		}
+	joined := strings.Join(messageContents(conv.Messages()), "\n")
+	if !strings.Contains(joined, "[Tool: read") ||
+		!strings.Contains(joined, "[Result] critical OAuth migration details") {
+		t.Fatalf("relevant tool pair was not kept together in the checkpoint: %q", joined)
 	}
-	if !foundCall || !foundResult {
-		t.Fatalf("relevant tool pair was not kept together: call=%t result=%t", foundCall, foundResult)
+	for _, msg := range conv.Messages() {
+		if msg.Role == provider.RoleAssistant || msg.Role == provider.RoleTool {
+			t.Fatalf("raw tool message crossed the compaction boundary: %#v", msg)
+		}
 	}
 }
 
@@ -833,6 +934,26 @@ func TestTranscriptSkipsSystemAndCapsAMessage(t *testing.T) {
 	}
 	if len(got) > CompactMessageCap*2 {
 		t.Errorf("transcript is %d bytes; one pasted file should not crowd out the rest", len(got))
+	}
+}
+
+func TestTranscriptCapsTheWholeHistory(t *testing.T) {
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: "first goal"}}
+	for i := 0; i < 100; i++ {
+		msgs = append(msgs, provider.Message{
+			Role:    provider.RoleAssistant,
+			Content: fmt.Sprintf("middle %03d %s", i, strings.Repeat("x", CompactMessageCap)),
+		})
+	}
+	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: "last active state"})
+
+	got := Transcript(msgs)
+	if len(got) > CompactTranscriptMaxBytes {
+		t.Fatalf("transcript is %d bytes; maximum is %d", len(got), CompactTranscriptMaxBytes)
+	}
+	if !strings.Contains(got, "first goal") || !strings.Contains(got, "last active state") ||
+		!strings.Contains(got, "middle of transcript omitted") {
+		t.Fatalf("bounded transcript lost its boundary records: %q", got)
 	}
 }
 

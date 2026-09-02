@@ -74,7 +74,11 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), CompactTimeout)
 		defer cancel()
-		summary, err := m.compactor.CompactWithWindow(ctx, m.agent.Conv, m.contextMax())
+		window := m.contextMax()
+		if m.agent.CompactionWindow > 0 {
+			window = m.agent.CompactionWindow
+		}
+		summary, err := m.compactor.CompactWithWindow(ctx, m.agent.Conv, window)
 		return compactDone{summary: summary, before: before, err: err}
 	}
 }
@@ -105,6 +109,7 @@ func (m *Model) applyCompaction(done compactDone) {
 	// The meter reflected the pre-compaction size until the next turn reported
 	// usage, which made a compaction look like it had done nothing.
 	m.ctxUsed = 0
+	m.agent.ResetContextUsage()
 	// The summary rides a clickable record: collapsed, one row saying what
 	// happened; expanded, the exact context the next prompt is answered with.
 	m.blocks = append(m.blocks, Block{

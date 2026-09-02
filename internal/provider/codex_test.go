@@ -222,6 +222,12 @@ func TestCodexChatStreamMapsResponsesAndSSE(t *testing.T) {
 	if body["model"] != "gpt-5.3-codex" || body["instructions"] != "be concise" || body["stream"] != true {
 		t.Errorf("request envelope = %+v", body)
 	}
+	if body["parallel_tool_calls"] != true {
+		t.Errorf("parallel_tool_calls = %#v, want true", body["parallel_tool_calls"])
+	}
+	if body["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %#v, want auto", body["tool_choice"])
+	}
 	if body["prompt_cache_key"] != "snake-6" {
 		t.Errorf("prompt_cache_key = %#v, want session id", body["prompt_cache_key"])
 	}

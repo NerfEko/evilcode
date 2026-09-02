@@ -78,9 +78,12 @@ func RewindPoints(path string) ([]RewindPoint, error) {
 		if json.Unmarshal(e.Data, &m) != nil {
 			continue
 		}
-		// Harness-authored continuations are not points a person would think
-		// of rewinding to.
-		if strings.HasPrefix(m.Content, "[automated ") {
+		// Harness-authored and compaction-authored user rows are not points a
+		// person would think of rewinding to. The recent checkpoint is hidden so
+		// its serialized history does not become a giant fake prompt here.
+		if m.Hidden || strings.HasPrefix(m.Content, "[automated ") ||
+			strings.HasPrefix(m.Content, CompactedPrefix) ||
+			strings.HasPrefix(m.Content, CompactedRecentPrefix) {
 			continue
 		}
 		n++
@@ -365,6 +368,10 @@ func DeriveTitle(activeGroup, userIntention, firstTodo, firstPrompt string) stri
 // CompactedPrefix marks the synthetic message a compaction leaves behind, so a
 // replayed session is visibly a summary rather than something the user typed.
 const CompactedPrefix = "[conversation compacted]\n\n"
+
+// CompactedRecentPrefix marks the hidden provider-neutral tail paired with a
+// compaction summary.
+const CompactedRecentPrefix = "[conversation recent context]\n\n"
 
 // Compact rewrites a session down to a summary message. It keeps the legacy
 // summary-only shape for callers that do not have a live tail to preserve.

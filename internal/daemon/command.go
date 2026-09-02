@@ -419,6 +419,7 @@ func (sess *Session) compact() error {
 	if err != nil {
 		return err
 	}
+	sess.built.Agent.ResetContextUsage()
 	sess.notice(fmt.Sprintf("📦 Compacted %d messages into a summary\n\n%s", before, summary))
 	sess.publishSnapshot()
 	return nil
