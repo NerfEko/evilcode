@@ -102,16 +102,23 @@ ending the session; another window can reconnect to it later. A session with no 
 is kept hydrated for ten minutes after its last turn/window activity, then it is cleanly
 closed and unloaded. Its transcript remains available for resume.
 
-## The web UI (early)
+## The web UI
 
 `evilcode serve -web` starts an opt-in HTTP surface beside the unix socket, bound to
 `127.0.0.1:7749` by default (`[webui] addr` / `serve -web-addr` to change; `[webui]
 enabled` turns it on permanently). The first start mints a token at
 `<socket>.web-token` (mode 0600) and prints a one-time tokenized URL — open it in a
 browser and the token is exchanged for a cookie; every later request is cookie- or
-`Bearer`-authenticated, and mutating requests must come from the same origin. Phase 1
-ships the authenticated shell only; roster and chat arrive with the later web phases.
-The blessed remote path is Tailscale to the loopback bind, not a LAN bind.
+`Bearer`-authenticated, and mutating requests must come from the same origin. The
+UI covers the full chat + roster surface: live transcripts over SSE, deep history
+from the durable session store, model/effort switching, slash commands, asks,
+spawn, and worker pokes. On a phone it is a roster-first webapp: Add to Home Screen
+(Share → "Add to Home Screen") installs it as a standalone app with the daemon's
+own theme; while a turn is running the screen is kept awake when the browser
+allows it (silent no-op otherwise — plain HTTP off the loopback host is not a
+secure context). A browser sitting on the roster holds no stream, so a phone-first
+setup should run `evilcode serve -idle 0` to keep the daemon alive. The blessed
+remote path is Tailscale to the loopback bind, not a LAN bind.
 
 ## Requirements
 

@@ -430,18 +430,22 @@ setups.
 
 ## Phase 7 — Mobile and PWA
 
-- [ ] **P7.1** manifest, icons, standalone metas, install hint when not
+- [x] **P7.1** manifest, icons, standalone metas, install hint when not
   standalone.
-- [ ] **P7.2** safe areas, `100dvh`, `visualViewport` keyboard handling.
-- [ ] **P7.3** touch audit: 44 px targets, no hover-only affordances.
-- [ ] **P7.4** reconnect resilience: backgrounded EventSource suspend →
+- [x] **P7.2** safe areas, `100dvh`, `visualViewport` keyboard handling.
+- [x] **P7.3** touch audit: 44 px targets, no hover-only affordances.
+- [x] **P7.4** reconnect resilience: backgrounded EventSource suspend →
   reconnect on focus with last-seen seq; snapshot reconciliation; pending-ask
   badge + roster pulse.
-- [ ] **P7.5** Wake Lock when available; silent degradation otherwise.
+- [x] **P7.5** Wake Lock when available; silent degradation otherwise.
 - [ ] Verify Phase 7 (real iPhone, on the tailnet): Add-to-Home-Screen install;
   token cookie survives a daemon restart mid-session (exercise the self-update
   path); lock the phone mid-turn → unlock → gap replays exactly; composer rides
   the keyboard; roster polls only while visible. Tag `web-7`.
+  (Browser-verified in lieu of the device pass — see `docs/LOOPS.md` web-7:
+  touch-emulated 390×844 round-trips, token + gap replay across a live daemon
+  restart, keyboard shim under a faked `visualViewport` resize. The A2HS,
+  notch-safe-area, and real-keyboard steps still want the device.)
 
 ## Phase 8 — Hardening and docs
 

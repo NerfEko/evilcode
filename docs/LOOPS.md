@@ -8308,3 +8308,101 @@ ask dock, urgent confirm sheet, model sheet, spawn dialog, secret password
 field for `/connect`. Screenshots in `shots/P6-*.png`. Gates: `go build
 ./...`, `go vet ./...`, `go test -count=1 ./...`, node tests 30/30. Tag
 `web-6`.
+
+## 2026-09-02 — web-7: mobile and PWA (plan-web.md Phase 7)
+
+**Goal:** the webapp behaves like a phone app — installable, keyboard-safe,
+touch-first, and resilient to the backgrounding/kill behavior of mobile
+browsers — without giving up the server-owned state model.
+
+**Built:** `webassets/js/mobile.js` — three phone behaviors behind one module:
+the keyboard shim (it publishes the iOS keyboard overlap as a `--kb-overlap`
+custom property; the phone chat column and bottom sheets subtract it, so the
+composer rides above the keys with no `position: fixed` fight), the screen
+Wake Lock while the open session's turn runs (a `createWakeLock` state
+machine that re-arms on visibility and degrades silently when
+`navigator.wakeLock` is absent — which it is on any non-loopback HTTP
+origin, per §9), and the Add-to-Home-Screen hint (shown once on touch
+devices that are not `display-mode: standalone` / `navigator.standalone`,
+dismissed into localStorage). `sse.js` gains the reconnect state machine for
+P7.4: a CLOSED EventSource (Safari kills backgrounded sockets without
+retrying) reconnects with capped exponential backoff and gives up after five
+attempts so a 401/404 cannot be hammered; `resume()` is the deliberate
+reconnect for the focus/visibility handlers, re-opening at the last-seen
+sequence, which the daemon answers with a fresh snapshot plus the replayed
+gap. `app.js` resumes the stream when a hidden tab returns (immediately if
+the stream is unhealthy, after 5 s hidden regardless — the suspension
+presumption) and, on the status poll's unreachable→reachable transition,
+re-renders the route from scratch: after a daemon restart (the self-update
+path) the open session is stored until reopened, so a resumed stream would
+just 404 — the re-render lands the honest stored view with its Reopen banner
+instead. CSS: the phone chat column gets a definite height (`100dvh` minus
+the keyboard overlap; the old `min-height` let indefinite fr rows grow the
+page, so long transcripts pushed the composer below the fold — fixed),
+explicit grid rows for the five phone chat children, `vh` fallbacks before
+every `dvh`, the touch audit extended to model rows / palette rows / ask
+options / the activity pill with `:active` fallbacks, and 16px touch inputs
+because iOS auto-zooms focused fields set below 16px (the composer's
+`font: inherit` out-specified the type selector — caught by a computed-style
+probe). The pending-ask roster badge now pulses (§9) and the install hint
+reuses the callout vocabulary.
+
+**Verified:** 41/41 node tests (`node --test` — new: keyboard-overlap math
+incl. pinch-zoom rejection, install-hint predicate, wake-lock
+acquire/release/re-arm/deny/invisible fakes; SSE CLOSED→backoff→reconnect at
+last-seen seq, CONNECTING left to the browser, bounded give-up, resume()).
+`go build`, `go vet`, `go test -count=1 ./...` green; `-race` green on
+daemon + config. Live browser verify against the mock daemon at 390×844 in
+Firefox responsive mode with touch simulation: `(hover: none)` computed
+`min-height: 44px` on the backbar buttons and `16px` composer inputs,
+`--kb-overlap` at rest `0px`; a faked `visualViewport` resize (844→544) set
+`--kb-overlap: 300px` and the composer rode exactly at the faked keyboard's
+top edge; a reload landed bottom-stuck with the composer on the viewport
+floor; the install hint appeared on the touch roster and correctly never on
+desktop; the daemon was killed and restarted under the open tab — the page
+kept its JS identity (no reload), the poll declared the daemon unreachable
+then recovered, the stream re-established (`clients=1` in the status line),
+the transcript survived in place, and the one-time token URL was never
+reprinted (cookie rode through the restart); the `ask` scenario blocked
+mid-turn, the roster badge pulsed, and the ask was answered from the phone
+chat, completing the turn ("Exponential it is."). Reconnect attempts logged
+`/events?since=31` replay params and stopped at the bounded count.
+Screenshots: `shots/P7-desktop-home.png`, `shots/P7-desktop-chat.png`.
+
+**Deviations:** the plan's device-verify block (real iPhone on the tailnet:
+the A2HS install flow, notch safe-area insets, the real iOS keyboard,
+locked-phone gap-replay timing) could not be exercised from this
+workstation; every mechanical piece of those flows is verified in a
+touch-emulated browser, and the checklist item stays open in `plan-web.md`
+for the device pass. No code deviations.
+
+**Codex review (background, folded):** eight findings, all real, all fixed
+and regression-tested. P1 wake lock: an in-flight `request()` resolving
+after a desired-flap adopted an orphaned sentinel (codex's own probe showed
+`released: [false, true]`) — requests now carry a generation and a stale
+resolution releases itself. P1 restart-while-hidden: with polling stopped,
+no poll ever observed the outage, so the unreachable→reachable re-render
+never ran and the tab kept a live-looking dead chat — the SSE adapter now
+notifies `onExhausted` once per dead backoff run and the app re-renders the
+route into the honest stored view. P1 reset ring: an idle snapshot below the
+cursor now adopts the server's sequence instead of poisoning every
+reconnect's `since`. P1 stale transport: frames queued from a replaced
+EventSource are generation-guarded out (`source !== attached`). P2:
+`reconnect()` now cancels a pending backoff timer (no ghost duplicate
+stream); the suspension timestamp is consumed on return (no per-focus churn
+forever after one long hide); keyboard compensation now reaches ≥900px touch
+viewports (the app's `min-height` and the centered sheet both subtract
+`--kb-overlap`, fixing landscape tablets); and a pinch-zoom no longer masks
+a real keyboard — when an editable element is focused, the overlap counts as
+the keyboard even while zoomed. The keyboard-shim wiring itself is now under
+test too: a DOM-stub harness drives the real `mountMobile()` — visualViewport
+resize → rAF-coalesced apply → `--kb-overlap` published and the transcript
+re-pinned while the composer is focused, closed → 0px, pinch-zoom unfocused →
+no var and no re-pin (46/46). Two new tests initially failed against my
+own logic — the `onExhausted` one caught a genuine repeat-fire bug (the
+callback fired per error, not per dead run; now once, reset on open/resume),
+the wake-lock one was a broken test, not a broken fix.
+
+**Verdict:** codex review done; all findings folded with tests (46/46).
+No tag — the user asked for the phase as a plain commit only (previous
+phases' tags remain untouched).

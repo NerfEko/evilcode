@@ -11,6 +11,10 @@
 // transcript, and iOS caps connections per origin). The loop runs every 2s
 // while the page is visible, fires immediately on focus/visibilitychange, and
 // pauses entirely when hidden.
+//
+// Mobile (§9, Phase 7): the keyboard shim / wake lock / install hint live in
+// mobile.js; this file only feeds it the running state and asks the SSE
+// adapter to resume when the tab comes back from a suspension.
 
 import { getJSON, postJSON } from "./api.js";
 import { openSessionStream, readSessionCursor, writeSessionCursor } from "./sse.js";
@@ -20,9 +24,14 @@ import { chipsFor, renderChatHead, renderRail, renderTranscript, storedBanner } 
 import { mountComposer } from "./views/composer.js";
 import { answerAsk, renderAsks } from "./views/asks.js";
 import { openConfirmSheet, openModelsSheet, openNewSessionSheet, openSpawnSheet } from "./sheets.js";
+import { mountMobile } from "./mobile.js";
 
 const POLL_INTERVAL_MS = 2000;
 const LAST_OPEN_KEY = "evilcode:last-open";
+// A tab hidden longer than this is presumed suspended (iOS kills background
+// sockets); its stream is re-opened on return even if the browser reports it
+// still open.
+const RESUME_SUSPECT_AFTER_MS = 5000;
 
 const rosterEl = document.getElementById("roster");
 const statusEl = document.getElementById("statusline");
@@ -40,6 +49,12 @@ let renderFrame = null;
 let renderFrameCancel = null;
 let pendingMirrorRender = null;
 let historyLoading = false;
+let hiddenAt = 0; // when the tab last went away; drives the P7.4 resume heuristic
+let lastResumeAt = 0;
+let statusWasUnreachable = false; // the poll just failed: the daemon is down or blipping
+
+// Keyboard shim + wake lock + install hint (P7.1/P7.2/P7.5).
+const mobile = mountMobile();
 
 const TRANSCRIPT_BOTTOM_GAP = 48;
 const HISTORY_TOP_GAP = 72;
@@ -74,6 +89,14 @@ let lastAskSignature = "";
 async function refreshSidebar() {
   const [status, rows] = await Promise.allSettled([getJSON("/api/status"), getJSON("/api/sessions")]);
   if (status.status === "fulfilled") {
+    if (statusWasUnreachable) {
+      // P7.4: the daemon came back after being unreachable — a restart (the
+      // self-update path) or a blip. The open session may now be stored (the
+      // registry is in-memory) or renamed, so re-render the route from
+      // scratch rather than trusting a stream that 404s or a stale mirror.
+      statusWasUnreachable = false;
+      render();
+    }
     statusEl.classList.remove("is-unreachable");
     statusEl.replaceChildren(
       statusSpan("sessions", status.value.sessions),
@@ -81,6 +104,7 @@ async function refreshSidebar() {
       statusSpan("clients", status.value.clients),
     );
   } else {
+    statusWasUnreachable = true;
     statusEl.classList.add("is-unreachable");
     statusEl.textContent = "daemon unreachable";
   }
@@ -134,6 +158,7 @@ function closeSessionStream() {
   liveSnapshot = null;
   liveRow = null;
   historyLoading = false;
+  mobile.setRunning(false);
   setActivityPill(false);
 }
 
@@ -300,6 +325,7 @@ function renderMirrorState(name, snapshot, row, state, generation, options = {})
   const transcript = document.getElementById("transcript");
   renderTranscript(transcript, messagesFromMirror(state), { stateHistory: state.history, mirror: state, answered: answeredAsks });
   composer.setRunning(data.running);
+  mobile.setRunning(data.running); // P7.5: keep the screen awake while the turn runs
   renderRail(document.getElementById("rail-body"), data, row, {
     onPickModel: () => openModelsSheet({
       session: route.name,
@@ -368,12 +394,43 @@ function loadOlderHistory() {
   });
 }
 
+function scheduleSessionResume() {
+  if (!sessionStream || typeof sessionStream.resume !== "function") return;
+  const now = Date.now();
+  if (now - lastResumeAt < 1000) return; // one deliberate reconnect per second at most
+  lastResumeAt = now;
+  sessionStream.resume();
+}
+
+// P7.4: iOS suspends background tabs and may kill their EventSource without
+// an error event. On return, re-open the stream whenever it is no longer
+// healthy, or whenever the tab was hidden long enough that the socket cannot
+// be trusted. The daemon answers every fresh connection with a full snapshot
+// (self-healing) and replays the ring from our last-seen sequence.
+function resumeAfterSuspension() {
+  const hiddenFor = hiddenAt > 0 ? Date.now() - hiddenAt : 0;
+  // Consumed: a later focus must not treat this same return as a fresh
+  // suspension and churn an otherwise healthy stream forever.
+  hiddenAt = 0;
+  if (hiddenFor > RESUME_SUSPECT_AFTER_MS || sessionStream?.health !== "open") {
+    scheduleSessionResume();
+  }
+}
+
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") startPolling();
-  else stopPolling(); // P2 verify, DOM half: the roster polls only while visible.
+  if (document.visibilityState === "visible") {
+    startPolling();
+    resumeAfterSuspension();
+  } else {
+    hiddenAt = Date.now();
+    stopPolling(); // P2 verify, DOM half: the roster polls only while visible.
+  }
 });
 window.addEventListener("focus", () => {
-  if (document.visibilityState === "visible") tick();
+  if (document.visibilityState === "visible") {
+    tick();
+    resumeAfterSuspension();
+  }
 });
 
 // ---- routing ----------------------------------------------------------------
@@ -413,6 +470,7 @@ async function render() {
   if (route.view === "home") {
     localStorage.removeItem(LAST_OPEN_KEY);
     composer.bind("");
+    mobile.setRunning(false);
     return;
   }
 
@@ -436,6 +494,7 @@ async function render() {
     const transcript = document.getElementById("transcript");
     if (info.live === false) {
       composer.bind(""); // stored views stay read-only; Reopen is the door back
+      mobile.setRunning(false);
       lastAskSignature = "";
       renderTranscript(transcript, data.messages, { before: storedBanner(info.name), history: true });
       renderRail(document.getElementById("rail-body"), data, row);
@@ -476,6 +535,15 @@ async function render() {
           mirrorState = reduceMirror(mirrorState, { type: "EVENT", event });
           rememberMirrorCursor(route.name, mirrorState);
           scheduleMirrorRender(route.name, liveSnapshot, liveRow, mirrorState, generation);
+        },
+        // P7.4: the bounded backoff run gave up — usually a daemon restart
+        // that happened while the tab was hidden, so no poll ever observed
+        // the outage. The open session is now stored until reopened; a
+        // re-render swaps the stale live view for the honest stored one
+        // (Reopen banner) instead of leaving a dead stream looking live.
+        onExhausted: () => {
+          if (generation !== renderGeneration || streamEpoch !== streamGeneration) return;
+          render();
         },
       });
     }
