@@ -61,6 +61,11 @@ type Server struct {
 	// Close shuts it down with everything else.
 	web *webState
 
+	// webModels caches the /api/models catalogue (plan-web.md §4): one
+	// provider aggregation per five minutes, so the picker does not hammer
+	// Ollama on every open. Guarded by its own mutex.
+	webModels webModelsCache
+
 	// socketUnlock releases the lifetime claim on the socket path, taken by
 	// Listen and held until Close. A second daemon must fail the claim while
 	// this one lives, even if its socket file has been deleted from under it.

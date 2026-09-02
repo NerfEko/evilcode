@@ -130,6 +130,19 @@ func (w *webState) mux(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/sessions/{name}", s.webAPISession)
 	mux.HandleFunc("GET /api/sessions/{name}/messages", s.webAPIMessages)
 	mux.HandleFunc("GET /api/sessions/{name}/events", s.webEvents)
+	// The command surface (§4, Phase 3): the mutating half. Every handler calls
+	// the same Server/Session method the unix protocol handler calls.
+	mux.HandleFunc("POST /api/sessions/{name}/input", s.webInput)
+	mux.HandleFunc("POST /api/sessions/{name}/interrupt", s.webInterrupt)
+	mux.HandleFunc("POST /api/sessions/{name}/answer", s.webAnswer)
+	mux.HandleFunc("POST /api/sessions/{name}/model", s.webModel)
+	mux.HandleFunc("POST /api/sessions/{name}/effort", s.webEffort)
+	mux.HandleFunc("POST /api/sessions/{name}/command", s.webCommand)
+	mux.HandleFunc("POST /api/sessions/{name}/message", s.webMessage)
+	mux.HandleFunc("POST /api/sessions", s.webCreateSession)
+	mux.HandleFunc("POST /api/spawn", s.webSpawn)
+	mux.HandleFunc("GET /api/models", s.webAPIModels)
+	mux.HandleFunc("GET /api/workspaces", s.webWorkspaces)
 	// Anything else under /api/ — unknown routes, cleaned-away paths like
 	// "/api/sessions/.." — answers the uniform error shape rather than the
 	// mux's plain-text 404, so clients have exactly one failure format.
@@ -138,7 +151,7 @@ func (w *webState) mux(s *Server) http.Handler {
 	})
 
 	auth := &webAuth{token: w.token, addr: w.addr}
-	return securityHeaders(auth.wrap(gzipJSON(mux)))
+	return securityHeaders(webRecover(auth.wrap(gzipJSON(mux))))
 }
 
 // webCSP is the plan's Content-Security-Policy, verbatim (§3). Everything is
