@@ -9,6 +9,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -26,16 +27,40 @@ type ServerConfig struct {
 	Command string   `toml:"command"`
 	Args    []string `toml:"args"`
 	Env     []string `toml:"env"`
+
+	// Timeout bounds one tool call. Zero means CallTimeout.
+	Timeout time.Duration
 }
 
-// ConnectTimeout bounds the handshake. A server that does not answer promptly
-// must not hold up the session — the harness is usable without it.
-const ConnectTimeout = 10 * time.Second
+const (
+	// ConnectTimeout bounds the handshake. A server that does not answer promptly
+	// must not hold up the session — the harness is usable without it.
+	ConnectTimeout = 10 * time.Second
+
+	// CallTimeout bounds one tool call when the server's config names no own
+	// timeout. MCP servers are third-party subprocesses with no deadline of
+	// their own: without a bound, one wedged server stalls the whole turn until
+	// the user interrupts manually. The bound costs at most one tool result,
+	// which the model can read and route around.
+	CallTimeout = 120 * time.Second
+)
+
+// callTimeoutOf resolves a server's per-call bound: its configured timeout,
+// or CallTimeout when none was set.
+func callTimeoutOf(cfg ServerConfig) time.Duration {
+	if cfg.Timeout > 0 {
+		return cfg.Timeout
+	}
+	return CallTimeout
+}
 
 // Server is a live connection.
 type Server struct {
 	Name    string
 	Session *sdk.ClientSession
+
+	// timeout bounds one tool call (callTimeoutOf at connect time).
+	timeout time.Duration
 
 	mu    sync.Mutex
 	tools []tools.Tool
@@ -93,7 +118,7 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	srv := &Server{Name: cfg.Name, Session: session}
+	srv := &Server{Name: cfg.Name, Session: session, timeout: callTimeoutOf(cfg)}
 	if err := srv.loadTools(ctx); err != nil {
 		session.Close()
 		return nil, err
@@ -145,11 +170,28 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (t
 		}
 	}
 
+	// Bound the call so a wedged server costs one tool result, not the turn.
+	// The smaller of the server's own timeout and any deadline the caller
+	// already set wins; the error names the bound that actually applied.
+	bound := s.timeout
+	if d, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(d); remaining < bound {
+			bound = remaining
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+
 	res, err := s.Session.CallTool(ctx, &sdk.CallToolParams{
 		Name:      name,
 		Arguments: parsed,
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return tools.Result{}, fmt.Errorf(
+				"mcp tool %s__%s: no response in %s; the call was abandoned — the server may be wedged, retry or narrow it",
+				s.Name, name, bound)
+		}
 		return tools.Result{}, err
 	}
 

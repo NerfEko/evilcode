@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"evilcode/internal/agent"
 	"evilcode/internal/attachcmd"
@@ -164,7 +165,7 @@ func runOnce(args []string) (string, error) {
 	var mcpServers []mcp.ServerConfig
 	for _, srv := range cfg.MCP {
 		mcpServers = append(mcpServers, mcp.ServerConfig{
-			Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env,
+			Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env, Timeout: time.Duration(srv.TimeoutSeconds) * time.Second,
 		})
 	}
 	for _, err := range mcpClient.Connect(context.Background(), mcpServers) {

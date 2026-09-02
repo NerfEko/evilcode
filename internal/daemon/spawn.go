@@ -91,7 +91,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		var servers []mcp.ServerConfig
 		for _, srv := range workerCfg.MCP {
 			servers = append(servers, mcp.ServerConfig{
-				Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env,
+				Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env, Timeout: time.Duration(srv.TimeoutSeconds) * time.Second,
 			})
 		}
 		for _, mcpErr := range mcpClient.Connect(context.Background(), servers) {

@@ -201,6 +201,10 @@ type MCPServer struct {
 	Command string   `toml:"command"`
 	Args    []string `toml:"args"`
 	Env     []string `toml:"env"`
+
+	// TimeoutSeconds bounds one tool call against this server. Zero means the
+	// harness default (mcp.CallTimeout).
+	TimeoutSeconds int `toml:"timeout_seconds"`
 }
 
 // DefaultThinkingLines mirrors tui.DefaultThinkingLines. Duplicated rather than
@@ -1147,6 +1151,11 @@ func (c *Config) Validate() error {
 			}
 		}
 		validateEnvAssignments(path+".env", server.Env, add)
+		if server.TimeoutSeconds < 0 {
+			add(path+".timeout_seconds", "must not be negative")
+		} else if server.TimeoutSeconds > maxMCPCallSeconds {
+			add(path+".timeout_seconds", fmt.Sprintf("is unreasonably large (maximum %d)", maxMCPCallSeconds))
+		}
 	}
 
 	validateCommand("dictate", c.Dictate, false, add)
@@ -1165,6 +1174,10 @@ const (
 	maxConfigContextWindow = 1 << 30
 	maxConfigThinkingLines = 1 << 16
 	maxConfigSteps         = 1 << 20
+	// maxMCPCallSeconds caps mcp[].timeout_seconds. An hour is already far
+	// past any interactive tool call; beyond it a wedged server would hold a
+	// turn for longer than the user would wait before interrupting anyway.
+	maxMCPCallSeconds = 3600
 )
 
 var validDisplayThemes = map[string]bool{

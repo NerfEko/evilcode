@@ -447,6 +447,42 @@ smol = ["small@missing"]
 	}
 }
 
+func TestMCPTimeoutSecondsRoundTripsAndValidates(t *testing.T) {
+	path := write(t, `
+default_model = "m@a"
+
+[[provider]]
+name = "a"
+kind = "ollama"
+base_url = "http://localhost:11434"
+
+[[mcp]]
+name = "docs"
+command = "mcp-docs"
+timeout_seconds = 45
+`)
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.MCP) != 1 || cfg.MCP[0].TimeoutSeconds != 45 {
+		t.Fatalf("TimeoutSeconds = %+v, want 45", cfg.MCP)
+	}
+
+	cfg.MCP[0].TimeoutSeconds = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mcp[0].timeout_seconds") {
+		t.Errorf("negative timeout_seconds accepted: %v", err)
+	}
+	cfg.MCP[0].TimeoutSeconds = maxMCPCallSeconds + 1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mcp[0].timeout_seconds") {
+		t.Errorf("oversized timeout_seconds accepted: %v", err)
+	}
+	cfg.MCP[0].TimeoutSeconds = maxMCPCallSeconds
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid timeout_seconds rejected: %v", err)
+	}
+}
+
 func TestBadTOMLIsAnError(t *testing.T) {
 	path := write(t, "default_model = [unclosed")
 	if _, err := LoadFrom(path); err == nil {

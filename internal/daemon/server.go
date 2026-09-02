@@ -933,7 +933,7 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		var servers []mcp.ServerConfig
 		for _, srv := range cfg.MCP {
 			servers = append(servers, mcp.ServerConfig{
-				Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env,
+				Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env, Timeout: time.Duration(srv.TimeoutSeconds) * time.Second,
 			})
 		}
 		for _, mcpErr := range mcpClient.Connect(context.Background(), servers) {

@@ -7541,3 +7541,28 @@ Both `/home/eko/.local/bin/ec` and `/home/eko/.local/bin/evilcode` resolve to
 the updated checkout binary; the previous daemon was stopped so the next
 attach starts the new code.
 
+## 2026-09-01 — MCP gap 1: bounded tool call timeouts
+
+`mcp_gaps.md` #1 (High). `Server.call` ran `Session.CallTool` on the caller's
+context with no deadline, so one wedged MCP server stalled the entire turn
+until the user interrupted manually — every comparable integration (LSP,
+brave, exec) bounds its calls, but the MCP path did not.
+
+Done. Every MCP tool call is now bounded: the smaller of the server's own
+`timeout_seconds` and any deadline the caller already set wins, so the bound
+reported in the error is always the one that actually fired. Default is
+`mcp.CallTimeout` (120s); per-server `mcp[].timeout_seconds` (TOML, validated
+0–3600, negative rejected) overrides it. A timed-out call comes back as a
+normal tool error naming `server__tool` and the bound, which the model can
+read and route around — a wedged server costs one tool result, not the turn.
+
+Tests: new `internal/mcp` suite driven entirely by the SDK's in-process
+server pairs (no real subprocesses): a wedged handler hits the configured
+50ms bound with the tool named in the error; a caller deadline smaller than
+the server's timeout wins and is the one reported; unbounded calls still
+succeed; `timeout_seconds` round-trips TOML and validates in
+`internal/config`.
+
+Verified: `go test ./internal/mcp/... ./internal/config/... -count=1` and the
+full `go test ./... -count=1` green.
+
