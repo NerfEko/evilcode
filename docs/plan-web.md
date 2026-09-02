@@ -383,17 +383,17 @@ setups.
 
 ## Phase 4 — Design system and app shell
 
-- [ ] **P4.1** `css/app.css` on tokens only — cards, chips, callouts, meters,
+- [x] **P4.1** `css/app.css` on tokens only — cards, chips, callouts, meters,
   buttons, sheets; dark-only Frappé.
-- [ ] **P4.2** desktop shell: sidebar + chat + right rail (≥1280 px), with the
+- [x] **P4.2** desktop shell: sidebar + chat + right rail (≥1280 px), with the
   status line wired to `/api/status`.
-- [ ] **P4.3** phone shell: roster home, drill-in chat, back behavior, bottom
+- [x] **P4.3** phone shell: roster home, drill-in chat, back behavior, bottom
   sheets; `@media (hover: none)` fallbacks.
-- [ ] **P4.4** routing + roster poll loop (`visibilitychange`-gated) + last-open
+- [x] **P4.4** routing + roster poll loop (`visibilitychange`-gated) + last-open
   persistence.
-- [ ] **P4.5** guard test — grep the authored CSS for hex literals; only the
+- [x] **P4.5** guard test — grep the authored CSS for hex literals; only the
   theme generator may contain them.
-- [ ] Verify Phase 4: screenshots at both breakpoints against the palette
+- [x] Verify Phase 4: screenshots at both breakpoints against the palette
   (look at them); roster reflects `SessionInfo` fields (running, worker, task,
   pending, stale, crashed). Tag `web-4`.
 

@@ -57,7 +57,7 @@ func TestWebIndexServesShell(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	html := string(body)
-	if !strings.Contains(html, `<div id="app">`) {
+	if !strings.Contains(html, `id="app"`) {
 		t.Error("the shell is missing its mount point")
 	}
 	if !strings.Contains(html, `rel="manifest" href="/manifest.webmanifest"`) {

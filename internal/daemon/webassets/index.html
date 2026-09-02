@@ -18,13 +18,48 @@
   <script type="module" src="/assets/js/app.js"></script>
 </head>
 <body>
-  <div id="app">
-    <main class="shell">
-      <h1 class="shell-title">evilcode</h1>
-      <p class="shell-note">The daemon is serving its web surface. The app shell —
-      roster and chat — lands in a later phase; everything behind this page is
-      already authenticated.</p>
+  <div id="app" class="app" data-view="home">
+    <aside id="sidebar" class="sidebar">
+      <header class="brand">
+        <span class="brand-glyph" aria-hidden="true">▚</span><span>evilcode</span>
+      </header>
+      <div id="statusline" class="statusline" role="status" aria-live="polite">connecting…</div>
+      <p class="eyebrow">Sessions</p>
+      <nav id="roster" class="roster" aria-label="Sessions"></nav>
+      <footer class="sidebar-foot">
+        <button id="new-session" class="btn btn--primary" type="button">＋ New session</button>
+      </footer>
+    </aside>
+
+    <main id="home" class="home">
+      <div class="empty">
+        <p class="empty-title">No session open</p>
+        <p>Pick a session from the roster, or start a new one.</p>
+      </div>
     </main>
+
+    <main id="chat" class="chat">
+      <div class="chat-backbar">
+        <button id="chat-back" class="btn btn--small" type="button" aria-label="Back to the roster">‹ Back</button>
+      </div>
+      <header class="chat-head">
+        <h1 id="chat-title" class="chat-title"></h1>
+        <div id="chat-chips" class="chat-chips"></div>
+        <div id="chat-sub" class="chat-sub"></div>
+      </header>
+      <div id="transcript-scroll" class="chat-scroll">
+        <div class="chat-column">
+          <div id="transcript" class="transcript"></div>
+        </div>
+      </div>
+    </main>
+
+    <aside id="rail" class="rail" aria-label="Session details">
+      <p class="eyebrow">Session</p>
+      <div id="rail-body"></div>
+    </aside>
+
+    <div id="sheet-root" class="sheet-root"></div>
   </div>
 </body>
 </html>
