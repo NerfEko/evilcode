@@ -7790,3 +7790,23 @@ a healthy load stays silent.
 Verified: `go test ./internal/mcp/... -count=1 -race`, `go vet ./...`, and
 the full `go test ./... -count=1` green.
 
+## 2026-09-01 — install: rebuilt with all nine MCP gap fixes, pushed to both remotes
+
+The ten commits through gap 9 (`227d8bb`…`584f088`) are pushed to `origin`
+(git.evileko.dev, `1db05b4..584f088`) and the `github` mirror
+(`60a5f42..584f088`).
+
+Rebuilt with `go build -o evilcode ./cmd/evilcode` and installed in place;
+`/home/eko/.local/bin/ec` and `/home/eko/.local/bin/evilcode` are symlinks to
+this checkout binary, so they pick the rebuild up on the next invocation.
+Installed SHA-256: `fa1a7316db033aced6ac92fac3a1811b0cf455de25aff58a2d8fd61a7da851e2`
+(33,265,239 bytes; previous install was `75270f30…4dd9aa`). Smoke-checked
+with `./evilcode --help` (exit 0).
+
+Note: a daemon is still running under a live `ec` attach client (spawned
+22:07, sustained CPU — it is serving an in-flight session, plausibly this
+one), so it was deliberately left running the previous build
+(`75270f30…`). Kill the daemon once the session is idle — its client
+respawns it from disk, which now serves the new build — or simply exit and
+re-attach; the next daemon start runs `fa1a7316…`.
+
