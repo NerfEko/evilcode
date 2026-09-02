@@ -7636,3 +7636,34 @@ server's environment while PATH and configured `env` entries arrive.
 Verified: `go test ./internal/tools/... ./internal/mcp/... -count=1` and the
 full `go test ./... -count=1` green.
 
+## 2026-09-01 — MCP gap 5: tools/list_changed refresh reaches the agent
+
+`mcp_gaps.md` #5 (Medium). The client registered no notification handler and
+tools were loaded once at connect into a static slice, so a server that added
+or removed tools mid-session stayed stale until restart.
+
+Done. `connectOne` registers the SDK's `ToolListChangedHandler`; the handler
+schedules a single-flight reload (250ms coalescing) on its own goroutine with
+a fresh bounded context. The reload follows the same pagination as connect,
+swaps the set atomically under the server mutex, keeps the old set on refresh
+failure while recording `lastReloadErr` for the status surface (gap 7 reads
+it), and fires a changed-set-only `Client.OnToolsChanged` hook. The agent
+gained `SetTools` — the safe-point update: the swap is atomic under the agent
+mutex, an in-flight request keeps the definitions it was built with, and the
+next request picks the new set up; all three per-request reads go through a
+guarded `toolSet()` snapshot. The daemon's main and worker sessions and the
+local TUI register `OnToolsChanged` after wiring so a live session's agent is
+pushed the new set.
+
+Tests: a server that removes and adds tools on the wire (no explicit reload
+call — the registered handler must turn the notification into a refresh)
+ends with the new set on the server and the hook fired with it; a no-change
+reload with no consumer is safe; the agent swap test pins the safe-point
+semantics. `-race` clean on the mcp package.
+
+Verified: `go test ./internal/mcp/... -count=1 -race`,
+`go test ./internal/agent/... -count=1`, and the full `go test ./... -count=1`
+green. One pre-existing flake observed ~1-in-3 under full-suite load:
+`TestConcurrentStartsOnAStaleSocketLeaveOneReachable` (daemon socket
+lifecycle, untouched by this work; passes in isolation and with `-count=3`).
+

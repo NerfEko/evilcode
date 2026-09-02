@@ -9,6 +9,8 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"evilcode/internal/tools"
 )
 
 // newInProcessClient wires an *sdk.Server into a Client over the SDK's
@@ -19,6 +21,12 @@ func newInProcessClient(t *testing.T, server *sdk.Server, cfg ServerConfig, clie
 
 	if clientOpts == nil {
 		clientOpts = &sdk.ClientOptions{}
+	}
+	srv := &Server{Name: cfg.Name, timeout: callTimeoutOf(cfg)}
+	// Mirror connectOne's notification wiring: a test client would otherwise
+	// silently never see tools/list_changed.
+	clientOpts.ToolListChangedHandler = func(ctx context.Context, req *sdk.ToolListChangedRequest) {
+		srv.scheduleReload()
 	}
 	serverTransport, clientTransport := sdk.NewInMemoryTransports()
 	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode-test", Version: "test"}, clientOpts)
@@ -34,12 +42,13 @@ func newInProcessClient(t *testing.T, server *sdk.Server, cfg ServerConfig, clie
 	}
 	t.Cleanup(func() { _ = clientSession.Close() })
 
-	srv := &Server{Name: cfg.Name, Session: clientSession, timeout: callTimeoutOf(cfg)}
+	srv.Session = clientSession
 	if err := srv.loadTools(context.Background()); err != nil {
 		t.Fatalf("loadTools: %v", err)
 	}
 	cl := &Client{}
 	cl.servers = append(cl.servers, srv)
+	srv.setOnChange(cl.fireHook)
 	return cl, srv
 }
 
@@ -402,4 +411,76 @@ func TestServerEnvIsAllowlisted(t *testing.T) {
 	if !strings.Contains(joined, "FOO=bar") {
 		t.Errorf("configured env entry missing: %q", joined)
 	}
+}
+
+// Gap 5: a tools/list_changed notification rebuilds the set and pushes it to
+// the registered consumer.
+func TestListChangedRefreshesToolsAndFiresTheHook(t *testing.T) {
+	oldDelay := reloadDelay.Load()
+	reloadDelay.Store(int64(10 * time.Millisecond))
+	defer func() { reloadDelay.Store(oldDelay) }()
+
+	server := sdk.NewServer(&sdk.Implementation{Name: "dyn", Version: "1"},
+		&sdk.ServerOptions{PageSize: 1})
+	server.AddTool(&sdk.Tool{Name: "a", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	})
+
+	var pushed []string
+	cl, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, &sdk.ClientOptions{})
+	cl.OnToolsChanged(func(ts tools.Set) {
+		pushed = toolsSetNames(ts)
+	})
+
+	server.RemoveTools("a")
+	server.AddTool(&sdk.Tool{Name: "b", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	})
+	// No explicit scheduleReload: RemoveTools/AddTool fire tools/list_changed
+	// on the wire, and the registered handler must turn that into a reload.
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		names := toolsSetNames(srv.toolsSnapshot())
+		if len(names) == 1 && names[0] == "srv__b" && len(pushed) == 1 && pushed[0] == "srv__b" {
+			return // both the reload and the push landed
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	srv.mu.Lock()
+	reloadErr := srv.lastReloadErr
+	srv.mu.Unlock()
+	t.Fatalf("refresh did not land: server=%v pushed=%v lastReloadErr=%v",
+		toolsSetNames(srv.toolsSnapshot()), pushed, reloadErr)
+}
+
+// A changed-set reload without a registered consumer must not panic, and an
+// unchanged set must not fire the hook.
+func TestListChangedWithoutConsumerIsSafe(t *testing.T) {
+	oldDelay := reloadDelay.Load()
+	reloadDelay.Store(int64(10 * time.Millisecond))
+	defer func() { reloadDelay.Store(oldDelay) }()
+
+	server := sdk.NewServer(&sdk.Implementation{Name: "dyn", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{Name: "a", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	})
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, &sdk.ClientOptions{})
+
+	srv.scheduleReload() // no change, no consumer
+	time.Sleep(300 * time.Millisecond)
+	srv.mu.Lock()
+	reloadErr := srv.lastReloadErr
+	srv.mu.Unlock()
+	if reloadErr != nil {
+		t.Fatalf("reload failed: %v", reloadErr)
+	}
+}
+
+func toolsSetNames(ts tools.Set) []string {
+	out := make([]string, len(ts))
+	for i, t := range ts {
+		out[i] = t.Name
+	}
+	return out
 }

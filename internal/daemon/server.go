@@ -949,6 +949,13 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 	if err != nil {
 		return nil, err
 	}
+	if mcpClient != nil {
+		// A server that announced tools/list_changed mid-session refreshes the
+		// agent's definitions at the next safe point (mcp_gaps #5). `built` is
+		// final here, so the closure needs no synchronization.
+		ag := built.Agent
+		mcpClient.OnToolsChanged(func(ts tools.Set) { ag.SetTools(ts) })
+	}
 	// These hooks used to exist only in the local TUI wiring. They belong to
 	// the agent runtime, so keeping them here preserves auto-poke and advisor
 	// behavior while every client is disconnected.

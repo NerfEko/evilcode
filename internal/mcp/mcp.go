@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -76,16 +78,51 @@ type Server struct {
 
 	mu    sync.Mutex
 	tools []tools.Tool
+
+	// onChange, when set, runs after a tools/list_changed reload produced a
+	// different set. Guarded by mu because the SDK's notification goroutine
+	// and the reload goroutine both touch it.
+	onChange func(tools.Set)
+
+	// reloading marks a single-flight reload so a burst of notifications
+	// costs one pass. lastReloadErr keeps the most recent failed refresh for
+	// the status surface; nil means the loaded set is the server's truth.
+	reloading     bool
+	lastReloadErr error
 }
 
 // Client holds every connected server.
 type Client struct {
 	mu      sync.Mutex
 	servers []*Server
+
+	// hook, when registered, runs after any server's tool set changes.
+	hook func(tools.Set)
 }
 
 // New builds an empty client.
 func New() *Client { return &Client{} }
+
+// OnToolsChanged registers fn to run with the new set after any server's
+// tools/list_changed notification produced a different tool set. Register it
+// before Connect when the consumer exists by then; a consumer built after
+// Connect (the agent comes out of wiring) registers late and picks changes up
+// from the next notification on — the set itself is never lost, only the
+// first push to that consumer can be.
+func (c *Client) OnToolsChanged(fn func(tools.Set)) {
+	c.mu.Lock()
+	c.hook = fn
+	c.mu.Unlock()
+}
+
+func (c *Client) fireHook(ts tools.Set) {
+	c.mu.Lock()
+	hook := c.hook
+	c.mu.Unlock()
+	if hook != nil {
+		hook(ts)
+	}
+}
 
 // Connect starts the configured servers, returning the ones that came up and
 // the errors from the ones that did not.
@@ -101,6 +138,7 @@ func (c *Client) Connect(ctx context.Context, configs []ServerConfig) []error {
 			errs = append(errs, fmt.Errorf("mcp %s: %w", cfg.Name, err))
 			continue
 		}
+		srv.setOnChange(c.fireHook)
 		c.mu.Lock()
 		c.servers = append(c.servers, srv)
 		c.mu.Unlock()
@@ -131,13 +169,20 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = serverEnv(cfg)
 
-	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode", Version: "0.1.0"}, nil)
+	srv := &Server{Name: cfg.Name, timeout: callTimeoutOf(cfg)}
+	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode", Version: "0.1.0"}, &sdk.ClientOptions{
+		// A server that adds or removes tools mid-session (login flows,
+		// dynamic registries) must not stay stale until restart. The handler
+		// runs on the SDK's notification goroutine, so it only schedules.
+		ToolListChangedHandler: func(ctx context.Context, req *sdk.ToolListChangedRequest) {
+			srv.scheduleReload()
+		},
+	})
 	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	srv := &Server{Name: cfg.Name, Session: session, timeout: callTimeoutOf(cfg)}
+	srv.Session = session
 	if err := srv.loadTools(ctx); err != nil {
 		session.Close()
 		return nil, err
@@ -198,6 +243,88 @@ func (s *Server) loadTools(ctx context.Context) error {
 	s.tools = out
 	s.mu.Unlock()
 	return nil
+}
+
+// toolsSnapshot returns a copy of the loaded tool set, for tests and change
+// consumers that must not race a reload.
+func (s *Server) toolsSnapshot() []tools.Tool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.tools)
+}
+
+// setOnChange registers the consumer notified after a reload changes the set.
+func (s *Server) setOnChange(fn func(tools.Set)) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
+// reloadDelay coalesces bursts of tools/list_changed notifications before
+// the reload runs. Atomic because tests tune it while a live session's
+// goroutine reads it.
+var reloadDelay = func() *atomic.Int64 {
+	d := new(atomic.Int64)
+	d.Store(int64(250 * time.Millisecond))
+	return d
+}()
+
+// scheduleReload starts one single-flight reload after a tools/list_changed
+// notification. It runs on the SDK's notification goroutine: everything here
+// is scheduling, the reload itself happens on its own goroutine with a fresh
+// bounded context.
+func (s *Server) scheduleReload() {
+	s.mu.Lock()
+	if s.reloading {
+		s.mu.Unlock()
+		return
+	}
+	s.reloading = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.reloading = false
+			s.mu.Unlock()
+		}()
+		time.Sleep(time.Duration(reloadDelay.Load()))
+
+		ctx, cancel := context.WithTimeout(context.Background(), ConnectTimeout)
+		defer cancel()
+		before := s.toolNames()
+		if err := s.loadTools(ctx); err != nil {
+			// Keep the loaded set — a failed refresh must not blank the
+			// server's tools — and hold the error for the status surface.
+			// The next notification retries.
+			s.mu.Lock()
+			s.lastReloadErr = err
+			s.mu.Unlock()
+			return
+		}
+		after := s.toolNames()
+		s.mu.Lock()
+		s.lastReloadErr = nil
+		onChange := s.onChange
+		s.mu.Unlock()
+		if !slices.Equal(before, after) && onChange != nil {
+			s.mu.Lock()
+			changed := slices.Clone(s.tools)
+			s.mu.Unlock()
+			onChange(changed)
+		}
+	}()
+}
+
+// toolNames snapshots the loaded tool names, for change detection.
+func (s *Server) toolNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.tools))
+	for i, t := range s.tools {
+		out[i] = t.Name
+	}
+	return out
 }
 
 func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (tools.Result, error) {

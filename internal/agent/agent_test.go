@@ -1309,3 +1309,20 @@ func TestConversationDoesNotPersistBeforeTheSinkIsSet(t *testing.T) {
 		t.Errorf("persisted %v, want only the message appended after the sink", written)
 	}
 }
+
+// SetTools (mcp_gaps #5): a swap from outside the turn loop lands under the
+// agent mutex and is visible to the next request build, while a snapshot
+// taken before stays consistent.
+func TestSetToolsSwapsAtASafePoint(t *testing.T) {
+	a := New("s", nil, "m", tools.Set{{Name: "old"}}, NewConversation("system"))
+	if _, ok := a.toolSet().Find("old"); !ok {
+		t.Fatal("initial tool set missing")
+	}
+	a.SetTools(tools.Set{{Name: "new"}})
+	if _, ok := a.toolSet().Find("old"); ok {
+		t.Error("old tool survived the swap")
+	}
+	if _, ok := a.toolSet().Find("new"); !ok {
+		t.Error("new tool missing after the swap")
+	}
+}

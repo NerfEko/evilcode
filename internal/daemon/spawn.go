@@ -109,6 +109,11 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		s.releaseName(store.Name)
 		return nil, err
 	}
+	if mcpClient != nil {
+		// Same tools/list_changed refresh as the main session (mcp_gaps #5).
+		ag := built.Agent
+		mcpClient.OnToolsChanged(func(ts tools.Set) { ag.SetTools(ts) })
+	}
 	var hooks agent.Chain
 	if existing, ok := built.Agent.Hooks.(agent.Chain); ok {
 		hooks = append(hooks, existing...)

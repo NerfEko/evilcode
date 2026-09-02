@@ -356,6 +356,12 @@ func runOnce(args []string) (string, error) {
 	ts = append(ts, tools.NewLSP(lsps))
 	ts = append(ts, mcpClient.Tools()...)
 	a.Tools = ts
+	if len(cfg.MCP) > 0 {
+		// A server that announced tools/list_changed mid-session refreshes the
+		// local agent's definitions at the next safe point (mcp_gaps #5). `a`
+		// is final here, so the closure needs no synchronization.
+		mcpClient.OnToolsChanged(func(updated tools.Set) { a.SetTools(updated) })
+	}
 
 	limits := config.ContextLimitsFor(prov, modelName, overrides.ContextWindow)
 	a.NumCtx = limits.ContextWindow

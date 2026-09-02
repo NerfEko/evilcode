@@ -387,6 +387,26 @@ func (a *Agent) SetToolPolicy(policy *tools.ToolPolicy) {
 	a.mu.Unlock()
 }
 
+// SetTools swaps the agent's tool set. It is called from outside the turn
+// loop — an MCP server that announced tools/list_changed mid-session — and is
+// the safe-point update: the swap itself is atomic under the agent mutex, so
+// a request in flight keeps the definitions it was built with and the next
+// request picks the new set up. A tool the model already emitted a call for
+// that the new set no longer has is answered with the unknown-tool error,
+// which the model can read and route around.
+func (a *Agent) SetTools(ts tools.Set) {
+	a.mu.Lock()
+	a.Tools = ts
+	a.mu.Unlock()
+}
+
+// toolSet snapshots the current tool set for the per-request reads.
+func (a *Agent) toolSet() tools.Set {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.Tools
+}
+
 func (a *Agent) currentToolPolicy() *tools.ToolPolicy {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -695,7 +715,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		// the response carried no structured calls, and only with strict
 		// name/schema validation so ordinary prose cannot misfire.
 		if a.LenientToolParse && len(msg.ToolCalls) == 0 {
-			if calls, stripped, ok := parseLenientToolCalls(msg.Content, a.Tools); ok {
+			if calls, stripped, ok := parseLenientToolCalls(msg.Content, a.toolSet()); ok {
 				msg.ToolCalls = calls
 				msg.Content = stripped
 			}
@@ -881,7 +901,7 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 		Model:           a.Model,
 		SessionID:       a.Session,
 		Messages:        a.Conv.MessagesForModel(),
-		Tools:           toolDefs(a.Tools),
+		Tools:           toolDefs(a.toolSet()),
 		NumCtx:          a.NumCtx,
 		ReasoningEffort: a.configuredReasoningEffort(),
 	}
@@ -1003,7 +1023,7 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.ToolCall) error {
 		return nil
 	}
 
-	outcomes := a.Tools.RunBatchWithPolicy(ctx, batch, a.currentToolPolicy())
+	outcomes := a.toolSet().RunBatchWithPolicy(ctx, batch, a.currentToolPolicy())
 
 	// Answer every call even when the round was cancelled. Returning early left
 	// the assistant's tool_calls unanswered in the conversation and in the
