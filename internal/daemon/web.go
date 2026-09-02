@@ -127,6 +127,13 @@ func (w *webState) mux(s *Server) http.Handler {
 	mux.HandleFunc("GET /manifest.webmanifest", s.webManifest(manifestTmpl))
 	mux.HandleFunc("GET /api/status", s.webAPIStatus)
 	mux.HandleFunc("GET /api/sessions", s.webAPISessions)
+	mux.HandleFunc("GET /api/sessions/{name}", s.webAPISession)
+	// Anything else under /api/ — unknown routes, cleaned-away paths like
+	// "/api/sessions/.." — answers the uniform error shape rather than the
+	// mux's plain-text 404, so clients have exactly one failure format.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		webErrorf(w, http.StatusNotFound, "no such API route: %s %s", r.Method, r.URL.Path)
+	})
 
 	auth := &webAuth{token: w.token, addr: w.addr}
 	return securityHeaders(auth.wrap(gzipJSON(mux)))

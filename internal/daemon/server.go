@@ -1562,29 +1562,7 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 	cfg := sess.built.Config.Clone()
 	sess.mu.Unlock()
 	msgs := sess.built.Agent.Conv.Messages()
-	out := make([]Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role == provider.RoleSystem || (m.Content == "" && len(m.ToolCalls) == 0 && m.ToolName == "") {
-			continue
-		}
-		out = append(out, Message{
-			Role:          string(m.Role),
-			Content:       m.Content,
-			Reasoning:     m.Reasoning,
-			ToolCalls:     m.ToolCalls,
-			ProviderItems: m.ProviderItems,
-			ToolCallID:    m.ToolCallID,
-			ToolName:      m.ToolName,
-			IsError:       m.IsError,
-			Held:          m.Held,
-			// No image bytes: history is never re-rendered from its bytes,
-			// and a 20 MiB image would push the attach frame far past the
-			// client's 8 MiB scanner limit (R2-01).
-			Images:  nil,
-			Hidden:  m.Hidden,
-			Repairs: m.Repairs,
-		})
-	}
+	out := shapeConversationMessages(msgs)
 	levels := provider.ReasoningEffortLevelsForProvider(
 		prov, agentModel)
 	levelNames := make([]string, 0, len(levels))
@@ -1653,6 +1631,38 @@ func containsReasoningEffort(levels []provider.ReasoningEffort, want provider.Re
 		}
 	}
 	return false
+}
+
+// shapeConversationMessages flattens provider messages to the wire Message the
+// socket snapshot and the web surface share: the system preamble and empty
+// entries are dropped, and image bytes never travel (history is never
+// re-rendered from its bytes, and one 20 MiB image would push an attach or
+// history frame far past the client's 8 MiB limit, R2-01). Every caller that
+// turns a conversation into a client payload goes through this one function —
+// a renderer-visible difference between snapshot and stored history would be a
+// bug waiting to happen.
+func shapeConversationMessages(msgs []provider.Message) []Message {
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == provider.RoleSystem || (m.Content == "" && len(m.ToolCalls) == 0 && m.ToolName == "") {
+			continue
+		}
+		out = append(out, Message{
+			Role:          string(m.Role),
+			Content:       m.Content,
+			Reasoning:     m.Reasoning,
+			ToolCalls:     m.ToolCalls,
+			ProviderItems: m.ProviderItems,
+			ToolCallID:    m.ToolCallID,
+			ToolName:      m.ToolName,
+			IsError:       m.IsError,
+			Held:          m.Held,
+			Images:        nil,
+			Hidden:        m.Hidden,
+			Repairs:       m.Repairs,
+		})
+	}
+	return out
 }
 
 // Input starts a turn. A turn already in flight is queued, which gives every

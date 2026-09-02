@@ -3,9 +3,17 @@ package daemon
 import (
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"evilcode/internal/config"
+	"evilcode/internal/provider"
+	"evilcode/internal/session"
 )
 
 // The read-only API surface (plan-web.md §4): handlers call the same code the
@@ -48,11 +56,9 @@ func gzipJSON(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
-		gw := &gzipResponseWriter{ResponseWriter: w, gz: gz}
+		gw := &gzipResponseWriter{ResponseWriter: w, gz: gzip.NewWriter(w)}
+		defer gw.close()
 		next.ServeHTTP(gw, r)
-		gw.close()
 	})
 }
 
@@ -91,6 +97,118 @@ func (g *gzipResponseWriter) close() {
 		g.gz.Close()
 	}
 }
+
+// webErrorf is webError with formatting: uniform body, caller picks the code.
+func webErrorf(w http.ResponseWriter, code int, format string, args ...any) {
+	webError(w, code, fmt.Sprintf(format, args...))
+}
+
+// webAPISession serves one session (§4): a live one renders exactly what a
+// just-attached TUI gets — Session.snapshot() — while a stored one is metadata
+// plus durable history, marked read-only. A stored session is never booted
+// here: viewing it must not build an agent, load tools, or spend a model call.
+func (s *Server) webAPISession(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := session.ValidName(name); err != nil {
+		// The name is client input, but an invalid one can never name a
+		// session, so it is a 404 rather than a 400: there is nothing to
+		// correct, the resource does not exist.
+		webErrorf(w, http.StatusNotFound, "no session named %q", name)
+		return
+	}
+	if sess := s.lookupLiveSession(name); sess != nil {
+		writeJSON(w, sess.snapshot())
+		return
+	}
+	view, err := s.storedSessionView(name)
+	if err != nil {
+		webErrorf(w, http.StatusNotFound, "no session named %q", name)
+		return
+	}
+	writeJSON(w, view)
+}
+
+// lookupLiveSession returns the hydrated runtime for name, or nil.
+func (s *Server) lookupLiveSession(name string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions[name]
+}
+
+// webStoredHistoryCap bounds the history embedded in a stored session view.
+// The full log stays reachable through the /messages pager; a stored session
+// viewed read-only needs enough to render, not necessarily all of it.
+const webStoredHistoryCap = 200
+
+// StoredSession is the read-only view of a session nobody has hydrated.
+type StoredSession struct {
+	Session SessionInfo `json:"session"`
+	// Messages is the durable conversation, newest window capped at
+	// webStoredHistoryCap; Truncated says older pages exist behind
+	// /api/sessions/{name}/messages.
+	Messages  []Message `json:"messages,omitempty"`
+	Truncated bool      `json:"truncated,omitempty"`
+}
+
+// storedSessionView reads a stored session's metadata and history straight
+// from the durable log. No runtime is built, no store is opened for append,
+// and no session lock is held across the read (§6).
+func (s *Server) storedSessionView(name string) (*StoredSession, error) {
+	info, err := session.Describe(config.DataDir(), name)
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := s.sessionLogMessages(name)
+	if err != nil {
+		return nil, err
+	}
+	shaped := shapeConversationMessages(msgs)
+	truncated := false
+	if len(shaped) > webStoredHistoryCap {
+		shaped = shaped[len(shaped)-webStoredHistoryCap:]
+		truncated = true
+	}
+	return &StoredSession{
+		Session: SessionInfo{
+			Name:     info.Name,
+			Model:    info.Model,
+			Cwd:      info.Cwd,
+			Title:    info.Title,
+			Modified: info.Modified,
+			Crashed:  info.Crashed,
+			Stored:   true,
+			Live:     false,
+			Messages: info.Messages,
+		},
+		Messages:  shaped,
+		Truncated: truncated,
+	}, nil
+}
+
+// sessionLogMessages loads a session's durable conversation through the
+// resume-path loader — the same session.Messages call a resume uses, so the
+// log's only parser stays in internal/session. The one retry covers reads that
+// race a compact/rewind (the log is rewritten by rename, so a reader can catch
+// the file mid-swap or briefly missing) and a torn line an append just
+// landed (§6). Never call this while holding sess.mu.
+func (s *Server) sessionLogMessages(name string) ([]provider.Message, error) {
+	// ValidName has already run in every caller; the join mirrors pathFor.
+	path := filepath.Join(session.Dir(config.DataDir()), name+".jsonl")
+	msgs, err := session.Messages(path)
+	if err != nil && !os.IsNotExist(err) {
+		time.Sleep(webTornReadRetryDelay)
+		msgs, err = session.Messages(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}
+
+// webTornReadRetryDelay gives a concurrent compact-or-append a moment to
+// finish before the one retry. Small enough to keep a 404 snappy, long enough
+// to clear the narrow rename window.
+const webTornReadRetryDelay = 25 * time.Millisecond
 
 // intQuery parses a non-negative integer query parameter, returning def when
 // absent, malformed, or negative. Malformed input degrades to the default

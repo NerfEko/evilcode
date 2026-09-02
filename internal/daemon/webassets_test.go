@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,7 +9,12 @@ import (
 	"testing"
 )
 
-// authedWebGet fetches a web path with the server's own token as a bearer.
+// webClient disables the transport's transparent gzip so tests see exactly
+// what the server sent, the way a browser would before it decodes.
+var webClient = &http.Client{Transport: &http.Transport{DisableCompression: true}}
+
+// authedWebGet fetches a web path with the server's own token as a bearer and
+// decodes any Content-Encoding the server applied.
 func authedWebGet(t *testing.T, srv *Server, addr, path string) *http.Response {
 	t.Helper()
 	tok, _, err := loadOrMintWebToken(srv.webTokenPath())
@@ -20,11 +26,22 @@ func authedWebGet(t *testing.T, srv *Server, addr, path string) *http.Response {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			t.Fatalf("GET %s: advertised gzip is not gzip: %v", path, err)
+		}
+		body, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("GET %s: gunzip: %v", path, err)
+		}
+		resp.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
 	return resp
 }
 
