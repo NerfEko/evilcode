@@ -5,6 +5,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -89,6 +90,28 @@ type WebConfig struct {
 	// must be guarded like a password.
 	OllamaSessionCookie string `toml:"ollama_session_cookie"`
 }
+
+// WebUIConfig configures the daemon's optional HTTP surface (plan-web.md §10).
+// It is deliberately a separate table from WebConfig, which holds
+// web-capability credentials: this one configures a server the daemon runs.
+type WebUIConfig struct {
+	// Enabled starts the web listener alongside the unix socket. Off by
+	// default; `serve -web` overrides it to true for one run.
+	Enabled bool `toml:"enabled"`
+
+	// Addr is the HTTP bind address, host:port. Empty uses DefaultWebUIAddr.
+	// The default is loopback-only: the blessed remote path is a loopback bind
+	// reached through Tailscale, not a bind on a LAN interface.
+	Addr string `toml:"addr"`
+
+	// Workspaces is the cwd menu the web UI offers when creating a session.
+	// Empty means the daemon's own working directory only — the server never
+	// browses directories on a browser's behalf (plan-web.md decision 6).
+	Workspaces []string `toml:"workspaces"`
+}
+
+// DefaultWebUIAddr is the loopback bind used when [webui].addr is unset.
+const DefaultWebUIAddr = "127.0.0.1:7749"
 
 // ModelConfig is an optional `[[model]]` block carrying per-model overrides
 // that the provider cannot report.
@@ -241,6 +264,7 @@ type Config struct {
 	Features       Features          `toml:"features"`
 	Keybindings    map[string]string `toml:"keybindings"`
 	Web            WebConfig         `toml:"web"`
+	WebUI          WebUIConfig       `toml:"webui"`
 
 	// Dictate is the speech-to-text command `evilcode dictate` runs. A command
 	// rather than a bundled engine: STT setups are personal — a local
@@ -294,6 +318,7 @@ func Default() *Config {
 		// discover after the fact. `memory = true` in the config turns it on.
 		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false},
 	}
+	c.WebUI.Addr = DefaultWebUIAddr
 	c.DefaultModel = c.preferredDefaultModel()
 	// deepseek-v4-flash:0731 is a thinking model, so the default routes pin
 	// reasoning effort to high for both the cloud and local routes. A user's
@@ -1184,6 +1209,7 @@ func (c *Config) Validate() error {
 
 	validateCommand("dictate", c.Dictate, false, add)
 	validateLSP(c.LSP, add)
+	validateWebUI(&c.WebUI, add)
 
 	if len(problems) == 0 {
 		return nil
@@ -1218,6 +1244,45 @@ var validOverscrollModes = map[string]bool{
 
 var validThinkingDisplays = map[string]bool{
 	"off": true, "full": true, "current": true,
+}
+
+// validateWebUI checks the [webui] table. An empty addr is legal (it means the
+// default); anything set must parse as host:port with an explicit usable port,
+// because a daemon that binds port 0 silently moves every restart and the web
+// token URL would never survive. Workspaces are the create-session menu, so
+// each entry must be an absolute path — a relative one would resolve against
+// whatever directory the daemon happened to start in.
+func validateWebUI(w *WebUIConfig, add func(path, message string)) {
+	if w.Addr != "" {
+		host, port, err := net.SplitHostPort(w.Addr)
+		if err != nil {
+			add("webui.addr", fmt.Sprintf("must be host:port (e.g. %s)", DefaultWebUIAddr))
+		} else {
+			n, perr := strconv.Atoi(port)
+			if perr != nil || n < 1 || n > 65535 {
+				add("webui.addr", fmt.Sprintf("port %q is not a usable TCP port (1-65535)", port))
+			}
+			if strings.TrimSpace(host) == "" {
+				add("webui.addr", "must name a host (use 127.0.0.1 for loopback, 0.0.0.0 for all interfaces)")
+			}
+		}
+	}
+	seen := make(map[string]bool, len(w.Workspaces))
+	for i, ws := range w.Workspaces {
+		path := fmt.Sprintf("webui.workspaces[%d]", i)
+		if strings.TrimSpace(ws) == "" {
+			add(path, "must not be empty")
+			continue
+		}
+		if !filepath.IsAbs(ws) {
+			add(path, "must be an absolute path")
+			continue
+		}
+		if seen[filepath.Clean(ws)] {
+			add(path, fmt.Sprintf("duplicates an earlier entry (%s)", filepath.Clean(ws)))
+		}
+		seen[filepath.Clean(ws)] = true
+	}
 }
 
 func validConfigName(value string) bool {

@@ -128,6 +128,7 @@ func (c *Config) Clone() *Config {
 		out.MCP[i].Env = append([]string(nil), c.MCP[i].Env...)
 	}
 	out.Dictate = append([]string(nil), c.Dictate...)
+	out.WebUI.Workspaces = append([]string(nil), c.WebUI.Workspaces...)
 	if c.Keybindings != nil {
 		out.Keybindings = make(map[string]string, len(c.Keybindings))
 		for k, v := range c.Keybindings {

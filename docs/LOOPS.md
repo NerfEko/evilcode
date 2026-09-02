@@ -7830,3 +7830,17 @@ never taken as the subcommand, so it reaches the tui flag parser instead of
 the `help` case — pre-existing dispatch behavior, not a property of this
 build; `./evilcode help` is the form that works.
 
+## 2026-08-24 web-1 P1.1 — [webui] config table
+
+Done: `WebUIConfig` (`enabled`, `addr`, `workspaces`) beside the
+credentials-only `[web]` table, `DefaultWebUIAddr = 127.0.0.1:7749`,
+`validateWebUI` (addr must parse host:port with port 1-65535 and a named host;
+workspaces must be absolute, non-empty, deduped by cleaned path),
+`Config.Clone` copies the workspaces slice.
+
+Verified: `TestWebUIDefaultsAreLoopbackAndOff`, `TestValidateWebUI` (12 cases),
+`TestValidateWebUIRoundTripsTOML`, `TestConfigCloneCopiesWebUIWorkspaces`;
+`go build ./... && go vet && go test ./internal/config/` green.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
+

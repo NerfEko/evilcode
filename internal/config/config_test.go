@@ -1374,3 +1374,100 @@ func TestMCPURLOrCommandExclusive(t *testing.T) {
 		}
 	}
 }
+
+func TestWebUIDefaultsAreLoopbackAndOff(t *testing.T) {
+	cfg := Default()
+	if cfg.WebUI.Enabled {
+		t.Error("the web UI must be off by default")
+	}
+	if cfg.WebUI.Addr != DefaultWebUIAddr {
+		t.Errorf("default web addr = %q, want %q", cfg.WebUI.Addr, DefaultWebUIAddr)
+	}
+	if cfg.WebUI.Addr != "127.0.0.1:7749" {
+		t.Errorf("default web addr %q is not the loopback bind the plan locks in", cfg.WebUI.Addr)
+	}
+	if len(cfg.WebUI.Workspaces) != 0 {
+		t.Errorf("default workspaces = %v, want empty", cfg.WebUI.Workspaces)
+	}
+}
+
+func TestValidateWebUI(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			DefaultModel: "m@a",
+			Providers:    []ProviderConfig{{Name: "a", Kind: KindOllama}},
+		}
+	}
+	if err := base().Validate(); err != nil {
+		t.Fatalf("config without [webui] rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		set  func(c *Config)
+		path string
+	}{
+		{"empty addr means default", func(c *Config) { c.WebUI.Addr = "" }, ""},
+		{"explicit loopback", func(c *Config) { c.WebUI.Addr = "127.0.0.1:7749" }, ""},
+		{"tailscale loopback", func(c *Config) { c.WebUI.Addr = "100.64.0.1:7749" }, ""},
+		{"no port", func(c *Config) { c.WebUI.Addr = "127.0.0.1" }, "webui.addr"},
+		{"garbage", func(c *Config) { c.WebUI.Addr = "not an addr" }, "webui.addr"},
+		{"port zero", func(c *Config) { c.WebUI.Addr = "127.0.0.1:0" }, "webui.addr"},
+		{"port too big", func(c *Config) { c.WebUI.Addr = "127.0.0.1:99999" }, "webui.addr"},
+		{"no host", func(c *Config) { c.WebUI.Addr = ":7749" }, "webui.addr"},
+		{"relative workspace", func(c *Config) { c.WebUI.Workspaces = []string{"relative/dir"} }, "webui.workspaces[0]"},
+		{"empty workspace", func(c *Config) { c.WebUI.Workspaces = []string{"  "} }, "webui.workspaces[0]"},
+		{"absolute workspaces", func(c *Config) { c.WebUI.Workspaces = []string{"/home/eko/proj", "/tmp/sandbox"} }, ""},
+		{"duplicate workspaces", func(c *Config) { c.WebUI.Workspaces = []string{"/a/b", "/a/b/"} }, "webui.workspaces[1]"},
+	} {
+		cfg := base()
+		tt.set(cfg)
+		err := cfg.Validate()
+		if tt.path == "" {
+			if err != nil {
+				t.Errorf("%s: rejected: %v", tt.name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: accepted, want an error naming %s", tt.name, tt.path)
+			continue
+		}
+		if !strings.Contains(err.Error(), tt.path) {
+			t.Errorf("%s: error does not name %s: %v", tt.name, tt.path, err)
+		}
+	}
+}
+
+func TestValidateWebUIRoundTripsTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[webui]
+enabled = true
+addr = "127.0.0.1:7799"
+workspaces = ["/home/eko/proj"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("webui config rejected: %v", err)
+	}
+	if !cfg.WebUI.Enabled || cfg.WebUI.Addr != "127.0.0.1:7799" {
+		t.Errorf("decoded webui = %+v", cfg.WebUI)
+	}
+	if len(cfg.WebUI.Workspaces) != 1 || cfg.WebUI.Workspaces[0] != "/home/eko/proj" {
+		t.Errorf("decoded workspaces = %v", cfg.WebUI.Workspaces)
+	}
+}
+
+func TestConfigCloneCopiesWebUIWorkspaces(t *testing.T) {
+	original := &Config{WebUI: WebUIConfig{Workspaces: []string{"/a"}}}
+	clone := original.Clone()
+	clone.WebUI.Workspaces[0] = "/b"
+	clone.WebUI.Workspaces = append(clone.WebUI.Workspaces, "/c")
+	if original.WebUI.Workspaces[0] != "/a" || len(original.WebUI.Workspaces) != 1 {
+		t.Errorf("clone mutated the original's workspaces: %v", original.WebUI.Workspaces)
+	}
+}
