@@ -7566,3 +7566,30 @@ succeed; `timeout_seconds` round-trips TOML and validates in
 Verified: `go test ./internal/mcp/... ./internal/config/... -count=1` and the
 full `go test ./... -count=1` green.
 
+## 2026-09-01 — MCP gap 2: map every content type and structured results
+
+`mcp_gaps.md` #2 (High). `Server.call` kept only `*sdk.TextContent` and never
+read `StructuredContent`, so images, audio, embedded resources, resource
+links, and structured output vanished — a successful image-only tool returned
+an empty success no consumer could use.
+
+Done. `mapResult` maps the full protocol surface into `tools.Result`: text is
+output; image content and image blobs in embedded resources ride
+`tools.Result.Images`, which already reaches vision models and the UI; audio
+attachments, resource links, and opaque blobs are named in the output (mime
+type and size) instead of vanishing; and a content type this SDK build does
+not know is a hard error naming the tool and the type — a server that
+half-answers must not read as a success. `StructuredContent` follows
+SEP-2106: with no text it becomes the output; with text it rides
+`Result.Display` as display metadata, so the payload is preserved without the
+model paying for the same data twice.
+
+Tests: image bytes attach raw (the SDK base64-decodes on the wire) with an
+output note; structured-only output; structured-with-text kept as display;
+audio and resource links named; embedded text/blob mapping including an
+image-mime blob attaching as an image; empty results stay empty successes;
+`tool_use` content fails loudly.
+
+Verified: `go test ./internal/mcp/... -count=1` and the full
+`go test ./... -count=1` green.
+

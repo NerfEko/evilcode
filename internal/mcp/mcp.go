@@ -195,24 +195,92 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (t
 		return tools.Result{}, err
 	}
 
+	out, err := s.mapResult(name, res)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	if res.IsError {
+		// An MCP error is information the model can act on, so it comes back
+		// as a tool error rather than a transport failure.
+		if out.Output == "" {
+			out.Output = "the server reported an error"
+		}
+		return out, fmt.Errorf("%s", out.Output)
+	}
+	return out, nil
+}
+
+// mapResult converts one MCP CallToolResult into evilcode's tools.Result.
+//
+// Every content type the protocol allows is mapped: text becomes output,
+// images ride tools.Result.Images so a vision model and the UI can use them,
+// audio and opaque blobs are named rather than silently dropped, and a
+// content type this SDK build does not know is a hard error — a server that
+// half-answers must not read as a success.
+func (s *Server) mapResult(name string, res *sdk.CallToolResult) (tools.Result, error) {
 	var b strings.Builder
+	var images [][]byte
 	for _, content := range res.Content {
-		if text, ok := content.(*sdk.TextContent); ok {
-			b.WriteString(text.Text)
+		switch c := content.(type) {
+		case nil:
+			continue
+		case *sdk.TextContent:
+			b.WriteString(c.Text)
 			b.WriteByte('\n')
+		case *sdk.ImageContent:
+			images = append(images, c.Data)
+			fmt.Fprintf(&b, "[image #%d attached: %s, %d bytes]\n", len(images), c.MIMEType, len(c.Data))
+		case *sdk.AudioContent:
+			fmt.Fprintf(&b, "[audio attachment: %s, %d bytes — audio cannot be played in this harness]\n",
+				c.MIMEType, len(c.Data))
+		case *sdk.ResourceLink:
+			title := c.Title
+			if title == "" {
+				title = c.Name
+			}
+			fmt.Fprintf(&b, "[resource link] %s — %s\n", title, c.URI)
+		case *sdk.EmbeddedResource:
+			if c.Resource == nil {
+				continue
+			}
+			if c.Resource.Text != "" {
+				b.WriteString(c.Resource.Text)
+				b.WriteByte('\n')
+				continue
+			}
+			if len(c.Resource.Blob) > 0 && strings.HasPrefix(c.Resource.MIMEType, "image/") {
+				images = append(images, c.Resource.Blob)
+				fmt.Fprintf(&b, "[image #%d attached: %s, %d bytes]\n", len(images), c.Resource.MIMEType, len(c.Resource.Blob))
+				continue
+			}
+			fmt.Fprintf(&b, "[embedded resource: %s (%s), %d bytes]\n",
+				c.Resource.URI, c.Resource.MIMEType, len(c.Resource.Blob))
+		default:
+			return tools.Result{}, fmt.Errorf(
+				"mcp tool %s__%s returned content of unsupported type %T",
+				s.Name, name, content)
 		}
 	}
 	out := strings.TrimRight(b.String(), "\n")
 
-	if res.IsError {
-		// An MCP error is information the model can act on, so it comes back
-		// as a tool error rather than a transport failure.
-		if out == "" {
-			out = "the server reported an error"
+	// Structured content is the machine-readable twin of the text (SEP-2106:
+	// the two should mirror each other). When the server sent no text at all,
+	// the JSON becomes the output; when both arrived, the text is what the
+	// model reads and the JSON rides as display metadata instead of being
+	// paid for twice in the context window.
+	if res.StructuredContent != nil {
+		raw, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			return tools.Result{}, fmt.Errorf("mcp tool %s__%s: structured content is not representable as JSON: %w",
+				s.Name, name, err)
 		}
-		return tools.Result{Output: out}, fmt.Errorf("%s", out)
+		if out == "" {
+			out = string(raw)
+		} else {
+			return tools.Result{Output: out, Images: images, Intent: s.Name + " · " + name, Display: raw}, nil
+		}
 	}
-	return tools.Result{Output: out, Intent: s.Name + " · " + name}, nil
+	return tools.Result{Output: out, Images: images, Intent: s.Name + " · " + name}, nil
 }
 
 // Tools returns every connected server's tools.
