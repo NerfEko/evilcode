@@ -7667,3 +7667,27 @@ green. One pre-existing flake observed ~1-in-3 under full-suite load:
 `TestConcurrentStartsOnAStaleSocketLeaveOneReachable` (daemon socket
 lifecycle, untouched by this work; passes in isolation and with `-count=3`).
 
+## 2026-09-01 — MCP gap 4: hosted servers connect over streamable HTTP
+
+`mcp_gaps.md` #4 (Medium). `connectOne` used `sdk.CommandTransport`
+exclusively, so only servers that run as local subprocesses could be
+configured at all.
+
+Done. `mcp[].url` is an alternative to `command`: connectOne selects the
+SDK's `StreamableClientTransport` for a URL and the stdio transport for a
+command, with the same non-fatal connect semantics (an absent endpoint is
+reported and the session starts anyway). Config validation enforces exactly
+one of the two, runs URL servers through the same endpoint rules as provider
+URLs (scheme, credentials, port), and rejects `args`/`env` on a url server —
+stdio-only concepts must not silently do nothing. `timeout_seconds` applies
+to both transports; the notification handler (gap 5) is registered the same
+way either way.
+
+Tests: an end-to-end call against the SDK's `StreamableHTTPHandler` behind
+httptest reaches a tool over HTTP and closes cleanly; a refused port is
+exactly one reported error with no tools contributed; both/none transports
+are refused by `connectOne`; the eight config validation cases.
+
+Verified: `go test ./internal/config/... ./internal/mcp/... -count=1` and the
+full `go test ./... -count=1` green.
+

@@ -197,8 +197,11 @@ type Features struct {
 
 // MCPServer is one `[[mcp]]` block.
 type MCPServer struct {
-	Name    string   `toml:"name"`
+	Name string `toml:"name"`
+	// Command starts a stdio server; URL points at a remote one
+	// (streamable HTTP). Exactly one is required.
 	Command string   `toml:"command"`
+	URL     string   `toml:"url"`
 	Args    []string `toml:"args"`
 	Env     []string `toml:"env"`
 
@@ -1144,13 +1147,34 @@ func (c *Config) Validate() error {
 				mcpNames[server.Name] = i
 			}
 		}
-		validateCommand(path+".command", []string{server.Command}, true, add)
-		for j, arg := range server.Args {
-			if strings.ContainsRune(arg, '\x00') {
-				add(fmt.Sprintf("%s.args[%d]", path, j), "must not contain NUL")
+		if server.Command == "" && server.URL == "" {
+			add(path, "must set command or url")
+		} else if server.Command != "" && server.URL != "" {
+			add(path, "must set command or url, not both")
+		}
+		if server.Command != "" {
+			validateCommand(path+".command", []string{server.Command}, true, add)
+			for j, arg := range server.Args {
+				if strings.ContainsRune(arg, '\x00') {
+					add(fmt.Sprintf("%s.args[%d]", path, j), "must not contain NUL")
+				}
+			}
+			validateEnvAssignments(path+".env", server.Env, add)
+		} else {
+			// A url server runs elsewhere; args and env are stdio-only concepts
+			// and must not silently do nothing.
+			if len(server.Args) > 0 {
+				add(path+".args", "applies only to command servers")
+			}
+			if len(server.Env) > 0 {
+				add(path+".env", "applies only to command servers")
 			}
 		}
-		validateEnvAssignments(path+".env", server.Env, add)
+		if server.URL != "" {
+			if msg := validateProviderURL(server.URL); msg != "" {
+				add(path+".url", msg)
+			}
+		}
 		if server.TimeoutSeconds < 0 {
 			add(path+".timeout_seconds", "must not be negative")
 		} else if server.TimeoutSeconds > maxMCPCallSeconds {

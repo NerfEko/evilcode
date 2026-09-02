@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -483,4 +485,65 @@ func toolsSetNames(ts tools.Set) []string {
 		out[i] = t.Name
 	}
 	return out
+}
+
+// Gap 4: a url-configured server connects over streamable HTTP.
+func TestConnectViaStreamableHTTP(t *testing.T) {
+	server := newTestServer(t, "http", func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "over http"}}}, nil
+	}, nil)
+	httpSrv := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
+	defer httpSrv.Close()
+
+	c := New()
+	for _, err := range c.Connect(context.Background(), []ServerConfig{{Name: "srv", URL: httpSrv.URL}}) {
+		t.Fatalf("connect reported: %v", err)
+	}
+	set := c.Tools()
+	tool, ok := set.Find("srv__echo")
+	if !ok {
+		t.Fatalf("srv__echo missing from %v", set.Names())
+	}
+	res, err := tool.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("call over http: %v", err)
+	}
+	if res.Output != "over http" {
+		t.Errorf("Output = %q, want %q", res.Output, "over http")
+	}
+	c.Close()
+}
+
+// A url server that is absent is reported, not fatal — the same non-fatal
+// connect semantics as a missing binary.
+func TestConnectViaHTTPReportsAnAbsentServer(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	httpSrv.Close() // close first: the port now refuses connections
+
+	c := New()
+	errs := c.Connect(context.Background(), []ServerConfig{{Name: "absent", URL: httpSrv.URL}})
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly the absent-server report", errs)
+	}
+	if len(c.Tools()) != 0 {
+		t.Error("a failed server contributed tools")
+	}
+	c.Close()
+}
+
+// A server configured with both command and url is a config validation error
+// and connectOne refuses it too.
+func TestConnectRejectsAmbiguousTransport(t *testing.T) {
+	_, err := connectOne(context.Background(), ServerConfig{
+		Name: "srv", Command: "echo", URL: "http://localhost:1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("connectOne error = %v, want the ambiguity diagnostic", err)
+	}
+	_, err = connectOne(context.Background(), ServerConfig{Name: "srv"})
+	if err == nil || !strings.Contains(err.Error(), "no command or url") {
+		t.Fatalf("connectOne error = %v, want the missing-transport diagnostic", err)
+	}
 }

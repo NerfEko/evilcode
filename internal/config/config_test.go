@@ -1338,3 +1338,39 @@ func containsAll(text string, values ...string) bool {
 	}
 	return true
 }
+
+// Gap 4: a url server is an alternative to command, never a companion; args
+// and env belong to stdio only.
+func TestMCPURLOrCommandExclusive(t *testing.T) {
+	cases := []struct {
+		name   string
+		server MCPServer
+		path   string
+		wantOK bool
+	}{
+		{"command only", MCPServer{Name: "docs", Command: "mcp-docs"}, "", true},
+		{"url only", MCPServer{Name: "docs", URL: "https://example.test/mcp"}, "", true},
+		{"neither", MCPServer{Name: "docs"}, "mcp[0]", false},
+		{"both", MCPServer{Name: "docs", Command: "mcp-docs", URL: "https://example.test/mcp"}, "mcp[0]", false},
+		{"bad url", MCPServer{Name: "docs", URL: "not a url"}, "mcp[0].url", false},
+		{"args with url", MCPServer{Name: "docs", URL: "https://example.test/mcp", Args: []string{"x"}}, "mcp[0].args", false},
+		{"env with url", MCPServer{Name: "docs", URL: "https://example.test/mcp", Env: []string{"A=1"}}, "mcp[0].env", false},
+		{"url with timeout", MCPServer{Name: "docs", URL: "https://example.test/mcp", TimeoutSeconds: 30}, "", true},
+	}
+	for _, tt := range cases {
+		cfg := Config{DefaultModel: "m@a", Providers: []ProviderConfig{{Name: "a", Kind: KindOllama}}, MCP: []MCPServer{tt.server}}
+		err := cfg.Validate()
+		if tt.wantOK && err != nil {
+			t.Errorf("%s: rejected: %v", tt.name, err)
+		}
+		if !tt.wantOK {
+			if err == nil {
+				t.Errorf("%s: accepted", tt.name)
+				continue
+			}
+			if tt.path != "" && !strings.Contains(err.Error(), tt.path) {
+				t.Errorf("%s: error does not name %s: %v", tt.name, tt.path, err)
+			}
+		}
+	}
+}

@@ -165,7 +165,7 @@ func runOnce(args []string) (string, error) {
 	var mcpServers []mcp.ServerConfig
 	for _, srv := range cfg.MCP {
 		mcpServers = append(mcpServers, mcp.ServerConfig{
-			Name: srv.Name, Command: srv.Command, Args: srv.Args, Env: srv.Env, Timeout: time.Duration(srv.TimeoutSeconds) * time.Second,
+			Name: srv.Name, Command: srv.Command, URL: srv.URL, Args: srv.Args, Env: srv.Env, Timeout: time.Duration(srv.TimeoutSeconds) * time.Second,
 		})
 	}
 	for _, err := range mcpClient.Connect(context.Background(), mcpServers) {

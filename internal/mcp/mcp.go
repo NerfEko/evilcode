@@ -25,10 +25,13 @@ import (
 
 // ServerConfig is one configured MCP server.
 type ServerConfig struct {
-	Name    string   `toml:"name"`
-	Command string   `toml:"command"`
-	Args    []string `toml:"args"`
-	Env     []string `toml:"env"`
+	Name string
+	// Command starts a stdio server; URL points at a remote one (streamable
+	// HTTP). Exactly one is set — config validation enforces it.
+	Command string
+	URL     string
+	Args    []string
+	Env     []string
 
 	// Timeout bounds one tool call. Zero means CallTimeout.
 	Timeout time.Duration
@@ -156,18 +159,15 @@ func serverEnv(cfg ServerConfig) []string {
 }
 
 func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
-	if cfg.Command == "" {
-		return nil, fmt.Errorf("no command configured")
+	if cfg.Command == "" && cfg.URL == "" {
+		return nil, fmt.Errorf("no command or url configured")
 	}
-	if _, err := exec.LookPath(cfg.Command); err != nil {
-		return nil, fmt.Errorf("%s is not installed", cfg.Command)
+	if cfg.Command != "" && cfg.URL != "" {
+		return nil, fmt.Errorf("set command or url, not both")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, ConnectTimeout)
 	defer cancel()
-
-	cmd := exec.Command(cfg.Command, cfg.Args...)
-	cmd.Env = serverEnv(cfg)
 
 	srv := &Server{Name: cfg.Name, timeout: callTimeoutOf(cfg)}
 	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode", Version: "0.1.0"}, &sdk.ClientOptions{
@@ -178,7 +178,23 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 			srv.scheduleReload()
 		},
 	})
-	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)
+
+	var transport sdk.Transport
+	if cfg.URL != "" {
+		// Hosted and remote servers speak streamable HTTP. The SDK's own
+		// reconnect-with-backoff covers a dropped stream; a server that is
+		// simply absent fails the connect and is reported like any other.
+		transport = &sdk.StreamableClientTransport{Endpoint: cfg.URL}
+	} else {
+		if _, err := exec.LookPath(cfg.Command); err != nil {
+			return nil, fmt.Errorf("%s is not installed", cfg.Command)
+		}
+		cmd := exec.Command(cfg.Command, cfg.Args...)
+		cmd.Env = serverEnv(cfg)
+		transport = &sdk.CommandTransport{Command: cmd}
+	}
+
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return nil, err
 	}
