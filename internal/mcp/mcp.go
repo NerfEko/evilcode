@@ -4,6 +4,16 @@
 // (plan.md §1.5). Everything here is about lifecycle and naming — connecting,
 // surviving a server that is not there, and giving MCP tools names that cannot
 // collide with the built-ins.
+//
+// Every daemon session — including each spawned worker — starts its own copy
+// of every configured server. That fan-out is deliberate: a session owns its
+// servers' lifetime (reconnect, close, status) with no cross-session
+// references to clean up, and one session's wedged server cannot take
+// another's down. The trade-off is linear scaling: N sessions mean N sets of
+// server processes and handshakes, and any server-side quota is consumed N
+// times. A shared per-daemon registry with per-session proxies is the place
+// that trade-off would be revisited if a user runs enough workers for it to
+// matter.
 package mcp
 
 import (
@@ -20,6 +30,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"evilcode/internal/buildinfo"
 	"evilcode/internal/tools"
 )
 
@@ -97,6 +108,11 @@ type Server struct {
 	connected     bool
 	lastConnErr   error
 	lastReloadErr error
+
+	// loadWarns holds per-tool diagnostics from the last load — a missing or
+	// unusable input schema — so a degraded catalog is visible on the status
+	// surface instead of silently degraded. Guarded by mu.
+	loadWarns []string
 
 	// connMu serializes reattach attempts: two calls discovering a dead
 	// transport must produce one new session, not two.
@@ -204,7 +220,11 @@ func (s *Server) attach(ctx context.Context) error {
 		return fmt.Errorf("mcp server %s is closed", s.Name)
 	}
 
-	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode", Version: "0.1.0"}, &sdk.ClientOptions{
+	client := sdk.NewClient(&sdk.Implementation{
+		// The build's real version, not a hardcoded placeholder: capability
+		// negotiation and server-side compatibility checks read it.
+		Name: "evilcode", Version: strings.TrimPrefix(buildinfo.Version, "v"),
+	}, &sdk.ClientOptions{
 		// A server that adds or removes tools mid-session (login flows,
 		// dynamic registries) must not stay stale until restart. The handler
 		// runs on the SDK's notification goroutine, so it only schedules.
@@ -350,6 +370,7 @@ func (s *Server) loadTools(ctx context.Context) error {
 func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) error {
 	var out []tools.Tool
 	seen := make(map[string]bool)
+	var warns []string
 	cursor := ""
 	for page := 1; ; page++ {
 		if page > maxListPages {
@@ -361,26 +382,16 @@ func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) 
 		}
 
 		for _, t := range res.Tools {
-			remote := t.Name
-			seen[remote] = true
-			schema := json.RawMessage(`{"type":"object","properties":{}}`)
-			if t.InputSchema != nil {
-				if raw, err := json.Marshal(t.InputSchema); err == nil {
-					schema = raw
-				}
+			tool, warn, err := s.assembleTool(t, seen)
+			if err != nil {
+				return err
 			}
-
-			out = append(out, tools.Tool{
-				// Namespaced so an MCP server can never shadow a built-in. A
-				// server that ships its own `read` must not silently replace the
-				// one the model has been taught to trust.
-				Name:   s.Name + "__" + remote,
-				Desc:   t.Description,
-				Schema: schema,
-				Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
-					return s.call(ctx, remote, args)
-				},
-			})
+			if warn != "" {
+				warns = append(warns, warn)
+			}
+			if tool.Name != "" {
+				out = append(out, tool)
+			}
 			if len(out) > maxListTools {
 				return fmt.Errorf("tool catalog exceeds %d tools; refusing to expose a truncated catalog", maxListTools)
 			}
@@ -398,8 +409,55 @@ func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) 
 
 	s.mu.Lock()
 	s.tools = out
+	s.loadWarns = warns
 	s.mu.Unlock()
 	return nil
+}
+
+// assembleTool adapts one listed tool, rejecting a duplicate remote name
+// outright — the set would otherwise keep the first while the server meant
+// the other — and naming a missing or unusable input schema instead of
+// silently substituting an empty one.
+func (s *Server) assembleTool(t *sdk.Tool, seen map[string]bool) (tools.Tool, string, error) {
+	remote := t.Name
+	if seen[remote] {
+		return tools.Tool{}, "", fmt.Errorf("tool %q is listed more than once; refusing the ambiguous catalog", remote)
+	}
+	seen[remote] = true
+
+	schema, warn := toolSchema(remote, t.InputSchema)
+	if schema == nil {
+		return tools.Tool{}, warn, nil
+	}
+
+	return tools.Tool{
+		// Namespaced so an MCP server can never shadow a built-in. A
+		// server that ships its own `read` must not silently replace the
+		// one the model has been taught to trust.
+		Name:   s.Name + "__" + remote,
+		Desc:   t.Description,
+		Schema: schema,
+		Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+			return s.call(ctx, remote, args)
+		},
+	}, warn, nil
+}
+
+// toolSchema converts the server's input schema into raw JSON for the model.
+// A missing schema keeps the tool callable with an empty object schema but is
+// reported — the model gets no argument hints and needs to know. A schema
+// that cannot be marshalled yields nil, which the caller treats as "skip the
+// tool": a call with unknown arguments is a failure waiting to happen.
+func toolSchema(remote string, input any) (json.RawMessage, string) {
+	if input == nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`),
+			fmt.Sprintf("tool %q has no input schema; exposed with an empty schema and no argument hints", remote)
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Sprintf("tool %q has an unusable input schema (%v); it was not exposed", remote, err)
+	}
+	return raw, ""
 }
 
 // toolsSnapshot returns a copy of the loaded tool set, for tests and change
@@ -674,6 +732,8 @@ func (s *Server) status() Summary {
 	switch {
 	case !s.connected && s.lastConnErr != nil:
 		sm.LastError = s.lastConnErr.Error()
+	case len(s.loadWarns) > 0:
+		sm.LastError = strings.Join(s.loadWarns, "; ")
 	case s.lastReloadErr != nil:
 		sm.LastError = "tools refresh failed: " + s.lastReloadErr.Error()
 	}

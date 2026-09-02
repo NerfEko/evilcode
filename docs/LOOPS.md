@@ -7757,3 +7757,36 @@ none; a server's own `read_resource` tool survives untouched.
 Verified: `go test ./internal/mcp/... -count=1 -race` and the full
 `go test ./... -count=1` green.
 
+## 2026-09-01 — MCP gap 9: the minor defects
+
+`mcp_gaps.md` #9 (Low), four items.
+
+Done. (1) The silent empty-schema fallback is gone: a missing input schema
+keeps the tool callable with an empty object schema but is recorded as a
+named diagnostic — the model gets no argument hints and needs to know — and
+a schema that cannot be marshalled now *skips* the tool rather than silently
+substituting `{"type":"object","properties":{}}` onto arguments nobody knows.
+Diagnostics land in `Server.loadWarns`, surface in `Summary.LastError`, ride
+the daemon `MCPStatus.Error` field, and the TUI header marks a connected but
+degraded server as `name (N tools, warn: …)`. (2) The hardcoded client
+version `0.1.0` is now the build's real version (`buildinfo.Version`, `v`
+trimmed), so capability negotiation advertises what actually ships. (3) A
+server listing one tool twice is refused with a load error naming the tool —
+first-wins with execution possibly bound to the other was the worst of both
+readings — and the server is reported skipped like any failed connect. The
+SDK's own server cannot produce this (map-backed, same name replaces), which
+is why the check is unit-tested directly. (4) The per-session process
+fan-out is documented in the package comment as deliberate — a session owns
+its servers' lifetime with no cross-session references, and one session's
+wedged server cannot take another's down — with the linear-scaling trade-off
+and the place a shared registry would attach written down rather than left
+as folklore.
+
+Tests: `toolSchema` names the nil and unusable cases (and keeps a healthy
+schema clean); `assembleTool` refuses the duplicate name while accepting the
+first; a load with diagnostics surfaces them in status while connected, and
+a healthy load stays silent.
+
+Verified: `go test ./internal/mcp/... -count=1 -race`, `go vet ./...`, and
+the full `go test ./... -count=1` green.
+

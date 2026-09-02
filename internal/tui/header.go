@@ -134,7 +134,18 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 		}
 		for _, s := range shown {
 			if s.Connected {
-				parts = append(parts, fmt.Sprintf("%s (%d tools)", s.Name, s.Tools))
+				if s.LastError != "" {
+					// A connected server with diagnostics (a tool skipped for
+					// an unusable schema, a failed refresh) is degraded, not
+					// healthy: say so instead of rendering a clean count.
+					warn := s.LastError
+					if len(warn) > 48 {
+						warn = warn[:48] + "…"
+					}
+					parts = append(parts, fmt.Sprintf("%s (%d tools, warn: %s)", s.Name, s.Tools, warn))
+				} else {
+					parts = append(parts, fmt.Sprintf("%s (%d tools)", s.Name, s.Tools))
+				}
 				continue
 			}
 			// A dead server must be visible: "down" plus a bounded slice of the

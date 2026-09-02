@@ -810,3 +810,62 @@ func TestServerToolWinsOverAdapterName(t *testing.T) {
 		t.Errorf("adapter shadowed the server's tool: %q", res.Output)
 	}
 }
+
+// Gap 9: the silent empty-schema fallback becomes a named diagnostic.
+func TestToolSchemaNamesTheDegradedCases(t *testing.T) {
+	schema, warn := toolSchema("x", map[string]any{"type": "object"})
+	if warn != "" || string(schema) != `{"type":"object"}` {
+		t.Errorf("healthy schema: (%s, %q)", schema, warn)
+	}
+
+	schema, warn = toolSchema("x", nil)
+	if warn == "" || !strings.Contains(warn, "no input schema") {
+		t.Errorf("nil schema: warn = %q, want the missing-schema diagnostic", warn)
+	}
+	if string(schema) != `{"type":"object","properties":{}}` {
+		t.Errorf("nil schema fallback = %s", schema)
+	}
+
+	// A channel cannot be marshalled: the tool is skipped, not silently
+	// substituted.
+	schema, warn = toolSchema("x", make(chan int))
+	if schema != nil {
+		t.Errorf("unusable schema returned %s, want nil", schema)
+	}
+	if warn == "" || !strings.Contains(warn, "unusable input schema") {
+		t.Errorf("unusable schema: warn = %q", warn)
+	}
+}
+
+// Gap 9: a server listing one tool twice is refused, not first-wins.
+func TestDuplicateToolNamesAreRefused(t *testing.T) {
+	srv := &Server{Name: "srv", done: make(chan struct{})}
+	seen := map[string]bool{}
+	tool, _, err := srv.assembleTool(&sdk.Tool{Name: "dup", InputSchema: map[string]any{"type": "object"}}, seen)
+	if err != nil || tool.Name != "srv__dup" {
+		t.Fatalf("first assembly: (%v, %v)", tool.Name, err)
+	}
+	_, _, err = srv.assembleTool(&sdk.Tool{Name: "dup", InputSchema: map[string]any{"type": "object"}}, seen)
+	if err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("duplicate accepted: %v", err)
+	}
+}
+
+// A load with schema diagnostics records them on the status surface.
+func TestLoadWarnsSurfaceInStatus(t *testing.T) {
+	server := newTestServer(t, "warny", func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	}, nil)
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+	// A healthy load leaves no warnings.
+	if st := srv.status(); st.LastError != "" {
+		t.Fatalf("healthy load reported %q", st.LastError)
+	}
+	srv.mu.Lock()
+	srv.loadWarns = []string{`tool "x" has no input schema; exposed with an empty schema and no argument hints`}
+	srv.mu.Unlock()
+	st := srv.status()
+	if !st.Connected || !strings.Contains(st.LastError, "no input schema") {
+		t.Errorf("status = %+v, want the warning while connected", st)
+	}
+}
