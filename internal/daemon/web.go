@@ -125,9 +125,11 @@ func (w *webState) mux(s *Server) http.Handler {
 	mux.Handle("GET /assets/", webNoStore(http.StripPrefix("/assets", http.FileServerFS(assets))))
 	mux.HandleFunc("GET /theme.css", s.webThemeCSS)
 	mux.HandleFunc("GET /manifest.webmanifest", s.webManifest(manifestTmpl))
+	mux.HandleFunc("GET /api/status", s.webAPIStatus)
+	mux.HandleFunc("GET /api/sessions", s.webAPISessions)
 
 	auth := &webAuth{token: w.token, addr: w.addr}
-	return securityHeaders(auth.wrap(mux))
+	return securityHeaders(auth.wrap(gzipJSON(mux)))
 }
 
 // webCSP is the plan's Content-Security-Policy, verbatim (§3). Everything is
