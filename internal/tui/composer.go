@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"charm.land/lipgloss/v2"
@@ -544,6 +545,40 @@ type PendingMessage struct {
 
 // MaxPendingRows is how many staged messages show at once.
 const MaxPendingRows = 3
+
+// RenderCompacting draws the indeterminate bar shown while /compact runs.
+//
+// Summarising is one side-call with no meaningful percentage, so the bar
+// sweeps instead of filling: a moving window over a fixed track, a pure
+// function of elapsed time so tests and captures stay deterministic (the
+// sweep freezes under EVILCODE_DETERMINISTIC). The elapsed seconds matter
+// more than the bar: a silent thirty seconds reads as a hang, a labelled
+// bar reads as work in progress.
+func (r *Renderer) RenderCompacting(elapsed time.Duration, messages int) []string {
+	const trackCells = 24
+	track := []rune(strings.Repeat("░", trackCells))
+	if Deterministic() {
+		for i := 0; i < trackCells/2; i++ {
+			track[i] = '█'
+		}
+	} else {
+		const win = 5
+		span := trackCells - win
+		pos := int(elapsed/(400*time.Millisecond)) % (2 * span)
+		if pos >= span {
+			pos = 2*span - pos
+		}
+		for i := pos; i < pos+win; i++ {
+			track[i] = '█'
+		}
+	}
+	label := fmt.Sprintf("⏳ Compacting %d messages", messages)
+	clock := fmt.Sprintf("%ds", int(elapsed.Seconds()))
+	dim := r.style(theme.RoleDim)
+	queued := r.style(theme.RoleQueued)
+	return []string{queued.Render(label) + "  " + dim.Render("▕"+string(track)+"▏") +
+		queued.Render(strings.Repeat(" ", max(3-len(clock), 0))+clock)}
+}
 
 // RenderPending draws the queued-message rows. The number is rainbow-decayed by
 // distance from the *front* of the queue, so the message going in next is the

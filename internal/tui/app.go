@@ -109,6 +109,7 @@ const (
 	hoverReasoning
 	hoverTool
 	hoverShellCode
+	hoverCompacted
 )
 
 // hoverTarget is intentionally small and transient. A mouse motion only
@@ -330,6 +331,13 @@ type Model struct {
 	// terminal whose mouse an app has captured. The zero value keeps the app
 	// capturing — clicks, hover, and the wheel — as it always has.
 	mousePassthrough bool
+
+	// compacting tracks the local /compact summarising side-call: the dock
+	// shows an indeterminate bar while it runs, and the tick cadence speeds up
+	// to animate it. compactingCount is the message count being folded.
+	compacting      bool
+	compactingSince time.Time
+	compactingCount int
 
 	// centered is the Alt+C layout toggle, and overscroll drives the elastic
 	// pull-to-reveal facts line (§4.4).
@@ -1045,7 +1053,7 @@ func (m *Model) tick() tea.Cmd {
 	// picked up promptly on the slower cadence; an in-flight turn keeps the
 	// normal spinner cadence.
 	interval := IdleTickInterval
-	if m.processing || m.hasRunningBackground() || m.startPageVisible() {
+	if m.processing || m.hasRunningBackground() || m.startPageVisible() || m.compacting {
 		interval = SpinnerInterval
 	}
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -1450,6 +1458,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// quick-view below never both apply to one click; the early return just
 		// keeps the two paths separate.
 		if m.toggleReasoningAt(mouse) {
+			return m, nil
+		}
+		// A click on the compaction record expands or collapses the summary
+		// the conversation was rewritten into.
+		if m.toggleCompactedAt(mouse) {
 			return m, nil
 		}
 		m.openQuickViewAt(mouse)
@@ -4689,7 +4702,8 @@ func (m *Model) stack() Stack {
 func (m *Model) stackFor(contentHeight int) Stack {
 	s := Stack{Available: m.height, ContentHeight: contentHeight}
 	s.Heights[SlotStatus] = 1
-	if m.notice != "" {
+	if m.notice != "" || m.compacting {
+		// Compaction reuses the notice row for its dedicated progress bar.
 		s.Heights[SlotNotice] = 1
 	}
 	s.Heights[SlotQueued] = min(len(m.pending), MaxPendingRows)
@@ -5111,6 +5125,11 @@ func (m *Model) View() tea.View {
 		}
 	}
 
+	if m.compacting {
+		// The compacting bar occupies the notice slot reserved by stackFor;
+		// do not also paint the old one-line notice below it.
+		rows = append(rows, m.renderer.RenderCompacting(time.Since(m.compactingSince), m.compactingCount)...)
+	}
 	rows = append(rows, m.renderer.RenderPending(m.pending)...)
 
 	m.status.Animate = !Deterministic()
@@ -5132,7 +5151,7 @@ func (m *Model) View() tea.View {
 		}
 	}
 
-	if m.notice != "" {
+	if m.notice != "" && !m.compacting {
 		// Sanitized at the draw rather than at each of the hundred-odd
 		// assignments: a notice is usually ours, but some carry text straight
 		// from elsewhere — a renderer's stderr, a provider's error, a tool's
@@ -5882,6 +5901,24 @@ func (m *Model) toggleReasoningAt(mouse tea.Mouse) bool {
 	return true
 }
 
+// toggleCompactedAt expands or collapses the compaction record under a click,
+// reporting whether the click landed on one. The block holds the summary text
+// either way; the toggle only trades transcript rows for context legibility.
+func (m *Model) toggleCompactedAt(mouse tea.Mouse) bool {
+	idx := m.transcriptBlockAt(mouse)
+	if idx < 0 || idx >= len(m.blocks) {
+		return false
+	}
+	b := &m.blocks[idx]
+	if b.Kind != BlockCompacted {
+		return false
+	}
+	b.Collapsed = !b.Collapsed
+	b.dropCache()
+	m.invalidateTranscriptCache()
+	return true
+}
+
 func (m *Model) openQuickViewAt(mouse tea.Mouse) {
 	idx := m.transcriptBlockAt(mouse)
 	if idx < 0 || idx >= len(m.blocks) || m.blocks[idx].Kind != BlockTool {
@@ -6290,6 +6327,8 @@ func (m *Model) hoverAt(mouse tea.Mouse) hoverTarget {
 		if segment := m.shellSegmentAtLine(b, relative); segment >= 0 {
 			return hoverTarget{valid: true, block: idx, kind: hoverShellCode, segment: segment}
 		}
+	case BlockCompacted:
+		return hoverTarget{valid: true, block: idx, kind: hoverCompacted}
 	}
 	return hoverTarget{}
 }
