@@ -1517,6 +1517,7 @@ var configKeybindingDefaults = map[string][]string{
 	"thinking_display_cycle": {"alt+t"},
 	"reasoning_effort_cycle": {"alt+r"},
 	"background_task":        {"alt+b"},
+	"mouse_mode_toggle":      {"alt+shift+m"},
 }
 
 func validateKeybindings(overrides map[string]string, add func(string, string)) {
