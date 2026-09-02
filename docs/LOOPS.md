@@ -8060,3 +8060,97 @@ full daemon suite + `-race` on the web tests green.
 
 Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
 
+## 2026-09-01 web-3 — Phase 3: the command surface
+
+Done: `internal/daemon/webcmd.go` — the mutating half of the §4 surface, each
+handler calling the same method the unix protocol handler calls:
+`POST /api/sessions/{name}/input` (text, base64 images → `[][]byte`, `hidden`,
+`request_id` → `InputRequestHidden`), `.../interrupt` (empty text cancels,
+text interjects; urgent flag through), `.../answer` (→ `asks.Answer`; stale
+request ids are 409), `.../model` (→ `SetModelWithEffort`), `.../effort` (→
+`SetReasoningEffort`), `.../command` (→ `Command`, leading `/` tolerated,
+`secret` passes through and goes nowhere else), `.../message` (→ `deliver`),
+`POST /api/sessions` (create with empty name / reopen live or stored; cwd held
+to the `[webui] workspaces` allowlist or the daemon cwd, compared
+absolutely-cleaned; invalid name 400, unknown name 400 exactly as attach),
+`POST /api/spawn` (attribution to the named live spawner + the socket handler's
+start-notice deliver; files and raw-schema passthrough), `GET /api/models`
+(per-provider `Models(ctx)` aggregation with a 5-minute cache, `ModelOverrides`
+context-window overrides, favorites marked, via=oauth/api-key/no key/local),
+and `GET /api/workspaces` (daemon cwd + configured list; drives the P4 picker).
+Middleware: `webRecover` (panic → uniform 500 JSON + daemon log) wrapped around
+auth+gzip; `readWebBody` caps every body at `MaxClientFrameBytes` (8 MiB) via
+`MaxBytesReader` — over the cap is 413 with the uniform shape, malformed
+JSON/wrong types/trailing data is 400. Refusals that co-occur with a running
+turn map to the plan's 409. Routes registered in `web.go`.
+
+Verified (tests, `internal/daemon/webcmd_test.go`):
+- P3.1 `TestWebInputStartsTurnWithImages` — base64 in, raw bytes in the durable
+  conversation; `request_id` carried onto turn_start; hidden turn renders blank
+  with the id; empty input and bad base64 are 400; a stored session is 404.
+- P3.2 `TestWebInterruptCancelsATurn` (ask scenario: text+urgent does not
+  cancel, empty text cancels, turn_end reason=interrupted) and
+  `TestWebAnswerUnblocksAnAsk` (answer unblocks, turn completes with the
+  post-answer text, second answer on the spent id is 409).
+- P3.3 `TestWebModelAndEffort` — mock switch ok, unknown ref 400, effort on the
+  mock 400, deepseek-kind provider switch then effort=high reflected in the
+  snapshot (provider/model/effort).
+- P3.4 `TestWebCommandAndSecretIsNeverLogged` — /save pins durably; a
+  credential command carrying a secret is refused with the secret absent from
+  the response and the captured daemon log.
+- P3.5 `TestWebMessageLandsAtNextSafePoint` — idle poke drains into the next
+  turn's conversation; empty text 400, unknown session 404.
+- P3.6 `TestWebCreateSessionWorkspaceAllowlist` — generated name live row;
+  live reopen; stored reopen; rejected cwd 400; allowed cwd accepted through a
+  redundant-`..` spelling; `../evil` 400. `TestWebWorkspacesEndpoint`.
+- P3.7 `TestWebSpawnAttributesToTheSpawner` — worker row carries the task, the
+  start notice (and the finished result) land in the spawner's conversation at
+  the next safe point; uncompilable schema / empty task 400; unknown spawner 404.
+- P3.8 `TestWebModelsCatalogCacheOverridesFavorites` — Mock.Models values,
+  cache holds against mid-TTL config changes, expiry picks up the override and
+  the favorite.
+- P3.9 `TestWebMalformedBodyBattery` — bad JSON / wrong types / trailing data /
+  wrong shape → 400 uniform; a parseable 8 MiB+ body → 413; `%2F`-in-segment
+  and `..` path tricks never reach a handler as a usable name; wrong-method
+  requests answer the uniform 404 shape through the `/api/` fallback (never the
+  mux's plain-text 405); a panicking handler is caught by `webRecover` into the
+  uniform 500 with the stack on the daemon side.
+- Verify item "TUI and browser sending to one session concurrently":
+  `TestWebAndSocketClientsShareOneTurnStream` — a real socket client (the TUI's
+  path) and a browser POST fire at once; the durable conversation serializes
+  both prompts in arrival order, and the browser's SSE tail shows exactly one
+  turn_start per input (no double-start).
+
+Verified (live, isolated daemon `serve -web -web-addr 127.0.0.1:7891 -idle 0`,
+mock provider, port 7891, scratch dir under the repo): startup lines and
+once-only tokenized URL printed; token file 0600; scripted curl round-trip per
+verb — status, create (generated name "nebula"), workspaces, models (mock +
+real local Ollama catalogues, via=local/no key), input with a base64 image,
+SSE during a turn (snapshot → turn_start → text_delta → token_usage → turn_end
+with the post-turn history; snapshot strips image bytes as designed), message
+(interject landed as a user turn at the next safe point), spawn ("raven"
+worker with the task; its start notice and finished result drained into the
+spawner's conversation on the next input — attribution verified end to end),
+command /save (pinned), credential-with-secret (refused, secret absent from the
+daemon log), interrupt, effort (unsupported on the mock → 400), model switch
+(reflected in the snapshot); negatives: no token 401, cross-origin 403, unknown
+route 404 uniform, wrong method 404 uniform; `serve -stop` ends the listener.
+The render half of "image renders in the live stream" (drawing it in the DOM)
+is the Phase 5/6 mirror's job; the server-side half — decoded bytes in the
+conversation and the live event stream — is proven here.
+
+Gates: `go build ./...`, `go vet ./...`, `go test -count=1 ./...` (all packages
+green), `go test -race ./internal/daemon/... ./internal/config/...` green.
+Tag `web-3`.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations:
+- Named create via `POST /api/sessions` is refused for names nothing on disk
+  holds, matching the socket's attach semantics. The plan's "name empty →
+  `session.PickFreeName`" is satisfied by the create path's own collision-safe
+  allocator (`CreateWithCwd` → `core.PickName` against the disk's taken set);
+  proposing with `PickFreeName` and then opening would reintroduce the exact
+  claim race its doc comment warns about.
+- A body over the 8 MiB cap answers 413 (outside the plan's enumerated
+  400/401/403/404/409 but semantically exact), always in the uniform shape.
+- `webRecover` maps a handler panic to the uniform 500 ("a bare 500 is a bug" —
+  this keeps even the bug machine-readable) and logs the stack daemon-side.

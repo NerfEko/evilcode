@@ -360,23 +360,23 @@ setups.
 
 ## Phase 3 — Command surface
 
-- [ ] **P3.1** `POST .../input` — text, base64 images, `hidden`, `request_id`
+- [x] **P3.1** `POST .../input` — text, base64 images, `hidden`, `request_id`
   (+ test with an image-bearing turn).
-- [ ] **P3.2** `POST .../interrupt` (soft/urgent) and `POST .../answer`
+- [x] **P3.2** `POST .../interrupt` (soft/urgent) and `POST .../answer`
   (+ tests: interrupt cancels; answer unblocks a waiting ask).
-- [ ] **P3.3** `POST .../model` and `POST .../effort` (+ tests).
-- [ ] **P3.4** `POST .../command` — slash commands with `arg` and `secret`
+- [x] **P3.3** `POST .../model` and `POST .../effort` (+ tests).
+- [x] **P3.4** `POST .../command` — slash commands with `arg` and `secret`
   (+ test; secret never logged).
-- [ ] **P3.5** `POST .../message` → `deliver` (+ test: lands at next safe point).
-- [ ] **P3.6** `POST /api/sessions` — create/reopen with workspace allowlist;
+- [x] **P3.5** `POST .../message` → `deliver` (+ test: lands at next safe point).
+- [x] **P3.6** `POST /api/sessions` — create/reopen with workspace allowlist;
   name generation via `session.PickFreeName` (+ tests incl. rejected cwd).
-- [ ] **P3.7** `POST /api/spawn` — attribution, files, schema passthrough
+- [x] **P3.7** `POST /api/spawn` — attribution, files, schema passthrough
   (+ test).
-- [ ] **P3.8** `GET /api/models` — provider aggregation, 5-min cache, config
+- [x] **P3.8** `GET /api/models` — provider aggregation, 5-min cache, config
   overrides, favorites (+ test with `Mock.Models`).
-- [ ] **P3.9** error-mapping middleware + malformed-body/battery tests (bad
+- [x] **P3.9** error-mapping middleware + malformed-body/battery tests (bad
   JSON, wrong types, >8 MiB body, path tricks in `{name}`).
-- [ ] Verify Phase 3: scripted round-trip per verb; TUI and browser sending to
+- [x] Verify Phase 3: scripted round-trip per verb; TUI and browser sending to
   one session concurrently (one turn, no double-start); ask answered from HTTP
   unblocks the agent; spawn result returns to the spawner; image renders in the
   live stream. `go test -race ./...`. Tag `web-3`.
