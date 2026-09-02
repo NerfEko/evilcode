@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -294,5 +295,92 @@ func TestUnsupportedContentTypeFailsLoudly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported type") || !strings.Contains(err.Error(), "srv__echo") {
 		t.Errorf("error does not name the tool and type: %v", err)
+	}
+}
+
+func TestLoadToolsFollowsPagination(t *testing.T) {
+	// The SDK server paginates automatically at ServerOptions.PageSize; five
+	// tools at two per page means the old single ListTools call saw only two.
+	server := sdk.NewServer(&sdk.Implementation{Name: "paged", Version: "1"},
+		&sdk.ServerOptions{PageSize: 2})
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		n := name
+		server.AddTool(&sdk.Tool{Name: n, InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: n}}}, nil
+		})
+	}
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+
+	got := map[string]bool{}
+	for _, tool := range srv.tools {
+		got[tool.Name] = true
+	}
+	for _, want := range []string{"srv__a", "srv__b", "srv__c", "srv__d", "srv__e"} {
+		if !got[want] {
+			t.Errorf("tool %s missing; only %v loaded", want, got)
+		}
+	}
+}
+
+func TestLoadToolsRefusesAToolCountBeyondTheBound(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "many", Version: "1"}, nil)
+	for i := range maxListTools + 1 {
+		server.AddTool(&sdk.Tool{Name: fmt.Sprintf("t%d", i), InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{}, nil
+		})
+	}
+	serverTransport, clientTransport := sdk.NewInMemoryTransports()
+	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode-test", Version: "test"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	srv := &Server{Name: "srv", Session: clientSession, timeout: time.Minute}
+	err = srv.loadTools(context.Background())
+	if err == nil {
+		t.Fatal("oversized catalog loaded without error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d tools", maxListTools)) {
+		t.Errorf("error does not name the bound: %v", err)
+	}
+}
+
+func TestLoadToolsRefusesUnboundedPagination(t *testing.T) {
+	// One tool per page and more pages than maxListPages: the old loop could
+	// never terminate here, and silent truncation is not acceptable either.
+	server := sdk.NewServer(&sdk.Implementation{Name: "endless", Version: "1"},
+		&sdk.ServerOptions{PageSize: 1})
+	for i := range maxListPages + 5 {
+		server.AddTool(&sdk.Tool{Name: fmt.Sprintf("t%d", i), InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{}, nil
+		})
+	}
+	serverTransport, clientTransport := sdk.NewInMemoryTransports()
+	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode-test", Version: "test"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	srv := &Server{Name: "srv", Session: clientSession, timeout: time.Minute}
+	err = srv.loadTools(context.Background())
+	if err == nil {
+		t.Fatal("an endless catalog loaded without error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d pages", maxListPages)) {
+		t.Errorf("error does not name the bound: %v", err)
 	}
 }

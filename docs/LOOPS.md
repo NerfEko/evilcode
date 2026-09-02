@@ -7593,3 +7593,24 @@ image-mime blob attaching as an image; empty results stay empty successes;
 Verified: `go test ./internal/mcp/... -count=1` and the full
 `go test ./... -count=1` green.
 
+## 2026-09-01 — MCP gap 3: tool discovery follows the pagination cursor
+
+`mcp_gaps.md` #3 (High). `loadTools` called `ListTools(ctx, nil)` once and
+never followed `NextCursor`, so servers with more than one page of tools
+silently exposed a prefix — tools past page one did not exist as far as the
+model was concerned, and the header's tool count lied.
+
+Done. `loadTools` walks the cursor until it empties, under two hard bounds:
+100 pages and 4096 tools per server. Both bounds are errors naming the limit,
+not silent truncation — a catalog cut in half is exactly the bug this closes,
+and the list feeds the model's context every turn. The SDK server paginates
+automatically (default page 1000), which is why nothing failed before; real
+worlds set smaller pages.
+
+Tests: an in-process server at `PageSize: 2` with five tools loads all five;
+4097 tools fails with the tool-count bound; 105 one-tool pages fails with the
+page bound (which the old loop could never have terminated on).
+
+Verified: `go test ./internal/mcp/... -count=1` and the full
+`go test ./... -count=1` green.
+

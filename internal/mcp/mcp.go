@@ -54,6 +54,18 @@ func callTimeoutOf(cfg ServerConfig) time.Duration {
 	return CallTimeout
 }
 
+const (
+	// maxListPages bounds tool discovery: a catalog that still returns
+	// cursors after this many pages is either pathological or lying, and
+	// walking it forever would hang the connect path.
+	maxListPages = 100
+
+	// maxListTools bounds how many tools one server may expose. The list
+	// feeds the model's context every turn, so a runaway catalog must fail
+	// loudly rather than be truncated silently.
+	maxListTools = 4096
+)
+
 // Server is a live connection.
 type Server struct {
 	Name    string
@@ -126,34 +138,53 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	return srv, nil
 }
 
-// loadTools adapts the server's tool list into evilcode's tool struct.
+// loadTools adapts the server's tool list into evilcode's tool struct,
+// following the list's pagination cursor: MCP list operations are paginated,
+// so a single call exposes only the first page and tools past it do not exist
+// as far as the model is concerned. The page and tool-count bounds are hard
+// errors rather than silent truncation — a catalog cut in half is exactly the
+// bug this closes.
 func (s *Server) loadTools(ctx context.Context) error {
-	res, err := s.Session.ListTools(ctx, nil)
-	if err != nil {
-		return err
-	}
-
 	var out []tools.Tool
-	for _, t := range res.Tools {
-		remote := t.Name
-		schema := json.RawMessage(`{"type":"object","properties":{}}`)
-		if t.InputSchema != nil {
-			if raw, err := json.Marshal(t.InputSchema); err == nil {
-				schema = raw
+	cursor := ""
+	for page := 1; ; page++ {
+		if page > maxListPages {
+			return fmt.Errorf("tool catalog exceeds %d pages; refusing to expose a truncated catalog", maxListPages)
+		}
+		res, err := s.Session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
+		if err != nil {
+			return err
+		}
+
+		for _, t := range res.Tools {
+			remote := t.Name
+			schema := json.RawMessage(`{"type":"object","properties":{}}`)
+			if t.InputSchema != nil {
+				if raw, err := json.Marshal(t.InputSchema); err == nil {
+					schema = raw
+				}
+			}
+
+			out = append(out, tools.Tool{
+				// Namespaced so an MCP server can never shadow a built-in. A
+				// server that ships its own `read` must not silently replace the
+				// one the model has been taught to trust.
+				Name:   s.Name + "__" + remote,
+				Desc:   t.Description,
+				Schema: schema,
+				Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
+					return s.call(ctx, remote, args)
+				},
+			})
+			if len(out) > maxListTools {
+				return fmt.Errorf("tool catalog exceeds %d tools; refusing to expose a truncated catalog", maxListTools)
 			}
 		}
 
-		out = append(out, tools.Tool{
-			// Namespaced so an MCP server can never shadow a built-in. A
-			// server that ships its own `read` must not silently replace the
-			// one the model has been taught to trust.
-			Name:   s.Name + "__" + remote,
-			Desc:   t.Description,
-			Schema: schema,
-			Run: func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
-				return s.call(ctx, remote, args)
-			},
-		})
+		if res.NextCursor == "" {
+			break
+		}
+		cursor = res.NextCursor
 	}
 
 	s.mu.Lock()
