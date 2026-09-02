@@ -250,6 +250,25 @@ func (e *Exec) commandEnv() []string {
 	return env
 }
 
+// AllowlistedEnv filters entries down to the names a model-run command may
+// inherit. MCP server subprocesses apply the same discipline: a third-party
+// server is an untrusted process, and the daemon's provider keys and
+// unrelated secrets must not ride into it.
+func AllowlistedEnv(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || !envAllowed(name) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// AllowlistedProcessEnv is AllowlistedEnv over this process's environment.
+func AllowlistedProcessEnv() []string { return AllowlistedEnv(os.Environ()) }
+
 // Cwd reports the working directory subsequent commands will run in.
 func (e *Exec) Cwd() string {
 	e.mu.Lock()

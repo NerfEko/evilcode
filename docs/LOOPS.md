@@ -7614,3 +7614,25 @@ page bound (which the old loop could never have terminated on).
 Verified: `go test ./internal/mcp/... -count=1` and the full
 `go test ./... -count=1` green.
 
+## 2026-09-01 — MCP gap 6: server subprocesses inherit the allowlist, not the daemon environment
+
+`mcp_gaps.md` #6 (Medium). Model-run shell commands were hardened to an
+allowlist in R2-16, but the MCP path still started every server with
+`append(cmd.Environ(), cfg.Env...)` — every configured third-party server saw
+the daemon's full environment, provider API keys included. An untrusted
+process holding every credential the harness has is the exact bug R2-16
+closed for the shell; the MCP path had been left out.
+
+Done. `mcp.serverEnv` builds the stdio server's environment as the exported
+`tools.AllowlistedProcessEnv()` (the same allowlist the shell path uses:
+process basics, locale, XDG, git identity, SSH agent) plus the explicit `env`
+entries from the server's config block, which come last and win. Nothing else
+crosses.
+
+Tests: `tools.AllowlistedEnv` drops foreign names while keeping PATH/LC_ALL
+and malformed entries; `mcp.serverEnv` keeps a planted secret out of the
+server's environment while PATH and configured `env` entries arrive.
+
+Verified: `go test ./internal/tools/... ./internal/mcp/... -count=1` and the
+full `go test ./... -count=1` green.
+

@@ -108,6 +108,15 @@ func (c *Client) Connect(ctx context.Context, configs []ServerConfig) []error {
 	return errs
 }
 
+// serverEnv builds the environment an MCP server subprocess inherits: the
+// same allowlist the shell path applies (R2-16) plus the env entries the
+// server's config block names, which come last and win. A third-party MCP
+// server is an untrusted process — it must not receive the daemon's
+// environment with every provider key in it.
+func serverEnv(cfg ServerConfig) []string {
+	return append(tools.AllowlistedProcessEnv(), cfg.Env...)
+}
+
 func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	if cfg.Command == "" {
 		return nil, fmt.Errorf("no command configured")
@@ -120,9 +129,7 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	defer cancel()
 
 	cmd := exec.Command(cfg.Command, cfg.Args...)
-	if len(cfg.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), cfg.Env...)
-	}
+	cmd.Env = serverEnv(cfg)
 
 	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode", Version: "0.1.0"}, nil)
 	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)

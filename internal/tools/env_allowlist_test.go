@@ -83,3 +83,25 @@ func TestCommandEnvDropsScratchAndKeepsFallbackTmpdir(t *testing.T) {
 		t.Fatal("TMPDIR disappeared entirely")
 	}
 }
+
+// Gap 6: the exported filter the MCP stdio path uses applies the same
+// discipline to entries handed in directly.
+func TestAllowlistedEnvFiltersForeignNames(t *testing.T) {
+	entries := []string{
+		"PATH=/usr/bin",
+		"OPENAI_API_KEY=sk-leak",
+		"MY_TOOL_TOKEN=tok",
+		"LC_ALL=C.UTF-8",
+		"MALFORMED_NO_EQUALS",
+	}
+	env := AllowlistedEnv(entries)
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "PATH=/usr/bin") || !strings.Contains(joined, "LC_ALL=C.UTF-8") {
+		t.Errorf("allowlisted entries dropped: %q", joined)
+	}
+	for _, leak := range []string{"OPENAI_API_KEY", "MY_TOOL_TOKEN"} {
+		if strings.Contains(joined, leak) {
+			t.Errorf("secret %s survived the filter: %q", leak, joined)
+		}
+	}
+}

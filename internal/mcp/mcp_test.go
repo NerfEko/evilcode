@@ -384,3 +384,22 @@ func TestLoadToolsRefusesUnboundedPagination(t *testing.T) {
 		t.Errorf("error does not name the bound: %v", err)
 	}
 }
+
+// Gap 6: an MCP server subprocess sees the allowlist plus its configured env
+// entries — never the daemon's full environment.
+func TestServerEnvIsAllowlisted(t *testing.T) {
+	t.Setenv("MCP_GAP6_SECRET", "leak-me")
+	t.Setenv("PATH", "/usr/bin")
+
+	env := serverEnv(ServerConfig{Name: "srv", Env: []string{"FOO=bar"}})
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "MCP_GAP6_SECRET") {
+		t.Errorf("daemon environment leaked into the server env: %q", joined)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") {
+		t.Errorf("allowlisted PATH missing: %q", joined)
+	}
+	if !strings.Contains(joined, "FOO=bar") {
+		t.Errorf("configured env entry missing: %q", joined)
+	}
+}
