@@ -166,20 +166,35 @@ func humanBytes(n int) string {
 // Even when the image is drawn, the block still reserves its rows: the picture
 // is painted over them, and without them the transcript below would be under
 // the image rather than after it.
+//
+// Both text paths are bounded by the wrap width. A row wider than the terminal
+// is not clipped, it is wrapped — which shifts every row below down and tears
+// the layout, so an image block entered the transcript and the frame came
+// apart underneath it. The no-graphics explanation is canned text wider than
+// most terminals and long screenshot names are routine, so the explanation
+// wraps across rows; the caption cannot, because the reserved row count is the
+// contract the picture is painted against, and it is truncated instead.
 func (r *Renderer) RenderImagePlaceholder(b ImageBlock, proto graphics.Protocol, on bool) []string {
 	label := filepath.Base(b.Path)
 	if !on || proto == graphics.ProtoNone || len(b.PNG) == 0 {
-		return []string{r.style(theme.RoleDim).Render(graphics.Placeholder(label, proto))}
+		return r.dimWrapped(graphics.Placeholder(label, proto))
 	}
 
 	rows := max(b.Rows, 1)
 	out := make([]string, rows)
-	for i := range out {
-		out[i] = ""
-	}
 	// The caption rides the last row so the picture is identifiable when
 	// several are on screen.
-	out[rows-1] = r.style(theme.RoleDim).Render("🖼 " + label)
+	out[rows-1] = r.style(theme.RoleDim).Render(truncateCells("🖼 "+label, r.Width))
+	return out
+}
+
+// dimWrapped renders text in the dim role, wrapped to the renderer width, so
+// no row it emits can overflow the terminal and wrap underneath.
+func (r *Renderer) dimWrapped(s string) []string {
+	var out []string
+	for _, line := range wrapPlain(s, max(r.Width, 1)) {
+		out = append(out, r.style(theme.RoleDim).Render(line))
+	}
 	return out
 }
 
@@ -204,7 +219,10 @@ func MermaidAvailable() bool {
 // message blaming mmdc sends someone who already has it to reinstall it.
 func (r *Renderer) RenderMermaidSource(source string) []string {
 	out := r.renderCodeBlock(Segment{Code: true, Lang: "mermaid", Text: source})
-	return append(out, r.style(theme.RoleDim).Render(MermaidHint(r.Graphics, r.ImagesOn)))
+	// The hint rides the same bound as the image placeholder: its no-images
+	// branch is ~94 cells of canned text, and an unwrapped row wraps the
+	// terminal and drags every row below it out of place.
+	return append(out, r.dimWrapped(MermaidHint(r.Graphics, r.ImagesOn))...)
 }
 
 // MermaidHint explains why a diagram is showing as source.

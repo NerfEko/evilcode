@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	"evilcode/internal/graphics"
 )
 
@@ -54,11 +56,16 @@ func TestImagePlaceholderExplainsATerminalWithNoSupport(t *testing.T) {
 	r := testRenderer(80)
 	rows := plainLines(r.RenderImagePlaceholder(
 		ImageBlock{Path: "/tmp/diagram.png"}, graphics.ProtoNone, true))
-	if len(rows) != 1 {
-		t.Fatalf("rows = %v, want one placeholder line", rows)
+	// The explanation is wider than 80 columns, so it wraps rather than
+	// emitting a row that would wrap the terminal underneath it.
+	joined := strings.Join(rows, " ")
+	if !strings.Contains(joined, "diagram.png") || !strings.Contains(joined, "kitty") {
+		t.Errorf("placeholder = %q", rows)
 	}
-	if !strings.Contains(rows[0], "diagram.png") || !strings.Contains(rows[0], "kitty") {
-		t.Errorf("placeholder = %q", rows[0])
+	for i, row := range rows {
+		if w := lipgloss.Width(row); w > 80 {
+			t.Errorf("row %d is %d cells and will wrap:\n  %q", i, w, row)
+		}
 	}
 }
 
@@ -209,6 +216,48 @@ func TestImagesOffFallsBackToThePlaceholder(t *testing.T) {
 		graphics.ProtoKitty, false)
 	if len(rows) != 1 {
 		t.Errorf("rows = %d with images off, want the one-line placeholder", len(rows))
+	}
+}
+
+func TestImageCaptionIsTruncatedNotWrapped(t *testing.T) {
+	// The caption shares the rows the picture is painted over, so its row
+	// count is a contract: wrapping it would move every block below while the
+	// image kept its old placement. A long screenshot name is cut instead.
+	r := testRenderer(40)
+	rows := r.RenderImagePlaceholder(ImageBlock{
+		Path: "architecture-overview-before-refactor.png", PNG: []byte("x"),
+		Cols: 20, Rows: 4}, graphics.ProtoKitty, true)
+	if len(rows) != 4 {
+		t.Fatalf("reserved %d rows, want the 4 the picture is painted over", len(rows))
+	}
+	if w := lipgloss.Width(plain(rows[3])); w > 40 {
+		t.Errorf("caption row is %d cells at width 40:\n  %q", w, plain(rows[3]))
+	}
+}
+
+func TestImageBlockFitsTheTerminal(t *testing.T) {
+	// The end-to-end guard for the placeholder overflow: the no-images text is
+	// canned and wider than most terminals, and a transcript row that
+	// overflows is not clipped — the terminal wraps it, every row below
+	// shifts, and the layout tears. The whole frame is checked, because the
+	// damage is what the overflow does to the rows underneath.
+	for _, width := range []int{60, 80, 100} {
+		m := newTestModel(t)
+		m.width, m.height = width, 40
+		m.WithGraphics(graphics.ProtoNone, t.TempDir())
+		m.blocks = append(m.blocks,
+			Block{Kind: BlockUser, Text: "look at the screenshot"},
+			Block{Kind: BlockImage, Image: ImageBlock{
+				Path: "/home/user/Pictures/Screenshots/architecture-overview-before-refactor.png",
+				Cols: 40, Rows: 8}},
+			Block{Kind: BlockAssistant, Text: "prose after the picture."})
+		m.View()
+		for i, line := range strings.Split(m.lastFrame, "\n") {
+			if w := lipgloss.Width(line); w > m.width {
+				t.Errorf("width %d: row %d is %d cells wide:\n  %q",
+					width, i, w, plain(line))
+			}
+		}
 	}
 }
 

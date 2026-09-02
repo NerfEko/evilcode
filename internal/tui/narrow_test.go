@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"evilcode/internal/graphics"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/todo"
@@ -36,6 +37,20 @@ func TestNothingOverflowsANarrowTerminal(t *testing.T) {
 			})
 		},
 		"help": func(r *Renderer) []string { return r.RenderHelp(0, r.Width, 24) },
+		"image-placeholder": func(r *Renderer) []string {
+			r.Graphics, r.ImagesOn = graphics.ProtoNone, true
+			return r.RenderImagePlaceholder(ImageBlock{
+				Path: "architecture-overview-before-refactor.png"}, graphics.ProtoNone, true)
+		},
+		"image-caption": func(r *Renderer) []string {
+			return r.RenderImagePlaceholder(ImageBlock{
+				Path: "architecture-overview-before-refactor.png", PNG: []byte("x"),
+				Cols: 20, Rows: 4}, graphics.ProtoKitty, true)
+		},
+		"mermaid-hint": func(r *Renderer) []string {
+			r.Graphics, r.ImagesOn = graphics.ProtoNone, true
+			return r.RenderMermaidSource("graph TD; A-->B")
+		},
 		"history": func(r *Renderer) []string {
 			var h HistorySearch
 			h.Open("", 0)
