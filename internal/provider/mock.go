@@ -163,9 +163,10 @@ func (m *Mock) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 }
 
 // isWorkerBrief reports whether this conversation is a spawned worker's.
+// daemon/spawn.go writes the brief; keep the prefix in step with it.
 func isWorkerBrief(req Req) bool {
 	for _, msg := range req.Messages {
-		if msg.Role == RoleUser && strings.HasPrefix(msg.Content, "You are a worker agent.") {
+		if msg.Role == RoleUser && strings.HasPrefix(msg.Content, "You are a focused coding worker.") {
 			return true
 		}
 	}
@@ -255,6 +256,17 @@ var planChunks = []Chunk{
 	{Text: "``"},
 	{Text: "`\n"},
 	done(340, 96),
+}
+
+// bigAnswer builds a long markdown answer (~2600 chars, ~650 estimated
+// tokens) for the web5 compaction scenario. Paragraphs plus one fence, so the
+// transcript also exercises markdown rendering at scale.
+func bigAnswer(which string) string {
+	return "The " + which + " pass is done. " + strings.Repeat(
+		"Here is a measured paragraph about the config layer, the defaults it "+
+			"exposes, and the merge order that callers rely on. ", 30) +
+		"\n\n```go\nfunc Default() map[string]string {\n\treturn map[string]string{\"retries\": \"3\"}\n}\n```\n\n" +
+		strings.Repeat("The remaining rows list the fields that moved and why. ", 40)
 }
 
 var mockScenarios = map[string][][]Chunk{
@@ -574,6 +586,23 @@ var mockScenarios = map[string][][]Chunk{
 	// The tool *results* are canned too (see DemoCannedTools), so this
 	// replays without needing evilwm/evil checked out at record time.
 	"demo-search": demoSearchTurns(),
+
+	// plan-web Phase 5 verify: a compact (epoch bump) between tool rounds.
+	// Turn 3's request reports a prompt large enough (CtxUsed 3200) to cross
+	// the 0.85 threshold of a 3500-token window (2975) only AFTER its first
+	// round streams, so the round-2 autoCompact check fires mid-turn. Turns
+	// 1-2 carry ~2600-char answers so the conversation outgrows the
+	// 2000-token preserve budget and has a real prefix to summarize.
+	"web5": {
+		append(text(bigAnswer("first")), call("call_1", "read", map[string]any{"path": "internal/config/config.go"}), done(700, 200)),
+		append(text(bigAnswer("second")), done(100, 50)),
+		{
+			{Text: "One more check."},
+			call("call_2", "grep", map[string]any{"pattern": "Default", "path": "internal/config"}),
+			done(3000, 200),
+		},
+		append(text("Compaction survived; here is the answer."), done(400, 60)),
+	},
 
 	// A detached command, for the background-task widget and its completion
 	// notice (§17, §8.3).

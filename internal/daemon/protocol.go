@@ -254,6 +254,9 @@ type Snapshot struct {
 	// the transcript is complete.
 	Messages  []Message `json:"messages,omitempty"`
 	Truncated bool      `json:"truncated,omitempty"`
+	// Oldest is the shaped-message index of Messages[0] when Truncated is true.
+	// It lets a web client request the page immediately before this snapshot.
+	Oldest int `json:"oldest,omitempty"`
 
 	// Pending contains interactive requests that are waiting in the server,
 	// including when no TUI was attached when they were created.
@@ -296,9 +299,14 @@ type Message struct {
 	ToolName      string              `json:"tool_name,omitempty"`
 	IsError       bool                `json:"is_error,omitempty"`
 	Held          bool                `json:"held,omitempty"`
-	Images        [][]byte            `json:"images,omitempty"`
-	Hidden        bool                `json:"hidden,omitempty"`
-	Repairs       []string            `json:"repairs,omitempty"`
+	Diff          string              `json:"diff,omitempty"`
+	// ImageCount remains when Images is intentionally omitted from snapshots,
+	// allowing a remote renderer to show an honest history placeholder without
+	// carrying attachment bytes across the wire.
+	Images     [][]byte `json:"images,omitempty"`
+	ImageCount int      `json:"image_count,omitempty"`
+	Hidden     bool     `json:"hidden,omitempty"`
+	Repairs    []string `json:"repairs,omitempty"`
 }
 
 // SessionInfo is one row of a list response.

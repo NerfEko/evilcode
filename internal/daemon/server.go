@@ -1128,9 +1128,13 @@ func (sess *Session) publishEvent(e agent.Event) {
 		// Image bytes never travel in the history copy. Nothing re-renders an
 		// image from history — blocks are built from text and tool metadata —
 		// and one 20 MiB read base64-expands past the client's whole frame
-		// limit, disconnecting it at the exact moment a turn completed.
+		// limit, disconnecting it at the exact moment a turn completed. Keep only
+		// a count so a remote mirror can render an honest placeholder.
 		for i := range history {
-			history[i].Images = nil
+			if len(history[i].Images) > 0 {
+				history[i].ImageCount = len(history[i].Images)
+				history[i].Images = nil
+			}
 		}
 		e.SnapshotMessages = history
 		e.SnapshotEpoch = sess.built.Agent.Conv.Epoch()
@@ -1649,7 +1653,15 @@ func containsReasoningEffort(levels []provider.ReasoningEffort, want provider.Re
 func shapeConversationMessages(msgs []provider.Message) []Message {
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role == provider.RoleSystem || (m.Content == "" && len(m.ToolCalls) == 0 && m.ToolName == "") {
+		imageCount := m.ImageCount
+		if len(m.Images) > imageCount {
+			imageCount = len(m.Images)
+		}
+		if imageCount < 0 {
+			imageCount = 0
+		}
+		if m.Role == provider.RoleSystem ||
+			(m.Content == "" && len(m.ToolCalls) == 0 && m.ToolName == "" && imageCount == 0) {
 			continue
 		}
 		out = append(out, Message{
@@ -1662,7 +1674,9 @@ func shapeConversationMessages(msgs []provider.Message) []Message {
 			ToolName:      m.ToolName,
 			IsError:       m.IsError,
 			Held:          m.Held,
+			Diff:          m.Diff,
 			Images:        nil,
+			ImageCount:    imageCount,
 			Hidden:        m.Hidden,
 			Repairs:       m.Repairs,
 		})

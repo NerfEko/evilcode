@@ -399,16 +399,17 @@ setups.
 
 ## Phase 5 — Transcript engine
 
-- [ ] **P5.1** `js/mirror.js` reducer + unit tests covering every event kind and
+- [x] **P5.1** `js/mirror.js` reducer + unit tests covering every event kind and
   epoch resync.
-- [ ] **P5.2** renderers: markdown (vendored + sanitized), reasoning collapse,
+- [x] **P5.2** renderers: markdown (vendored + sanitized — see DEVIATIONS.md:
+  hand-rolled renderer that never produces HTML from strings), reasoning collapse,
   tool cards with args/output/diff, notices by level, per-turn usage meter,
   image placeholders in history.
-- [ ] **P5.3** streaming polish: rAF coalescing, caret, autoscroll stickiness +
+- [x] **P5.3** streaming polish: rAF coalescing, caret, autoscroll stickiness +
   "↓ new activity" pill.
-- [ ] **P5.4** history seam: infinite scroll-up, `before`-merge, epoch invalidates
+- [x] **P5.4** history seam: infinite scroll-up, `before`-merge, epoch invalidates
   the seam.
-- [ ] Verify Phase 5: drive a real turn with tool calls + a conflict notice + a
+- [x] Verify Phase 5: drive a real turn with tool calls + a conflict notice + a
   background task + a compact (epoch) mid-turn; compare the rendered transcript
   against the TUI's rendering of the same scenario; screenshots. Tag `web-5`.
 

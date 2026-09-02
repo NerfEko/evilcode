@@ -604,3 +604,32 @@ truth ("whatever you left off at") removes the whole class of confusion.
 **Worth revisiting if**: a project genuinely needs a pinned model again — the
 repo-override path (`[roles]`/`default_model` in the repo config) still works
 for that.
+
+## 2026-09-02 — plan-web §8/P5.2 markdown is hand-rolled, not vendored marked+DOMPurify
+
+**Spec** (plan-web.md §8): "one vendored single-file renderer + sanitizer (e.g.
+marked + DOMPurify as vendored ESM), rendering to sanitized DOM."
+
+**Built instead**: `webassets/js/views/transcript.js` carries a hand-rolled
+renderer (~170 lines) that builds DOM exclusively with `createElement` +
+`textContent` — there is no HTML parsing anywhere, so no inline markup can
+survive, and `webshell_test.go` already guards the module graph. Link hrefs go
+through `safeHref` (http/https/mailto/relative/`#` only, always with
+`rel="noreferrer noopener"`); image sources go through `safeImageURL`
+(blob:/data:image/* only) plus a magic-byte MIME sniff; `javascript:` and other
+schemes cannot reach an `href` or `src`. The P4 guard test also keeps authored
+CSS free of hex literals, and CSP (`script-src 'self'`) backstops everything.
+
+**Why**: the spec's own requirement is "rendering to sanitized DOM", and a
+parser that never produces HTML from strings meets it more strongly than a
+renderer-plus-sanitizer pair: there is no vendored third-party parser to review
+at vendoring time and re-review on every update, no sanitizer-bypass surface,
+and no second copy of a parsing engine to keep current. The escape hatch stands:
+if markdown fidelity gaps hurt (nested list stacks, tables, footnotes), the
+pre-approved vendored-Preact/ESM path in §8 is still available and this file
+gets a follow-up entry.
+
+**Worth revisiting if**: transcript content starts needing tables, reference
+links, or task-list syntax that the hand-rolled renderer flattens — vendor
+marked+DOMPurify as two reviewed ESM files before hand-extending the
+hand-rolled one.

@@ -61,10 +61,18 @@ func TestHistoryCarriesNoImageBytes(t *testing.T) {
 		if msg.Kind != MsgEvent || msg.Event == nil || msg.Event.Kind != agent.EventTurnEnd {
 			continue
 		}
+		foundImageCount := false
 		for i, m := range msg.Event.SnapshotMessages {
 			if len(m.Images) > 0 {
 				t.Fatalf("turn-end history message %d carries %d image bytes", i, len(m.Images[0]))
 			}
+			if m.Content == "look" && m.ImageCount != 1 {
+				t.Fatalf("turn-end history image count = %d, want 1", m.ImageCount)
+			}
+			foundImageCount = foundImageCount || m.ImageCount > 0
+		}
+		if !foundImageCount {
+			t.Fatal("turn-end history lost image omission metadata")
 		}
 		if len(msg.Event.SnapshotMessages) == 0 {
 			t.Fatal("turn end carried no history at all")
@@ -82,10 +90,15 @@ func TestHistoryCarriesNoImageBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach failed: %v", err)
 	}
+	foundImageCount := false
 	for i, m := range reattach.Messages {
 		if len(m.Images) > 0 {
 			t.Fatalf("snapshot message %d carries image bytes", i)
 		}
+		foundImageCount = foundImageCount || m.ImageCount > 0
+	}
+	if !foundImageCount {
+		t.Fatal("snapshot lost image omission metadata")
 	}
 	if len(reattach.Messages) == 0 {
 		t.Fatal("snapshot carried no messages")

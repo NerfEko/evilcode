@@ -8154,3 +8154,98 @@ Codex verdict: n/a (CLI absent, per P0.3). Deviations:
   400/401/403/404/409 but semantically exact), always in the uniform shape.
 - `webRecover` maps a handler panic to the uniform 500 ("a bare 500 is a bug" —
   this keeps even the bug machine-readable) and logs the stack daemon-side.
+
+## 2026-09-02 codex-loop — Restore the normal agentic tool loop
+
+The previous attempt added an arbitrary `max_turns` boundary, forced
+`tool_choice=required` on the first Codex request, and disabled parallel tool
+calls. Those gates were removed. The interactive agent loop now follows the
+provider protocol: request a response with the normal automatic tool choice,
+execute every returned tool call, append the exact results, and request the
+next response until the model returns a final assistant message. There is no
+default provider-request or read-round cap.
+
+The compact Codex prompt remains execution-oriented, but it does not require a
+first tool call or pretend that a wire-level tool requirement means the model
+made progress. A terminal response containing only hidden reasoning and no
+tool call or user-visible text is reported as a non-retryable provider error;
+replaying that same completed response is what created the documented endless
+reasoning loop. User cancellation, explicit configured `max_steps`, and real
+provider/context errors remain the available stops.
+
+The private ChatGPT Codex endpoint rejects `max_output_tokens`, so Evilcode
+cannot client-side cap hidden reasoning within one response. The remedy is to
+preserve the provider's response/tool-result protocol and use an appropriate
+reasoning effort, not to add a fixed turn counter.
+
+## 2026-09-02 web-4 — Design system and app shell
+
+Done: the embedded web shell now has the token-only dark Frappé design system
+(cards, chips, callouts, meters, buttons, and sheets), a desktop roster/chat /
+right-rail layout, and a phone roster-home/chat-drill-in shell with safe-area
+padding, a back bar, bottom-sheet dialogs, and touch fallbacks. The status line
+polls `/api/status`; roster rows poll `/api/sessions` only while the document is
+visible, carry every `SessionInfo` state (running, worker/task, pending, stale,
+crashed, stored), and route through hash + last-open persistence. A delegated
+row click keeps polled rows navigable; async route generations prevent a slow
+fetch from repainting a newer route. `webshell_test.go` guards authored CSS
+against hex literals and validates the embedded HTML/module graph.
+
+Verified live against an isolated mock daemon: roster rows showed running,
+worker/task, pending, idle, stored, and crashed states; clicking a row changed
+the hash and opened its stored chat; the phone chat back bar returned home;
+phone and desktop shell screenshots were captured and inspected. Gates:
+`go build ./...`, `go vet ./...`, `go test -count=1 ./...`,
+`go test -race ./internal/daemon/... ./internal/config/...`, and JavaScript
+syntax checks all passed. Tag `web-4`.
+
+## 2026-09-02 — web-5: transcript engine (plan-web.md Phase 5)
+
+**Goal:** the browser transcript becomes a live mirror of the daemon: every
+event kind lands in a pure reducer, renders as a real card (markdown, tool
+calls with args/output/diff, reasoning collapse, notices by level, per-turn
+usage), streaming stays smooth while a turn runs, and scrolling up pages
+durable history through the `before` seam.
+
+**Built:** `webassets/js/mirror.js` — a pure reducer over SNAPSHOT / all 16
+agent event kinds / HISTORY_PAGE / EPOCH_BUMP, with epoch-scoped reconnect
+watermarks, a bounded `_seen` dedupe ring (256), tool-call registry keyed by
+call id, per-turn usage accumulation, and a history seam that merges
+`?before=` pages by durable index and rejects stale generations.
+`webassets/js/sse.js` — one EventSource per open transcript over the daemon's
+named `snapshot`/`event` frames, Last-Event-ID/since cursor persisted
+per-session in localStorage (epoch-checked; storage failures are non-fatal).
+`webassets/js/views/transcript.js` — the card renderer: hand-rolled markdown
+that builds DOM via `createElement`/`textContent` only (deviation logged in
+DEVIATIONS.md), `<details>` reasoning collapsed by default, tool cards with
+target/intent/args/output/diff/repairs/held/error, diff colorization,
+warning-level notice callouts, per-turn usage meters, and history image
+placeholders driven by the daemon's new `ImageCount`. `app.js` attaches the
+stream, seeds the cursor from `mirror_end_seq` semantics when it can prove
+one, coalesces mirror renders with requestAnimationFrame, keeps an autoscroll
+sticky-bottom with a "↓ new activity" pill, and loads older history when the
+scroll passes the top gap. `chat.js` delegates message-card rendering to the
+new renderer. Daemon side: `publishEvent` strips live image bytes and keeps a
+count so history renders honest placeholders; SSE and history endpoints were
+already Phase 2/3 work.
+
+**Verified:** 25 mirror/SSE unit tests pass (`node --test
+mirror.test.mjs sse.test.mjs`); `go build ./...`, `go vet ./...`, and the full
+`go test ./...` suite pass. Live verify against isolated mock daemons (one per
+scenario, browser attached throughout): a real turn streamed text + reasoning
++ a read tool call whose tool result showed the real file; a scripted
+mid-turn auto-compaction (new `web5` mock scenario; window 3500, round-1
+usage 3200 crosses the 0.85 threshold between tool rounds) bumped the epoch —
+the attached browser survived three epoch bumps and rendered the compacted
+transcript with the usage meter live; the `background` scenario ran a detached
+bash command and the rail showed the task; the `diff` scenario rendered a
+colorized edit diff for a real file edit; and the swarm `conflict` rig
+produced genuine ⚠ conflict notices ("bat modified … which you read at turn
+1") that rendered live in the transcript — which also exposed and fixed a
+stale worker-brief matcher in the mock (`isWorkerBrief` still checked "You
+are a worker agent." after the daemon's brief had become "You are a focused
+coding worker."). TUI parity: `evilcode attach` on the same session in tmux
+rendered the same notices, diff previews, and turn structure. Screenshots:
+desktop transcript, 390×844 phone breakpoint via responsive design mode, and
+the TUI capture, all in `shots/`. Gates: `go build ./...`, `go vet ./...`,
+`go test -count=1 ./...`, node tests above. Tag `web-5`.

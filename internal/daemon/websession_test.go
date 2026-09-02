@@ -118,6 +118,9 @@ func TestWebAPIStoredSessionStripsImageBytes(t *testing.T) {
 	if len(view.Messages[0].Images) != 0 {
 		t.Error("history carries image bytes; it must render placeholders instead")
 	}
+	if view.Messages[0].ImageCount != 1 {
+		t.Errorf("history image count = %d, want 1", view.Messages[0].ImageCount)
+	}
 }
 
 func TestWebAPISessionNotFoundAndPathTricks(t *testing.T) {

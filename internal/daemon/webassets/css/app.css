@@ -533,6 +533,7 @@ label {
 .chat-scroll {
   overflow-y: auto;
   padding: 1rem 0.25rem 2rem;
+  position: relative;
 }
 
 /* Center the conversation like a document column (§9). */
@@ -625,6 +626,124 @@ label {
   color: var(--dim);
   padding: 2.5rem 1rem;
   text-align: center;
+}
+
+.msg-reasoning {
+  border-left: 2px solid var(--border);
+  color: var(--dim);
+  margin: 0.35rem 0;
+  padding-left: 0.7rem;
+}
+
+.reasoning-summary {
+  cursor: pointer;
+  font-size: 11px;
+  user-select: none;
+}
+
+.reasoning-body {
+  color: var(--dim);
+  font-size: 13px;
+  margin-top: 0.35rem;
+}
+
+.stream-caret {
+  color: var(--accent);
+  display: inline-block;
+  font-weight: 700;
+  margin-left: 0.12rem;
+  animation: stream-caret-blink 1s steps(2, jump-none) infinite;
+}
+
+@keyframes stream-caret-blink {
+  50% { opacity: 0; }
+}
+
+.tool-card {
+  font-size: 13px;
+}
+
+.tool-head {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.tool-status {
+  color: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.tool-status--running,
+.tool-status--pending {
+  color: var(--accent);
+}
+
+.tool-status--error {
+  color: var(--danger);
+}
+
+.tool-field {
+  margin-top: 0.55rem;
+}
+
+.tool-label {
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tool-value,
+.tool-output-body,
+.tool-display-body {
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.tool-args,
+.tool-diff-body pre,
+.tool-display-body {
+  margin: 0.15rem 0 0;
+  max-height: 20rem;
+  overflow: auto;
+}
+
+.tool-repair-list {
+  margin: 0.15rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.tool-error {
+  margin-top: 0.55rem;
+}
+
+.new-activity-pill {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  bottom: 0.75rem;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.3);
+  color: var(--background);
+  cursor: pointer;
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  margin: 0.75rem auto 0;
+  padding: 0.4rem 0.8rem;
+  position: sticky;
+  z-index: 3;
+}
+
+.new-activity-pill[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-caret { animation: none; }
 }
 
 /* ---- right rail ----------------------------------------------------------------------------- */

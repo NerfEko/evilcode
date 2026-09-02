@@ -11,6 +11,7 @@
 // the roster row the poll loop already holds, so nothing needs a second API.
 
 import { postJSON } from "../api.js";
+import { renderTranscript as renderTranscriptCards } from "./transcript.js";
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -47,36 +48,10 @@ export function renderChatHead({ title, chips, sub }) {
   document.getElementById("chat-sub").textContent = sub;
 }
 
-// A message card. Phase 5's renderers replace the body; the card, role class,
-// meta line, and the history image placeholder are the design system's part.
-function messageCard(m) {
-  const roleClass = { user: "msg--user", assistant: "msg--ai", system: "msg--system", tool: "msg--tool" }[m.role] ?? "msg--ai";
-  const card = el("article", `msg ${roleClass}`);
-
-  const meta = el("div", "msg-meta");
-  const labels = { user: "you", assistant: "assistant", system: "system", tool: "tool" };
-  meta.textContent = m.tool_name ? `${labels[m.role] ?? m.role} · ${m.tool_name}` : labels[m.role] ?? m.role;
-  card.appendChild(meta);
-
-  const body = el("div", "msg-body", m.content);
-  // History never carries image bytes (§6); the placeholder says so.
-  for (let i = 0; i < (m.images?.length ?? 0); i++) {
-    body.appendChild(el("div", "msg-img-placeholder", "image omitted from history"));
-  }
-  card.appendChild(body);
-  return card;
-}
-
+// Keep the Phase 4 chat API stable while the renderer owns message semantics.
+// The app already calls this seam for both live snapshots and stored history.
 export function renderTranscript(container, messages, extra) {
-  container.replaceChildren();
-  if (extra?.before) container.appendChild(extra.before);
-  if (!messages?.length) {
-    const empty = el("div", "transcript-empty");
-    empty.appendChild(el("p", "empty-title", "No messages yet"));
-    container.appendChild(empty);
-    return;
-  }
-  for (const m of messages) container.appendChild(messageCard(m));
+  return renderTranscriptCards(container, messages, extra);
 }
 
 export function storedBanner(name) {

@@ -275,6 +275,11 @@ type Message struct {
 	// log round-trips without a store change.
 	Images [][]byte `json:"images,omitempty"`
 
+	// ImageCount preserves the fact that an attachment existed when a daemon
+	// snapshot deliberately strips its bytes for the remote transcript. It is
+	// display metadata only; provider adapters ignore it and use Images.
+	ImageCount int `json:"image_count,omitempty"`
+
 	// Repairs names the argument rewrites a tool call received before its
 	// strict decode (an aliased field, a string-wrapped number coerced). It is
 	// display metadata: it lives on the message so a resumed or attached
