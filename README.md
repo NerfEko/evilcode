@@ -85,6 +85,7 @@ evilcode                              # open the TUI
 evilcode run "fix the parser"         # submit a prompt and return
 evilcode run --wait "explain this"    # submit and stream the answer
 evilcode serve                        # run the daemon in the foreground
+evilcode serve -web                   # also serve the web UI on 127.0.0.1:7749
 evilcode serve -status                # inspect the daemon
 evilcode serve -stop                  # stop it cleanly
 evilcode attach [session]             # attach to an existing daemon session
@@ -100,6 +101,17 @@ the answer streamed back, or `--local` when you want the old in-process one-shot
 ending the session; another window can reconnect to it later. A session with no window
 is kept hydrated for ten minutes after its last turn/window activity, then it is cleanly
 closed and unloaded. Its transcript remains available for resume.
+
+## The web UI (early)
+
+`evilcode serve -web` starts an opt-in HTTP surface beside the unix socket, bound to
+`127.0.0.1:7749` by default (`[webui] addr` / `serve -web-addr` to change; `[webui]
+enabled` turns it on permanently). The first start mints a token at
+`<socket>.web-token` (mode 0600) and prints a one-time tokenized URL — open it in a
+browser and the token is exchanged for a cookie; every later request is cookie- or
+`Bearer`-authenticated, and mutating requests must come from the same origin. Phase 1
+ships the authenticated shell only; roster and chat arrive with the later web phases.
+The blessed remote path is Tailscale to the loopback bind, not a LAN bind.
 
 ## Requirements
 

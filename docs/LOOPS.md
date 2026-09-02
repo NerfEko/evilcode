@@ -7907,6 +7907,21 @@ base `#303446` in §7's prose, but no role carries it; the app background is
 composed from emitted tokens in P4.1 rather than adding an off-contract
 `--base` token.
 
+## 2026-08-24 web-1 P1.2 — serve -web flags and status line
+
+Done: `-web` (OR with `[webui] enabled`) and `-web-addr` (overrides
+`[webui] addr`) on `evilcode serve`; `ListenWeb` failures are loud on stderr
+but never take the socket down (§2 independence); `ServerStatus.Web` carries
+the bound host:port and `-status` prints `web=<addr>` (or `-`); `Usage()`
+updated. README gains a short web section (usage line + token/origin model).
+
+Verified: `go build ./...`, `go vet ./...`, daemon + config suites green; the
+flag wiring is exercised end to end by the browser smoke test recorded under
+web-1 Verify below (daemon started with `-web -web-addr`, token handoff over
+HTTP, `-status` line).
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
+
 ## 2026-08-24 web-1 P1.5 — embedded app shell, manifest, icons, security headers
 
 Done: `internal/daemon/webassets/` (index.html shell, manifest.webmanifest,

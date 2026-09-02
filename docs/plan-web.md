@@ -313,7 +313,7 @@ setups.
 - [x] **P1.1** `internal/config/config.go` `[webui]` — add `WebUIConfig`
   (`enabled`, `addr`, `workspaces`), validation (addr parses; loopback default),
   `Config.Clone` copy — with `config_test.go` cases.
-- [ ] **P1.2** `internal/servecmd/serve.go` — `-web`, `-web-addr` flags; wire
+- [x] **P1.2** `internal/servecmd/serve.go` — `-web`, `-web-addr` flags; wire
   into `Server.ListenWeb`; status line in `-status` output.
 - [x] **P1.3** `internal/daemon/web.go` `listenWeb` — listener lifecycle,
   mux, shutdown inside `Server.Close()`, independence from the unix socket

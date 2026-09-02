@@ -22,6 +22,8 @@ func Run(args []string) error {
 	idle := fs.Duration("idle", daemon.DefaultIdleTimeout, "shutdown after this long with no clients or running agents (0 disables)")
 	status := fs.Bool("status", false, "print daemon status and exit")
 	stop := fs.Bool("stop", false, "request a graceful daemon shutdown and exit")
+	web := fs.Bool("web", false, "serve the web UI (overrides [webui] enabled)")
+	webAddr := fs.String("web-addr", "", "web UI bind address, host:port (overrides [webui] addr)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -47,8 +49,12 @@ func Run(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "pid=%d socket=%s sessions=%d clients=%d running=%d idle=%s\n",
-			info.PID, info.Socket, info.Sessions, info.Clients, info.Running, info.IdleTimeout)
+		web := "-"
+		if info.Web != "" {
+			web = info.Web
+		}
+		fmt.Fprintf(os.Stdout, "pid=%d socket=%s sessions=%d clients=%d running=%d idle=%s web=%s\n",
+			info.PID, info.Socket, info.Sessions, info.Clients, info.Running, info.IdleTimeout, web)
 		return nil
 	}
 
@@ -65,11 +71,26 @@ func Run(args []string) error {
 		return err
 	}
 
+	// The web surface is opt-in: `[webui] enabled` in the config, or `-web`
+	// for one run. `-web-addr` overrides `[webui] addr` either way (§10).
+	webEnabled := *web || cfg.WebUI.Enabled
+	webBind := cfg.WebUI.Addr
+	if *webAddr != "" {
+		webBind = *webAddr
+	}
+
 	srv := daemon.NewServer(cfg, cwd, *model)
 	srv.Path = path
 	srv.IdleTimeout = *idle
 	if err := srv.Listen(); err != nil {
 		return err
+	}
+	if webEnabled {
+		// Independence (§2): a web bind failure must not take the socket down.
+		// The user asked for the web UI, so the failure is loud, not swallowed.
+		if err := srv.ListenWeb(webBind); err != nil {
+			fmt.Fprintf(os.Stderr, "evilcode: web UI unavailable: %v\n", err)
+		}
 	}
 	if !*quiet {
 		fmt.Fprintf(os.Stderr, "evilcode serve: listening on %s\n", srv.Path)
@@ -86,5 +107,5 @@ func Run(args []string) error {
 
 // Usage prints the subcommand's flags.
 func Usage() string {
-	return "evilcode serve [-m model] [-socket path] [-idle duration] [-q] [-status|-stop]"
+	return "evilcode serve [-m model] [-socket path] [-idle duration] [-web] [-web-addr host:port] [-q] [-status|-stop]"
 }

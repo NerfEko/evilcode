@@ -340,4 +340,8 @@ type ServerStatus struct {
 	Running      int           `json:"running"`
 	IdleTimeout  time.Duration `json:"idle_timeout"`
 	LastActivity time.Time     `json:"last_activity"`
+
+	// Web is the host:port the optional HTTP surface is bound to, empty when
+	// it is off (plan-web.md §10).
+	Web string `json:"web,omitempty"`
 }

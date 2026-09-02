@@ -821,6 +821,9 @@ func (s *Server) Status() *ServerStatus {
 		PID: s.processID(), Socket: s.Path, IdleTimeout: s.IdleTimeout,
 		LastActivity: s.lastActivity,
 	}
+	if s.web != nil {
+		status.Web = s.web.addr
+	}
 	status.Sessions = len(s.sessions)
 	for _, sess := range s.sessions {
 		sess.mu.Lock()
