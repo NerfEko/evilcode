@@ -79,8 +79,28 @@ type Server struct {
 	// timeout bounds one tool call (callTimeoutOf at connect time).
 	timeout time.Duration
 
+	// cfg re-arms the transport on reconnect: stdio re-execs the command,
+	// HTTP dials the endpoint again.
+	cfg ServerConfig
+
+	// closed is set by Close; a monitor that wakes on an intentional close
+	// must not try to bring the server back.
+	closed bool
+	done   chan struct{}
+
 	mu    sync.Mutex
 	tools []tools.Tool
+
+	// connected reflects the transport's liveness, lastConnErr the most
+	// recent connection-level failure (empty when none), and lastReloadErr a
+	// failed tools/list_changed refresh. All guarded by mu.
+	connected     bool
+	lastConnErr   error
+	lastReloadErr error
+
+	// connMu serializes reattach attempts: two calls discovering a dead
+	// transport must produce one new session, not two.
+	connMu sync.Mutex
 
 	// onChange, when set, runs after a tools/list_changed reload produced a
 	// different set. Guarded by mu because the SDK's notification goroutine
@@ -88,10 +108,8 @@ type Server struct {
 	onChange func(tools.Set)
 
 	// reloading marks a single-flight reload so a burst of notifications
-	// costs one pass. lastReloadErr keeps the most recent failed refresh for
-	// the status surface; nil means the loaded set is the server's truth.
-	reloading     bool
-	lastReloadErr error
+	// costs one pass.
+	reloading bool
 }
 
 // Client holds every connected server.
@@ -166,44 +184,155 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("set command or url, not both")
 	}
 
+	srv := &Server{Name: cfg.Name, timeout: callTimeoutOf(cfg), cfg: cfg, done: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(ctx, ConnectTimeout)
 	defer cancel()
+	if err := srv.attach(ctx); err != nil {
+		return nil, err
+	}
+	return srv, nil
+}
 
-	srv := &Server{Name: cfg.Name, timeout: callTimeoutOf(cfg)}
+// attach opens a session from cfg, loads its tools, and marks the server
+// connected. It is the one place a session comes to life, shared by the
+// initial connect and by reconnects.
+func (s *Server) attach(ctx context.Context) error {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return fmt.Errorf("mcp server %s is closed", s.Name)
+	}
+
 	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode", Version: "0.1.0"}, &sdk.ClientOptions{
 		// A server that adds or removes tools mid-session (login flows,
 		// dynamic registries) must not stay stale until restart. The handler
 		// runs on the SDK's notification goroutine, so it only schedules.
 		ToolListChangedHandler: func(ctx context.Context, req *sdk.ToolListChangedRequest) {
-			srv.scheduleReload()
+			s.scheduleReload()
 		},
 	})
 
 	var transport sdk.Transport
-	if cfg.URL != "" {
+	if s.cfg.URL != "" {
 		// Hosted and remote servers speak streamable HTTP. The SDK's own
 		// reconnect-with-backoff covers a dropped stream; a server that is
 		// simply absent fails the connect and is reported like any other.
-		transport = &sdk.StreamableClientTransport{Endpoint: cfg.URL}
+		transport = &sdk.StreamableClientTransport{Endpoint: s.cfg.URL}
 	} else {
-		if _, err := exec.LookPath(cfg.Command); err != nil {
-			return nil, fmt.Errorf("%s is not installed", cfg.Command)
+		if _, err := exec.LookPath(s.cfg.Command); err != nil {
+			return fmt.Errorf("%s is not installed", s.cfg.Command)
 		}
-		cmd := exec.Command(cfg.Command, cfg.Args...)
-		cmd.Env = serverEnv(cfg)
+		cmd := exec.Command(s.cfg.Command, s.cfg.Args...)
+		cmd.Env = serverEnv(s.cfg)
 		transport = &sdk.CommandTransport{Command: cmd}
 	}
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	srv.Session = session
-	if err := srv.loadTools(ctx); err != nil {
-		session.Close()
-		return nil, err
+	if err := s.loadToolsWith(ctx, session); err != nil {
+		_ = session.Close()
+		return err
 	}
-	return srv, nil
+	s.mu.Lock()
+	s.Session = session
+	s.connected = true
+	s.lastConnErr = nil
+	s.mu.Unlock()
+	go s.monitor()
+	return nil
+}
+
+// reconnectBackoff spaces the bounded background reconnect attempts after a
+// transport dies. Atomic because tests tune it while a live session's
+// monitor goroutine reads it.
+var reconnectBackoff = func() *atomic.Pointer[[]time.Duration] {
+	p := new(atomic.Pointer[[]time.Duration])
+	p.Store(&[]time.Duration{time.Second, 2 * time.Second, 4 * time.Second})
+	return p
+}()
+
+// currentBackoff snapshots the active backoff schedule.
+func currentBackoff() []time.Duration { return *reconnectBackoff.Load() }
+
+// monitor watches the session's transport. When it dies — and the death was
+// not an intentional Close — it attempts a bounded reconnect with backoff so
+// a server that died mid-session is not dead for the rest of the session.
+// Exhausted attempts leave the server disconnected with the error on the
+// status surface; the next tool call makes one more lazy attempt.
+func (s *Server) monitor() {
+	session := s.currentSession()
+	err := session.Wait()
+
+	s.mu.Lock()
+	intentional := s.closed
+	s.connected = false
+	switch {
+	case intentional:
+		// The user closed it; a close is not a fault for the status surface.
+		s.lastConnErr = nil
+	case err != nil:
+		s.lastConnErr = err
+	default:
+		s.lastConnErr = fmt.Errorf("the server closed the connection")
+	}
+	s.mu.Unlock()
+	if intentional {
+		return
+	}
+
+	for _, backoff := range currentBackoff() {
+		select {
+		case <-time.After(backoff):
+		case <-s.done:
+			return
+		}
+		if rerr := s.reattach(); rerr == nil {
+			return // reattach started the next monitor
+		}
+	}
+}
+
+// reattach brings a dead server back: one bounded dial plus a tool reload,
+// serialized so concurrent discoverers produce one session. It is a no-op
+// reporting success when someone else already reattached.
+func (s *Server) reattach() error {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("mcp server %s is closed", s.Name)
+	}
+	if s.connected {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), ConnectTimeout)
+	defer cancel()
+	old := s.currentSession()
+	if err := s.attach(ctx); err != nil {
+		s.mu.Lock()
+		s.lastConnErr = err
+		s.mu.Unlock()
+		return err
+	}
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
+// currentSession snapshots the live session pointer.
+func (s *Server) currentSession() *sdk.ClientSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Session
 }
 
 // loadTools adapts the server's tool list into evilcode's tool struct,
@@ -213,13 +342,19 @@ func connectOne(ctx context.Context, cfg ServerConfig) (*Server, error) {
 // errors rather than silent truncation — a catalog cut in half is exactly the
 // bug this closes.
 func (s *Server) loadTools(ctx context.Context) error {
+	return s.loadToolsWith(ctx, s.currentSession())
+}
+
+// loadToolsWith is loadTools against an explicit session, so a reconnect can
+// reload from the new session before it becomes current.
+func (s *Server) loadToolsWith(ctx context.Context, session *sdk.ClientSession) error {
 	var out []tools.Tool
 	cursor := ""
 	for page := 1; ; page++ {
 		if page > maxListPages {
 			return fmt.Errorf("tool catalog exceeds %d pages; refusing to expose a truncated catalog", maxListPages)
 		}
-		res, err := s.Session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
+		res, err := session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
 			return err
 		}
@@ -360,10 +495,20 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (t
 			bound = remaining
 		}
 	}
+	// A server the monitor has not yet marked dead gets one lazy reconnect
+	// attempt here, so a session does not stay unusable while a background
+	// backoff is still counting down.
+	if !s.isConnected() {
+		if err := s.reattach(); err != nil {
+			return tools.Result{}, fmt.Errorf("mcp server %s is not connected: %w", s.Name, err)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 
-	res, err := s.Session.CallTool(ctx, &sdk.CallToolParams{
+	session := s.currentSession()
+	res, err := session.CallTool(ctx, &sdk.CallToolParams{
 		Name:      name,
 		Arguments: parsed,
 	})
@@ -373,7 +518,21 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (t
 				"mcp tool %s__%s: no response in %s; the call was abandoned — the server may be wedged, retry or narrow it",
 				s.Name, name, bound)
 		}
-		return tools.Result{}, err
+		// A protocol-level error (unknown tool, bad params) rides a live
+		// transport, so a cheap ping separates "the server said no" from "the
+		// transport died". Only a dead transport earns a reconnect, and the
+		// retry happens once within the same bound.
+		if perr := s.ping(); perr != nil {
+			if rerr := s.reattach(); rerr == nil {
+				res, err = s.currentSession().CallTool(ctx, &sdk.CallToolParams{
+					Name:      name,
+					Arguments: parsed,
+				})
+			}
+		}
+		if err != nil {
+			return tools.Result{}, err
+		}
 	}
 
 	out, err := s.mapResult(name, res)
@@ -480,22 +639,58 @@ func (c *Client) Tools() tools.Set {
 
 // Summary describes the connected servers for the header line.
 type Summary struct {
-	Name  string
-	Tools int
+	Name      string
+	Tools     int
+	Connected bool
+	LastError string
 }
 
-// Summaries reports what is connected.
+// Summaries reports what is connected, including per-server status: whether
+// the transport is alive, how many tools it currently exposes, and the last
+// connection- or refresh-level failure (empty when healthy).
 func (c *Client) Summaries() []Summary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	out := make([]Summary, 0, len(c.servers))
 	for _, s := range c.servers {
-		s.mu.Lock()
-		out = append(out, Summary{Name: s.Name, Tools: len(s.tools)})
-		s.mu.Unlock()
+		out = append(out, s.status())
 	}
 	return out
+}
+
+// status snapshots one server's surface state.
+func (s *Server) status() Summary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sm := Summary{Name: s.Name, Tools: len(s.tools), Connected: s.connected}
+	switch {
+	case !s.connected && s.lastConnErr != nil:
+		sm.LastError = s.lastConnErr.Error()
+	case s.lastReloadErr != nil:
+		sm.LastError = "tools refresh failed: " + s.lastReloadErr.Error()
+	}
+	return sm
+}
+
+// isConnected snapshots the liveness flag.
+func (s *Server) isConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connected
+}
+
+// pingTimeout bounds the transport liveness probe.
+const pingTimeout = 2 * time.Second
+
+// ping probes the transport with a short bounded round trip. A live transport
+// makes a CallTool error a protocol-level answer the model can act on; a
+// failed ping means the connection itself is gone.
+func (s *Server) ping() error {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	return s.currentSession().Ping(ctx, nil)
 }
 
 // Close shuts every server down.
@@ -503,7 +698,28 @@ func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, s := range c.servers {
-		_ = s.Session.Close()
+		s.Close()
 	}
 	c.servers = nil
+}
+
+// Close marks the server closed so no monitor or lazy call tries to bring it
+// back, then shuts the transport down.
+func (s *Server) Close() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.connected = false
+	done := s.done
+	session := s.Session
+	s.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+	if session != nil {
+		_ = session.Close()
+	}
 }

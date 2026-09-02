@@ -51,8 +51,10 @@ type HeaderState struct {
 
 // MCPStatus is one connected server, for the header line.
 type MCPStatus struct {
-	Name  string
-	Tools int
+	Name      string
+	Tools     int
+	Connected bool
+	LastError string
 }
 
 // ProviderStatus is one provider dot.
@@ -131,7 +133,22 @@ func (r *Renderer) RenderHeader(h HeaderState) []string {
 			shown = shown[:3]
 		}
 		for _, s := range shown {
-			parts = append(parts, fmt.Sprintf("%s (%d tools)", s.Name, s.Tools))
+			if s.Connected {
+				parts = append(parts, fmt.Sprintf("%s (%d tools)", s.Name, s.Tools))
+				continue
+			}
+			// A dead server must be visible: "down" plus a bounded slice of the
+			// last error, so a wedged or absent server is diagnosable from the
+			// header instead of just failing silently.
+			err := s.LastError
+			if len(err) > 64 {
+				err = err[:64] + "…"
+			}
+			if err != "" {
+				parts = append(parts, fmt.Sprintf("%s (down: %s)", s.Name, err))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s (down)", s.Name))
+			}
 		}
 		out = append(out, dim.Render("mcp: "+strings.Join(parts, ", ")+suffix))
 	}

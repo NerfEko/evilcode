@@ -7691,3 +7691,44 @@ are refused by `connectOne`; the eight config validation cases.
 Verified: `go test ./internal/config/... ./internal/mcp/... -count=1` and the
 full `go test ./... -count=1` green.
 
+## 2026-09-01 — MCP gap 7: dead servers reconnect, and the header shows the truth
+
+`mcp_gaps.md` #7 (Medium). There was no restart logic and no status surface:
+a server that died mid-session stayed dead for the rest of the session with
+every call failing, connect failures only reached stderr, and in a daemon not
+even that was visible.
+
+Done. `Server.attach` is now the one place a session comes to life (initial
+connect and reconnects share it), and a monitor goroutine watches the
+transport via `Session.Wait()`. An unintentional death triggers a bounded
+background reconnect — three attempts at 1s/2s/4s — that re-dials (stdio
+re-execs the command, HTTP dials the endpoint), reloads the tool list from
+the new session, and swaps atomically. Exhausted attempts leave the server
+disconnected with the error on the status surface, and the next tool call
+makes one lazy reconnect attempt, so a session is never unusable while a
+backoff is still counting down. On the call path a failed `CallTool` is
+classified by a short `Ping`: a live transport means the error is
+protocol-level (unknown tool, bad params) and must not restart a healthy
+server; a failed ping earns one reconnect plus one retry within the same
+call bound. An intentional `Close` clears the state and wakes the monitor
+without recording a fault.
+
+Status: `Summary` gained `Connected` and `LastError` (connection failure
+while down, refresh failure while up), carried into the daemon's
+`MCPStatus`, the snapshot event, and the TUI header — `name (N tools)` when
+healthy, `name (down: <error>)` when not. The local TUI polls its summaries
+on the idle tick; an attached client gets status through every daemon
+snapshot, so mid-session death is visible instead of silent.
+
+Tests: a dead in-memory server surfaces `Connected: false` with an error
+after its reconnect attempts fail; an HTTP server killed from the client
+side reconnects automatically, reloads its tools, and answers a call; an
+intentional close reports no fault and does not reconnect; status error
+precedence; `-race` clean. Both test knobs (reload delay, backoff schedule)
+are atomic because live goroutines read them while tests tune them.
+
+Verified: `go test ./internal/mcp/... -count=1 -race` and the full
+`go test ./... -count=1` green (one run tripped the pre-existing
+`TestConcurrentStartsOnAStaleSocketLeaveOneReachable` daemon flake again;
+passes standalone).
+

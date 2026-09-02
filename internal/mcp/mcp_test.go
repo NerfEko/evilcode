@@ -48,6 +48,11 @@ func newInProcessClient(t *testing.T, server *sdk.Server, cfg ServerConfig, clie
 	if err := srv.loadTools(context.Background()); err != nil {
 		t.Fatalf("loadTools: %v", err)
 	}
+	// The harness session is live, mirroring attach's bookkeeping; tests that
+	// exercise the monitor start it explicitly.
+	srv.mu.Lock()
+	srv.connected = true
+	srv.mu.Unlock()
 	cl := &Client{}
 	cl.servers = append(cl.servers, srv)
 	srv.setOnChange(cl.fireHook)
@@ -545,5 +550,159 @@ func TestConnectRejectsAmbiguousTransport(t *testing.T) {
 	_, err = connectOne(context.Background(), ServerConfig{Name: "srv"})
 	if err == nil || !strings.Contains(err.Error(), "no command or url") {
 		t.Fatalf("connectOne error = %v, want the missing-transport diagnostic", err)
+	}
+}
+
+// setBackoff replaces the reconnect backoff for a test and returns the
+// restore func.
+func setBackoff(d ...time.Duration) func() {
+	old := reconnectBackoff.Load()
+	cp := append([]time.Duration(nil), d...)
+	reconnectBackoff.Store(&cp)
+	return func() { reconnectBackoff.Store(old) }
+}
+
+// Gap 7: a server that dies mid-session is marked down with its last error,
+// and a bounded reconnect cannot save a transport whose peer is gone.
+func TestDeadServerIsReportedAndReconnectAttemptsFail(t *testing.T) {
+	restore := setBackoff(5*time.Millisecond, 5*time.Millisecond, 5*time.Millisecond)
+	defer restore()
+
+	server := sdk.NewServer(&sdk.Implementation{Name: "die", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{Name: "a", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	})
+	serverTransport, clientTransport := sdk.NewInMemoryTransports()
+	client := sdk.NewClient(&sdk.Implementation{Name: "evilcode-test", Version: "test"}, nil)
+	serverSession, err := server.Connect(context.Background(), serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	clientSession, err := client.Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	srv := &Server{Name: "srv", Session: clientSession, timeout: time.Minute, cfg: ServerConfig{Name: "srv"}, done: make(chan struct{})}
+	if err := srv.loadTools(context.Background()); err != nil {
+		t.Fatalf("loadTools: %v", err)
+	}
+	srv.mu.Lock()
+	srv.connected = true
+	srv.mu.Unlock()
+	go srv.monitor()
+	t.Cleanup(srv.Close)
+
+	// The server side dies: the monitor must notice, fail its bounded
+	// reconnects (an in-memory transport has no second dial), and surface
+	// the failure.
+	serverSession.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if st := srv.status(); !st.Connected && st.LastError != "" {
+			if strings.Contains(st.LastError, "not installed") || st.LastError != "" {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("dead server never surfaced: %+v", srv.status())
+}
+
+// Gap 7: a reconnectable transport comes back automatically, tools reloaded.
+func TestTransportDeathReconnects(t *testing.T) {
+	restore := setBackoff(5 * time.Millisecond)
+	defer restore()
+
+	server := newTestServer(t, "heal", func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "back"}}}, nil
+	}, nil)
+	httpSrv := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
+	defer httpSrv.Close()
+
+	c := New()
+	for _, err := range c.Connect(context.Background(), []ServerConfig{{Name: "srv", URL: httpSrv.URL}}) {
+		t.Fatalf("connect: %v", err)
+	}
+	if len(c.servers) != 1 {
+		t.Fatalf("servers = %d, want 1", len(c.servers))
+	}
+	srv := c.servers[0]
+
+	// Force the transport death from the client side; the handler stays up.
+	_ = srv.currentSession().Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var last Summary
+	for time.Now().Before(deadline) {
+		last = srv.status()
+		if srv.isConnected() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !srv.isConnected() {
+		t.Fatalf("server never reconnected: %+v (last sample %+v)", srv.status(), last)
+	}
+	st := srv.status()
+	if st.LastError != "" {
+		t.Errorf("reconnected server still reports %q", st.LastError)
+	}
+	if len(srv.toolsSnapshot()) != 1 {
+		t.Errorf("tools after reconnect = %d, want the reloaded echo", len(srv.toolsSnapshot()))
+	}
+	// And the reattached session actually works.
+	res, err := srv.call(context.Background(), "echo", nil)
+	if err != nil {
+		t.Fatalf("call after reconnect: %v", err)
+	}
+	if res.Output != "back" {
+		t.Errorf("Output = %q, want %q", res.Output, "back")
+	}
+	c.Close()
+}
+
+// An intentional close must not read as a fault and must not trigger a
+// reconnect attempt.
+func TestIntentionalCloseIsNotAFault(t *testing.T) {
+	restore := setBackoff(5 * time.Millisecond)
+	defer restore()
+
+	server := newTestServer(t, "quiet", func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{}, nil
+	}, nil)
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+
+	srv.Close()
+	time.Sleep(100 * time.Millisecond)
+	if !srv.closed {
+		t.Error("server not marked closed")
+	}
+	st := srv.status()
+	if st.Connected {
+		t.Error("closed server still reports connected")
+	}
+	if st.LastError != "" {
+		t.Errorf("intentional close reported as a fault: %q", st.LastError)
+	}
+}
+
+// The status surface prefers the connection error while down and the refresh
+// error while up.
+func TestStatusPrefersTheRightError(t *testing.T) {
+	srv := &Server{Name: "srv", done: make(chan struct{})}
+	srv.mu.Lock()
+	srv.connected = false
+	srv.lastConnErr = fmt.Errorf("dial refused")
+	srv.mu.Unlock()
+	if got := srv.status().LastError; !strings.Contains(got, "dial") {
+		t.Errorf("down server status = %+v, want the connection error", srv.status())
+	}
+
+	srv.mu.Lock()
+	srv.connected = true
+	srv.lastReloadErr = fmt.Errorf("boom")
+	srv.mu.Unlock()
+	if got := srv.status().LastError; !strings.Contains(got, "tools refresh failed") {
+		t.Errorf("up server status = %+v, want the refresh error", srv.status())
 	}
 }

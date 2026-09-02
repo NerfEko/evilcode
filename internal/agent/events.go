@@ -177,6 +177,10 @@ type Event struct {
 	SnapshotIncomplete bool              `json:"snapshot_incomplete,omitempty"`
 	SnapshotPending    []AskEvent        `json:"snapshot_pending,omitempty"`
 	SnapshotBackground []BackgroundState `json:"snapshot_background,omitempty"`
+	// SnapshotMCP is the per-server MCP status from the daemon snapshot, so an
+	// attached client's header shows connected tools and dead servers live
+	// (mcp_gaps #7).
+	SnapshotMCP []RemoteMCPStatus `json:"snapshot_mcp,omitempty"`
 
 	// Ask carries a persisted interactive request owned by the server. It is
 	// separate from Display because a disconnected client must be able to
@@ -203,6 +207,14 @@ type BackgroundState struct {
 	Done     bool   `json:"done"`
 	Failed   bool   `json:"failed,omitempty"`
 	Progress string `json:"progress,omitempty"`
+}
+
+// RemoteMCPStatus is the wire form of one MCP server's header status.
+type RemoteMCPStatus struct {
+	Name      string `json:"name"`
+	Tools     int    `json:"tools"`
+	Connected bool   `json:"connected"`
+	Error     string `json:"error,omitempty"`
 }
 
 // UnmarshalJSON restores the typed display payloads used by the TUI. A plain

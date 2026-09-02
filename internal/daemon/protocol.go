@@ -268,6 +268,10 @@ type Snapshot struct {
 type MCPStatus struct {
 	Name  string `json:"name"`
 	Tools int    `json:"tools"`
+	// Connected reports whether the transport is currently alive; Error holds
+	// the last connection- or refresh-level failure, empty when healthy.
+	Connected bool   `json:"connected"`
+	Error     string `json:"error,omitempty"`
 }
 
 // BackgroundTask is the wire form of a detached shell task.

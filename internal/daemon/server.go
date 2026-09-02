@@ -1581,7 +1581,10 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 	var mcpStatus []MCPStatus
 	if sess.mcp != nil {
 		for _, summary := range sess.mcp.Summaries() {
-			mcpStatus = append(mcpStatus, MCPStatus{Name: summary.Name, Tools: summary.Tools})
+			mcpStatus = append(mcpStatus, MCPStatus{
+				Name: summary.Name, Tools: summary.Tools,
+				Connected: summary.Connected, Error: summary.LastError,
+			})
 		}
 	}
 	var skillNames []string

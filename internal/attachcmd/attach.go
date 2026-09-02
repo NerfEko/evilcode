@@ -301,6 +301,7 @@ func run(args []string, autoStart bool) error {
 						SnapshotMessages:   snapshotMessages(msg.Snapshot),
 						SnapshotPending:    append([]agent.AskEvent(nil), msg.Snapshot.Pending...),
 						SnapshotBackground: snapshotBackground(msg.Snapshot),
+						SnapshotMCP:        snapshotMCP(msg.Snapshot),
 					})
 				}
 			case daemon.MsgError:
@@ -340,6 +341,21 @@ func snapshotBackground(snap *daemon.Snapshot) []agent.BackgroundState {
 		})
 	}
 	return states
+}
+
+// snapshotMCP maps the daemon snapshot's per-server status for the header.
+func snapshotMCP(snap *daemon.Snapshot) []agent.RemoteMCPStatus {
+	if snap == nil {
+		return nil
+	}
+	out := make([]agent.RemoteMCPStatus, 0, len(snap.MCP))
+	for _, s := range snap.MCP {
+		out = append(out, agent.RemoteMCPStatus{
+			Name: s.Name, Tools: s.Tools,
+			Connected: s.Connected, Error: s.Error,
+		})
+	}
+	return out
 }
 
 func snapshotMessages(snap *daemon.Snapshot) []provider.Message {
@@ -510,7 +526,10 @@ func header(cfg *config.Config, snap *daemon.Snapshot, path string) tui.HeaderSt
 		h.Provider = "daemon"
 	}
 	for _, s := range snap.MCP {
-		h.MCP = append(h.MCP, tui.MCPStatus{Name: s.Name, Tools: s.Tools})
+		h.MCP = append(h.MCP, tui.MCPStatus{
+			Name: s.Name, Tools: s.Tools,
+			Connected: s.Connected, LastError: s.Error,
+		})
 	}
 	for _, level := range snap.ReasoningEfforts {
 		if parsed, ok := provider.ParseReasoningEffort(level); ok {

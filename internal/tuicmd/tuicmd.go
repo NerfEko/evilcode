@@ -266,7 +266,10 @@ func runOnce(args []string) (string, error) {
 
 	var mcpStatus []tui.MCPStatus
 	for _, s := range mcpClient.Summaries() {
-		mcpStatus = append(mcpStatus, tui.MCPStatus{Name: s.Name, Tools: s.Tools})
+		mcpStatus = append(mcpStatus, tui.MCPStatus{
+			Name: s.Name, Tools: s.Tools,
+			Connected: s.Connected, LastError: s.LastError,
+		})
 	}
 
 	// Look overrides up by the *resolved* model, not the flag. Passing the
@@ -307,6 +310,18 @@ func runOnce(args []string) (string, error) {
 	m := tui.NewModel(a, headerState(cfg, store.Name, modelName, prov.Name(), cwd,
 		skills.Names(), mcpStatus)).
 		WithSkills(skills, pc).
+		// A server that dies mid-session must be visible: the header status is
+		// polled on the idle tick, not frozen at startup (mcp_gaps #7).
+		WithMCPPoller(func() []tui.MCPStatus {
+			var out []tui.MCPStatus
+			for _, s := range mcpClient.Summaries() {
+				out = append(out, tui.MCPStatus{
+					Name: s.Name, Tools: s.Tools,
+					Connected: s.Connected, LastError: s.LastError,
+				})
+			}
+			return out
+		}).
 		WithTodos(todos, poke).
 		WithHistory(prompts).
 		WithKeymap(keymap, tui.LoadHotkeyUsage(dataDir), cfg.Display.KeybindingHints).

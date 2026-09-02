@@ -426,6 +426,7 @@ type Model struct {
 	remoteInterrupt   func(bool) error
 	remoteCommand     func(string, string, string) error
 	remoteSessions    func() ([]SessionDescriptor, error)
+	mcpPoll           func() []MCPStatus
 	remoteBackground  []BackgroundTask
 
 	// history is the Ctrl+R reverse search, and prompts is the recall source
@@ -742,6 +743,29 @@ func (m *Model) WithRemoteCommand(run func(kind, arg, secret string) error) *Mod
 func (m *Model) WithRemoteSessions(list func() ([]SessionDescriptor, error)) *Model {
 	m.remoteSessions = list
 	return m
+}
+
+// WithMCPPoller installs a per-tick poll of the MCP header status. The local
+// client passes one that maps its own server summaries; the attached client
+// leaves it nil and receives status through snapshot events instead.
+func (m *Model) WithMCPPoller(poll func() []MCPStatus) *Model {
+	m.mcpPoll = poll
+	return m
+}
+
+// applyRemoteMCP replaces the header's MCP status from a daemon snapshot.
+func (m *Model) applyRemoteMCP(status []agent.RemoteMCPStatus) {
+	if status == nil {
+		return
+	}
+	out := make([]MCPStatus, 0, len(status))
+	for _, s := range status {
+		out = append(out, MCPStatus{
+			Name: s.Name, Tools: s.Tools,
+			Connected: s.Connected, LastError: s.Error,
+		})
+	}
+	m.header.MCP = out
 }
 
 // SetRemoteAsk queues a server-owned question for the normal TUI picker.
@@ -1295,6 +1319,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		if m.mcpPoll != nil {
+			if status := m.mcpPoll(); status != nil {
+				m.header.MCP = status
+			}
+		}
 		if m.startPageVisible() && !Deterministic() {
 			m.startWaveFrame = (m.startWaveFrame + 1) % startPageWaveCycle
 		}
@@ -1850,6 +1879,7 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.ApplyRemoteState(e.SnapshotSession, e.SnapshotModel, e.SnapshotProvider,
 			e.SnapshotRunning, e.SnapshotMessages, e.SnapshotPending,
 			e.SnapshotBackground)
+		m.applyRemoteMCP(e.SnapshotMCP)
 		if e.SnapshotIncomplete {
 			// The daemon trimmed the frame to keep the connection alive; the
 			// transcript shows the newest history it could carry.
