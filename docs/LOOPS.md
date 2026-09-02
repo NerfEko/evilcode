@@ -7922,6 +7922,57 @@ HTTP, `-status` line).
 
 Codex verdict: n/a (CLI absent, per P0.3). Deviations: none.
 
+## 2026-08-24 web-1 Verify — httptest + live daemon + browser battery
+
+httptest battery (all in `web_test.go` / `webauth_test.go` / `webassets_test.go` /
+`webtheme_test.go`): no token → 401 with `{"error":...}`; wrong token → 401;
+handoff sets one HttpOnly SameSite=Strict cookie and 302s to `/` with the
+token stripped; failed handoff sets no cookie; POST without Origin → 403;
+cross-origin POST → 403; Origin/Host mismatch → 403; rebinding Host → 403;
+cookie and Bearer both authenticate; token survives restart with provenance;
+token file 0600 and re-chmod'd on load; corrupt token file is a hard error;
+web bind failure leaves the socket serving; `-idle` untouched.
+
+Live run: binary built from HEAD, daemon on an isolated runtime dir (temp
+socket, port 7799, mock provider, `-idle 0`). Startup printed
+`evilcode web: http://127.0.0.1:7799 (token: ...web-token)` and the full
+tokenized URL once; `-status` printed `web=127.0.0.1:7799`; curl confirmed
+the 401/403 battery over real TCP.
+
+Browser (zen-agent, Firefox): opened the tokenized URL → 302 stripped the
+token and the shell rendered (`shots/web-shell-desktop.png`); navigating to
+`/` without a token still renders (cookie); `/theme.css` shows all 38
+generated tokens including the tinted diff pair; `/manifest.webmanifest`
+parses with surface colors and both icons; `/assets/js/app.js` and the icon
+PNG serve. Daemon restarted mid-session: second start printed only the token
+line (no URL) and the browser's cookie still rendered the shell — decision 2
+confirmed live.
+
+Gates: `go build ./...`, `go vet ./...`, `go test ./...`, and
+`go test -race ./internal/daemon/... ./internal/config/...` green.
+
+Codex verdict: n/a (CLI absent, per P0.3). Deviations: none. Tag: `web-1`.
+
+## 2026-08-24 web-1 Verify — addendum: pre-existing daemon startup race fixed
+
+The first full `-race` run failed ~1 run in 5 with
+`TestConcurrentStartsOnAStaleSocketLeaveOneReachable: 2 of 8 daemons bound the
+same socket`. Verified pre-existing by running the same test at the pre-web
+baseline commit (1ae5fb8, scratch worktree): identical flake rate there.
+
+Root cause (pre-existing, not web): `Server.Listen` released the lifetime
+socket claim on `EADDRINUSE` *before* its remove-and-rebind recovery, so a
+second starter could acquire the claim, remove the first daemon's fresh
+socket during its own recovery, and bind — two live daemons, one unreachable.
+Fixed in 1a899b3: the claim is held through recovery and released only on a
+definitive failure. Post-fix: 0/15 `-race` runs of the test fail (was ~2/12),
+full suite + race gate green.
+
+Process note: the post-fix stress runs were briefly executed inside the
+baseline worktree (bash cwd carry-over), which made them meaningless; caught
+by an instrumented trace test producing "no tests to run", re-run in the
+workspace. Evidence above is from workspace runs.
+
 ## 2026-08-24 web-1 P1.7 — startup line and token provenance
 
 Done: `Server.WebInfo()` (addr, token path, token, minted) and the serve

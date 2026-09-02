@@ -329,7 +329,7 @@ setups.
   the Frappé defaults come out byte-identical to the palette spec.
 - [x] **P1.7** `internal/daemon/web.go` — startup print line; token provenance
   (minted vs reused) logged once.
-- [ ] Verify Phase 1: httptest — no token → 401; wrong token → 401; cross-origin
+- [x] Verify Phase 1: httptest — no token → 401; wrong token → 401; cross-origin
   POST → 403; rebinding Host → 403; token survives a daemon restart; token file
   is 0600; socket-only start works with web unconfigured and with web refusing
   to bind. `go test -race ./internal/daemon/... ./internal/config/...`.
