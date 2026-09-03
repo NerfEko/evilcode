@@ -40,6 +40,52 @@ func TestWebAuthoredCSSHasNoHexLiterals(t *testing.T) {
 	}
 }
 
+func TestWebShellLayoutOwnsPaneScrolling(t *testing.T) {
+	raw, err := fs.ReadFile(webAssets, "webassets/css/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(raw)
+	hasRule := func(selector string, declarations ...string) bool {
+		needle := selector + " {"
+		for offset := 0; ; {
+			relative := strings.Index(css[offset:], needle)
+			if relative < 0 {
+				return false
+			}
+			start := offset + relative + len(needle)
+			end := strings.IndexByte(css[start:], '}')
+			if end < 0 {
+				return false
+			}
+			block := css[start : start+end]
+			ok := true
+			for _, declaration := range declarations {
+				if !strings.Contains(block, declaration) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return true
+			}
+			offset = start + end + 1
+		}
+	}
+	for selector, declarations := range map[string][]string{
+		".app":         {"height: 100vh;", "min-height: 0;", "overflow: hidden;"},
+		".sidebar":     {"height: 100%;", "min-height: 0;", "overflow: hidden;"},
+		".roster":      {"overflow-y: auto;", "min-height: 0;"},
+		".chat":        {"height: 100%;", "min-height: 0;", "overflow: hidden;", "minmax(0, 1fr) auto auto"},
+		".chat-scroll": {"overflow-y: auto;", "min-height: 0;"},
+		".rail":        {"min-height: 0;"},
+	} {
+		if !hasRule(selector, declarations...) {
+			t.Errorf("%s is missing independent pane layout declarations %v", selector, declarations)
+		}
+	}
+}
+
 // The shell contract: the markup the app.js module graph expects must actually
 // ship, every asset the markup references must be embedded or generated, and
 // every relative import between modules must resolve. A typo in any of those

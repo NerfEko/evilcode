@@ -166,10 +166,34 @@ function transcriptScroll() {
   return document.getElementById("transcript-scroll");
 }
 
-function atTranscriptBottom(scroll) {
-  if (!scroll) return true;
-  return scroll.scrollHeight <= scroll.clientHeight ||
-    scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= TRANSCRIPT_BOTTOM_GAP;
+function pinTranscriptBottom(scroll, isCurrent = () => true) {
+  const pin = () => {
+    if (!isCurrent()) return false;
+    scroll.scrollTop = scroll.scrollHeight;
+    return true;
+  };
+  if (!pin()) return;
+  if (typeof ResizeObserver !== "function") {
+    setTimeout(pin, 100);
+    return;
+  }
+  const transcript = document.getElementById("transcript");
+  if (!transcript) return;
+  let timer = null;
+  let observer = null;
+  const stop = () => {
+    observer?.disconnect();
+    clearTimeout(timer);
+  };
+  observer = new ResizeObserver(() => {
+    if (!pin()) {
+      stop();
+      return;
+    }
+    clearTimeout(timer);
+    timer = setTimeout(stop, 100);
+  });
+  observer.observe(transcript);
 }
 
 function activityPill() {
@@ -548,7 +572,12 @@ async function render() {
       });
     }
     const scroll = transcriptScroll();
-    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    if (scroll) {
+      // `content-visibility: auto` refines message heights as the bottom comes
+      // into view, so keep the initial scroll pinned until that settles.
+      pinTranscriptBottom(scroll, () => generation === renderGeneration && route.view === "chat");
+    }
+    if (info.live !== false) composer.focus();
     setActivityPill(false);
   } catch (err) {
     if (generation !== renderGeneration) return;

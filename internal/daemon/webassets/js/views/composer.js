@@ -365,6 +365,9 @@ export function mountComposer(handlers = {}) {
       exitCommandMode();
       autogrow();
     },
+    focus() {
+      text.focus();
+    },
     setRunning(next) {
       const changed = running !== !!next;
       running = !!next;

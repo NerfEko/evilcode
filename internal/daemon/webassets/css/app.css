@@ -74,10 +74,11 @@ body {
 .app {
   display: grid;
   grid-template-columns: 288px minmax(0, 1fr);
-  /* Subtract the touch keyboard overlap (P7.2) so landscape tablets (≥900px
-   * touch viewports) keep the composer above the keys too; 0px on desktops. */
-  min-height: 100vh;
-  min-height: calc(100dvh - var(--kb-overlap, 0px));
+  /* Keep the shell inside the viewport so each pane owns its own scroll. */
+  height: 100vh;
+  height: calc(100dvh - var(--kb-overlap, 0px));
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* The data-view attribute picks the pane: home shows the empty state beside
@@ -152,7 +153,9 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: 1rem 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
 }
 
@@ -550,8 +553,11 @@ label {
 /* ---- chat column ------------------------------------------------------------------------- */
 
 .chat {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  height: 100%;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   padding: 0 1.5rem;
 }
 
@@ -578,7 +584,9 @@ label {
 }
 
 .chat-scroll {
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1rem 0.25rem 2rem;
   position: relative;
 }
@@ -1033,6 +1041,7 @@ label.ask-option {
 
 .rail {
   border-left: 1px solid var(--border);
+  min-height: 0;
   min-width: 0;
   overflow-y: auto;
   padding: 1rem 0.9rem calc(1rem + env(safe-area-inset-bottom));
