@@ -144,29 +144,46 @@ func (a *webAuth) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(bearer)), []byte(a.token)) == 1
 }
 
-// sameSite is the CSRF/DNS-rebinding discipline for mutating verbs: the Host
-// must be the bound address or a loopback spelling of its port, and the
-// Origin (or Referer) must carry exactly that host. A request with neither
-// header is rejected — it cannot prove where it came from.
+// sameSite is the CSRF/DNS-rebinding discipline for mutating verbs. The
+// backend Host must be the bound address or a loopback spelling of its port.
+// Tailscale Serve terminates HTTPS and forwards the public host in
+// X-Forwarded-Host, so that host is used for the Origin/Referer comparison only
+// when X-Forwarded-Proto is HTTPS. A request with neither Origin nor Referer is
+// rejected — it cannot prove where it came from.
 func (a *webAuth) sameSite(r *http.Request) bool {
 	if !hostAllowed(r.Host, a.addr) {
 		return false
+	}
+	host := r.Host
+	if forwardedHost := httpsForwardedHost(r); forwardedHost != "" {
+		host = forwardedHost
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || u.Host == "" {
 			return false
 		}
-		return sameHostPort(u.Host, r.Host)
+		return sameHostPort(u.Host, host)
 	}
 	if ref := r.Header.Get("Referer"); ref != "" {
 		u, err := url.Parse(ref)
 		if err != nil || u.Host == "" {
 			return false
 		}
-		return sameHostPort(u.Host, r.Host)
+		return sameHostPort(u.Host, host)
 	}
 	return false
+}
+
+func httpsForwardedHost(r *http.Request) string {
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return ""
+	}
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if comma := strings.IndexByte(host, ','); comma >= 0 {
+		host = strings.TrimSpace(host[:comma])
+	}
+	return host
 }
 
 // isMutating reports whether the method changes state, per the plan's "every

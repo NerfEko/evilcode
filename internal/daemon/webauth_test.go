@@ -254,6 +254,25 @@ func TestWebAuthMutatingVerbsRequireSameOrigin(t *testing.T) {
 	}
 }
 
+func TestWebAuthAcceptsHTTPSForwardedOrigin(t *testing.T) {
+	tok := strings.Repeat("ab", 32)
+	srv := authTestServer(t, tok, "127.0.0.1:7749")
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/input", strings.NewReader(`{}`))
+	req.Host = "127.0.0.1:7749"
+	req.AddCookie(&http.Cookie{Name: webCookieName, Value: tok})
+	req.Header.Set("X-Forwarded-Host", "gentoo.tail9da06.ts.net")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Origin", "https://gentoo.tail9da06.ts.net")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("HTTPS forwarded same-origin POST: status %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestWebAuthRejectsRebindingHost(t *testing.T) {
 	tok := strings.Repeat("ab", 32)
 	srv := authTestServer(t, tok, "127.0.0.1:7749")

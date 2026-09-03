@@ -8421,3 +8421,17 @@ alongside automatic web startup.
 
 **Verified:** focused config/daemon web tests pass; `go test ./... -count=1`
 passes (22 packages, 6 with no tests); `go vet ./...` passes.
+
+## 2026-09-02 — web-auth: Tailscale forwarded origins
+
+**Finding:** the first live proxied POST smoke test returned 403 because
+Tailscale Serve keeps the backend Host loopback and forwards the public host
+separately.
+
+**Built:** mutating requests still require the backend Host to be bound and the
+Origin/Referer to match; HTTPS requests may now use Tailscale's
+`X-Forwarded-Host` when `X-Forwarded-Proto` is `https`. Direct loopback
+rebinding checks are unchanged.
+
+**Verified:** the new forwarded-origin regression test passes, followed by the
+full `go test ./... -count=1` and `go vet ./...` checks.
