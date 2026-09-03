@@ -938,6 +938,21 @@ label.ask-option {
   margin-top: 0.35rem;
 }
 
+.tool-output-preview {
+  max-height: 10rem;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+
+.tool-output-toggle {
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+  margin-top: 0.25rem;
+  user-select: none;
+}
+
 .stream-caret {
   color: var(--accent);
   display: inline-block;

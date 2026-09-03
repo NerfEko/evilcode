@@ -322,6 +322,13 @@ export function mountComposer(handlers = {}) {
     autogrow();
   });
   text.addEventListener("keydown", (e) => {
+    // Enter sends; Shift+Enter is the newline. The palette keeps its own
+    // navigation keys when it is open.
+    if (palette.hidden && e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+      return;
+    }
     if (palette.hidden && e.key !== "Enter") return;
     if (!palette.hidden && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
@@ -331,7 +338,7 @@ export function mountComposer(handlers = {}) {
       rows[next]?.focus();
       return;
     }
-    if (!palette.hidden && (e.key === "Tab" || e.key === "Enter")) {
+    if (!palette.hidden && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
       const first = palette.querySelector(".palette-row");
       if (first instanceof HTMLElement) {
         e.preventDefault();

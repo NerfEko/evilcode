@@ -166,6 +166,12 @@ function transcriptScroll() {
   return document.getElementById("transcript-scroll");
 }
 
+function atTranscriptBottom(scroll) {
+  if (!scroll) return true;
+  return scroll.scrollHeight <= scroll.clientHeight ||
+    scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= TRANSCRIPT_BOTTOM_GAP;
+}
+
 function pinTranscriptBottom(scroll, isCurrent = () => true) {
   const pin = () => {
     if (!isCurrent()) return false;

@@ -1,6 +1,11 @@
 // evilcode web — transcript rendering. The renderer only touches the DOM when a
 // public function is called; importing this module is safe in non-browser tests.
 
+// Long tool output (reads, command runs) renders as a bounded preview; the
+// full text stays one click away in a <details>.
+const TOOL_OUTPUT_PREVIEW_CHARS = 400;
+const TOOL_OUTPUT_PREVIEW_LINES = 12;
+
 function asText(value) {
   if (value == null) return "";
   try { return String(value); } catch { return ""; }
@@ -576,10 +581,26 @@ function toolCard(doc, message, options) {
   if (intent) toolField(doc, body, "Intent", intent, "tool-intent");
   if (output !== "" && output !== undefined && output !== null) {
     const field = element(doc, "section", "tool-field tool-output");
+    const text = typeof output === "string" ? output : formatArguments(output);
     field.appendChild(element(doc, "div", "tool-label", "Output"));
-    const outputBody = element(doc, "div", "tool-output-body");
-    renderMarkdown(outputBody, typeof output === "string" ? output : formatArguments(output));
-    field.appendChild(outputBody);
+    // Long tool output (reads, command runs) collapses to a bounded preview;
+    // the full text stays one click away.
+    if (text.length > TOOL_OUTPUT_PREVIEW_CHARS || text.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES) {
+      field.classList.add("tool-output--long");
+      const preview = element(doc, "div", "tool-output-body tool-output-preview");
+      renderMarkdown(preview, text.slice(0, TOOL_OUTPUT_PREVIEW_CHARS));
+      field.appendChild(preview);
+      const details = element(doc, "details", "tool-output-details");
+      details.appendChild(element(doc, "summary", "tool-output-toggle", "Show full output"));
+      const full = element(doc, "div", "tool-output-body");
+      renderMarkdown(full, text);
+      details.appendChild(full);
+      field.appendChild(details);
+    } else {
+      const outputBody = element(doc, "div", "tool-output-body");
+      renderMarkdown(outputBody, text);
+      field.appendChild(outputBody);
+    }
     body.appendChild(field);
   } else if (message.display !== undefined && message.display !== null) {
     const field = element(doc, "section", "tool-field tool-display");
