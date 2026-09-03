@@ -105,8 +105,9 @@ closed and unloaded. Its transcript remains available for resume.
 ## The web UI
 
 `evilcode serve -web` starts an opt-in HTTP surface beside the unix socket, bound to
-`127.0.0.1:7749` by default (`[webui] addr` / `serve -web-addr` to change; `[webui]
-enabled` turns it on permanently). The first start mints a token at
+`127.0.0.1:7749` by default (`[webui] addr` / `serve -web-addr` to change).
+`[webui] enabled = true` starts the same listener automatically when `ec` starts
+the daemon; it is disabled by default. The first start mints a token at
 `<socket>.web-token` (mode 0600) and prints a one-time tokenized URL — open it in a
 browser and the token is exchanged for a cookie; every later request is cookie- or
 `Bearer`-authenticated, and mutating requests must come from the same origin. The
