@@ -75,24 +75,29 @@ func validWebToken(tok string) error {
 
 // webAuth guards every web route.
 type webAuth struct {
-	// token is the live hex token, captured at listener start. A closure over
-	// the value (not over s.web) keeps handlers safe after Close nils the field.
+	// token is the live hex token, captured only when auth is enabled. A
+	// closure over the value (not over s.web) keeps handlers safe after Close
+	// nils the field.
 	token string
 	// addr is the bound host:port; the Host allowlist is built from it.
 	addr string
+	// requireAuth controls whether bearer/cookie authentication is enforced.
+	requireAuth bool
 }
 
 // wrap authenticates r, enforces the cross-site rules on mutating verbs, and
 // only then reaches the mux. Failures are uniform JSON errors.
 func (a *webAuth) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query().Get("token"); q != "" {
-			a.handoff(w, r, q)
-			return
-		}
-		if !a.authorized(r) {
-			webError(w, http.StatusUnauthorized, "authentication required: open the tokenized URL once, or send the token as a cookie or bearer")
-			return
+		if a.requireAuth {
+			if q := r.URL.Query().Get("token"); q != "" {
+				a.handoff(w, r, q)
+				return
+			}
+			if !a.authorized(r) {
+				webError(w, http.StatusUnauthorized, "authentication required: open the tokenized URL once, or send the token as a cookie or bearer")
+				return
+			}
 		}
 		if isMutating(r.Method) && !a.sameSite(r) {
 			// Distinguish the two rejections: a rebinding Host is a hostile

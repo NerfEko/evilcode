@@ -99,6 +99,11 @@ type WebUIConfig struct {
 	// default; `serve -web` overrides it to true for one run.
 	Enabled bool `toml:"enabled"`
 
+	// RequireAuth keeps the token/cookie gate enabled. Set it to false only
+	// when the network boundary (for example, a Tailscale tailnet ACL) is the
+	// complete trust boundary for this listener.
+	RequireAuth bool `toml:"require_auth"`
+
 	// Addr is the HTTP bind address, host:port. Empty uses DefaultWebUIAddr.
 	// The default is loopback-only: the blessed remote path is a loopback bind
 	// reached through Tailscale, not a bind on a LAN interface.
@@ -318,6 +323,7 @@ func Default() *Config {
 		// discover after the fact. `memory = true` in the config turns it on.
 		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false},
 	}
+	c.WebUI.RequireAuth = true
 	c.WebUI.Addr = DefaultWebUIAddr
 	c.DefaultModel = c.preferredDefaultModel()
 	// deepseek-v4-flash:0731 is a thinking model, so the default routes pin

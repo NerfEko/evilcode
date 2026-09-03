@@ -633,3 +633,19 @@ gets a follow-up entry.
 links, or task-list syntax that the hand-rolled renderer flattens — vendor
 marked+DOMPurify as two reviewed ESM files before hand-extending the
 hand-rolled one.
+
+## 2026-09-02 — optional web auth for a trusted tailnet
+
+**Spec** (plan-web.md §3): every HTTP request must present the web token.
+
+**Built instead**: `[webui] require_auth = false` disables the evilcode
+bearer/cookie gate. It defaults to `true`; the listener remains loopback-bound,
+security headers remain active, and mutating requests still require the expected
+Host/Origin.
+
+**Why**: the requested deployment uses Tailscale membership and ACLs as its
+complete trust boundary, with no need for a second per-app credential.
+
+**Worth revisiting if**: the listener binds LAN/Tailscale interfaces, Tailscale
+Funnel is enabled, the tailnet broadens beyond trusted devices, or multiple
+untrusted users share the surface.

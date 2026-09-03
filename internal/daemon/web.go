@@ -44,11 +44,14 @@ type webState struct {
 	// what the Host allowlist is built from. It is a copy, not the listener,
 	// so Close can still be called after the listener is gone.
 	addr string
-	// token is the surface's bearer secret, minted or loaded at start (§3).
+	// token is the surface's bearer secret, captured only when auth is enabled.
 	token string
 	// minted records whether this start created the token file, which decides
 	// whether startup may print the full tokenized URL (once, ever).
 	minted bool
+	// requireAuth controls whether the bearer/cookie gate is active. Origin and
+	// Host checks remain active for mutating requests either way.
+	requireAuth bool
 }
 
 // errServerClosed is returned by ListenWeb when the daemon is already tearing
@@ -63,12 +66,23 @@ func (s *Server) ListenWeb(addr string) error {
 	if addr == "" {
 		addr = config.DefaultWebUIAddr
 	}
-	// The token is minted (or loaded and re-secured) before the bind: auth
-	// without a secret is impossible, so a token failure must not start a
-	// listener that would then 401 on everything.
-	token, minted, err := loadOrMintWebToken(s.webTokenPath())
-	if err != nil {
-		return err
+	requireAuth := true
+	s.mu.Lock()
+	if s.Cfg != nil {
+		requireAuth = s.Cfg.WebUI.RequireAuth
+	}
+	s.mu.Unlock()
+
+	var token string
+	var minted bool
+	if requireAuth {
+		// Auth without a secret is impossible, so a token failure must not start
+		// a listener that would then 401 on everything.
+		var err error
+		token, minted, err = loadOrMintWebToken(s.webTokenPath())
+		if err != nil {
+			return err
+		}
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -90,7 +104,13 @@ func (s *Server) ListenWeb(addr string) error {
 		ln.Close()
 		return fmt.Errorf("daemon: the web UI is already listening on %s", old)
 	}
-	w := &webState{ln: ln, addr: bound, token: token, minted: minted}
+	w := &webState{
+		ln:          ln,
+		addr:        bound,
+		token:       token,
+		minted:      minted,
+		requireAuth: requireAuth,
+	}
 	s.web = w
 	s.mu.Unlock()
 
@@ -107,9 +127,9 @@ func (s *Server) ListenWeb(addr string) error {
 	return nil
 }
 
-// webMux builds the HTTP surface: routes wrapped in webauth (token
-// authentication on every request, Origin+Host discipline on mutating verbs)
-// and the §3 security headers on every response.
+// webMux builds the HTTP surface: routes wrapped in webauth (an optional
+// token gate plus Origin+Host discipline on mutating verbs) and the §3
+// security headers on every response.
 func (w *webState) mux(s *Server) http.Handler {
 	mux := http.NewServeMux()
 
@@ -150,7 +170,7 @@ func (w *webState) mux(s *Server) http.Handler {
 		webErrorf(w, http.StatusNotFound, "no such API route: %s %s", r.Method, r.URL.Path)
 	})
 
-	auth := &webAuth{token: w.token, addr: w.addr}
+	auth := &webAuth{token: w.token, addr: w.addr, requireAuth: w.requireAuth}
 	return securityHeaders(webRecover(auth.wrap(gzipJSON(mux))))
 }
 
@@ -250,14 +270,15 @@ func (s *Server) webAddr() string {
 }
 
 // WebInfo is what startup reports about the web surface (§3, §10): the
-// address, where the token lives, the token itself, and whether this start
-// minted the token file. The full tokenized URL may be printed only when
-// Minted is true — once, ever; every later start just names the file.
+// address, authentication mode, and (when auth is enabled) where the token
+// lives, the token itself, and whether this start minted the token file. The
+// full tokenized URL may be printed only when Minted is true — once, ever.
 type WebInfo struct {
-	Addr      string
-	TokenPath string
-	Token     string
-	Minted    bool
+	Addr        string
+	TokenPath   string
+	Token       string
+	Minted      bool
+	RequireAuth bool
 }
 
 // WebInfo returns nil while the web surface is off.
@@ -267,10 +288,15 @@ func (s *Server) WebInfo() *WebInfo {
 	if s.web == nil {
 		return nil
 	}
+	tokenPath := ""
+	if s.web.requireAuth {
+		tokenPath = s.webTokenPath()
+	}
 	return &WebInfo{
-		Addr:      s.web.addr,
-		TokenPath: s.webTokenPath(),
-		Token:     s.web.token,
-		Minted:    s.web.minted,
+		Addr:        s.web.addr,
+		TokenPath:   tokenPath,
+		Token:       s.web.token,
+		Minted:      s.web.minted,
+		RequireAuth: s.web.requireAuth,
 	}
 }

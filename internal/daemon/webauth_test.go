@@ -26,7 +26,7 @@ func stubMux() http.Handler {
 // authTestServer wraps a stub mux with webAuth bound to token and addr.
 func authTestServer(t *testing.T, token, addr string) *httptest.Server {
 	t.Helper()
-	a := &webAuth{token: token, addr: addr}
+	a := &webAuth{token: token, addr: addr, requireAuth: true}
 	srv := httptest.NewServer(a.wrap(stubMux()))
 	t.Cleanup(srv.Close)
 	return srv

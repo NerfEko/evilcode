@@ -1389,6 +1389,25 @@ func TestWebUIDefaultsAreLoopbackAndOff(t *testing.T) {
 	if len(cfg.WebUI.Workspaces) != 0 {
 		t.Errorf("default workspaces = %v, want empty", cfg.WebUI.Workspaces)
 	}
+	if !cfg.WebUI.RequireAuth {
+		t.Error("web authentication must be required by default")
+	}
+}
+
+func TestWebUIAuthOptOutRoundTripsTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := "[webui]\nrequire_auth = false\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("webui auth config rejected: %v", err)
+	}
+	if cfg.WebUI.RequireAuth {
+		t.Error("require_auth = false decoded as true")
+	}
 }
 
 func TestValidateWebUI(t *testing.T) {

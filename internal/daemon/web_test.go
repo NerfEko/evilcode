@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,43 @@ func TestListenWebServesAndCloses(t *testing.T) {
 	srv.Close()
 	if _, err := net.Dial("tcp", addr); err == nil {
 		t.Error("Close left the web listener accepting connections")
+	}
+}
+
+func TestListenWebWithoutAuth(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.Cfg.WebUI.RequireAuth = false
+	if err := srv.ListenWeb("127.0.0.1:0"); err != nil {
+		t.Fatalf("ListenWeb without auth: %v", err)
+	}
+	addr := srv.webAddr()
+
+	resp := webGet(t, "http://"+addr+"/")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET / without auth: status %d, want 200", resp.StatusCode)
+	}
+	if _, err := os.Stat(srv.webTokenPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("without-auth listener token file stat = %v, want not exists", err)
+	}
+	info := srv.WebInfo()
+	if info == nil || info.RequireAuth {
+		t.Errorf("WebInfo = %+v, want auth disabled", info)
+	}
+	if info != nil && info.TokenPath != "" {
+		t.Errorf("without-auth WebInfo token path = %q, want empty", info.TokenPath)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/sessions", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-origin-unmarked POST without auth: status %d, want 403", resp.StatusCode)
 	}
 }
 

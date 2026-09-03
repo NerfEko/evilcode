@@ -107,19 +107,22 @@ closed and unloaded. Its transcript remains available for resume.
 `evilcode serve -web` starts an opt-in HTTP surface beside the unix socket, bound to
 `127.0.0.1:7749` by default (`[webui] addr` / `serve -web-addr` to change).
 `[webui] enabled = true` starts the same listener automatically when `ec` starts
-the daemon; it is disabled by default. The first start mints a token at
-`<socket>.web-token` (mode 0600) and prints a one-time tokenized URL — open it in a
-browser and the token is exchanged for a cookie; every later request is cookie- or
-`Bearer`-authenticated, and mutating requests must come from the same origin. The
-UI covers the full chat + roster surface: live transcripts over SSE, deep history
-from the durable session store, model/effort switching, slash commands, asks,
-spawn, and worker pokes. On a phone it is a roster-first webapp: Add to Home Screen
-(Share → "Add to Home Screen") installs it as a standalone app with the daemon's
-own theme; while a turn is running the screen is kept awake when the browser
-allows it (silent no-op otherwise — plain HTTP off the loopback host is not a
-secure context). A browser sitting on the roster holds no stream, so a phone-first
-setup should run `evilcode serve -idle 0` to keep the daemon alive. The blessed
-remote path is Tailscale to the loopback bind, not a LAN bind.
+the daemon; it is disabled by default. Token auth is enabled by default; set
+`[webui] require_auth = false` only when the network boundary (for example,
+Tailscale ACLs) is the complete trust boundary. With auth enabled, the first start
+mints a token at `<socket>.web-token` (mode 0600) and prints a one-time tokenized
+URL — open it in a browser and the token is exchanged for a cookie; later requests
+are cookie- or `Bearer`-authenticated. Mutating requests must come from the same
+origin in either mode. The UI covers the full chat + roster surface: live
+transcripts over SSE, deep history from the durable session store, model/effort
+switching, slash commands, asks, spawn, and worker pokes. On a phone it is a
+roster-first webapp: Add to Home Screen (Share → "Add to Home Screen") installs it
+as a standalone app with the daemon's own theme; while a turn is running the screen
+is kept awake when the browser allows it (silent no-op otherwise — plain HTTP off
+the loopback host is not a secure context). A browser sitting on the roster holds
+no stream, so a phone-first setup should run `evilcode serve -idle 0` to keep the
+daemon alive. The blessed remote path is Tailscale to the loopback bind, not a LAN
+bind.
 
 ### Test from another Tailscale device
 
@@ -141,11 +144,15 @@ evilcode serve -stop
 evilcode serve -web -idle 0
 ```
 
-On the first web start, evilcode prints a one-time tokenized URL. Replace its
-`http://127.0.0.1:7749` origin with the HTTPS URL from `tailscale serve status`,
-then open `https://<node>.<tailnet>.ts.net/?token=<token>` on the other device.
-The redirect removes `token` from the address bar and stores an HttpOnly cookie.
-If the token was minted previously, read the 64-character value from
+If `[webui] require_auth = false` is set, open `https://<node>.<tailnet>.ts.net/`
+directly on the other device. No evilcode token or cookie is required; access is
+controlled entirely by Tailscale membership and ACLs.
+
+With auth enabled, evilcode prints a one-time tokenized URL on the first web start.
+Replace its `http://127.0.0.1:7749` origin with the HTTPS URL from `tailscale serve
+status`, then open `https://<node>.<tailnet>.ts.net/?token=<token>` on the other
+device. The redirect removes `token` from the address bar and stores an HttpOnly
+cookie. If the token was minted previously, read the 64-character value from
 `<socket>.web-token` on the daemon machine; the default is
 `$XDG_RUNTIME_DIR/evilcode.sock.web-token` when `XDG_RUNTIME_DIR` is set. Treat
 the token like a password and do not paste it into shell history, issues, or logs.

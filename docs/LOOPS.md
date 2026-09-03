@@ -8406,3 +8406,18 @@ the wake-lock one was a broken test, not a broken fix.
 **Verdict:** codex review done; all findings folded with tests (46/46).
 No tag — the user asked for the phase as a plain commit only (previous
 phases' tags remain untouched).
+
+## 2026-09-02 — web-auth: trusted-tailnet auth opt-out
+
+**Goal:** let a single-user Tailscale deployment use tailnet ACLs as its
+network boundary without a second evilcode token.
+
+**Built:** `[webui] require_auth = false` skips token-file mint/load and the
+bearer/cookie gate while preserving loopback binding, security headers, and
+Host/Origin checks for mutating requests. The default remains `true`; startup
+reports when authentication is disabled. README and the append-only deviation
+log document the boundary and its risks. The user's config enables the opt-out
+alongside automatic web startup.
+
+**Verified:** focused config/daemon web tests pass; `go test ./... -count=1`
+passes (22 packages, 6 with no tests); `go vet ./...` passes.
