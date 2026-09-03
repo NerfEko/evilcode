@@ -558,7 +558,6 @@ function toolCard(doc, message, options) {
   const args = argumentValue(message);
   const target = targetFor(message, args);
   const intent = asText(message.intent);
-  const repairs = Array.isArray(message.repairs) ? message.repairs : [];
   const output = firstDefined(message, ["output", "content"], "");
   const diff = asText(message.diff);
   const failed = !!(message.failed || message.is_error || message.error || message.err);
@@ -575,21 +574,6 @@ function toolCard(doc, message, options) {
   body.appendChild(head);
   if (target) toolField(doc, body, "Target", target, "tool-target");
   if (intent) toolField(doc, body, "Intent", intent, "tool-intent");
-  if (repairs.length) {
-    const field = element(doc, "section", "tool-field tool-repairs");
-    field.appendChild(element(doc, "div", "tool-label", "Repairs"));
-    const list = element(doc, "ul", "tool-repair-list");
-    repairs.forEach((repair) => list.appendChild(element(doc, "li", undefined, repair)));
-    field.appendChild(list);
-    body.appendChild(field);
-  }
-  const formattedArgs = formatArguments(args);
-  if (formattedArgs) {
-    const field = element(doc, "section", "tool-field tool-arguments");
-    field.appendChild(element(doc, "div", "tool-label", "Arguments (JSON)"));
-    field.appendChild(element(doc, "pre", "tool-args", formattedArgs));
-    body.appendChild(field);
-  }
   if (output !== "" && output !== undefined && output !== null) {
     const field = element(doc, "section", "tool-field tool-output");
     field.appendChild(element(doc, "div", "tool-label", "Output"));

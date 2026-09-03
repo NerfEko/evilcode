@@ -995,17 +995,11 @@ label.ask-option {
   overflow-wrap: anywhere;
 }
 
-.tool-args,
 .tool-diff-body pre,
 .tool-display-body {
   margin: 0.15rem 0 0;
   max-height: 20rem;
   overflow: auto;
-}
-
-.tool-repair-list {
-  margin: 0.15rem 0 0;
-  padding-left: 1.15rem;
 }
 
 .tool-error {
