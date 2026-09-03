@@ -145,18 +145,21 @@ func (a *webAuth) authorized(r *http.Request) bool {
 }
 
 // sameSite is the CSRF/DNS-rebinding discipline for mutating verbs. The
-// backend Host must be the bound address or a loopback spelling of its port.
-// Tailscale Serve terminates HTTPS and forwards the public host in
-// X-Forwarded-Host, so that host is used for the Origin/Referer comparison only
-// when X-Forwarded-Proto is HTTPS. A request with neither Origin nor Referer is
-// rejected — it cannot prove where it came from.
+// backend Host must be the bound address or a loopback spelling of its port
+// unless an HTTPS reverse proxy forwards the public host. Tailscale Serve
+// terminates HTTPS and forwards that host in X-Forwarded-Host, so that host is
+// used for the Origin/Referer comparison only when X-Forwarded-Proto is HTTPS.
+// A request with neither Origin nor Referer is rejected — it cannot prove where
+// it came from.
 func (a *webAuth) sameSite(r *http.Request) bool {
-	if !hostAllowed(r.Host, a.addr) {
-		return false
-	}
 	host := r.Host
 	if forwardedHost := httpsForwardedHost(r); forwardedHost != "" {
+		if !hostAllowed(r.Host, a.addr) && !sameHostPort(r.Host, forwardedHost) {
+			return false
+		}
 		host = forwardedHost
+	} else if !hostAllowed(r.Host, a.addr) {
+		return false
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)

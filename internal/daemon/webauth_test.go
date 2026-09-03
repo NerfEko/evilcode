@@ -258,7 +258,7 @@ func TestWebAuthAcceptsHTTPSForwardedOrigin(t *testing.T) {
 	tok := strings.Repeat("ab", 32)
 	srv := authTestServer(t, tok, "127.0.0.1:7749")
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/input", strings.NewReader(`{}`))
-	req.Host = "127.0.0.1:7749"
+	req.Host = "gentoo.tail9da06.ts.net"
 	req.AddCookie(&http.Cookie{Name: webCookieName, Value: tok})
 	req.Header.Set("X-Forwarded-Host", "gentoo.tail9da06.ts.net")
 	req.Header.Set("X-Forwarded-Proto", "https")

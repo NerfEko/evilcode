@@ -8435,3 +8435,10 @@ rebinding checks are unchanged.
 
 **Verified:** the new forwarded-origin regression test passes, followed by the
 full `go test ./... -count=1` and `go vet ./...` checks.
+
+## 2026-09-02 — web-auth: forwarded-host correction
+
+**Correction:** the live Tailscale Serve path preserves the public Host in the
+backend request as well as sending `X-Forwarded-Host`. The guard now accepts a
+matching HTTPS forwarded host whether the proxy keeps or replaces the backend
+Host, while non-HTTPS external hosts remain rejected.
