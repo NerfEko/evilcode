@@ -221,15 +221,16 @@ func TestSpawnedWorkerIsAPeerWithSwarmTools(t *testing.T) {
 		t.Fatalf("the worker is not among %d peers", len(peers))
 	}
 
-	// It can coordinate like anyone else.
+	// It can coordinate like anyone else — but depth 1 by default: it
+	// messages peers and can be cancelled, it does not spawn (D8).
 	srv.mu.Lock()
 	worker := srv.sessions[name]
 	srv.mu.Unlock()
 	if _, ok := worker.built.Agent.Tools.Find("send_message"); !ok {
 		t.Error("a worker cannot message its peers")
 	}
-	if _, ok := worker.built.Agent.Tools.Find("spawn_worker"); !ok {
-		t.Error("a worker cannot spawn")
+	if _, ok := worker.built.Agent.Tools.Find("spawn_worker"); ok {
+		t.Error("a worker can spawn by default; depth 1 means it should not")
 	}
 }
 

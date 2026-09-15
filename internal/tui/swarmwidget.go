@@ -19,6 +19,11 @@ type SwarmAgent struct {
 	Worker  bool
 	Running bool
 	Since   time.Duration
+	// Model is the worker's resolved model@provider ref, and Tokens its
+	// accumulated total (orchestrator D7). Both empty/zero for plain
+	// sessions and older daemons.
+	Model  string
+	Tokens int
 }
 
 // SwarmState is the live swarm, plus the hysteresis that keeps the strip and
@@ -293,6 +298,18 @@ func (m *Model) agentsCommand() tea.Cmd {
 		fmt.Fprintf(&b, "%s (%s, %s, %s)", a.Name, kind, state, humanSeconds(a.Since))
 		if a.Task != "" {
 			fmt.Fprintf(&b, " — %s", a.Task)
+		}
+		// Workers render what they ran on and spent: `bat · mock · 1.2k tok`.
+		// Display-only; sessions and older daemons report nothing.
+		if a.Worker && (a.Model != "" || a.Tokens > 0) {
+			var cost []string
+			if a.Model != "" {
+				cost = append(cost, a.Model)
+			}
+			if a.Tokens > 0 {
+				cost = append(cost, humanTokens(a.Tokens)+" tok")
+			}
+			fmt.Fprintf(&b, " · %s", strings.Join(cost, " · "))
 		}
 		b.WriteString("\n")
 	}

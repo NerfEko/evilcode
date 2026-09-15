@@ -161,9 +161,9 @@ func (s *waitTestDouble) SpawnWorker(string, []string, json.RawMessage, string) 
 	return "async-1", nil
 }
 
-func (s *waitTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage, string) (string, string, error) {
+func (s *waitTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage, string) (SpawnResult, error) {
 	s.foregroundCalled = true
-	return "worker-1", `{"ok":true}`, nil
+	return SpawnResult{Name: "worker-1", Output: `{"ok":true}`, Status: StatusComplete}, nil
 }
 
 func TestSpawnWaitFalseUsesAsyncPath(t *testing.T) {

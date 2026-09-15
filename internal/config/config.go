@@ -245,6 +245,24 @@ type Features struct {
 	// contract and arms orchestrator mode until /orchestrate off or session
 	// end. On by default; off is for anyone who never wants a magic word.
 	OrchestrateKeyword bool `toml:"orchestrate_keyword"`
+
+	// MaxLiveWorkers bounds how many workers run at once (orchestrator D8).
+	// Zero means the default of 4. The per-session MaxWorkersPerSession stays
+	// a constant: it is the anti-recursion breaker, and the root session is
+	// never charged against either cap — only live workers count.
+	MaxLiveWorkers int `toml:"max_live_workers"`
+
+	// WorkerMaxSteps bounds tool-call rounds in a single worker turn, reusing
+	// the max_steps machinery. Zero — the default — means unbounded, like the
+	// main session.
+	WorkerMaxSteps int `toml:"worker_max_steps"`
+
+	// WorkerSpawning lets workers spawn their own workers (depth 2+).
+	// Default false: workers get messaging tools but no spawn_worker, the
+	// field consensus (Claude Code, OpenCode default, Gemini CLI, Cline).
+	// Orchestrator trees are the expensive failure mode; revisit if real
+	// usage wants depth.
+	WorkerSpawning bool `toml:"worker_spawning"`
 }
 
 // MCPServer is one `[[mcp]]` block.
@@ -1198,6 +1216,16 @@ func (c *Config) Validate() error {
 	} else if c.Features.MaxSteps > maxConfigSteps {
 		add("features.max_steps", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigSteps))
 	}
+	if c.Features.MaxLiveWorkers < 0 {
+		add("features.max_live_workers", "must be 0 (the default of 4) or a positive worker count")
+	} else if c.Features.MaxLiveWorkers > maxConfigLiveWorkers {
+		add("features.max_live_workers", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigLiveWorkers))
+	}
+	if c.Features.WorkerMaxSteps < 0 {
+		add("features.worker_max_steps", "must be 0 (unlimited) or a positive number of tool rounds")
+	} else if c.Features.WorkerMaxSteps > maxConfigSteps {
+		add("features.worker_max_steps", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigSteps))
+	}
 	validateEnvList("features.env_passthrough", c.Features.EnvPassthrough, add)
 
 	validateKeybindings(c.Keybindings, add)
@@ -1274,6 +1302,9 @@ const (
 	maxConfigContextWindow = 1 << 30
 	maxConfigThinkingLines = 1 << 16
 	maxConfigSteps         = 1 << 20
+	// maxConfigLiveWorkers caps [features] max_live_workers. Live workers each
+	// hold a full agent turn; past this the breaker stops being a breaker.
+	maxConfigLiveWorkers = 64
 	// maxMCPCallSeconds caps mcp[].timeout_seconds. An hour is already far
 	// past any interactive tool call; beyond it a wedged server would hold a
 	// turn for longer than the user would wait before interrupting anyway.

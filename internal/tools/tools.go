@@ -85,6 +85,12 @@ type Result struct {
 	// failed tool call so frontends can render a warning/reflection row without
 	// implying that the command started and then failed.
 	Held bool `json:"held,omitempty"`
+
+	// Status carries a spawn-shaped tool's outcome: complete, failed, or
+	// partial (orchestrator D4). Empty on every other tool and on async
+	// spawn starts, where no outcome exists yet — readers treat empty as
+	// complete for backward compatibility.
+	Status string `json:"status,omitempty"`
 }
 
 // Tool is one callable capability.

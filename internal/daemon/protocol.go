@@ -345,6 +345,10 @@ type SessionInfo struct {
 	// Pending is the number of interactive asks the session is waiting on,
 	// so a roster can flag a session that needs an answer (plan.md §20).
 	Pending int `json:"pending,omitempty"`
+
+	// Tokens is a worker's accumulated token total (orchestrator D7), so a
+	// roster can show what each worker spent. Display-only.
+	Tokens int `json:"tokens,omitempty"`
 }
 
 // ServerStatus is the stable response used by lifecycle commands.

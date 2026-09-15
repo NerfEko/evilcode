@@ -145,9 +145,28 @@ type Session struct {
 	// as the first turn.
 	turn int
 
-	// retried marks a worker that has already been asked once to fix its output
-	// against the schema. Asking forever is the loop §12.6 exists to prevent.
-	retried bool
+	// retries counts schema-fix attempts a worker has used. The cap is
+	// maxSchemaRetries: asking forever is the loop §12.6 exists to prevent.
+	retries int
+
+	// cancelRequested marks a worker whose orchestrator asked for an abort.
+	// The turn still unwinds on its own; this tells the report path to
+	// salvage partial output instead of reporting a completion.
+	cancelRequested bool
+
+	// partialDelivered guards the salvage path: one worker reports once,
+	// whether the salvage runs from the turn error or a turn-end race.
+	partialDelivered bool
+
+	// partial is salvaged assistant text from a timed-out or cancelled
+	// worker. Non-empty means the worker's outcome status is partial.
+	partial string
+
+	// schemaFailed marks a worker whose output never validated after all
+	// schema retries. Its last text still reports — as a failed result, not
+	// an error — so the orchestrator gets the content and the fact it was
+	// unvalidated.
+	schemaFailed bool
 
 	// foreground means the worker was created by the spawn_worker tool. Those
 	// calls follow OpenCode's task semantics: the parent waits for the worker's
@@ -741,6 +760,15 @@ func waitForBuilds(wg *sync.WaitGroup, budget time.Duration) bool {
 
 // Sessions lists what the server is holding.
 func (s *Server) Sessions() []SessionInfo {
+	// Token totals live on the swarm ledger; snapshot them before taking the
+	// session lock so the two mutexes never nest.
+	s.swarm.mu.Lock()
+	tokens := make(map[string]int, len(s.swarm.tokens))
+	for name, total := range s.swarm.tokens {
+		tokens[name] = total
+	}
+	s.swarm.mu.Unlock()
+
 	s.mu.Lock()
 	out := make([]SessionInfo, 0, len(s.sessions))
 	seen := make(map[string]bool, len(s.sessions))
@@ -748,6 +776,9 @@ func (s *Server) Sessions() []SessionInfo {
 		sess.mu.Lock()
 		name, model, task, cwd := sess.Name, sess.Model, sess.Task, sess.Cwd
 		worker, started := sess.Worker, sess.Started
+		if resolved := sess.ResolvedModel; worker && resolved != "" {
+			model = resolved
+		}
 		clients := len(sess.subs)
 		running := sess.running
 		stale := worker && sess.stale && !sess.closedDone
@@ -781,6 +812,7 @@ func (s *Server) Sessions() []SessionInfo {
 			Live:     true,
 			Pending:  pending,
 			Messages: msgCount,
+			Tokens:   tokens[name],
 		})
 	}
 	s.mu.Unlock()
@@ -1425,6 +1457,9 @@ func (sess *Session) observe(e agent.Event) {
 		if e.Usage != nil && sess.overnight != nil {
 			sess.overnight.addTokens(e.Usage.In + e.Usage.Out)
 		}
+		if e.Usage != nil && sess.Worker {
+			sess.srv.swarm.addTokens(name, e.Usage.In+e.Usage.Out)
+		}
 	case agent.EventAsk:
 		if sess.overnight != nil && sess.overnight.isActive() {
 			if sess.overnight.stop("the unattended run asked a question") {
@@ -1487,6 +1522,15 @@ func (sess *Session) observe(e agent.Event) {
 // second, contradictory result.
 func (sess *Session) notifyWorkerFailure(err error) {
 	if !sess.Worker || sess.srv == nil {
+		return
+	}
+	// A cancel that lands while a retry is unwinding still salvages: the
+	// retry-error path calls here directly, bypassing the spawn goroutine.
+	sess.mu.Lock()
+	cancelled := sess.cancelRequested
+	sess.mu.Unlock()
+	if cancelled && !sess.finished() {
+		sess.srv.settleCancel(sess)
 		return
 	}
 	sess.mu.Lock()

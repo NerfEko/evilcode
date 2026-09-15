@@ -17,9 +17,9 @@ func (s *modelCaptureDouble) SpawnWorker(_ string, _ []string, _ json.RawMessage
 	return "w1", nil
 }
 
-func (s *modelCaptureDouble) SpawnWorkerForeground(_ context.Context, _ string, _ []string, _ json.RawMessage, model string) (string, string, error) {
+func (s *modelCaptureDouble) SpawnWorkerForeground(_ context.Context, _ string, _ []string, _ json.RawMessage, model string) (SpawnResult, error) {
 	s.gotModel = model
-	return "w1", "done", nil
+	return SpawnResult{Name: "w1", Output: "done", Status: StatusComplete}, nil
 }
 
 func TestSpawnWorkerPassesModelThrough(t *testing.T) {

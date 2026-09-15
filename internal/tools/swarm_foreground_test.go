@@ -18,9 +18,9 @@ func (s *foregroundSpawnerTestDouble) SpawnWorker(string, []string, json.RawMess
 	return "async", nil
 }
 
-func (s *foregroundSpawnerTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage, string) (string, string, error) {
+func (s *foregroundSpawnerTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage, string) (SpawnResult, error) {
 	s.foregroundCalled = true
-	return "worker-1", `{"changed":true}`, nil
+	return SpawnResult{Name: "worker-1", Output: `{"changed":true}`, Status: StatusComplete}, nil
 }
 
 func TestSpawnWorkerUsesForegroundResultWhenRuntimeSupportsIt(t *testing.T) {

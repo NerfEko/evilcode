@@ -43,14 +43,14 @@ func TestArmingARetryDoesNotFinishTheWorker(t *testing.T) {
 	// Rewind to the moment its first turn ended, and report again.
 	worker.mu.Lock()
 	worker.closedDone, worker.done = false, make(chan struct{})
-	worker.retried, worker.retrying = false, false
+	worker.retries, worker.retrying = 0, false
 	worker.mu.Unlock()
 
 	if srv.reportWorkerResult(worker) {
 		t.Fatal("a result that fails its schema reported as finished on the first try")
 	}
 	worker.mu.Lock()
-	armed := worker.retried
+	armed := worker.retries > 0
 	worker.mu.Unlock()
 	if !armed {
 		t.Fatal("the retry was not armed")

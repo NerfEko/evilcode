@@ -28,7 +28,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 	// Reserved here too, with no spawner to charge it to: a worker started
 	// through this path is as live as any other, and a counter that cannot see
 	// it is a counter that admits one worker too many.
-	if err := s.swarm.reserve(""); err != nil {
+	if err := s.swarm.reserve("", s.effectiveMaxLiveWorkers()); err != nil {
 		return nil, err
 	}
 	sess, err := s.spawn(task, files, schema, "", nil, s.Cwd)
@@ -177,15 +177,24 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, work
 		}
 	}
 
-	// A worker can message and spawn like any other session. Bounded, though:
-	// MaxLiveWorkers and MaxWorkersPerSession are what stop a worker that
-	// decides delegation is going well from recursing (§12.6).
+	// Depth 1 by default: a worker gets messaging tools but no spawn_worker
+	// (orchestrator D8, the field consensus). Spawning stays available behind
+	// [features] worker_spawning for the day real usage wants depth 2+.
+	// Either way the caps bound what a worker that decides delegation is going
+	// well can recurse into (§12.6).
 	//
 	// Bound to the settled name: built before the name was final, these tools
 	// spoke as whatever session the worker had collided with, so its messages
 	// arrived from the wrong sender and its spawns were charged to the wrong
 	// account.
-	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.AgentTools(sess.Name)...)
+	sess.built.Agent.Tools = append(sess.built.Agent.Tools, s.agentToolsForWorker(sess.Name, workerCfg.Features.WorkerSpawning)...)
+
+	// A per-worker tool-call budget reuses the max_steps machinery: a worker
+	// that cannot converge in N rounds stops instead of spending unboundedly
+	// where nobody is watching.
+	if workerCfg.Features.WorkerMaxSteps > 0 {
+		sess.built.Agent.MaxSteps = workerCfg.Features.WorkerMaxSteps
+	}
 
 	s.mu.Lock()
 	if s.closed {
@@ -224,8 +233,20 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, work
 		// spending tokens. Only a Run that failed outright — no turn end, so
 		// nothing else will ever finish it — is marked from here.
 		if err := sess.built.Agent.Run(ctx, WorkerPrompt(task, files, schema)); err != nil {
-			sess.notifyWorkerFailure(err)
-			sess.markFinished()
+			// Timeout is cancel, not detach (orchestrator D6): a worker that
+			// hits WorkerTimeout salvages its last text as a partial result
+			// instead of vanishing. An explicit cancel lands here the same
+			// way once its context unwinds.
+			sess.mu.Lock()
+			cancelled := sess.cancelRequested
+			sess.mu.Unlock()
+			if cancelled || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				s.settleCancel(sess)
+				sess.markFinished()
+			} else {
+				sess.notifyWorkerFailure(err)
+				sess.markFinished()
+			}
 		}
 	}()
 	return sess, nil

@@ -80,6 +80,28 @@ func TestComposerTintMarksOrchestratorMode(t *testing.T) {
 	}
 }
 
+func TestAgentsRendersWorkerModelAndTokens(t *testing.T) {
+	m := newTestModel(t)
+	swarm := &SwarmState{}
+	swarm.Publish([]SwarmAgent{
+		{Name: "bat", Task: "wiring auth", Worker: true, Running: true, Since: 42 * time.Second, Model: "small@mock", Tokens: 1500},
+		{Name: "ed", Since: 90 * time.Second},
+	})
+	m.swarm = swarm
+	m.agentsCommand()
+	if len(m.blocks) == 0 {
+		t.Fatal("agents produced no output")
+	}
+	text := m.blocks[len(m.blocks)-1].Text
+	if !strings.Contains(text, "small@mock") || !strings.Contains(text, "tok") {
+		t.Fatalf("agents output = %q, want model and tokens", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "ed ") && strings.Contains(line, "tok") {
+			t.Fatalf("cost leaked onto the plain session row: %q", line)
+		}
+	}
+}
 func TestSwarmRosterRainbowKeepsNamesLegible(t *testing.T) {
 	r := NewRenderer(theme.Dracula(), 60)
 	s := &SwarmState{}

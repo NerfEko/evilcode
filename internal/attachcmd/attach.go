@@ -586,6 +586,7 @@ func pollRoster(ctx context.Context, path string, self func() string, swarm *tui
 			agents = append(agents, tui.SwarmAgent{
 				Name: s.Name, Task: s.Task, Worker: s.Worker,
 				Running: s.Running, Since: time.Since(s.Started),
+				Model: s.Model, Tokens: s.Tokens,
 			})
 		}
 		swarm.Publish(agents)

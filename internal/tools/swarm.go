@@ -31,10 +31,36 @@ type Spawner interface {
 type ForegroundSpawner interface {
 	Spawner
 
-	// SpawnWorkerForeground starts a worker and waits for its validated final
-	// answer. The returned name is the same stable worker name as SpawnWorker.
-	SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage, model string) (name, output string, err error)
+	// SpawnWorkerForeground starts a worker and waits for its finished result.
+	// The name is the same stable worker name as SpawnWorker.
+	SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage, model string) (SpawnResult, error)
 }
+
+// SpawnResult is one finished worker: the validated answer plus the audit
+// the orchestrator needs to trust it (orchestrator D3/D4).
+type SpawnResult struct {
+	// Name is the stable worker session name.
+	Name string
+
+	// Output is the worker's final text (validated when a schema was given).
+	Output string
+
+	// Status is complete, failed, or partial. Failed means the output never
+	// validated (or the worker errored with salvageable text); partial means
+	// a timeout or cancel cut the worker off and Output is what it had said
+	// so far. Empty from runtimes that predate the contract reads as
+	// complete.
+	Status string
+}
+
+// Spawn outcome statuses. Every spawn_worker result carries one (D4): the
+// orchestrator treats worker failure as data and re-spawns with accumulated
+// knowledge, which needs partial output, not just an error.
+const (
+	StatusComplete = "complete"
+	StatusFailed   = "failed"
+	StatusPartial  = "partial"
+)
 
 // NewSpawn returns the spawn_worker tool (plan.md §20).
 //
@@ -115,14 +141,23 @@ func spawnWorkerTool(s Spawner) Tool {
 			}
 			if wait {
 				if foreground, ok := s.(ForegroundSpawner); ok {
-					name, output, err := foreground.SpawnWorkerForeground(
+					res, err := foreground.SpawnWorkerForeground(
 						ctx, args.Task, args.FilesHint, args.ResultSchema, args.Model)
 					if err != nil {
 						return Result{}, err
 					}
+					status := res.Status
+					if status == "" {
+						status = StatusComplete
+					}
+					output := fmt.Sprintf("Worker %s completed:\n%s", res.Name, res.Output)
+					if status != StatusComplete {
+						output = fmt.Sprintf("Worker %s completed [status: %s]:\n%s", res.Name, status, res.Output)
+					}
 					return Result{
-						Output: fmt.Sprintf("Worker %s completed:\n%s", name, output),
-						Intent: fmt.Sprintf("%s · %s", name, shortTask(args.Task)),
+						Output: output,
+						Intent: fmt.Sprintf("%s · %s", res.Name, shortTask(args.Task)),
+						Status: status,
 					}, nil
 				}
 			}
@@ -148,4 +183,61 @@ func shortTask(s string) string {
 		return s
 	}
 	return strings.TrimSpace(s[:backToRuneBoundary(s, max)]) + "…"
+}
+
+// Canceller is what cancel_worker needs from the daemon: abort a worker by
+// name. It is separate from Spawner so a runtime can offer one without the
+// other, and so tools never imports the daemon.
+type Canceller interface {
+	// Self is the calling session's name, for attribution.
+	Self() string
+
+	// CancelWorker aborts the named worker's in-flight work, releases its
+	// live slot, and reports what was salvaged.
+	CancelWorker(worker string) (string, error)
+}
+
+// NewCancel returns the cancel_worker tool (orchestrator D6).
+//
+// Registered wherever spawn_worker is: an orchestrator that can start work
+// can stop it. Undeclared Effect (the serialized default) on purpose —
+// cancelling mid-batch must not race a spawn in the same round.
+func NewCancel(c Canceller) Set {
+	return Set{{
+		Name: "cancel_worker",
+		Desc: `Abort a worker you started, by the name spawn_worker returned.
+
+Use this when the worker is stuck, redundant, or its brief was wrong. The
+worker's live slot is released immediately and whatever it last said is
+salvaged into the result that arrives as a message — a cancelled worker
+reports partial output, not nothing. Cancelling a finished or unknown
+worker is an error, not a silent no-op.`,
+		Schema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "worker": {"type": "string",
+               "description": "The worker session name to abort."}
+  },
+  "required": ["worker"]
+}`),
+		Run: func(ctx context.Context, raw json.RawMessage) (Result, error) {
+			var args struct {
+				Worker string `json:"worker"`
+			}
+			if err := unmarshalArgs(raw, &args); err != nil {
+				return Result{}, err
+			}
+			if strings.TrimSpace(args.Worker) == "" {
+				return Result{}, fmt.Errorf("cancel_worker needs a worker name")
+			}
+			summary, err := c.CancelWorker(strings.TrimSpace(args.Worker))
+			if err != nil {
+				return Result{}, err
+			}
+			return Result{
+				Output: summary,
+				Intent: "cancelled " + strings.TrimSpace(args.Worker),
+			}, nil
+		},
+	}}
 }
