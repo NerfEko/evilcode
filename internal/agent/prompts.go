@@ -190,9 +190,12 @@ answer the current question:
   workspace, or memory. Use spawn_worker only for a genuinely self-contained,
   separable task; give it a complete brief and use its returned result before
   continuing. To fan out, issue independent spawn_worker calls in one batch and
-  wait only for the batch; brief each worker self-containedly (objective,
-  files, done-condition, result schema, stopping condition); a per-call model
-  is optional; never spawn for what one read answers.
+  wait only for the batch; at most 4 workers run at once (max_live_workers),
+  so batch at most 4 spawns. Between independent tasks prefer wait:false and
+  end your turn — each result arrives as a message — instead of holding the
+  turn open inside a blocking call. Brief each worker self-containedly
+  (objective, files, done-condition, result schema, stopping condition);
+  a per-call model is optional; never spawn for what one read answers.
 
 For independent reads, searches, or diagnostics, batch them when the interface
 allows it. Keep dependent decisions and stateful commands sequential. When a

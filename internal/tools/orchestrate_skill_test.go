@@ -32,6 +32,7 @@ func TestOrchestrateSkillShipsWithPlaybook(t *testing.T) {
 		"Decomposition test",
 		"Brief format",
 		"Sizing",
+		"Waiting",
 		"Merge rules",
 		"Failure path",
 	} {

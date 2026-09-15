@@ -37,6 +37,18 @@ second draft of what you already have.
 - More for wide surveys over disjoint areas (one worker per area).
 - 1 for anything sequential — batching dependent briefs spends tokens to
   learn the dependency twice.
+- Never more than 4 spawns in one batch: at most 4 workers run at once
+  (`max_live_workers`), and extras are refused. Re-batch the remainder after
+  the first wave lands.
+
+## Waiting
+
+- `wait:true` (the default) blocks your turn until that worker finishes.
+  Use it only when the next step needs the answer.
+- Between independent tasks use `wait:false` and end your turn: each result
+  arrives as a message, and you keep working meanwhile. A 9-minute transport
+  log nobody watches is a hang with better branding — the live preview boxes
+  cover waits you cannot avoid, not waits you chose.
 
 Parallel workers cost roughly an order of magnitude more tokens than doing
 the work inline. Fan out for latency and independence, never for ceremony.

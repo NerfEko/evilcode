@@ -93,7 +93,11 @@ means you will both be told about the conflict, and someone still has to
 untangle the edit.
 
 Fan-out trigger: reach for this in parallel only when 3+ independent briefs
-exist — batch them in one round and wait only for the batch. Load the
+exist — batch them in one round and wait only for the batch. At most 4
+workers run at once (max_live_workers), so batch at most 4 spawns; extras
+are refused and must be re-batched. Between independent tasks prefer
+wait:false: end your turn and let each result arrive as a message, instead
+of holding the turn open inside a blocking call. Load the
 "orchestrate" skill for the decomposition and briefing playbook before
 fanning out.`
 

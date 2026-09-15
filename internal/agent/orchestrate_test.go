@@ -13,6 +13,8 @@ func TestSystemPromptCarriesFanOutBullet(t *testing.T) {
 	for _, want := range []string{
 		"To fan out",
 		"spawn_worker",
+		"at most 4 workers",
+		"wait:false",
 		"never spawn for what one read answers",
 	} {
 		if !strings.Contains(prompt, want) {
