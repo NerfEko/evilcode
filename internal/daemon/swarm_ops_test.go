@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+// Workers are grunts: grunt-N off the on-disk high-water mark, never a
+// creature name, so no worker ever reads as a normal session.
+func TestSpawnedWorkerIsNamedGrunt(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+
+	spawner, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"grunt-1", "grunt-2"} {
+		name, err := srv.SpawnFor(spawner.Name, "grunt work", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name != want {
+			t.Fatalf("worker name = %q, want %q", name, want)
+		}
+	}
+	waitReservationsDrained(t, srv)
+}
+
 // D8: [features] max_live_workers is honored under concurrent load.
 func TestMaxLiveWorkersConfigIsHonored(t *testing.T) {
 	srv, _ := testServer(t)

@@ -154,7 +154,7 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, work
 		advisor:       advisor,
 		overnight:     newOvernightState(),
 		done:          make(chan struct{}),
-		subs:          map[chan ServerMsg]struct{}{},
+		subs:          map[*subscription]struct{}{},
 		lastHeartbeat: time.Now(),
 		idleSince:     time.Now(),
 	}
@@ -260,7 +260,9 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, work
 // name after the store existed left a renamed worker holding the log — and the
 // identity its own swarm tools spoke with — of whatever it collided with.
 func (s *Server) claimName(cwd string) (*session.Store, error) {
-	base := session.PickFreeName(config.DataDir())
+	// Workers are grunts: grunt-N off the on-disk high-water mark, never a
+	// creature name, so no worker ever reads as a normal session.
+	base := session.PickGruntName(config.DataDir())
 	for range 64 {
 		s.mu.Lock()
 		if s.closed {

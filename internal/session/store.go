@@ -244,6 +244,36 @@ func PickFreeName(dataDir string) string {
 	return core.PickName(core.Creatures, core.SeedFrom(time.Now().String()), takenNames(dataDir))
 }
 
+// PickGruntName proposes the next worker name: grunt-N one past the highest
+// N already claimed on disk. Workers read as a numbered crew, never as normal
+// sessions — the start screen colors and sections them off by the prefix.
+//
+// It claims nothing — CreateNamed does that, exclusively — so concurrent
+// spawns that propose the same N still serialize on O_EXCL and the loser's
+// claimName retry proposes again from the now-advanced high-water mark.
+func PickGruntName(dataDir string) string {
+	if os.Getenv("EVILCODE_DETERMINISTIC") == "1" {
+		return "grunt-1"
+	}
+	high := 0
+	for name := range takenNames(dataDir) {
+		rest, ok := strings.CutPrefix(name, "grunt-")
+		if !ok {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(rest, "%d", &n); err != nil {
+			continue
+		}
+		// Sscanf accepts "3-2" as 3; only a clean integer counts, so a
+		// collision-suffixed grunt-3-2 never moves the high-water mark.
+		if rest == fmt.Sprintf("%d", n) && n > high {
+			high = n
+		}
+	}
+	return fmt.Sprintf("grunt-%d", high+1)
+}
+
 // CreateNamed claims one specific session name, failing if it is already taken.
 //
 // Under EVILCODE_DETERMINISTIC the name repeats by design, so an existing file
