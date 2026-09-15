@@ -126,6 +126,14 @@ const (
 	// filesystem reads, globs, greps, git metadata, memory lookups. RunBatch
 	// may run consecutive read-only calls concurrently.
 	EffectReadOnly
+
+	// EffectSpawn marks spawn-shaped tools (spawn_worker). A maximal run of
+	// consecutive spawn calls shares the bounded pool like read-only calls,
+	// so a fan-out batch runs concurrently. Spawns still barrier against
+	// mutating/interactive/undeclared calls, exactly like read-only calls do:
+	// effects land in the order the model asked. Only spawn-shaped tools
+	// declare this; undeclared tools keep the safe serialized default.
+	EffectSpawn
 )
 
 // Set is the collection of tools available to a turn.
@@ -179,11 +187,16 @@ const MaxBatch = 64
 // happened to finish.
 //
 // Scheduling is effect-aware (R2-07): a maximal run of consecutive read-only
-// calls shares a bounded pool; a mutating, spawning, interactive, or undeclared
+// or spawn calls shares a bounded pool; a mutating, interactive, or undeclared
 // call is a barrier — it runs alone, after everything before it has finished
 // and before anything after it starts. Two edits to one file, a mkdir before
 // the write that fills it, or a test racing a generated file therefore land in
-// the order the model asked, while a fan-out of reads still overlaps.
+// the order the model asked, while a fan-out of reads or spawns still overlaps.
+//
+// Spawn batches carry one extra guard (orchestrator fan-out D9): files_hint is
+// the parallel-safety primitive. A spawn run whose declared files_hint sets
+// overlap is downgraded to serialized, in order — the registry conflict check
+// covers the rest, and undeclared (empty) hints never block parallelism.
 func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 	out := make([]Outcome, len(calls))
 
@@ -236,9 +249,10 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 
 	i := 0
 	for i < runnable && ctx.Err() == nil {
-		// Accumulate the maximal run of read-only calls starting here.
+		// Accumulate the maximal run of parallelizable calls starting here
+		// (read-only or spawn).
 		j := i
-		for j < runnable && s.readOnly(calls[j].Name) {
+		for j < runnable && s.parallelizable(calls[j].Name) {
 			j++
 		}
 		if j > i {
@@ -246,7 +260,18 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 			for k := i; k < j; k++ {
 				group = append(group, k)
 			}
-			runGroup(group)
+			if spawnFilesOverlap(calls, group) {
+				// D9: overlapping files_hint downgrades the spawn run to
+				// serialized, in order — as today.
+				for _, k := range group {
+					if ctx.Err() != nil {
+						break
+					}
+					out[k] = s.RunOne(ctx, calls[k])
+				}
+			} else {
+				runGroup(group)
+			}
 			if ctx.Err() != nil {
 				break
 			}
@@ -282,6 +307,57 @@ func (s Set) RunBatch(ctx context.Context, calls []Call) []Outcome {
 func (s Set) readOnly(name string) bool {
 	t, ok := s.Find(name)
 	return ok && t.Effect == EffectReadOnly
+}
+
+// parallelizable reports whether a call may share the bounded pool with its
+// consecutive neighbors: read-only calls and spawn-shaped calls. Anything
+// else — mutating, interactive, undeclared — is a barrier.
+func (s Set) parallelizable(name string) bool {
+	t, ok := s.Find(name)
+	if !ok {
+		return false
+	}
+	return t.Effect == EffectReadOnly || t.Effect == EffectSpawn
+}
+
+// spawnFilesOverlap implements D9: files_hint is the parallel-safety
+// primitive. When two spawn calls in one parallel run declare the same file,
+// the run is downgraded to serialized. Empty (undeclared) hints never block
+// parallelism; the registry conflict check covers undeclared overlap.
+func spawnFilesOverlap(calls []Call, group []int) bool {
+	seen := map[string]bool{}
+	for _, idx := range group {
+		hints := callFilesHint(calls[idx])
+		if len(hints) == 0 {
+			continue
+		}
+		for _, f := range hints {
+			if f == "" {
+				continue
+			}
+			if seen[f] {
+				return true
+			}
+			seen[f] = true
+		}
+	}
+	return false
+}
+
+// callFilesHint extracts a spawn call's declared files_hint, if any. Calls
+// without the field (reads, undeclared hints) report none and never block
+// parallelism on their own.
+func callFilesHint(call Call) []string {
+	if len(call.Args) == 0 {
+		return nil
+	}
+	var args struct {
+		FilesHint []string `json:"files_hint"`
+	}
+	if err := json.Unmarshal(call.Args, &args); err != nil {
+		return nil
+	}
+	return args.FilesHint
 }
 
 // RunBatchWithPolicy answers calls rejected by an active skill without

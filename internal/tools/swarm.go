@@ -68,6 +68,10 @@ func spawnWorkerTool(s Spawner) Tool {
 	return Tool{
 		Name: "spawn_worker",
 		Desc: spawnDesc,
+		// EffectSpawn is the fan-out guarantee (orchestrator D1): a maximal run
+		// of consecutive spawns shares the bounded pool instead of running as
+		// a barrier. Overlapping files_hint batches still serialize via D9.
+		Effect: EffectSpawn,
 		Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -76,7 +80,9 @@ func spawnWorkerTool(s Spawner) Tool {
     "files_hint": {"type": "array", "items": {"type": "string"},
                    "description": "Files to start from. A hint, not a boundary."},
     "result_schema": {"type": "object",
-                      "description": "JSON Schema the worker's final answer must validate against."}
+                      "description": "JSON Schema the worker's final answer must validate against."},
+    "wait": {"type": "boolean",
+             "description": "Wait for the worker's validated result (default true). False returns immediately with the worker name; the result arrives as a message."}
   },
   "required": ["task"]
 }`),
@@ -85,6 +91,7 @@ func spawnWorkerTool(s Spawner) Tool {
 				Task         string          `json:"task"`
 				FilesHint    []string        `json:"files_hint"`
 				ResultSchema json.RawMessage `json:"result_schema"`
+				Wait         *bool           `json:"wait"`
 			}
 			if err := unmarshalArgs(raw, &args); err != nil {
 				return Result{}, err
@@ -92,16 +99,22 @@ func spawnWorkerTool(s Spawner) Tool {
 			if strings.TrimSpace(args.Task) == "" {
 				return Result{}, fmt.Errorf("spawn_worker needs a task")
 			}
-			if foreground, ok := s.(ForegroundSpawner); ok {
-				name, output, err := foreground.SpawnWorkerForeground(
-					ctx, args.Task, args.FilesHint, args.ResultSchema)
-				if err != nil {
-					return Result{}, err
+			wait := true
+			if args.Wait != nil {
+				wait = *args.Wait
+			}
+			if wait {
+				if foreground, ok := s.(ForegroundSpawner); ok {
+					name, output, err := foreground.SpawnWorkerForeground(
+						ctx, args.Task, args.FilesHint, args.ResultSchema)
+					if err != nil {
+						return Result{}, err
+					}
+					return Result{
+						Output: fmt.Sprintf("Worker %s completed:\n%s", name, output),
+						Intent: fmt.Sprintf("%s · %s", name, shortTask(args.Task)),
+					}, nil
 				}
-				return Result{
-					Output: fmt.Sprintf("Worker %s completed:\n%s", name, output),
-					Intent: fmt.Sprintf("%s · %s", name, shortTask(args.Task)),
-				}, nil
 			}
 
 			name, err := s.SpawnWorker(args.Task, args.FilesHint, args.ResultSchema)

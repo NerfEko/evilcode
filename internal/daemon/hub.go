@@ -133,8 +133,16 @@ func (w *swarmState) finished() {
 // SpawnForForeground below so delegation has the same blocking result semantics
 // as OpenCode's task tool.
 func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawMessage) (string, error) {
-	name, _, err := s.spawnForSession(spawner, task, files, schema, false)
+	name, _, err := s.SpawnForWithSession(spawner, task, files, schema)
 	return name, err
+}
+
+// SpawnForWithSession is the non-blocking path with its session handle: the
+// caller gets the worker name immediately and the result arrives as a message
+// (spawn_worker wait:false, /summon). The handle lets later phases roll up
+// per-worker tokens without another lookup.
+func (s *Server) SpawnForWithSession(spawner, task string, files []string, schema json.RawMessage) (string, *Session, error) {
+	return s.spawnForSession(spawner, task, files, schema, false)
 }
 
 // SpawnForForeground starts a worker on behalf of a session and waits for its
