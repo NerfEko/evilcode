@@ -31,6 +31,37 @@ func TestSpawnedWorkerIsNamedGrunt(t *testing.T) {
 	waitReservationsDrained(t, srv)
 }
 
+// The attach snapshot carries grunt identity so clients open workers in
+// observe mode instead of a normal session with a composer.
+func TestSnapshotCarriesGruntIdentity(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+
+	spawner, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := srv.SpawnFor(spawner.Name, "grunt brief", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	worker := srv.sessions[name]
+	parent := srv.sessions[spawner.Name]
+	srv.mu.Unlock()
+	snap := worker.snapshot()
+	if !snap.Worker {
+		t.Error("worker snapshot does not mark Worker")
+	}
+	if snap.Task != "grunt brief" {
+		t.Errorf("worker snapshot task = %q", snap.Task)
+	}
+	if parent.snapshot().Worker {
+		t.Error("normal session snapshot marks Worker")
+	}
+	waitReservationsDrained(t, srv)
+}
+
 // D8: [features] max_live_workers is honored under concurrent load.
 func TestMaxLiveWorkersConfigIsHonored(t *testing.T) {
 	srv, _ := testServer(t)

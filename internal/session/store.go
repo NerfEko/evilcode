@@ -244,6 +244,13 @@ func PickFreeName(dataDir string) string {
 	return core.PickName(core.Creatures, core.SeedFrom(time.Now().String()), takenNames(dataDir))
 }
 
+// IsGruntName reports whether a session name belongs to the worker crew.
+// The prefix is the marker everywhere — daemon roster, disk list, old
+// sessions from before the Worker flag existed on the wire.
+func IsGruntName(name string) bool {
+	return strings.HasPrefix(name, "grunt-")
+}
+
 // PickGruntName proposes the next worker name: grunt-N one past the highest
 // N already claimed on disk. Workers read as a numbered crew, never as normal
 // sessions — the start screen colors and sections them off by the prefix.

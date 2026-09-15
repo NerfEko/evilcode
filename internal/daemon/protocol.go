@@ -246,6 +246,12 @@ type Snapshot struct {
 	// mid-turn shows the spinner instead of an idle composer.
 	Running bool `json:"running"`
 
+	// Worker marks a grunt session, and Task carries its brief. An attaching
+	// client opens grunts in observe mode (details, no input) instead of a
+	// normal session with a composer.
+	Worker bool   `json:"worker,omitempty"`
+	Task   string `json:"task,omitempty"`
+
 	// Seq is the newest sequence number in the ring at snapshot time.
 	Seq int `json:"seq"`
 

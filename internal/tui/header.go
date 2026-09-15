@@ -373,7 +373,14 @@ func (r *Renderer) startPageButtonRow(rows []SessionRow, sel int, active bool, w
 	}
 	pills := make([]pill, 0, len(rows))
 	for i, row := range rows {
-		pills = append(pills, pill{render: r.startPagePill(row, i == sel && active), w: lipgloss.Width(plainText(r.startPagePill(row, false)))})
+		render := r.startPagePill(row, i == sel && active)
+		if row.Worker && (i == 0 || !rows[i-1].Worker) {
+			// The section divider rides on the first grunt pill rather than
+			// as its own element: the scroll window indexes pills, and a
+			// non-selectable element would shift every selection past it.
+			render = r.style(theme.RoleDim).Render("‖ grunts ‖ ") + render
+		}
+		pills = append(pills, pill{render: render, w: lipgloss.Width(plainText(render))})
 	}
 
 	sep := "  "
@@ -456,6 +463,15 @@ func (r *Renderer) startPagePill(row SessionRow, selected bool) string {
 		nameStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(20, 20, 24)))).
 			Background(lipgloss.Color(theme.Hex(theme.RGB(140, 220, 160)))).Bold(true)
+	}
+	if row.Worker {
+		// Grunt pills stay amber even selected: the section color is the
+		// identity, not the selection.
+		nameStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Bold(true)
+		if selected {
+			nameStyle = nameStyle.Background(lipgloss.Color(theme.Hex(theme.RGB(60, 45, 20))))
+		}
 	}
 
 	return " " + emoji + " " + nameStyle.Render(row.Info.Name) + " " + r.startStatusGlyph(row) + " "

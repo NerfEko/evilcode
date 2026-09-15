@@ -608,6 +608,17 @@ type Model struct {
 	orchestrate  *agent.OrchestrateHook
 	orchestrator bool
 
+	// observeGrunt is grunt observe mode: attached to a worker session, the
+	// bottom bar shows session details instead of an input box. Typing has
+	// nowhere to go, so composer-bound keys are swallowed with a hint; Alt+O
+	// promotes to a normal session. The grunt* fields carry the details bar
+	// content, observeHinted rate-limits the swallow notice.
+	observeGrunt  bool
+	observeHinted bool
+	gruntName     string
+	gruntTask     string
+	gruntModel    string
+
 	// swarmDocked records whether the status widget found a slot last frame,
 	// which is what the strip stands down against.
 	swarmDocked bool
@@ -1502,6 +1513,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWheel(msg)
 
 	case tea.PasteMsg:
+		if m.observeGrunt {
+			// Nowhere to paste into: the composer is hidden.
+			return m, nil
+		}
 		if m.loginMode {
 			m.editor.Insert(msg.Content)
 			return m, nil
@@ -2331,6 +2346,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Configurable bindings are resolved before the fixed keys, so a rebind
 	// genuinely takes the chord away from its default (plan.md §11).
+	// Grunt observe mode runs first instead: the composer is hidden, so
+	// composer-bound keys are swallowed before any binding can act on them —
+	// except Alt+O, which promotes to a normal session.
+	if m.observeGate(key, msg.Key().Text) {
+		return m, nil
+	}
 	if m.keymap != nil {
 		if b, ok := m.keymap.Lookup(key); ok {
 			if handled, model, cmd := m.runAction(b.Action); handled {
@@ -4284,6 +4305,11 @@ func (m *Model) interrupt(disarmPoke bool) {
 
 // send applies the §6.3 send model: idle submits, processing queues.
 func (m *Model) send() (tea.Model, tea.Cmd) {
+	// Belt and suspenders behind the key gate: no prompt leaves a grunt
+	// observe window, even through a path that bypasses handleKey.
+	if m.observeGrunt {
+		return m, nil
+	}
 	text := strings.TrimSpace(m.editor.Text)
 	if text == "" {
 		return m, nil
@@ -4850,7 +4876,7 @@ func (m *Model) stackFor(contentHeight int) Stack {
 		s.Heights[SlotPickerGap] = 1
 	}
 
-	composer := m.renderer.RenderComposer(m.composerState())
+	composer := m.bottomBar()
 	s.Heights[SlotComposer] = len(composer)
 	return s
 }
@@ -5312,7 +5338,7 @@ func (m *Model) View() tea.View {
 		// input, until the daemon starts their turn (plan.md §6.3).
 		rows = append(rows, m.renderer.RenderQueuedPrompts(m.queuedTexts)...)
 	}
-	rows = append(rows, m.renderer.RenderComposer(m.composerState())...)
+	rows = append(rows, m.bottomBar()...)
 
 	// The elastic facts line lives below the composer and owns the same facts
 	// as the fact stack, so only one of them shows at a time (§4.4, §8.6).
@@ -5395,7 +5421,7 @@ func (m *Model) View() tea.View {
 // drawn after the palette so it wins when both could apply (plan.md §5.2).
 func (m *Model) overlayHistory(rows []string, inset string) []string {
 	return spliceOverlay(rows, indent(m.renderer.RenderHistorySearch(&m.history), inset),
-		m.height, len(m.renderer.RenderComposer(m.composerState())))
+		m.height, len(m.bottomBar()))
 }
 
 // indent prefixes overlay rows so they line up with the padded frame.
@@ -5421,7 +5447,7 @@ func (m *Model) overlayPalette(rows []string, inset string) []string {
 	state.Query = strings.TrimPrefix(m.editor.Text, "/")
 	overlay := indent(m.renderer.RenderPalette(state, VisibleCommands()), inset)
 	return spliceOverlay(rows, overlay, m.height,
-		len(m.renderer.RenderComposer(m.composerState())))
+		len(m.bottomBar()))
 }
 
 // spliceOverlay draws overlay rows over existing ones, covering them rather

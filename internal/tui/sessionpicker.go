@@ -39,6 +39,10 @@ type SessionRow struct {
 	// Marked is the multi-select state.
 	Marked bool
 
+	// Worker marks a grunt session. The picker and start screen color and
+	// section grunts off so no worker ever reads as a normal session.
+	Worker bool
+
 	// Current flags the session being viewed right now.
 	Current bool
 
@@ -74,6 +78,10 @@ type SessionDescriptor struct {
 	// Pending is the number of interactive asks the session is blocked on,
 	// so a roster can flag a session that needs an answer.
 	Pending int
+
+	// Worker marks a grunt session (or a grunt-N name from a source without
+	// the flag, like the on-disk list).
+	Worker bool
 }
 
 // SessionRows converts durable/server summaries into picker rows.
@@ -88,12 +96,16 @@ func SessionRows(descriptors []SessionDescriptor) []SessionRow {
 			},
 			Live: d.Live, Running: d.Running, Clients: d.Clients, Task: d.Task,
 			Pending: d.Pending,
+			Worker:  d.Worker || session.IsGruntName(d.Name),
 		})
 	}
 	return rows
 }
 
 func sessionEmoji(name string) string {
+	if session.IsGruntName(name) {
+		return "🔧"
+	}
 	return core.CreatureEmoji(name)
 }
 
@@ -242,6 +254,12 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 		nameStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(140, 220, 160)))).Bold(true)
 	}
+	if row.Worker {
+		// Grunts read as crew, never as normal sessions: amber name whether
+		// or not the row is selected.
+		nameStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).Bold(true)
+	}
 
 	var b strings.Builder
 	b.WriteString(mark + emoji + " " + nameStyle.Render(row.Info.Name))
@@ -251,6 +269,11 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 180, 100)))).Render("📌"))
 	}
 	b.WriteString(" " + r.sessionStatus(row))
+	if row.Worker {
+		b.WriteString(" " + lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 190, 100)))).
+			Bold(true).Render("grunt"))
+	}
 
 	if row.Current {
 		b.WriteString(" " + lipgloss.NewStyle().
@@ -276,6 +299,9 @@ func (r *Renderer) sessionRow(row SessionRow, selected bool, filter string, widt
 		detail += " · 🧠 " + row.Recalled
 	} else if row.Info.Title != "" {
 		detail += " · " + row.Info.Title
+	}
+	if row.Worker && row.Task != "" {
+		detail += " · " + row.Task
 	}
 	second := "     " + dim.Render(truncateCells(detail, max(width-6, 10)))
 

@@ -53,7 +53,7 @@ func (m *Model) refreshStartSessions() tea.Cmd {
 				if info.Name == m.header.SessionName {
 					continue
 				}
-				rows = append(rows, SessionRow{Info: info})
+				rows = append(rows, SessionRow{Info: info, Worker: session.IsGruntName(info.Name)})
 			}
 			return startSessionsMsg{rows: rows}
 		}
@@ -135,9 +135,11 @@ func (m *Model) applyStartSessions(msg startSessionsMsg) {
 
 // sortStartRows orders the start page: active sessions (a turn in flight or a
 // question waiting on an answer) to the front, then live-but-idle sessions,
-// then completed/stored ones. Within each tier the most recently modified
-// session wins, so a session that just became inactive slides to the head of
-// the inactive group rather than to the very end.
+// then completed/stored ones. Grunts always sort after normal sessions —
+// their own section at the bottom — so no worker ever reads as a resume
+// candidate. Within each tier the most recently modified session wins, so a
+// session that just became inactive slides to the head of the inactive group
+// rather than to the very end.
 func sortStartRows(rows []SessionRow) []SessionRow {
 	tier := func(r SessionRow) int {
 		switch {
@@ -150,6 +152,10 @@ func sortStartRows(rows []SessionRow) []SessionRow {
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
+		gi, gj := rows[i].Worker, rows[j].Worker
+		if gi != gj {
+			return gj
+		}
 		ti, tj := tier(rows[i]), tier(rows[j])
 		if ti != tj {
 			return ti < tj

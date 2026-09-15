@@ -1773,6 +1773,7 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 	defer sess.controlMu.Unlock()
 	sess.mu.Lock()
 	name, model, cwd := sess.Name, sess.Model, sess.Cwd
+	worker, task := sess.Worker, sess.Task
 	reserved := sess.running
 	prov := sess.built.Agent.Provider
 	agentModel := sess.built.Agent.Model
@@ -1833,6 +1834,8 @@ func (sess *Session) snapshot(_ ...string) *Snapshot {
 		Skills:           skillNames,
 		MCP:              mcpStatus,
 		Running:          reserved || sess.built.Agent.Running(),
+		Worker:           worker,
+		Task:             task,
 		Seq:              sess.ring.Seq(),
 		Epoch:            sess.built.Agent.Conv.Epoch(),
 		Messages:         out,

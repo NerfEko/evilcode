@@ -250,6 +250,11 @@ func run(args []string, autoStart bool) error {
 		WithModelPrefs(cfg.FavoriteModels, config.SaveModelPrefs).
 		WithGraphics(graphics.Detect(), filepath.Join(config.DataDir(), "diagrams"))
 	m.SetRemoteBackground(snapshotBackground(snap))
+	// Grunt sessions open in observe mode: details bar, no input box. The
+	// prefix check covers workers from before the snapshot carried the flag.
+	if snap.Worker || session.IsGruntName(snap.Session) {
+		m.EnterObserveMode(snap.Session, snap.Task, snap.Model)
+	}
 	for _, req := range snap.Pending {
 		m.SetRemoteAsk(req)
 	}
@@ -478,7 +483,7 @@ func sessionDescriptors(rows []daemon.SessionInfo) []tui.SessionDescriptor {
 			Name: row.Name, Model: row.Model, Cwd: row.Cwd, Title: row.Title,
 			Modified: modified, Crashed: row.Crashed, Live: row.Live,
 			Running: row.Running, Clients: row.Clients, Task: row.Task,
-			Pending: row.Pending, Messages: row.Messages,
+			Pending: row.Pending, Messages: row.Messages, Worker: row.Worker,
 		})
 	}
 	return out
