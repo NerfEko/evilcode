@@ -74,14 +74,21 @@ func run(args []string, autoStart bool) error {
 		name = strings.TrimSpace(*resume)
 	}
 	// There is no resume window on launch: the start page inside the TUI is
-	// the one place you pick a session. Attaching with no name opens a fresh
-	// session, and its empty-transcript start page offers the recent ones to
-	// resume from there.
+	// the one place you pick a session. Attaching with no name defers the
+	// session itself: the daemon replies with a preview snapshot — everything
+	// the start page needs, with an empty session name — and the session is
+	// created only when this window's first prompt crosses the socket. Opening
+	// `ec` and quitting therefore creates nothing.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	snap, err := client.AttachAt(name, 0, cwd, *model)
+	var snap *daemon.Snapshot
+	if name == "" {
+		snap, err = client.AttachDeferred(cwd, *model)
+	} else {
+		snap, err = client.AttachAt(name, 0, cwd, *model)
+	}
 	if err != nil {
 		return err
 	}
@@ -282,6 +289,11 @@ func run(args []string, autoStart bool) error {
 				if msg.Snapshot != nil {
 					// Follow a /rename: the new identity is authoritative for every
 					// closure and the roster self-filter from here on (D3).
+					// created is the deferred attach's materialization: this
+					// window's own prompt just created the session, so the
+					// snapshot carries no conversation rewrite and must not
+					// rebuild the locally drawn prompt (SnapshotKeepLocal).
+					created := self.get() == "" && msg.Snapshot.Session != ""
 					self.set(msg.Snapshot.Session)
 					// A transport-truncated snapshot must not replace a mirror
 					// that already holds the older half of the conversation; the
@@ -298,6 +310,7 @@ func run(args []string, autoStart bool) error {
 						SnapshotProvider:   msg.Snapshot.Provider,
 						SnapshotRunning:    msg.Snapshot.Running,
 						SnapshotIncomplete: trimmed,
+						SnapshotKeepLocal:  created,
 						SnapshotMessages:   snapshotMessages(msg.Snapshot),
 						SnapshotPending:    append([]agent.AskEvent(nil), msg.Snapshot.Pending...),
 						SnapshotBackground: snapshotBackground(msg.Snapshot),
@@ -326,7 +339,82 @@ func run(args []string, autoStart bool) error {
 		_ = client.Close()
 		return run([]string{"-socket", path, "-resume", target}, autoStart)
 	}
+	// Quitting detached this window. If it was the daemon's only reason to
+	// exist — no other session is live, and this one is neither mid-turn,
+	// watched by another window, nor waiting on an answer — stopping the
+	// daemon is what `ec serve -stop` would have done, so do it here rather
+	// than leaving a server holding nothing (§20).
+	//
+	// Only the default entrypoint does this: it is also the command that
+	// started the daemon on demand. An explicit `ec attach` is a guest of a
+	// daemon the user started by hand, and it has no business stopping one.
+	//
+	// The attached connection stays open through the check: its subscription
+	// is this window's seat, and a client count above it is what says another
+	// window is watching the same session.
+	if autoStart {
+		stopDaemonIfIdle(path, self.get(), m.OvernightActive())
+	}
 	return nil
+}
+
+// daemonStopTimeout bounds the wait for a daemon teardown after a quit.
+const daemonStopTimeout = 15 * time.Second
+
+// stopDaemonIfIdle stops the daemon after a detach when this window was its
+// only reason to exist: no other live session, and this window's own session
+// — if it has one — idle, unwatched, and waiting on nothing. Every failure is
+// silent: a daemon that is already gone, a list that cannot be read, or a
+// decision not to stop simply leaves the daemon as it was.
+func stopDaemonIfIdle(path, self string, overnight bool) {
+	if overnight {
+		return
+	}
+	c, err := daemon.DialPath(path)
+	if err != nil {
+		return // the daemon is already gone; nothing to stop
+	}
+	defer c.Close()
+	// One budget covers the check and the teardown both: the user is sitting
+	// at the shell prompt behind this call.
+	if err := c.SetDeadline(daemonStopTimeout); err != nil {
+		return
+	}
+	rows, err := c.List()
+	if err != nil {
+		return
+	}
+	if !mayStopDaemon(rows, self) {
+		return
+	}
+	if err := c.Stop(); err != nil {
+		fmt.Fprintln(os.Stderr, "evilcode: could not stop the daemon:", err)
+		fmt.Fprintln(os.Stderr, "evilcode: it keeps running; stop it with `ec serve -stop`")
+		return
+	}
+	fmt.Fprintln(os.Stdout, "evilcode: stopped the daemon (no other sessions were running)")
+}
+
+// mayStopDaemon is the decision behind stopDaemonIfIdle, kept pure for tests.
+// Any session the daemon is holding other than this window's own blocks the
+// stop: it may be idle in the map, but it is still live state the user can
+// reattach to, and tearing the daemon down would dehydrate it early.
+func mayStopDaemon(rows []daemon.SessionInfo, self string) bool {
+	for _, row := range rows {
+		if !row.Live {
+			continue // a stored row is a file on disk, not daemon state
+		}
+		if self != "" && row.Name == self {
+			// A turn in flight, another window, or an unanswered ask keeps the
+			// daemon — and with it the turn or the question — alive.
+			if row.Running || row.Clients > 1 || row.Pending > 0 {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func snapshotBackground(snap *daemon.Snapshot) []agent.BackgroundState {

@@ -9,12 +9,17 @@
 # rotation is the only way to give them different scripts.
 scenario conflict,conflict-worker
 serve
+
+# A session is created by the first prompt, not by the attach (§20): the
+# conversation has to start before the second client can join it by name.
 attach "" bat
+keys --pane=0 "look at the clamp"
+keys --pane=0 Enter
 attach dracula spider
 capture swarm-two-clients
 
 # Typing into one client reaches the daemon, and the other client sees it.
-keys --pane=0 "look at the clamp"
+keys --pane=0 "and the rest of it"
 keys --pane=0 Enter
 capture swarm-shared-turn
 

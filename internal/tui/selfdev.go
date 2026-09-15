@@ -118,6 +118,11 @@ type reloadRequest struct{ session string }
 // ReloadTarget is the session to resume after the TUI exits, or "".
 func (m *Model) ReloadTarget() string { return m.reloadTo }
 
+// OvernightActive reports whether the unattended loop is running for the
+// session this window mirrors. The daemon keeps it alive across detaches, so
+// quitting must not stop a daemon that is still working through it.
+func (m *Model) OvernightActive() bool { return m.overnight.Active }
+
 // Reexec replaces this process with a fresh one resuming the named session.
 func Reexec(session string) error {
 	exe, err := os.Executable()

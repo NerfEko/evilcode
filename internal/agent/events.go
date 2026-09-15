@@ -174,7 +174,12 @@ type Event struct {
 	// SnapshotIncomplete marks a turn whose history copy was dropped by the
 	// transport size guard. Clients must keep their accumulated mirror instead
 	// of syncing from the absent history.
-	SnapshotIncomplete bool              `json:"snapshot_incomplete,omitempty"`
+	SnapshotIncomplete bool `json:"snapshot_incomplete,omitempty"`
+	// SnapshotKeepLocal marks a snapshot that carries no conversation rewrite:
+	// the session it describes was just created by this client's own prompt,
+	// which is drawn locally and not yet in the mirror. Rebuilding would wipe
+	// that prompt (and its image blocks) for the first turn's whole duration.
+	SnapshotKeepLocal  bool              `json:"snapshot_keep_local,omitempty"`
 	SnapshotPending    []AskEvent        `json:"snapshot_pending,omitempty"`
 	SnapshotBackground []BackgroundState `json:"snapshot_background,omitempty"`
 	// SnapshotMCP is the per-server MCP status from the daemon snapshot, so an

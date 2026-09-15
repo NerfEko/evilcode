@@ -172,6 +172,14 @@ type ClientMsg struct {
 	Model   string `json:"model,omitempty"`
 	NoTools bool   `json:"no_tools,omitempty"`
 
+	// Deferred marks an attach that must not create the session yet: the
+	// daemon replies with a preview snapshot (an empty session name) and
+	// builds the real session when this connection's first input arrives.
+	// A TUI opened on the start page therefore creates nothing until a
+	// prompt is submitted (§20). Only valid together with an empty
+	// Session name.
+	Deferred bool `json:"deferred,omitempty"`
+
 	RequestID string   `json:"request_id,omitempty"`
 	Answers   []string `json:"answers,omitempty"`
 	Arg       string   `json:"arg,omitempty"`

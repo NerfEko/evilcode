@@ -847,10 +847,18 @@ func (m *Model) applyRemoteBackground(state agent.BackgroundState) {
 // this only keeps an attached TUI's conversation and chrome in sync.
 func (m *Model) ApplyRemoteState(sessionName, modelName, providerName string,
 	running bool, msgs []provider.Message, pending []agent.AskEvent,
-	background []agent.BackgroundState) {
+	background []agent.BackgroundState, keepLocal bool) {
 	if sessionName != "" {
 		m.header.SessionName = sessionName
-		if m.todos != nil && m.todos.Session != sessionName {
+		if m.todos == nil && m.dataDir != "" {
+			// A deferred attach boots with no session and therefore no todo
+			// namespace; the first real snapshot names the session, so bind
+			// the read-only mirror here. On the update loop, where model
+			// mutation belongs.
+			if t, err := todo.NewStore(m.dataDir, sessionName); err == nil {
+				m.WithTodos(t, nil)
+			}
+		} else if m.todos != nil && m.todos.Session != sessionName {
 			if err := m.todos.Rebind(sessionName); err != nil {
 				m.notice = "could not refresh renamed session plan: " + err.Error()
 			}
@@ -880,7 +888,13 @@ func (m *Model) ApplyRemoteState(sessionName, modelName, providerName string,
 		m.SetRemoteAsk(req)
 	}
 	m.SetRemoteBackground(background)
-	m.RebuildFrom(msgs)
+	// A snapshot that carries no conversation rewrite must not rebuild the
+	// transcript: the materialization snapshot that names a session created
+	// by this window's own prompt would otherwise wipe that prompt block
+	// (and its images) until the turn ended.
+	if !keepLocal {
+		m.RebuildFrom(msgs)
+	}
 }
 
 // WithSessions attaches the session store and data directory, enabling the
@@ -1960,7 +1974,7 @@ func (m *Model) applyEvent(e agent.Event) {
 	case agent.EventSnapshot:
 		m.ApplyRemoteState(e.SnapshotSession, e.SnapshotModel, e.SnapshotProvider,
 			e.SnapshotRunning, e.SnapshotMessages, e.SnapshotPending,
-			e.SnapshotBackground)
+			e.SnapshotBackground, e.SnapshotKeepLocal)
 		m.applyRemoteMCP(e.SnapshotMCP)
 		if e.SnapshotIncomplete {
 			// The daemon trimmed the frame to keep the connection alive; the

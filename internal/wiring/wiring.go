@@ -44,6 +44,14 @@ type Options struct {
 	// NoTools builds an agent with no tools at all.
 	NoTools bool
 
+	// Provider and ModelName pre-resolve the session's chat provider. A
+	// deferred attach resolves once for its preview snapshot, and the session
+	// materializes on exactly that pair — the preview's provider build is the
+	// session's provider, so nothing re-resolves and no second slot is
+	// consumed anywhere a build order matters.
+	Provider  provider.Provider
+	ModelName string
+
 	// Extract turns on ambient memory extraction. Off for one-shot runs: a
 	// single turn never reaches the interval, and arming it would spend a
 	// side-call per invocation for nothing (plan.md §19).
@@ -149,6 +157,40 @@ func repoConfig(cfg *config.Config, root string) (*config.Config, error) {
 	return local, nil
 }
 
+// resolveChatProvider resolves the build's chat provider: a pre-resolved pair
+// wins, and the ordinary resolution chain (explicit model, the session's own
+// record, last model, config default) runs otherwise.
+func resolveChatProvider(cfg *config.Config, opts Options) (provider.Provider, string, error) {
+	if opts.Provider != nil {
+		return opts.Provider, opts.ModelName, nil
+	}
+	dataDir := config.DataDir()
+	ref := modelRefForResume(dataDir, opts)
+	usingLastModel := false
+	if ref == "" && opts.Model == "" && opts.Resume == "" && cfg.LastModel != "" &&
+		os.Getenv(config.EnvModel) == "" && os.Getenv(config.EnvProvider) == "" {
+		ref = cfg.LastModel
+		usingLastModel = true
+	}
+	prov, modelName, err := cfg.Resolve(ref)
+	if err != nil && usingLastModel {
+		prov, modelName, err = cfg.Resolve("")
+	}
+	if err != nil && opts.Resume != "" {
+		// A resumed session's recorded model can name a provider that is not
+		// available on this machine (an imported codex transcript on a host
+		// without a codex account, a deleted provider). Resuming must not fail
+		// for that; fall back to the default model and say so.
+		fmt.Fprintf(os.Stderr, "evilcode: recorded model %q for session %q is not available (%v); resuming on the default model\n",
+			ref, opts.Resume, err)
+		prov, modelName, err = cfg.Resolve("")
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return prov, modelName, nil
+}
+
 // Build assembles a session. On error nothing is left open.
 func Build(cfg *config.Config, opts Options) (*Session, error) {
 	cwd := opts.Cwd
@@ -182,26 +224,7 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 	}
 
-	ref := modelRefForResume(dataDir, opts)
-	usingLastModel := false
-	if ref == "" && opts.Model == "" && opts.Resume == "" && cfg.LastModel != "" &&
-		os.Getenv(config.EnvModel) == "" && os.Getenv(config.EnvProvider) == "" {
-		ref = cfg.LastModel
-		usingLastModel = true
-	}
-	prov, modelName, err := cfg.Resolve(ref)
-	if err != nil && usingLastModel {
-		prov, modelName, err = cfg.Resolve("")
-	}
-	if err != nil && opts.Resume != "" {
-		// A resumed session's recorded model can name a provider that is not
-		// available on this machine (an imported codex transcript on a host
-		// without a codex account, a deleted provider). Resuming must not fail
-		// for that; fall back to the default model and say so.
-		fmt.Fprintf(os.Stderr, "evilcode: recorded model %q for session %q is not available (%v); resuming on the default model\n",
-			ref, opts.Resume, err)
-		prov, modelName, err = cfg.Resolve("")
-	}
+	prov, modelName, err := resolveChatProvider(cfg, opts)
 	if err != nil {
 		return nil, err
 	}

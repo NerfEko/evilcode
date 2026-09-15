@@ -143,6 +143,21 @@ func (c *Client) AttachWithOptions(name string, since int, cwd, model string, no
 	}); err != nil {
 		return nil, err
 	}
+	return c.awaitSnapshot()
+}
+
+// AttachDeferred registers the connection for a session the daemon creates
+// only when this connection's first input arrives. The reply is a preview
+// snapshot: everything a client needs to render the pre-session start page,
+// with an empty session name as the marker that nothing exists yet.
+func (c *Client) AttachDeferred(cwd, model string) (*Snapshot, error) {
+	if err := c.Send(ClientMsg{Kind: MsgAttach, Cwd: cwd, Model: model, Deferred: true}); err != nil {
+		return nil, err
+	}
+	return c.awaitSnapshot()
+}
+
+func (c *Client) awaitSnapshot() (*Snapshot, error) {
 	for {
 		msg, err := c.Recv()
 		if err != nil {

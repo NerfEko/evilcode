@@ -38,6 +38,11 @@ evilcode
 From there you can type a prompt, resume a session, inspect files, run commands, review
 diffs, switch models, and keep working while tools run in the background.
 
+A session is created by the first prompt, not by opening the TUI: `evilcode` opened and
+quit without prompting leaves nothing behind. Quitting with `Ctrl+C` twice (or `/quit`)
+also stops the daemon when it holds nothing else — no other live session, no turn in
+flight, no other window — which is the same as `evilcode serve -stop` by hand.
+
 ## Install
 
 The quickest install is the latest Linux/amd64 release:
@@ -317,7 +322,7 @@ and todo state lets a small swarm coordinate without each worker keeping a priva
 | `Enter` | send; queue while a turn is running |
 | `Shift+Enter`, `Alt+Enter`, trailing `\` | newline |
 | `Esc` | cancel overlays, interrupt, then clear input |
-| `Ctrl+C` | interrupt; press twice while idle to quit |
+| `Ctrl+C` | detach; press twice to quit, stopping the daemon when nothing else is live |
 | `Ctrl+R` | search prompt history |
 | `Ctrl+G` | toggle a scroll bookmark |
 | `Alt+B` | send a running tool to the background |

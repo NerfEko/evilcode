@@ -869,6 +869,18 @@ type OpenOptions struct {
 	Cwd     string
 	Model   string
 	NoTools bool
+
+	// Effort is a reasoning effort chosen before the session existed — on the
+	// start page of a deferred attach. A session built from these options
+	// applies it to its first turn.
+	Effort provider.ReasoningEffort
+
+	// Provider and ModelName pre-resolve the chat provider: the preview of a
+	// deferred attach stashes the pair it resolved, and the session that
+	// materializes from the same options builds on it rather than resolving
+	// again. Fresh creation only; a resume ignores it.
+	Provider  provider.Provider
+	ModelName string
 }
 
 // OpenWithOptions returns or builds a session with explicit creation options.
@@ -973,6 +985,7 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 	}
 	built, err := wiring.Build(cfg, wiring.Options{
 		Model: opts.Model, Resume: name, Cwd: cwd, Extract: true, NoTools: opts.NoTools,
+		Provider: opts.Provider, ModelName: opts.ModelName,
 		Bank: bank, Asker: asks,
 		ExtraTools: extraTools, ExtraClosers: extraClosers,
 	})
@@ -985,6 +998,15 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		// final here, so the closure needs no synchronization.
 		ag := built.Agent
 		mcpClient.OnToolsChanged(func(ts tools.Set) { ag.SetTools(ts) })
+	}
+	// An effort picked on the start page applies to the session's first turn.
+	// Quiet: no event, because nothing is streaming yet and the snapshot the
+	// creating client receives carries the setting.
+	if opts.Effort.Valid() && provider.SupportsReasoningEffort(built.Agent.Provider) {
+		levels := provider.ReasoningEffortLevelsForProvider(built.Agent.Provider, built.Model)
+		if len(levels) == 0 || containsReasoningEffort(levels, opts.Effort) {
+			_ = built.Agent.SetReasoningEffortQuiet(opts.Effort)
+		}
 	}
 	// These hooks used to exist only in the local TUI wiring. They belong to
 	// the agent runtime, so keeping them here preserves auto-poke and advisor
@@ -1075,6 +1097,135 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 
 	go sess.pump()
 	return sess, nil
+}
+
+// previewSnapshot is the reply to a deferred attach: the state the session
+// will have when its first prompt creates it, computed without creating
+// anything. An empty Session name is the marker that no session exists yet;
+// every client treats such a snapshot as the pre-session start page.
+//
+// The resolution is stashed on *opts (Provider, ModelName): the preview's
+// provider build is the session's provider, so the header cannot drift from
+// the runtime between the two, and nothing consumes a second build anywhere a
+// build order matters. A later call on already-stashed options reuses the
+// pair; a caller that changes the model must clear the stash first.
+//
+// Repo overrides and last_model are applied the way wiring.Build would, but
+// no session store is opened and no MCP servers are connected, so idling on
+// the start page costs nothing. A preview that cannot resolve a model reports
+// the shape it has; the failure repeats at the first prompt, where /model can
+// fix it.
+func (s *Server) previewSnapshot(opts *OpenOptions) *Snapshot {
+	s.mu.Lock()
+	var cfg *config.Config
+	if s.Cfg != nil {
+		cfg = s.Cfg.Clone()
+	}
+	s.mu.Unlock()
+	if cfg == nil {
+		return &Snapshot{}
+	}
+	cfg.AddDiscoveredCodex()
+	cwd := opts.Cwd
+	if cwd == "" {
+		cwd = s.Cwd
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	pc := agent.LoadProjectContext(cwd, config.ConfigDir())
+	if err := cfg.LoadRepoOverrides(pc.Root); err != nil {
+		fmt.Fprintln(os.Stderr, "evilcode:", err)
+	}
+	// The interactive client persists last_model on every pick; a preview that
+	// resolved from a stale in-memory value would show a model the first
+	// prompt would never run.
+	if cfg.Path != "" {
+		if fresh, loadErr := config.LoadFrom(cfg.Path); loadErr == nil && fresh.LastModel != "" {
+			cfg.LastModel = fresh.LastModel
+		}
+	}
+	// An already-stashed pair is reused verbatim: the preview runs the same
+	// provider the session will, and repeated previews never build again.
+	prov, modelName := opts.Provider, opts.ModelName
+	if prov == nil {
+		ref := opts.Model
+		usingLast := false
+		if ref == "" && cfg.LastModel != "" &&
+			os.Getenv(config.EnvModel) == "" && os.Getenv(config.EnvProvider) == "" {
+			ref = cfg.LastModel
+			usingLast = true
+		}
+		var err error
+		prov, modelName, err = cfg.Resolve(ref)
+		if err != nil && usingLast {
+			prov, modelName, err = cfg.Resolve("")
+		}
+		if err != nil {
+			return &Snapshot{Cwd: cwd}
+		}
+		// The stash is the materialization contract: this build is the
+		// session's provider, not a throwaway preview.
+		opts.Provider, opts.ModelName = prov, modelName
+	}
+	overrides := cfg.ModelOverrides(config.ModelRef(modelName, prov.Name()))
+	limits := config.ContextLimitsFor(prov, modelName, overrides.ContextWindow)
+	levels := provider.NormalizeReasoningEfforts(
+		provider.ReasoningEffortLevelsForProvider(prov, modelName))
+	levelNames := make([]string, 0, len(levels))
+	for _, level := range levels {
+		levelNames = append(levelNames, string(level))
+	}
+	effort := opts.Effort
+	if len(levels) > 0 && provider.SupportsReasoningEffort(prov) {
+		if !containsReasoningEffort(levels, effort) {
+			if configured := cfg.ReasoningEffortFor(config.ModelRef(modelName, prov.Name())); containsReasoningEffort(levels, configured) {
+				effort = configured
+			} else {
+				// Match Agent.ReasoningEffort: an unset agent runs the
+				// provider's default level, not the first one in its list.
+				effort = provider.DefaultReasoningEffort
+				if !containsReasoningEffort(levels, effort) {
+					effort = levels[0]
+				}
+			}
+		}
+	} else {
+		effort = ""
+	}
+	skills := tools.LoadSkills(tools.SkillDirs(pc.Root, config.ConfigDir()))
+	return &Snapshot{
+		Model:            modelName,
+		Provider:         prov.Name(),
+		Cwd:              cwd,
+		ReasoningEffort:  string(effort),
+		ReasoningEfforts: levelNames,
+		Vision:           overrides.Vision,
+		ContextWindow:    limits.ContextWindow,
+		Skills:           skills.Names(),
+	}
+}
+
+// previewModelEvent turns a model or effort pick made before the session
+// exists into the same EventModel a session-owned switch publishes, so the
+// attached TUI's mirror — header, context meter, persisted preference — moves
+// exactly as it would once a session exists.
+func (s *Server) previewModelEvent(opts *OpenOptions) *agent.Event {
+	snap := s.previewSnapshot(opts)
+	return &agent.Event{
+		Kind:     agent.EventModel,
+		Model:    snap.Model,
+		Provider: snap.Provider,
+		// Known even when empty: a model without effort levels legitimately
+		// clears the picker, and the empty effort must not be read as "unknown".
+		ReasoningEffortKnown: true,
+		ReasoningEffort:      provider.ReasoningEffort(snap.ReasoningEffort),
+		ReasoningEfforts:     snap.ReasoningEfforts,
+		Vision:               snap.Vision,
+		VisionKnown:          true,
+		ContextWindow:        snap.ContextWindow,
+		ContextWindowKnown:   snap.ContextWindow > 0,
+	}
 }
 
 // pump moves the agent's events into the ring and out to every subscriber. It
@@ -2257,6 +2408,11 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		sub  chan ServerMsg
 		done = make(chan struct{})
 
+		// pending holds a deferred attach's creation options: this connection
+		// registered for a session that does not exist yet, and its first
+		// input builds one from these options (§20).
+		pending *OpenOptions
+
 		// relayStop ends the current attachment's relay. Per subscription, not
 		// per connection: every attach used to start a relay and stop none, so
 		// a client switching sessions left one goroutine per switch blocked on
@@ -2315,6 +2471,45 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 	}
 
+	// attach switches this connection to opened: the previous subscription is
+	// dropped, the snapshot is sent before the replay, and the relay carries
+	// live frames until the next attach, a detach, or the connection ends.
+	attach := func(opened *Session, since int) {
+		stopRelay()
+		if sess != nil && sub != nil {
+			sess.unsubscribe(sub)
+		}
+		sess = opened
+		// Subscribe before replaying, so an event arriving mid-replay is
+		// queued rather than dropped into the gap between the two.
+		sub = sess.subscribe()
+		send(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot()})
+		// A fresh attach replays only the turn in flight: the snapshot
+		// already holds every completed message, so replaying their deltas
+		// too would draw the conversation twice. A reconnecting client
+		// names the last sequence it saw and gets the gap instead.
+		replay := sess.ring.SinceLastTurn()
+		if since > 0 {
+			replay, _ = sess.ring.Since(since)
+		}
+		for i := range replay {
+			send(ServerMsg{Kind: MsgEvent, Event: &replay[i]})
+		}
+		relayStop = make(chan struct{})
+		go func(sub chan ServerMsg, stop chan struct{}) {
+			for {
+				select {
+				case msg := <-sub:
+					send(msg)
+				case <-stop:
+					return
+				case <-done:
+					return
+				}
+			}
+		}(sub, relayStop)
+	}
+
 	sc := bufio.NewScanner(conn)
 	// 8 MiB matches MaxClientFrameBytes; a frame of exactly that size plus its
 	// newline would otherwise trip the scanner before the daemon could parse it.
@@ -2352,6 +2547,19 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			send(ServerMsg{Kind: MsgSessions, Sessions: s.Sessions()})
 
 		case MsgAttach:
+			if msg.Deferred && msg.Session == "" && sess == nil {
+				// A deferred attach registers this connection for a session
+				// that does not exist yet: the reply is a preview snapshot,
+				// and the session is built when this connection's first input
+				// arrives. Opening the TUI creates nothing until a prompt is
+				// actually submitted (§20).
+				pending = &OpenOptions{
+					Cwd: msg.Cwd, Model: msg.Model, NoTools: msg.NoTools,
+					Effort: provider.ReasoningEffort(msg.ReasoningEffort),
+				}
+				send(ServerMsg{Kind: MsgSnapshot, Snapshot: s.previewSnapshot(pending)})
+				continue
+			}
 			opened, err := s.OpenWithOptions(msg.Session, OpenOptions{
 				Cwd: msg.Cwd, Model: msg.Model, NoTools: msg.NoTools,
 			})
@@ -2359,41 +2567,23 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 				continue
 			}
-			stopRelay()
-			if sess != nil && sub != nil {
-				sess.unsubscribe(sub)
-			}
-			sess = opened
-			// Subscribe before replaying, so an event arriving mid-replay is
-			// queued rather than dropped into the gap between the two.
-			sub = sess.subscribe()
-			send(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot()})
-			// A fresh attach replays only the turn in flight: the snapshot
-			// already holds every completed message, so replaying their deltas
-			// too would draw the conversation twice. A reconnecting client
-			// names the last sequence it saw and gets the gap instead.
-			replay := sess.ring.SinceLastTurn()
-			if msg.Since > 0 {
-				replay, _ = sess.ring.Since(msg.Since)
-			}
-			for i := range replay {
-				send(ServerMsg{Kind: MsgEvent, Event: &replay[i]})
-			}
-			relayStop = make(chan struct{})
-			go func(sub chan ServerMsg, stop chan struct{}) {
-				for {
-					select {
-					case msg := <-sub:
-						send(msg)
-					case <-stop:
-						return
-					case <-done:
-						return
-					}
-				}
-			}(sub, relayStop)
+			pending = nil
+			attach(opened, msg.Since)
 
 		case MsgInput:
+			// A deferred connection's first prompt is what creates its
+			// session; the prompt then runs in the freshly built one.
+			if sess == nil && pending != nil {
+				opened, err := s.OpenWithOptions("", *pending)
+				if err != nil {
+					// Creation failed but the options survive: /model can fix
+					// the cause and the next prompt tries again.
+					send(ServerMsg{Kind: MsgError, Err: err.Error()})
+					continue
+				}
+				pending = nil
+				attach(opened, 0)
+			}
 			if sess == nil {
 				send(ServerMsg{Kind: MsgError, Err: "input before attach"})
 				continue
@@ -2402,7 +2592,12 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 		case MsgInterrupt:
 			if sess == nil {
-				send(ServerMsg{Kind: MsgError, Err: "interrupt before attach"})
+				// Nothing can be in flight before the session exists, and a
+				// deferred connection has no session until its first prompt,
+				// so an interrupt is a no-op rather than an error.
+				if pending == nil {
+					send(ServerMsg{Kind: MsgError, Err: "interrupt before attach"})
+				}
 				continue
 			}
 			sess.Interrupt(msg.Text, msg.Urgent)
@@ -2418,6 +2613,24 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 		case MsgModel:
 			if sess == nil {
+				// A model picked on the start page, before the session exists,
+				// becomes the model the session is created with. The reply is
+				// the EventModel a session-owned switch would publish, so the
+				// picker's mirror moves and the pick persists.
+				if pending != nil {
+					if msg.Model != "" {
+						pending.Model = msg.Model
+						// A different model is a different provider: drop the
+						// stash so the next preview re-resolves the pair.
+						pending.Provider = nil
+						pending.ModelName = ""
+					}
+					if msg.ReasoningEffort != "" {
+						pending.Effort = provider.ReasoningEffort(msg.ReasoningEffort)
+					}
+					send(ServerMsg{Kind: MsgEvent, Event: s.previewModelEvent(pending)})
+					continue
+				}
 				send(ServerMsg{Kind: MsgError, Err: "model switch before attach"})
 				continue
 			}
@@ -2427,7 +2640,11 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 		case MsgCommand:
 			if sess == nil {
-				send(ServerMsg{Kind: MsgError, Err: "command before attach"})
+				if pending != nil {
+					send(ServerMsg{Kind: MsgError, Err: "no session yet: send a prompt to start one"})
+				} else {
+					send(ServerMsg{Kind: MsgError, Err: "command before attach"})
+				}
 				continue
 			}
 			if err := sess.Command(msg.Text, msg.Arg, msg.Secret); err != nil {
@@ -2436,6 +2653,27 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 		case MsgReasoningEffort:
 			if sess == nil {
+				if pending != nil {
+					// Validate against the previewed model, so an unsupported
+					// pick is refused now instead of silently falling back to
+					// the model's default at creation.
+					effort := provider.ReasoningEffort(msg.ReasoningEffort)
+					levels := s.previewSnapshot(pending).ReasoningEfforts
+					supported := make([]provider.ReasoningEffort, 0, len(levels))
+					for _, raw := range levels {
+						if parsed, ok := provider.ParseReasoningEffort(raw); ok {
+							supported = append(supported, parsed)
+						}
+					}
+					if len(supported) == 0 || !containsReasoningEffort(supported, effort) {
+						send(ServerMsg{Kind: MsgError, Err: fmt.Sprintf(
+							"reasoning effort %q is not supported by %s", effort, pending.Model)})
+						continue
+					}
+					pending.Effort = effort
+					send(ServerMsg{Kind: MsgEvent, Event: s.previewModelEvent(pending)})
+					continue
+				}
 				send(ServerMsg{Kind: MsgError, Err: "reasoning effort before attach"})
 				continue
 			}
