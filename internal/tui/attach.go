@@ -17,10 +17,10 @@ import (
 // Attachment is an image staged for the next message (plan.md §6.6).
 //
 // The bytes are held rather than the path: a clipboard image has no path at all,
-// and a file can change between attaching and sending. They are dropped after
-// the turn, and deliberately never written to the session log — one JSONL line
-// per message against a 16 MB scanner limit means a couple of images would
-// silently truncate the entire replay from that point on.
+// and a file can change between attaching and sending. The session store writes
+// committed attachments as content-addressed blobs beside the log rather than
+// inline, so a couple of images cannot exceed the JSONL record limit or make a
+// later replay unreadable.
 type Attachment struct {
 	Placeholder string
 	MIME        string

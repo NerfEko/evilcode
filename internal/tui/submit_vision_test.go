@@ -53,7 +53,7 @@ func TestSubmitProceedsWithVisionEnabled(t *testing.T) {
 	if len(m.attachments) != 0 {
 		t.Errorf("attachments = %d, want cleared after take", len(m.attachments))
 	}
-	if len(m.blocks) != 1 || m.blocks[0].Kind != BlockUser {
-		t.Errorf("blocks = %+v, want the user block", m.blocks)
+	if len(m.blocks) != 2 || m.blocks[0].Kind != BlockUser || m.blocks[1].Kind != BlockImage {
+		t.Errorf("blocks = %+v, want the user block followed by its image", m.blocks)
 	}
 }

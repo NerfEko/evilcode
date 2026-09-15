@@ -256,7 +256,12 @@ func TestWebAuthMutatingVerbsRequireSameOrigin(t *testing.T) {
 
 func TestWebAuthAcceptsHTTPSForwardedOrigin(t *testing.T) {
 	tok := strings.Repeat("ab", 32)
-	srv := authTestServer(t, tok, "127.0.0.1:7749")
+	a := &webAuth{
+		token: tok, addr: "127.0.0.1:7749",
+		requireAuth: true, trustForwarded: true,
+	}
+	srv := httptest.NewServer(a.wrap(stubMux()))
+	t.Cleanup(srv.Close)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/input", strings.NewReader(`{}`))
 	req.Host = "gentoo.tail9da06.ts.net"
 	req.AddCookie(&http.Cookie{Name: webCookieName, Value: tok})
@@ -270,6 +275,25 @@ func TestWebAuthAcceptsHTTPSForwardedOrigin(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("HTTPS forwarded same-origin POST: status %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestWebAuthRejectsUntrustedForwardedHost(t *testing.T) {
+	tok := strings.Repeat("ab", 32)
+	srv := authTestServer(t, tok, "127.0.0.1:7749")
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/input", strings.NewReader(`{}`))
+	req.Host = "attacker.example:7749"
+	req.AddCookie(&http.Cookie{Name: webCookieName, Value: tok})
+	req.Header.Set("X-Forwarded-Host", "attacker.example:7749")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Origin", "https://attacker.example:7749")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("untrusted forwarded Host POST: status %d, want 403", resp.StatusCode)
 	}
 }
 

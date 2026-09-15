@@ -307,9 +307,9 @@ function calloutFor(err) {
   return box;
 }
 
-// openNewSessionSheet is the ＋ New session action (§9): an optional name, the
-// workspace menu from GET /api/workspaces (server-side allowlist, §4), and
-// POST /api/sessions. Success navigates to the new session's chat.
+// openNewSessionSheet is the ＋ New session action (§9): a blank name creates a
+// session, while an existing name reopens one. The workspace menu comes from
+// GET /api/workspaces (server-side allowlist, §4), and success opens its chat.
 export function openNewSessionSheet({ onCreated }) {
   openSheet({
     title: "New session",
@@ -318,10 +318,10 @@ export function openNewSessionSheet({ onCreated }) {
       const name = el("input");
       name.type = "text";
       name.name = "name";
-      name.placeholder = "chosen for you";
+      name.placeholder = "leave blank to create";
       name.autocomplete = "off";
-      name.setAttribute("aria-label", "Session name (optional)");
-      const nameLabel = el("label", undefined, "Name");
+      name.setAttribute("aria-label", "Existing session name (optional)");
+      const nameLabel = el("label", undefined, "Existing session");
       nameLabel.appendChild(name);
       form.appendChild(nameLabel);
 
@@ -332,7 +332,7 @@ export function openNewSessionSheet({ onCreated }) {
       wsLabel.appendChild(workspace);
       form.appendChild(wsLabel);
 
-      const note = el("p", "sheet-note", "The daemon only creates sessions in the workspaces it is configured for.");
+      const note = el("p", "sheet-note", "Leave blank to create a new session; enter an existing name to reopen it.");
       form.appendChild(note);
 
       const submit = el("button", "btn btn--primary", "Create session");

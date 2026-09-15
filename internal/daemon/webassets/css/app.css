@@ -230,14 +230,14 @@ body {
   align-items: start;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   color: inherit;
   cursor: pointer;
   display: grid;
   font: inherit;
   gap: 0.1rem 0.5rem;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  padding: 0.5rem 0.6rem;
+  padding: 0.55rem 0.6rem;
   text-align: left;
   width: 100%;
 }
@@ -563,11 +563,10 @@ label {
 
 .chat-head {
   align-items: baseline;
-  border-bottom: 1px solid var(--border);
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
-  padding: 0.9rem 0.25rem;
+  padding: 0.9rem 0.25rem 0.7rem;
 }
 
 .chat-title {
@@ -581,24 +580,28 @@ label {
   color: var(--dim);
   font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-scroll {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 1rem 0.25rem 2rem;
+  padding: 0.5rem 0.25rem 1.5rem;
   position: relative;
+  scrollbar-gutter: stable;
 }
 
 /* ---- P6.1/P6.2/P6.5: the composer -------------------------------------- */
 
 .composer {
-  border-top: 1px solid var(--border);
-  padding: 0.6rem 0.85rem calc(0.6rem + env(safe-area-inset-bottom));
+  background: linear-gradient(to top, var(--prose-code-bg) 70%, transparent);
+  border-top: 0;
   display: grid;
-  gap: 0.45rem;
-  background: var(--user-bg);
+  gap: 0.4rem;
+  padding: 0.9rem 1.5rem calc(0.9rem + env(safe-area-inset-bottom));
 }
 
 .composer[hidden] {
@@ -606,28 +609,38 @@ label {
 }
 
 .composer-row {
-  display: flex;
   align-items: flex-end;
+  background: var(--user-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+  display: flex;
   gap: 0.45rem;
+  margin: 0 auto;
+  max-width: 46rem;
+  padding: 0.4rem 0.45rem 0.4rem 0.55rem;
+  width: 100%;
+}
+
+.composer-row:focus-within {
+  border-color: var(--accent);
 }
 
 .composer-text {
+  background: transparent;
+  border: 0;
+  color: var(--ai-text);
   flex: 1;
-  resize: none;
-  max-height: 160px;
-  min-height: 2.6rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--prose-code-bg);
-  color: var(--fg, inherit);
-  padding: 0.55rem 0.7rem;
   font: inherit;
   line-height: 1.45;
+  max-height: 160px;
+  min-height: 2.4rem;
+  padding: 0.35rem 0.2rem;
+  resize: none;
 }
 
 .composer-text:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: none;
 }
 
 .composer-secret {
@@ -635,7 +648,7 @@ label {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--prose-code-bg);
-  color: var(--fg, inherit);
+  color: var(--ai-text);
   padding: 0.5rem 0.6rem;
   font: inherit;
 }
@@ -719,9 +732,14 @@ label {
 .ask-dock {
   display: grid;
   gap: 0.45rem;
-  padding: 0.35rem 0.85rem;
-  border-top: 1px solid var(--border);
+  padding: 0;
+  border-top: 0;
   background: var(--user-bg);
+}
+
+.ask-dock:not(:empty) {
+  border-top: 1px solid var(--border);
+  padding: 0.35rem 0.85rem;
 }
 
 .ask-dock[hidden] {
@@ -840,23 +858,26 @@ label.ask-option {
 }
 
 .msg {
-  border-radius: 10px;
-  padding: 0.6rem 0.85rem;
+  border-radius: 12px;
   /* Long transcripts must not paint what the reader cannot see (§8). */
   content-visibility: auto;
   contain-intrinsic-size: auto 72px;
+  padding: 0.55rem 0.9rem 0.6rem;
 }
 
 .msg--user {
-  background: var(--user-bg);
+  background: var(--selection-bg);
   border: 1px solid var(--border);
+  margin-left: 2.5rem;
+}
+
+.msg--user .msg-meta {
+  color: var(--user);
 }
 
 .msg--ai {
-  background: transparent;
-  border: 1px solid transparent;
-  padding-left: 0;
-  padding-right: 0;
+  background: var(--user-bg);
+  border: 1px solid var(--border);
 }
 
 .msg--system {
@@ -871,13 +892,21 @@ label.ask-option {
   background: var(--prose-code-bg);
   border: 1px solid var(--border);
   border-left: 3px solid var(--tool);
+  font-size: 13px;
+  margin-right: 2.5rem;
 }
 
 .msg-meta {
+  align-items: baseline;
   color: var(--dim);
+  display: flex;
   font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  margin-bottom: 0.2rem;
+  font-size: 10px;
+  gap: 0.5rem;
+  justify-content: space-between;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
 }
 
 .msg-body {
@@ -938,6 +967,81 @@ label.ask-option {
   margin-top: 0.35rem;
 }
 
+/* ---- markdown in messages --------------------------------------------------- */
+
+.msg-body .md-heading {
+  color: var(--prose-h2);
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 0.9rem 0 0.35rem;
+}
+
+.msg-body .md-heading:first-child { margin-top: 0; }
+.msg-body h1.md-heading { font-size: 1.2em; }
+.msg-body h2.md-heading { font-size: 1.12em; }
+.msg-body h3.md-heading { font-size: 1.05em; }
+.msg-body h4.md-heading,
+.msg-body h5.md-heading,
+.msg-body h6.md-heading { font-size: 1em; }
+
+.msg-body .md-paragraph {
+  margin: 0.35rem 0;
+}
+
+.msg-body .md-list {
+  margin: 0.35rem 0;
+  padding-left: 1.35rem;
+}
+
+.msg-body .md-list li {
+  margin: 0.18rem 0;
+}
+
+.msg-body .md-blockquote {
+  border-left: 2px solid var(--border);
+  color: var(--prose-dim);
+  margin: 0.4rem 0;
+  padding-left: 0.7rem;
+}
+
+.msg-body .md-link {
+  color: var(--prose-link);
+  text-decoration-color: color-mix(in srgb, var(--prose-link) 45%, transparent);
+  text-underline-offset: 2px;
+}
+
+.msg-body .md-strong { color: var(--prose-bold-text); }
+.msg-body .md-code-span {
+  background: var(--prose-code-bg);
+  border-radius: 5px;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 0.08em 0.35em;
+}
+
+.msg-body .md-code-block {
+  background: var(--prose-code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 0.45rem 0;
+  overflow-x: auto;
+  padding: 0.6rem 0.75rem;
+}
+
+.msg-body .md-code-block code {
+  background: none;
+  padding: 0;
+}
+
+.msg-body .md-rule {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0.7rem 0;
+}
+
 .tool-output-preview {
   max-height: 10rem;
   overflow: hidden;
@@ -965,10 +1069,6 @@ label.ask-option {
   50% { opacity: 0; }
 }
 
-.tool-card {
-  font-size: 13px;
-}
-
 .tool-head {
   align-items: center;
   display: flex;
@@ -988,7 +1088,7 @@ label.ask-option {
 }
 
 .tool-status--error {
-  color: var(--danger);
+  color: var(--error);
 }
 
 .tool-field {
@@ -1027,7 +1127,7 @@ label.ask-option {
   border-radius: 999px;
   bottom: 0.75rem;
   box-shadow: 0 4px 18px rgb(0 0 0 / 0.3);
-  color: var(--background);
+  color: var(--ai-text);
   cursor: pointer;
   display: block;
   font-size: 12px;

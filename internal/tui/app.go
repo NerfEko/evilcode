@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -479,9 +478,9 @@ type Model struct {
 	// if they are handed to it inside a view. needsRepaint asks for a full
 	// redraw, which is the only way to take a sixel raster off the screen —
 	// there is no delete-by-id outside the kitty protocol. imageWidth is the
-	// chat width the current image boxes were computed against. frameWidth and
-	// frameHeight are the terminal geometry those pictures were drawn into:
-	// a font-size change rescales the cell grid underneath them while the
+	// effective text width the current image boxes were computed against.
+	// frameWidth and frameHeight are the terminal geometry those pictures were
+	// drawn into: a font-size change rescales the cell grid underneath them while
 	// placements here are in cells and can come out identical.
 	rawOut       string
 	needsRepaint bool
@@ -1635,19 +1634,51 @@ func (m *Model) applyEvent(e agent.Event) {
 		m.followIfPinned()
 
 	case agent.EventToolStart:
+		m.finishStreaming()
+		if e.Call == nil {
+			m.status.Phase = PhaseIdle
+			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: "tool call missing its arguments"})
+			m.followIfPinned()
+			break
+		}
 		m.status.Phase = PhaseRunningTool
 		m.status.ToolName = e.Call.Name
-		// A tool call closes the streaming text block; anything after it is a
-		// new message.
-		m.finishStreaming()
+		m.status.ToolIntent = e.Intent
+		// Create the activity row at start, not at result. This keeps the exact
+		// command visible while a slow shell process is still cancellable with
+		// Esc, and lets a result update the same row instead of duplicating it.
+		b := Block{
+			Kind:        BlockTool,
+			ToolCallID:  e.Call.ID,
+			ToolName:    e.Call.Name,
+			ToolTarget:  toolTarget(e.Call.Args),
+			ToolPath:    toolPath(e.Call.Args),
+			ToolIntent:  e.Intent,
+			ToolRunning: true,
+		}
+		if b.ToolName == "bash" {
+			b.ToolCommand = toolCommand(e.Call.Args)
+		}
+		if b.ToolPath != "" {
+			b.ToolPathExists = toolPathExists(m.cwd, b.ToolPath)
+			b.ToolPathMarkdown = b.ToolPathExists && isMarkdown(b.ToolPath)
+		}
+		m.blocks = append(m.blocks, b)
+		m.followIfPinned()
 
 	case agent.EventToolResult:
 		m.status.Phase = PhaseStreaming
+		if e.Call == nil {
+			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: "tool result missing its call"})
+			m.followIfPinned()
+			break
+		}
 		if m.overnight.Active {
 			m.overnight.AddToolCheck(overnightToolCheck(e))
 		}
 		b := Block{
 			Kind:       BlockTool,
+			ToolCallID: e.Call.ID,
 			ToolName:   e.Call.Name,
 			ToolTarget: toolTarget(e.Call.Args),
 			ToolPath:   toolPath(e.Call.Args),
@@ -1657,12 +1688,8 @@ func (m *Model) applyEvent(e agent.Event) {
 			Diff:       e.Diff,
 			Repairs:    e.Repairs,
 		}
-		if b.ToolPath != "" {
-			b.ToolPathExists = toolPathExists(m.cwd, b.ToolPath)
-			b.ToolPathMarkdown = b.ToolPathExists && isMarkdown(b.ToolPath)
-		}
 		if b.ToolName == "bash" {
-			b.ToolCommand = truncateToolCommand(toolCommand(e.Call.Args))
+			b.ToolCommand = toolCommand(e.Call.Args)
 			b.ToolOutput = tools.Truncate(e.Output)
 		}
 		if e.Intent != "" && !strings.Contains(e.Intent, b.ToolTarget) {
@@ -1706,9 +1733,25 @@ func (m *Model) applyEvent(e agent.Event) {
 				m.panelScrollPending = 0
 			}
 		}
-		m.blocks = append(m.blocks, b)
+		if idx := m.runningToolIndex(e.Call); idx >= 0 {
+			// The result completes the row created by ToolStart. Replacing the
+			// block in place preserves transcript order for concurrent reads and
+			// avoids a start/result duplicate.
+			if b.ToolCommand == "" {
+				b.ToolCommand = m.blocks[idx].ToolCommand
+			}
+			if b.ToolIntent == "" {
+				b.ToolIntent = m.blocks[idx].ToolIntent
+			}
+			m.blocks[idx] = b
+			m.blocks[idx].dropCache()
+		} else {
+			// Replayed or malformed streams may begin at a result. Keep that
+			// result visible rather than requiring a preceding start event.
+			m.blocks = append(m.blocks, b)
+		}
 		if e.IsError() && !e.Held {
-			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrText})
+			m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrMessage()})
 		}
 		// A `read` on an image attaches the bytes for the model's vision path
 		// (done in the agent) and renders inline here. The block is always kept
@@ -1717,14 +1760,21 @@ func (m *Model) applyEvent(e agent.Event) {
 		// turned on later; only the kitty transmission is gated on images being
 		// on. Over the terminal transmit cap the block keeps no PNG, so it
 		// renders as a placeholder naming the file rather than stalling the pty.
-		if len(e.Images) > 0 {
-			width := m.chatWidth()
-			for _, img := range e.Images {
-				cols, rows := imageBox(img, width)
-				m.nextImageID++
-				ib := loadImageBytes(img, b.ToolPath, cols, rows)
-				ib.ID = m.nextImageID
-				m.blocks = append(m.blocks, Block{Kind: BlockImage, Image: ib})
+		path := b.ToolPath
+		if path == "" {
+			path = b.ToolName + " image"
+		}
+		m.appendImageBlocks(e.Images, 0, path)
+		// A batch can have several tool calls in flight. Keep the status on the
+		// tool phase until the last one completes instead of flashing streaming
+		// between results.
+		m.status.ToolName, m.status.ToolIntent = "", ""
+		for i := len(m.blocks) - 1; i >= 0; i-- {
+			if m.blocks[i].Kind == BlockTool && m.blocks[i].ToolRunning {
+				m.status.Phase = PhaseRunningTool
+				m.status.ToolName = m.blocks[i].ToolName
+				m.status.ToolIntent = m.blocks[i].ToolIntent
+				break
 			}
 		}
 		// A todo write re-arms the poke cycle and shows what changed. The
@@ -1922,7 +1972,7 @@ func (m *Model) applyEvent(e agent.Event) {
 
 	case agent.EventError:
 		m.finishStreaming()
-		m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrText})
+		m.blocks = append(m.blocks, Block{Kind: BlockError, Text: e.ErrMessage()})
 		m.followIfPinned()
 
 	case agent.EventTurnEnd:
@@ -1953,7 +2003,6 @@ func (m *Model) applyEvent(e agent.Event) {
 		// called twice, which counted every turn twice against the cap and
 		// could start two continuations on one agent.
 		m.stepOvernight(spent)
-
 		// A harness prompt that was queued behind an interrupted turn starts
 		// here, once that turn has actually ended.
 		if m.queuedHidden != "" && !m.processing {
@@ -1962,6 +2011,30 @@ func (m *Model) applyEvent(e agent.Event) {
 			m.submitHidden(prompt)
 		}
 	}
+}
+
+// runningToolIndex finds the in-flight row for a result. IDs are authoritative;
+// the name fallback keeps older providers that omit call IDs usable.
+func (m *Model) runningToolIndex(call *provider.ToolCall) int {
+	if call == nil {
+		return -1
+	}
+	if call.ID != "" {
+		for i := len(m.blocks) - 1; i >= 0; i-- {
+			b := &m.blocks[i]
+			if b.Kind == BlockTool && b.ToolRunning && b.ToolCallID == call.ID {
+				return i
+			}
+		}
+		return -1
+	}
+	for i := len(m.blocks) - 1; i >= 0; i-- {
+		b := &m.blocks[i]
+		if b.Kind == BlockTool && b.ToolRunning && b.ToolName == call.Name {
+			return i
+		}
+	}
+	return -1
 }
 
 // appendStreamText keeps the public Block.Text view current while using an
@@ -2497,6 +2570,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "pgup":
 		m.scroll.Up(PageLines, m.contentHeight(), m.transcriptHeight())
+		m.overscroll.Cancel()
 		return m, nil
 
 	case "pgdown":
@@ -2506,6 +2580,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "up":
 		if m.editor.Text == "" {
 			m.scroll.Up(1, m.contentHeight(), m.transcriptHeight())
+			m.overscroll.Cancel()
 		} else {
 			m.editor.Up()
 		}
@@ -2640,10 +2715,12 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 	switch a {
 	case ActionScrollUp:
 		m.scroll.Up(1, m.contentHeight(), m.transcriptHeight())
+		m.overscroll.Cancel()
 	case ActionScrollDown:
 		m.scroll.Down(1)
 	case ActionPageUp:
 		m.scroll.Up(PageLines, m.contentHeight(), m.transcriptHeight())
+		m.overscroll.Cancel()
 	case ActionPageDown:
 		m.scroll.Down(PageLines)
 	case ActionPrevPrompt:
@@ -2784,6 +2861,9 @@ func (m *Model) jumpPrompt(dir int) {
 	rows := m.userPromptRows()
 	if len(rows) == 0 {
 		return
+	}
+	if dir < 0 {
+		m.overscroll.Cancel()
 	}
 
 	viewport := m.transcriptHeight()
@@ -4237,6 +4317,7 @@ func (m *Model) submit(text string, wpm int) {
 		m.dispatchTurn(text, wpm, true)
 		return
 	}
+	userBlock := len(m.blocks)
 	m.blocks = append(m.blocks, Block{
 		Kind:      BlockUser,
 		Text:      text,
@@ -4245,10 +4326,17 @@ func (m *Model) submit(text string, wpm int) {
 	})
 	m.promptCount++
 	m.renumberPrompts()
+	for _, attachment := range m.attachments {
+		path := attachment.Source
+		if path == "" {
+			path = "attached image"
+		}
+		m.appendImageBlocks([][]byte{attachment.Bytes}, 1, path)
+	}
 	if !Deterministic() {
 		// The flourish is decorative, so it is frozen in test mode along with
 		// everything else animated (invariant 5).
-		m.entryAnim = NewEntryAnimation(len(m.blocks) - 1)
+		m.entryAnim = NewEntryAnimation(userBlock)
 	}
 	if m.prompts != nil {
 		_ = m.prompts.Add(text)
@@ -4271,14 +4359,22 @@ func (m *Model) rollbackDispatch(f dispatchFailureMsg) {
 				break
 			}
 		}
-	} else if n := len(m.blocks); n > 0 {
-		if b := m.blocks[n-1]; b.Kind == BlockUser && b.Text == f.text && b.Number == m.promptCount {
-			m.blocks = m.blocks[:n-1]
-			m.promptCount--
-			m.renumberPrompts()
-			m.invalidateTranscriptCache()
-			if _, active := m.entryAnim.Progress(time.Now()); active && m.entryAnim.Block >= n-1 {
-				m.entryAnim = EntryAnimation{Block: -1}
+	} else {
+		end := len(m.blocks)
+		for end > 0 && m.blocks[end-1].Kind == BlockImage {
+			end--
+		}
+		prompt := end - 1
+		if prompt >= 0 {
+			b := m.blocks[prompt]
+			if b.Kind == BlockUser && b.Text == f.text && b.Number == m.promptCount {
+				m.blocks = m.blocks[:prompt]
+				m.promptCount--
+				m.renumberPrompts()
+				m.invalidateTranscriptCache()
+				if _, active := m.entryAnim.Progress(time.Now()); active && m.entryAnim.Block >= prompt {
+					m.entryAnim = EntryAnimation{Block: -1}
+				}
 			}
 		}
 	}
@@ -4947,12 +5043,13 @@ func (m *Model) relayoutImages(width int) {
 	if width <= 0 {
 		return
 	}
+	maxWidth := imageBoxWidth(width, m.centered, m.scrollbarOn)
 	for i := range m.blocks {
 		b := &m.blocks[i]
 		if b.Kind != BlockImage || len(b.Image.PNG) == 0 {
 			continue
 		}
-		cols, rows := imageBox(b.Image.PNG, width)
+		cols, rows := imageBox(b.Image.PNG, maxWidth)
 		if cols == b.Image.Cols && rows == b.Image.Rows {
 			continue
 		}
@@ -4976,6 +5073,8 @@ func (m *Model) composerState() ComposerState {
 		CtxMax:          m.contextMax(),
 		Session:         m.header.SessionName,
 		Processing:      m.processing,
+		SkillMode:       false,
+		NewSession:      m.startActive,
 		PaletteOpen:     m.paletteOpen(),
 		Masked:          m.loginMode,
 	}
@@ -4998,9 +5097,9 @@ func (m *Model) View() tea.View {
 
 	// One place to catch every reason the chat width moves — a resize, the side
 	// pane, centering — rather than a hook per cause.
-	if w := m.chatWidth(); w != m.imageWidth {
+	if w := imageBoxWidth(m.chatWidth(), m.centered, m.scrollbarOn); w != m.imageWidth {
 		m.imageWidth = w
-		m.relayoutImages(w)
+		m.relayoutImages(m.chatWidth())
 	}
 
 	// A terminal geometry change — a window resize, a font-size change — moves
@@ -5826,10 +5925,10 @@ func toolArg(raw json.RawMessage, key string) string {
 }
 
 // toolTarget pulls the one argument worth showing beside a tool name. The
-// display target is intentionally short; ToolPath and ToolCommand retain the
-// bounded full values for quick views.
+// command/path values themselves are retained in their dedicated fields so
+// inspection does not lose data.
 func toolTarget(raw json.RawMessage) string {
-	for _, key := range []string{"path", "pattern", "cmd", "query"} {
+	for _, key := range []string{"path", "file_path", "pattern", "cmd", "command", "query"} {
 		if v := toolArg(raw, key); v != "" {
 			return truncateCells(core.SanitizeTerminal(strings.ReplaceAll(v, "\n", " ")), 60)
 		}
@@ -5837,8 +5936,19 @@ func toolTarget(raw json.RawMessage) string {
 	return ""
 }
 
-func toolPath(raw json.RawMessage) string    { return strings.TrimSpace(toolArg(raw, "path")) }
-func toolCommand(raw json.RawMessage) string { return toolArg(raw, "cmd") }
+func toolPath(raw json.RawMessage) string {
+	if path := toolArg(raw, "path"); path != "" {
+		return strings.TrimSpace(path)
+	}
+	return strings.TrimSpace(toolArg(raw, "file_path"))
+}
+
+func toolCommand(raw json.RawMessage) string {
+	if command := toolArg(raw, "cmd"); command != "" {
+		return command
+	}
+	return toolArg(raw, "command")
+}
 
 func resolveToolPath(root, path string) string {
 	if filepath.IsAbs(path) {
@@ -5853,20 +5963,6 @@ func resolveToolPath(root, path string) string {
 func toolPathExists(root, path string) bool {
 	info, err := os.Stat(resolveToolPath(root, path))
 	return err == nil && info.Mode().IsRegular()
-}
-
-// truncateToolCommand keeps an unusually large shell script from becoming a
-// transcript retention leak while preserving the useful beginning verbatim.
-func truncateToolCommand(s string) string {
-	if len(s) <= tools.MaxResultBytes {
-		return s
-	}
-	const marker = "\n\n… command truncated …\n\n"
-	keep := tools.MaxResultBytes - len(marker)
-	for keep > 0 && !utf8.RuneStart(s[keep]) {
-		keep--
-	}
-	return s[:keep] + marker
 }
 
 // toggleReasoningAt expands or collapses a finished thinking trace under a

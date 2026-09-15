@@ -121,9 +121,9 @@ type Event struct {
 	NoWrite bool `json:"no_write,omitempty"`
 
 	// Repairs names the argument rewrites RunOne applied (an aliased field, a
-	// string-wrapped number coerced). Silent to the model, shown in the tool row
-	// so a quietly rewritten argument is findable later (§1.4). Serialized so a
-	// daemon-attached TUI and a replayed session show the same rows as local.
+	// string-wrapped number coerced). Retained as metadata for diagnostics and
+	// model feedback; normal human-facing renderers may hide it. Serialized so
+	// a daemon-attached TUI and a replayed session preserve the same metadata.
 	Repairs []string `json:"repairs,omitempty"`
 
 	// Err is the in-process error. ErrText carries it across a socket, where a

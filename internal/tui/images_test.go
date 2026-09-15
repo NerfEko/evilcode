@@ -202,11 +202,45 @@ func TestRelayoutImagesFollowsTheChatWidth(t *testing.T) {
 		Path: "wide.png", PNG: wide, Cols: 120, Rows: 30, ID: 1,
 	}}}
 	m.relayoutImages(40)
-	if got := m.blocks[0].Image.Cols; got != 40 {
-		t.Errorf("cols = %d after a resize to 40, want 40", got)
+	if got := m.blocks[0].Image.Cols; got != 39 {
+		t.Errorf("cols = %d after a resize to 40, want 39 text columns", got)
 	}
-	if got := m.blocks[0].Image.Rows; got != 10 {
-		t.Errorf("rows = %d, want 10 — the ratio the new width implies", got)
+	if got := m.blocks[0].Image.Rows; got != 9 {
+		t.Errorf("rows = %d, want 9 — the ratio the new width implies", got)
+	}
+}
+
+func TestRelayoutImagesLeavesScrollbarReserve(t *testing.T) {
+	m := NewModel(nil, HeaderState{SessionName: "s", Model: "m"})
+	m.scrollbarOn = true
+	m.blocks = []Block{{Kind: BlockImage, Image: ImageBlock{
+		PNG: pngOfSize(t, 4000, 2000), Cols: 120, Rows: 30, ID: 1,
+	}}}
+	m.relayoutImages(80)
+	if got, want := m.blocks[0].Image.Cols, 77; got != want {
+		t.Errorf("cols = %d with scrollbar, want %d", got, want)
+	}
+}
+
+func TestDiagramDrainUsesImageTextWidth(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "diagram.png")
+	if err := os.WriteFile(path, pngOfSize(t, 4000, 2000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewModel(nil, HeaderState{SessionName: "s", Model: "m"})
+	m.diagrams = map[string]string{}
+	m.width = 80
+	m.scrollbarOn = true
+	m.diagramInbox = make(chan *mermaidRendered, 1)
+	m.diagramInbox <- &mermaidRendered{Source: "graph TD", Path: path}
+
+	m.drainDiagrams()
+	if len(m.blocks) != 1 || m.blocks[0].Kind != BlockImage {
+		t.Fatalf("blocks = %#v, want one image block", m.blocks)
+	}
+	if got, want := m.blocks[0].Image.Cols, 77; got != want {
+		t.Errorf("diagram cols = %d with scrollbar, want %d", got, want)
 	}
 }
 

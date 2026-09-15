@@ -74,6 +74,35 @@ func TestCompactReplacesTheConversation(t *testing.T) {
 	}
 }
 
+func TestCompactCarriesForwardPriorSummary(t *testing.T) {
+	conv := compactableConversation()
+	const prior = "FACT_EXACT_731 means preserve the rollback checklist"
+	summaries := []string{prior, "newer work summary"}
+	var inputs []string
+	c := &Compactor{Summarize: func(_ context.Context, _, user string) (string, error) {
+		inputs = append(inputs, user)
+		return summaries[len(inputs)-1], nil
+	}}
+
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	conv.Append(
+		provider.Message{Role: provider.RoleUser, Content: "new work"},
+		provider.Message{Role: provider.RoleAssistant, Content: "done"},
+	)
+	if _, err := c.Compact(context.Background(), conv); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 2 || !strings.Contains(inputs[1], prior) {
+		t.Fatalf("second summary did not receive the prior summary: %#v", inputs)
+	}
+	joined := strings.Join(messageContents(conv.Messages()), "\n")
+	if !strings.Contains(joined, prior) || !strings.Contains(joined, summaries[1]) {
+		t.Fatalf("checkpoint lost prior or new summary: %q", joined)
+	}
+}
+
 func TestCompactDropsProviderStateFromTheCheckpointTail(t *testing.T) {
 	conv := compactableConversation()
 	conv.Append(

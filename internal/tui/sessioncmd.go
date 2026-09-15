@@ -281,20 +281,28 @@ func BlocksFromMessages(msgs []provider.Message, cwd string) []Block {
 			// system line (plan.md §12.4).
 			if todo.IsAutomated(msg.Content) {
 				out = append(out, Block{Kind: BlockNotice, Text: msg.Content})
+				out = append(out, messageImageBlocks(msg.Images, msg.ImageCount, "attached image")...)
 				continue
 			}
 			prompts++
 			out = append(out, Block{Kind: BlockUser, Text: msg.Content, Number: prompts})
+			out = append(out, messageImageBlocks(msg.Images, msg.ImageCount, "attached image")...)
 
 		case provider.RoleAssistant:
 			if strings.TrimSpace(msg.Content) != "" {
 				out = append(out, Block{Kind: BlockAssistant, Text: msg.Content})
 			}
+			out = append(out, messageImageBlocks(msg.Images, msg.ImageCount, "assistant image")...)
 
 		case provider.RoleTool:
 			b := Block{
-				Kind: BlockTool, ToolName: msg.ToolName, Held: msg.Held, Failed: msg.IsError && !msg.Held,
-				Repairs: msg.Repairs, Diff: msg.Diff,
+				Kind:       BlockTool,
+				ToolCallID: msg.ToolCallID,
+				ToolName:   msg.ToolName,
+				Held:       msg.Held,
+				Failed:     msg.IsError && !msg.Held,
+				Repairs:    msg.Repairs,
+				Diff:       msg.Diff,
 			}
 			if msg.Diff != "" {
 				b.HasDiff = true
@@ -319,19 +327,35 @@ func BlocksFromMessages(msgs []provider.Message, cwd string) []Block {
 					b.ToolPathMarkdown = b.ToolPathExists && isMarkdown(b.ToolPath)
 				}
 				if b.ToolName == "bash" {
-					b.ToolCommand = truncateToolCommand(toolCommand(call.Args))
+					b.ToolCommand = toolCommand(call.Args)
 					b.ToolOutput = tools.Truncate(msg.Content)
 					b.ToolTokens = len(msg.Content) / 4
 				}
 			}
 			out = append(out, b)
+			path := b.ToolPath
+			if path == "" {
+				path = b.ToolName + " image"
+			}
+			out = append(out, messageImageBlocks(msg.Images, msg.ImageCount, path)...)
 		}
 	}
+
 	return out
 }
 
 func (m *Model) rebuildFromMessages(msgs []provider.Message) {
+	m.clearDrawnImages()
+	m.nextImageID = 0
+	width := imageBoxWidth(m.chatWidth(), m.centered, m.scrollbarOn)
 	for _, b := range BlocksFromMessages(msgs, m.cwd) {
+		if b.Kind == BlockImage {
+			m.nextImageID++
+			b.Image.ID = m.nextImageID
+			if len(b.Image.PNG) > 0 {
+				b.Image.Cols, b.Image.Rows = imageBox(b.Image.PNG, width)
+			}
+		}
 		if b.Kind == BlockUser {
 			m.promptCount++
 			b.Number = m.promptCount
@@ -339,6 +363,7 @@ func (m *Model) rebuildFromMessages(msgs []provider.Message) {
 		m.blocks = append(m.blocks, b)
 	}
 	m.renumberPrompts()
+	m.invalidateTranscriptCache()
 }
 
 // RebuildFrom repopulates the transcript when resuming a session.

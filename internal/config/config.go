@@ -104,6 +104,12 @@ type WebUIConfig struct {
 	// complete trust boundary for this listener.
 	RequireAuth bool `toml:"require_auth"`
 
+	// TrustForwardedHeaders allows an HTTPS reverse proxy such as Tailscale
+	// Serve to identify the public origin with X-Forwarded-Host. Enable it only
+	// when the listener is reachable exclusively through that trusted proxy:
+	// direct clients can forge forwarded headers.
+	TrustForwardedHeaders bool `toml:"trust_forwarded_headers"`
+
 	// Addr is the HTTP bind address, host:port. Empty uses DefaultWebUIAddr.
 	// The default is loopback-only: the blessed remote path is a loopback bind
 	// reached through Tailscale, not a bind on a LAN interface.

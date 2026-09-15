@@ -140,3 +140,33 @@ func TestBlocksFromMessagesRebuildsToolRows(t *testing.T) {
 		t.Fatalf("edit row lost its diff: %+v", edit)
 	}
 }
+
+func TestBlocksFromMessagesRestoresAttachedImages(t *testing.T) {
+	png := pngOfSize(t, 96, 60)
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: "look", Images: [][]byte{png}, ImageCount: 2},
+		{Role: provider.RoleAssistant, Content: "done"},
+	}
+
+	blocks := BlocksFromMessages(msgs, "")
+	if len(blocks) != 4 || blocks[0].Kind != BlockUser ||
+		blocks[1].Kind != BlockImage || blocks[2].Kind != BlockImage ||
+		blocks[3].Kind != BlockAssistant {
+		t.Fatalf("blocks = %#v, want user, two images, assistant", blocks)
+	}
+	if len(blocks[1].Image.PNG) == 0 || len(blocks[2].Image.PNG) != 0 {
+		t.Fatalf("image bytes = %d, %d; want one renderable image and one placeholder",
+			len(blocks[1].Image.PNG), len(blocks[2].Image.PNG))
+	}
+
+	m := newTestModel(t)
+	m.RebuildFrom(msgs)
+	if m.blocks[1].Image.ID != 1 || m.blocks[2].Image.ID != 2 {
+		t.Fatalf("image ids = %d, %d; want stable 1, 2",
+			m.blocks[1].Image.ID, m.blocks[2].Image.ID)
+	}
+	if m.blocks[1].Image.Cols != 12 || m.blocks[1].Image.Rows != 3 {
+		t.Fatalf("image box = %dx%d; want 12x3",
+			m.blocks[1].Image.Cols, m.blocks[1].Image.Rows)
+	}
+}

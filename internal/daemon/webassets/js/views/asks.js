@@ -102,6 +102,10 @@ export function renderAsks(container, pending, answered, onAnswer) {
 // another client answered first: the card says so and the pending list
 // reconciles from the next snapshot/event.
 export async function answerAsk(name, ask, labels, card) {
+  if (card.dataset.answering === "true" || card.classList.contains("ask-card--answered")) {
+    return { ok: false, duplicate: true };
+  }
+  card.dataset.answering = "true";
   const buttons = card.querySelectorAll("button");
   for (const b of buttons) b.disabled = true;
   try {
@@ -118,13 +122,13 @@ export async function answerAsk(name, ask, labels, card) {
     }
     return { ok: true, labels };
   } catch (err) {
+    delete card.dataset.answering;
     card.classList.add("ask-card--stale");
     const body = card.querySelector(".card-body");
     if (body) {
       body.appendChild(el("p", "ask-answered-labels ask-stale", String(err.message ?? err)));
     }
-    return { ok: false, error: err };
-  } finally {
     for (const b of buttons) b.disabled = false;
+    return { ok: false, error: err };
   }
 }

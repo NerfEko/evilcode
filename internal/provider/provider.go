@@ -282,8 +282,8 @@ type Message struct {
 
 	// Repairs names the argument rewrites a tool call received before its
 	// strict decode (an aliased field, a string-wrapped number coerced). It is
-	// display metadata: it lives on the message so a resumed or attached
-	// session's tool rows show the same repair suffix as the live one did.
+	// retained for diagnostics and model feedback; normal human-facing
+	// renderers may hide it.
 	Repairs []string `json:"repairs,omitempty"`
 
 	// Diff is the unified diff a write/edit produced. Display metadata, kept

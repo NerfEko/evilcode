@@ -56,6 +56,7 @@ type Block struct {
 	Decay int
 
 	// Tool row fields (plan.md §9.5).
+	ToolCallID  string
 	ToolName    string
 	ToolTarget  string
 	ToolIntent  string
@@ -63,8 +64,9 @@ type Block struct {
 	ToolCommand string
 	ToolOutput  string
 	ToolTokens  int
-	// Repairs names argument rewrites RunOne applied (alias, string→number).
-	// Shown dim in the tool row so a quietly rewritten argument is findable.
+	ToolRunning bool
+	// Repairs are retained for diagnostics and model feedback, but deliberately
+	// stay out of the normal human-facing row.
 	Repairs          []string
 	Added            int
 	Removed          int
@@ -158,22 +160,22 @@ func (b *Block) keep(c blockRender) {
 // unchanged strings compare without allocating; the old fmt.Sprintf key copied
 // every byte of a long reply on every repaint, even when the cache hit.
 type blockCacheKey struct {
-	kind, number, typingWPM                                            int
-	promptColor                                                        color.RGBA
-	toolTokens, added, removed                                         int
-	text, toolName, toolTarget, toolIntent                             string
-	toolPath, toolCommand, toolOutput                                  string
-	diff                                                               string
-	repairs                                                            string
-	hasDiff, failed, held, collapsed, toolPathExists, toolPathMarkdown bool
-	graphics                                                           graphics.Protocol
-	imagesOn, centered, toolDetails                                    bool
-	diffMode                                                           DiffMode
-	imagePath                                                          string
-	imageCols, imageRows, imageID                                      int
-	imageBytes                                                         int
-	hovered                                                            bool
-	hoverCodeSegment                                                   int
+	kind, number, typingWPM                int
+	promptColor                            color.RGBA
+	toolTokens, added, removed             int
+	text, toolName, toolTarget, toolIntent string
+	toolPath, toolCommand, toolOutput      string
+	diff                                   string
+	hasDiff, failed, held, toolRunning, collapsed, toolPathExists,
+	toolPathMarkdown bool
+	graphics                        graphics.Protocol
+	imagesOn, centered, toolDetails bool
+	diffMode                        DiffMode
+	imagePath                       string
+	imageCols, imageRows, imageID   int
+	imageBytes                      int
+	hovered                         bool
+	hoverCodeSegment                int
 }
 
 // Rows is a rendered transcript plus the provenance of every line. Owner[i] is
@@ -314,19 +316,16 @@ const StreamingRenderInterval = SpinnerInterval
 
 func (b *Block) cacheContentKey(r *Renderer) blockCacheKey {
 	promptColor := color.RGBA{}
-	if b.Kind == BlockUser {
-		promptColor = theme.Rainbow(b.Decay)
-	}
 	return blockCacheKey{
 		kind: int(b.Kind), number: b.Number, typingWPM: b.TypingWPM, promptColor: promptColor,
 		toolTokens: b.ToolTokens, added: b.Added, removed: b.Removed,
 		text: b.Text, toolName: b.ToolName, toolTarget: b.ToolTarget,
 		toolIntent: b.ToolIntent, toolPath: b.ToolPath,
 		toolCommand: b.ToolCommand, toolOutput: b.ToolOutput, diff: b.Diff,
-		repairs: strings.Join(b.Repairs, ","),
-		hasDiff: b.HasDiff, failed: b.Failed, held: b.Held, collapsed: b.Collapsed,
-		toolPathExists: b.ToolPathExists, toolPathMarkdown: b.ToolPathMarkdown,
-		graphics: r.Graphics, imagesOn: r.ImagesOn, centered: r.Centered,
+		hasDiff: b.HasDiff, failed: b.Failed, held: b.Held, toolRunning: b.ToolRunning,
+		collapsed: b.Collapsed, toolPathExists: b.ToolPathExists,
+		toolPathMarkdown: b.ToolPathMarkdown,
+		graphics:         r.Graphics, imagesOn: r.ImagesOn, centered: r.Centered,
 		toolDetails: r.ToolDetails, diffMode: r.DiffMode,
 		imagePath: b.Image.Path, imageCols: b.Image.Cols, imageRows: b.Image.Rows,
 		imageID: b.Image.ID, imageBytes: len(b.Image.PNG),
@@ -367,6 +366,8 @@ func (r *Renderer) render(b *Block) []string {
 	clean.ToolTarget = core.SanitizeTerminal(b.ToolTarget)
 	clean.ToolIntent = core.SanitizeTerminal(b.ToolIntent)
 	clean.ToolPath = core.SanitizeTerminal(b.ToolPath)
+	clean.ToolCommand = core.SanitizeTerminal(b.ToolCommand)
+	clean.ToolOutput = core.SanitizeTerminal(b.ToolOutput)
 	clean.Image.Path = core.SanitizeTerminal(b.Image.Path)
 	clean.Diff = core.SanitizeTerminal(b.Diff)
 	b = &clean
@@ -582,12 +583,18 @@ func jaggedShellText(highlighted, source string) string {
 	return jaggedUnderline(prefix) + suffix
 }
 
-// renderTool draws the one-line completed call of §9.5:
-//
-//	✓ read src/main.go · load entry point · 1.2k tok (+8 -5)
+// renderTool draws a completed call, or a live call while its command is still
+// executing. Bash is special because the exact command is human-facing data:
+// it is wrapped rather than shortened, while the result remains a compact row.
 func (r *Renderer) renderTool(b *Block) []string {
+	if strings.EqualFold(b.ToolName, "bash") {
+		return r.renderBashTool(b)
+	}
+
 	icon, iconStyle := "✓", r.style(theme.RoleSuccess)
-	if b.Held {
+	if b.ToolRunning {
+		icon, iconStyle = "…", r.style(theme.RoleTool)
+	} else if b.Held {
 		icon, iconStyle = "!", r.style(theme.RoleWarning)
 	} else if b.Failed {
 		icon, iconStyle = "✗", rgbStyle(220, 100, 100)
@@ -626,17 +633,7 @@ func (r *Renderer) renderTool(b *Block) []string {
 			add.Render(fmt.Sprintf("+%d", b.Added)) + " " +
 			del.Render(fmt.Sprintf("-%d", b.Removed)) + dim.Render(")"))
 	}
-	if len(b.Repairs) > 0 {
-		clean := make([]string, len(b.Repairs))
-		for i, r := range b.Repairs {
-			clean[i] = core.SanitizeTerminal(r)
-		}
-		b2.WriteString(dim.Render(" · repaired: " + strings.Join(clean, ", ")))
-	}
 
-	// A tool row is assembled from parts that are each bounded but together are
-	// not: a 60-cell target plus an intent plus a token count runs past a narrow
-	// column, and an over-wide row wraps the terminal and drags the frame down.
 	out := []string{truncateCells(b2.String(), r.Width)}
 	if b.Diff != "" && r.DiffMode == DiffInline {
 		path := b.ToolPath
@@ -644,6 +641,95 @@ func (r *Renderer) renderTool(b *Block) []string {
 			path = b.ToolTarget
 		}
 		out = append(out, r.renderDiffLang(b.Diff, langFromPath(path))...)
+	}
+	return out
+}
+
+// renderBashTool keeps the command completely visible without letting a long
+// shell script wrap the terminal implicitly. The summary gets its own row so
+// neither the command nor the status is silently clipped.
+func (r *Renderer) renderBashTool(b *Block) []string {
+	icon, iconStyle := "✓", r.style(theme.RoleSuccess)
+	if b.ToolRunning {
+		icon, iconStyle = "…", r.style(theme.RoleTool)
+	} else if b.Held {
+		icon, iconStyle = "!", r.style(theme.RoleWarning)
+	} else if b.Failed {
+		icon, iconStyle = "✗", rgbStyle(220, 100, 100)
+	}
+	toolName := r.style(theme.RoleTool).Render(b.ToolName)
+	if b.Hovered {
+		toolName = jaggedUnderline(toolName)
+	}
+	prefix := "  " + iconStyle.Render(icon) + " " + toolName + " "
+	command := b.ToolCommand
+	if command == "" {
+		command = b.ToolTarget
+	}
+	command = core.SanitizeTerminal(command)
+	width := max(r.Width, 1)
+	commandWidth := max(width-lipgloss.Width(prefix), 1)
+	parts := wrapExactPlain(command, commandWidth)
+	out := make([]string, 0, len(parts)+1)
+	if len(parts) == 0 {
+		out = append(out, truncateCells(strings.TrimSuffix(prefix, " "), width))
+	} else {
+		out = append(out, truncateCells(prefix+parts[0], width))
+		continuation := strings.Repeat(" ", lipgloss.Width(prefix))
+		for _, part := range parts[1:] {
+			out = append(out, truncateCells(continuation+part, width))
+		}
+	}
+
+	dim := r.style(theme.RoleDim)
+	var summary []string
+	if b.ToolRunning {
+		summary = append(summary, "running", "Esc to cancel")
+	}
+	if b.ToolIntent != "" {
+		summary = append(summary, b.ToolIntent)
+	}
+	if b.ToolTokens > 0 {
+		summary = append(summary, humanTokens(b.ToolTokens)+" tok")
+	}
+	if b.HasDiff {
+		add := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.DiffAdd)))
+		del := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.DiffDel)))
+		summary = append(summary, "("+
+			add.Render(fmt.Sprintf("+%d", b.Added))+" "+
+			del.Render(fmt.Sprintf("-%d", b.Removed))+")")
+	}
+	if len(summary) > 0 {
+		out = append(out, truncateCells(strings.Repeat(" ", 4)+dim.Render("· "+strings.Join(summary, " · ")), width))
+	}
+	if b.Diff != "" && r.DiffMode == DiffInline {
+		out = append(out, r.renderDiffLang(b.Diff, langFromPath(b.ToolPath))...)
+	}
+	return out
+}
+
+// wrapExactPlain wraps a command at cell boundaries while retaining its
+// intentional spaces and newlines. wrapPlain uses Fields and is appropriate
+// for prose, but would change a shell command's meaning when inspected.
+func wrapExactPlain(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	var out []string
+	for _, line := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+		for lipgloss.Width(line) > width {
+			head, tail := splitPlainCells(line, width)
+			out = append(out, head)
+			line = tail
+		}
+		out = append(out, line)
+	}
+	if len(out) == 0 {
+		return []string{""}
 	}
 	return out
 }

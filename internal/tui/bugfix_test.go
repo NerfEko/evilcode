@@ -300,12 +300,20 @@ func TestRoundTokensDropsAPointlessDecimal(t *testing.T) {
 	}
 }
 
-func TestQueueHintStillShowsWhileProcessing(t *testing.T) {
-	// The binding is real *during* a turn, which is the case the row is for.
+func TestProcessingFooterShowsLiveState(t *testing.T) {
 	r := testRenderer(80)
-	got := plain(r.hintLine(ComposerState{Processing: true}))
-	if !strings.Contains(got, "queue") {
-		t.Errorf("hint = %q, want the queue binding while a turn runs", got)
+	got := plain(r.hintLine(ComposerState{
+		Processing: true, Model: "gpt-5.6-luna",
+		ReasoningEffort: provider.ReasoningEffortMax,
+		CtxUsed:         12_000, CtxMax: 200_000, Session: "dracula",
+	}))
+	for _, want := range []string{"gpt-5.6-luna max", "12.0k/200k ctx", "dracula"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("processing footer %q is missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "queues until") {
+		t.Errorf("processing footer retained the obsolete queue hint: %q", got)
 	}
 }
 
@@ -420,5 +428,13 @@ func TestFrameFitsTheTerminalWithBarAndPanel(t *testing.T) {
 			t.Fatalf("row %d is %d cells wide, terminal is %d:\n%s",
 				i, w, m.width, plain(line))
 		}
+	}
+}
+
+func TestErrorEventRendersLocalErrorText(t *testing.T) {
+	m := newTestModel(t)
+	m.applyEvent(agent.Event{Kind: agent.EventError, Err: fmt.Errorf("provider disconnected")})
+	if len(m.blocks) != 1 || m.blocks[0].Text != "provider disconnected" {
+		t.Fatalf("error blocks = %#v, want the local error text", m.blocks)
 	}
 }

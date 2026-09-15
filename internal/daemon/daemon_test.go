@@ -506,8 +506,8 @@ func TestCheckSocketPathNamesTheLimit(t *testing.T) {
 	}
 }
 
-// Repairs ride through the attach snapshot, so an attached client's tool rows
-// show the same repair suffix as the live session.
+// Repairs ride through the attach snapshot, so an attached client's tool
+// metadata remains consistent with the live session even when the row hides it.
 func TestSnapshotCarriesRepairs(t *testing.T) {
 	srv, _ := testServer(t)
 	defer srv.Close()

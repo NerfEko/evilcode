@@ -40,8 +40,10 @@ func blobDir(path string) string {
 // encodeMessage writes any attachments beside the log and returns the record.
 func encodeMessage(path string, m provider.Message) ([]byte, error) {
 	stored := storedMessage{Message: m}
+	if len(m.Images) > stored.Message.ImageCount {
+		stored.Message.ImageCount = len(m.Images)
+	}
 	stored.Message.Images = nil
-
 	if len(m.Images) > 0 {
 		dir := blobDir(path)
 		if err := os.MkdirAll(dir, DirPerm); err != nil {
@@ -102,9 +104,15 @@ func decodeMessage(path string, data []byte) (provider.Message, error) {
 		return provider.Message{}, err
 	}
 	m := stored.Message
+	// Preserve placeholders for missing blobs while still restoring every blob
+	// that is available.
+	m.ImageCount = max(m.ImageCount, len(stored.Refs))
 	// Inline images are the old format, still in every session written before
 	// the change.
 	m.Images = stored.Images
+	if len(m.Images) > m.ImageCount {
+		m.ImageCount = len(m.Images)
+	}
 	for _, ref := range stored.Refs {
 		if ref == "" || filepath.Base(ref) != ref || strings.ContainsAny(ref, `/\\`) {
 			continue

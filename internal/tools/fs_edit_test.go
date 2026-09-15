@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -290,5 +291,32 @@ func TestEditFailedMatchMissingTrailingNewlineLineIsEOF(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "line 3") {
 		t.Errorf("error = %q, want the EOF occurrence at line 3", err)
+	}
+}
+
+func TestAnchoredPartialReadOnlyRecordsShownWindow(t *testing.T) {
+	f := tempFS(t, map[string]string{"a.txt": "same\nhidden\nsame\n"}).WithAnchors(true)
+	if _, err := run(t, f.Tools(), "read", map[string]any{
+		"path": "a.txt", "offset": 1, "limit": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := run(t, f.Tools(), "edit", map[string]any{
+		"path": "a.txt",
+		"patches": []map[string]any{{
+			"anchor": LineAnchor("same"),
+			"op":     "replace",
+			"lines":  []string{"changed"},
+		}},
+	}); err != nil {
+		t.Fatalf("anchored edit after partial read: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(f.Root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "changed\nhidden\nsame\n"; got != want {
+		t.Fatalf("file = %q, want %q", got, want)
 	}
 }

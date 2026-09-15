@@ -355,7 +355,9 @@ func (o *Overscroll) Cancel() {
 	o.beganAtEnd = false
 }
 
-// Visible reports whether the facts line should show.
+// Visible reports whether the facts line should show. Pull mode is also
+// bottom-gated: keyboard scrolling must hide a reveal that was triggered by a
+// prior wheel gesture.
 func (o *Overscroll) Visible(now time.Time, atBottom bool) bool {
 	switch o.Mode {
 	case OverscrollOff:
@@ -363,7 +365,7 @@ func (o *Overscroll) Visible(now time.Time, atBottom bool) bool {
 	case OverscrollAlways:
 		return atBottom
 	default:
-		return now.Before(o.revealUntil)
+		return atBottom && now.Before(o.revealUntil)
 	}
 }
 

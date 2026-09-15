@@ -135,7 +135,7 @@ func TestEscapeNoLongerClosesTheSplit(t *testing.T) {
 	}
 }
 
-func TestApplyEventRetainsBoundedBashViewData(t *testing.T) {
+func TestApplyEventRetainsExactCommandAndBoundedOutput(t *testing.T) {
 	command := strings.Repeat("x", tools.MaxResultBytes+100)
 	output := "HEAD" + strings.Repeat("-", tools.MaxResultBytes*2) + "TAIL"
 	raw, err := json.Marshal(map[string]string{"cmd": command})
@@ -155,8 +155,8 @@ func TestApplyEventRetainsBoundedBashViewData(t *testing.T) {
 	if len(b.ToolOutput) > tools.MaxResultBytes || !strings.Contains(b.ToolOutput, "output truncated") {
 		t.Fatalf("bash output was not bounded and marked: len=%d", len(b.ToolOutput))
 	}
-	if len(b.ToolCommand) > tools.MaxResultBytes || !strings.Contains(b.ToolCommand, "command truncated") {
-		t.Fatalf("bash command was not bounded and marked: len=%d", len(b.ToolCommand))
+	if b.ToolCommand != command {
+		t.Fatalf("bash command was shortened: got %d bytes, want %d", len(b.ToolCommand), len(command))
 	}
 }
 

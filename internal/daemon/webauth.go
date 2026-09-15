@@ -83,6 +83,9 @@ type webAuth struct {
 	addr string
 	// requireAuth controls whether bearer/cookie authentication is enforced.
 	requireAuth bool
+	// trustForwarded is an explicit reverse-proxy trust decision. Without it,
+	// client-supplied X-Forwarded-* headers are ignored.
+	trustForwarded bool
 }
 
 // wrap authenticates r, enforces the cross-site rules on mutating verbs, and
@@ -145,21 +148,23 @@ func (a *webAuth) authorized(r *http.Request) bool {
 }
 
 // sameSite is the CSRF/DNS-rebinding discipline for mutating verbs. The
-// backend Host must be the bound address or a loopback spelling of its port
-// unless an HTTPS reverse proxy forwards the public host. Tailscale Serve
-// terminates HTTPS and forwards that host in X-Forwarded-Host, so that host is
-// used for the Origin/Referer comparison only when X-Forwarded-Proto is HTTPS.
-// A request with neither Origin nor Referer is rejected — it cannot prove where
-// it came from.
+// backend Host must be the bound address or a loopback spelling of its port.
+// An HTTPS reverse proxy may supply the public origin only when the operator
+// explicitly trusts its forwarded headers. A request with neither Origin nor
+// Referer is rejected — it cannot prove where it came from.
 func (a *webAuth) sameSite(r *http.Request) bool {
 	host := r.Host
-	if forwardedHost := httpsForwardedHost(r); forwardedHost != "" {
-		if !hostAllowed(r.Host, a.addr) && !sameHostPort(r.Host, forwardedHost) {
+	forwardedHost := ""
+	if a.trustForwarded {
+		forwardedHost = httpsForwardedHost(r)
+	}
+	if !hostAllowed(r.Host, a.addr) {
+		if forwardedHost == "" {
 			return false
 		}
 		host = forwardedHost
-	} else if !hostAllowed(r.Host, a.addr) {
-		return false
+	} else if forwardedHost != "" {
+		host = forwardedHost
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)

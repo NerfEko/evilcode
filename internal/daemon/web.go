@@ -52,6 +52,9 @@ type webState struct {
 	// requireAuth controls whether the bearer/cookie gate is active. Origin and
 	// Host checks remain active for mutating requests either way.
 	requireAuth bool
+	// trustForwarded is an explicit opt-in because forwarded headers are
+	// attacker-controlled when clients can reach the listener directly.
+	trustForwarded bool
 }
 
 // errServerClosed is returned by ListenWeb when the daemon is already tearing
@@ -67,9 +70,11 @@ func (s *Server) ListenWeb(addr string) error {
 		addr = config.DefaultWebUIAddr
 	}
 	requireAuth := true
+	trustForwarded := false
 	s.mu.Lock()
 	if s.Cfg != nil {
 		requireAuth = s.Cfg.WebUI.RequireAuth
+		trustForwarded = s.Cfg.WebUI.TrustForwardedHeaders
 	}
 	s.mu.Unlock()
 
@@ -105,11 +110,12 @@ func (s *Server) ListenWeb(addr string) error {
 		return fmt.Errorf("daemon: the web UI is already listening on %s", old)
 	}
 	w := &webState{
-		ln:          ln,
-		addr:        bound,
-		token:       token,
-		minted:      minted,
-		requireAuth: requireAuth,
+		ln:             ln,
+		addr:           bound,
+		token:          token,
+		minted:         minted,
+		requireAuth:    requireAuth,
+		trustForwarded: trustForwarded,
 	}
 	s.web = w
 	s.mu.Unlock()
@@ -170,7 +176,10 @@ func (w *webState) mux(s *Server) http.Handler {
 		webErrorf(w, http.StatusNotFound, "no such API route: %s %s", r.Method, r.URL.Path)
 	})
 
-	auth := &webAuth{token: w.token, addr: w.addr, requireAuth: w.requireAuth}
+	auth := &webAuth{
+		token: w.token, addr: w.addr, requireAuth: w.requireAuth,
+		trustForwarded: w.trustForwarded,
+	}
 	return securityHeaders(webRecover(auth.wrap(gzipJSON(mux))))
 }
 

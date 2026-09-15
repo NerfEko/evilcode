@@ -61,6 +61,35 @@ func TestBashRowShowsCommandOnce(t *testing.T) {
 	}
 }
 
+func TestBashToolStartsVisibleAndCompletesInPlace(t *testing.T) {
+	const cmd = "printf 'working\\n' && sleep 1"
+	args, _ := json.Marshal(map[string]any{"command": cmd})
+	m := &Model{renderer: NewRenderer(theme.Dracula(), 80)}
+	call := &provider.ToolCall{ID: "bash-1", Name: "bash", Args: args}
+
+	m.applyEvent(agent.Event{Kind: agent.EventToolStart, Call: call})
+	if len(m.blocks) != 1 || !m.blocks[0].ToolRunning {
+		t.Fatalf("start blocks = %#v, want one running block", m.blocks)
+	}
+	start := plain(strings.Join(m.renderer.Lines(&m.blocks[0]), "\n"))
+	if !strings.Contains(start, cmd) || !strings.Contains(start, "Esc to cancel") {
+		t.Fatalf("running row = %q, want exact command and cancel hint", start)
+	}
+
+	m.applyEvent(agent.Event{
+		Kind: agent.EventToolResult, Call: call, Output: "working\n", Intent: "exit 0",
+	})
+	if len(m.blocks) != 1 {
+		t.Fatalf("result created a duplicate block: %#v", m.blocks)
+	}
+	if m.blocks[0].ToolRunning {
+		t.Fatal("completed bash row still marked running")
+	}
+	if !strings.Contains(plain(strings.Join(m.renderer.Lines(&m.blocks[0]), "\n")), cmd) {
+		t.Fatal("completed row lost the exact command")
+	}
+}
+
 func TestHeldBashRowIsWarningNotFailure(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"cmd": "rm -rf ../outside"})
 	m := &Model{renderer: NewRenderer(theme.Dracula(), 100)}

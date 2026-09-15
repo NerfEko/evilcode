@@ -584,6 +584,10 @@ func TestOverscrollRequiresGestureToBeginAtBottom(t *testing.T) {
 	if !deliberate.Visible(now.Add(10*time.Millisecond), true) {
 		t.Error("a flick that began at the bottom should reveal")
 	}
+
+	if deliberate.Visible(now.Add(10*time.Millisecond), false) {
+		t.Error("a reveal must hide as soon as keyboard scrolling leaves the bottom")
+	}
 }
 
 func TestOverscrollDwellExpires(t *testing.T) {

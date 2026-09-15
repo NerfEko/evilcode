@@ -503,13 +503,6 @@ func toolLine(e agent.Event) string {
 	if e.Intent != "" && !strings.Contains(e.Intent, target) {
 		fmt.Fprintf(&b, " · %s", e.Intent)
 	}
-	if len(e.Repairs) > 0 {
-		clean := make([]string, len(e.Repairs))
-		for i, r := range e.Repairs {
-			clean[i] = core.SanitizeTerminal(r)
-		}
-		fmt.Fprintf(&b, " · repaired: %s", strings.Join(clean, ", "))
-	}
 	if n := approxTokens(e.Output); n > 0 {
 		fmt.Fprintf(&b, " · %s tok", humanCount(n))
 	}

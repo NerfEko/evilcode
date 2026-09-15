@@ -1392,12 +1392,15 @@ func TestWebUIDefaultsAreLoopbackAndOff(t *testing.T) {
 	if !cfg.WebUI.RequireAuth {
 		t.Error("web authentication must be required by default")
 	}
+	if cfg.WebUI.TrustForwardedHeaders {
+		t.Error("forwarded headers must be untrusted by default")
+	}
 }
 
 func TestWebUIAuthOptOutRoundTripsTOML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	body := "[webui]\nrequire_auth = false\n"
+	body := "[webui]\nrequire_auth = false\ntrust_forwarded_headers = true\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1407,6 +1410,9 @@ func TestWebUIAuthOptOutRoundTripsTOML(t *testing.T) {
 	}
 	if cfg.WebUI.RequireAuth {
 		t.Error("require_auth = false decoded as true")
+	}
+	if !cfg.WebUI.TrustForwardedHeaders {
+		t.Error("trust_forwarded_headers = true decoded as false")
 	}
 }
 

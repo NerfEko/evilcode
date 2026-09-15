@@ -16,6 +16,7 @@ import (
 )
 
 func TestKittySequenceCarriesThePNG(t *testing.T) {
+	t.Setenv("TMUX", "")
 	png := []byte("\x89PNG\r\n\x1a\nfake")
 	got := KittySequence(Image{PNG: png, Cols: 20, Rows: 10, ID: 7})
 
@@ -42,6 +43,7 @@ func TestCursorPositionIsOneBased(t *testing.T) {
 }
 
 func TestKittySequenceChunksLongPayloads(t *testing.T) {
+	t.Setenv("TMUX", "")
 	// Exceeding the protocol's per-sequence limit does not error, it corrupts:
 	// the terminal reads a truncated image and draws garbage.
 	png := make([]byte, ChunkSize*3)

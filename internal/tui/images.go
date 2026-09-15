@@ -115,7 +115,54 @@ func loadImageBytes(data []byte, path string, cols, rows int) ImageBlock {
 	return block
 }
 
-// maxImageRows caps how much of the transcript one picture can take.
+// messageImageBlocks turns provider attachments into transcript blocks. Missing
+// bytes still get a placeholder when ImageCount came from a remote snapshot.
+func messageImageBlocks(images [][]byte, count int, path string) []Block {
+	count = max(count, len(images))
+	if count == 0 {
+		return nil
+	}
+	out := make([]Block, 0, count)
+	for i := range count {
+		img := ImageBlock{Path: path}
+		if i < len(images) {
+			img = loadImageBytes(images[i], path, 0, 0)
+		}
+		out = append(out, Block{Kind: BlockImage, Image: img})
+	}
+	return out
+}
+
+// imageBoxWidth matches the text column after the chat inset and scrollbar
+// reserve are painted. Images otherwise overhang the bar or a side-pane edge.
+func imageBoxWidth(chatWidth int, centered, scrollbar bool) int {
+	width, _ := ContentWidth(chatWidth, centered)
+	if scrollbar {
+		width -= ScrollbarReserve
+	}
+	return max(width, 1)
+}
+
+// appendImageBlocks adds pictures owned by a live model and gives them stable
+// terminal ids and geometry.
+func (m *Model) appendImageBlocks(images [][]byte, count int, path string) {
+	blocks := messageImageBlocks(images, count, path)
+	if len(blocks) == 0 {
+		return
+	}
+	width := imageBoxWidth(m.chatWidth(), m.centered, m.scrollbarOn)
+	for i := range blocks {
+		m.nextImageID++
+		blocks[i].Image.ID = m.nextImageID
+		if len(blocks[i].Image.PNG) > 0 {
+			blocks[i].Image.Cols, blocks[i].Image.Rows =
+				imageBox(blocks[i].Image.PNG, width)
+		}
+	}
+	m.blocks = append(m.blocks, blocks...)
+	m.invalidateTranscriptCache()
+}
+
 const maxImageRows = 30
 
 // cellPxWide is the assumed width of a terminal cell. The real one is not
@@ -432,7 +479,7 @@ func (m *Model) drainDiagrams() {
 	m.diagrams[done.Source] = done.Path
 	m.diagramMu.Unlock()
 
-	img, err := LoadImage(done.Path, m.chatWidth(), DiagramRows)
+	img, err := LoadImage(done.Path, imageBoxWidth(m.chatWidth(), m.centered, m.scrollbarOn), DiagramRows)
 	if err != nil {
 		m.notice = "mermaid: " + err.Error()
 		return

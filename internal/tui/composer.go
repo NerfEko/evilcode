@@ -118,7 +118,7 @@ func (r *Renderer) hintLine(s ComposerState) string {
 	case s.NewSession:
 		return rgbStyle(120, 200, 255).Render("  ↗ Next prompt opens a new session")
 	case s.Processing:
-		return dim.Render("  Enter queues until the turn ends")
+		return dim.Render("  " + idleHint(s))
 	default:
 		// Nothing is running, so there is nothing to queue behind. This row is
 		// the one piece of screen that is always visible, so it carries what

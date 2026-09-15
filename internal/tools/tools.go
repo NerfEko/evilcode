@@ -67,8 +67,8 @@ type Result struct {
 
 	// Repairs names the argument rewrites RunOne applied before the tool's
 	// strict decode (an aliased field, a string-wrapped number coerced). It is
-	// silent to the model — the output is unchanged — and shown in the tool row
-	// so a quietly rewritten argument is findable later (§1.4).
+	// retained as metadata for diagnostics and model feedback; normal
+	// human-facing renderers may hide it.
 	Repairs []string
 
 	// EffectiveArgs is the repaired argument object used to run the tool. It is

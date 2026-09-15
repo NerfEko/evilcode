@@ -48,6 +48,9 @@ let streamGeneration = 0;
 let renderFrame = null;
 let renderFrameCancel = null;
 let pendingMirrorRender = null;
+// Follow-tail: the transcript sticks to the newest message unless the reader
+// deliberately scrolled away. One flag for the whole app (§5: one mirror).
+let followTail = true;
 let historyLoading = false;
 let hiddenAt = 0; // when the tab last went away; drives the P7.4 resume heuristic
 let lastResumeAt = 0;
@@ -172,34 +175,27 @@ function atTranscriptBottom(scroll) {
     scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= TRANSCRIPT_BOTTOM_GAP;
 }
 
-function pinTranscriptBottom(scroll, isCurrent = () => true) {
-  const pin = () => {
-    if (!isCurrent()) return false;
-    scroll.scrollTop = scroll.scrollHeight;
-    return true;
-  };
-  if (!pin()) return;
-  if (typeof ResizeObserver !== "function") {
-    setTimeout(pin, 100);
-    return;
-  }
+// The singleton follow observer: while followTail is set, any transcript
+// height change (markdown layout, lazy content-visibility refinement, new
+// cards) re-pins the scroll to the exact floor. A user scroll sets
+// followTail=false first (the scroll listener), which makes the observer
+// disconnect itself — reading position is never hijacked.
+let followObserver = null;
+
+function ensureFollowObserver() {
+  if (followObserver || typeof ResizeObserver !== "function") return;
   const transcript = document.getElementById("transcript");
   if (!transcript) return;
-  let timer = null;
-  let observer = null;
-  const stop = () => {
-    observer?.disconnect();
-    clearTimeout(timer);
-  };
-  observer = new ResizeObserver(() => {
-    if (!pin()) {
-      stop();
+  followObserver = new ResizeObserver(() => {
+    if (!followTail) {
+      followObserver.disconnect();
+      followObserver = null;
       return;
     }
-    clearTimeout(timer);
-    timer = setTimeout(stop, 100);
+    const scroll = transcriptScroll();
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
   });
-  observer.observe(transcript);
+  followObserver.observe(transcript);
 }
 
 function activityPill() {
@@ -342,7 +338,7 @@ function askSignature(pending) {
 function renderMirrorState(name, snapshot, row, state, generation, options = {}) {
   if (generation !== renderGeneration || generation !== streamGeneration) return;
   const scroll = transcriptScroll();
-  const wasAtBottom = options.forceBottom === true || atTranscriptBottom(scroll);
+  const wasAtBottom = options.forceBottom === true || followTail || atTranscriptBottom(scroll);
   const previousHeight = options.preserveScroll?.height;
   const previousTop = options.preserveScroll?.top;
   const data = mirrorData(snapshot, state);
@@ -390,6 +386,12 @@ function renderMirrorState(name, snapshot, row, state, generation, options = {})
       scroll.scrollTop = previousTop + (scroll.scrollHeight - previousHeight);
     } else if (wasAtBottom) {
       scroll.scrollTop = scroll.scrollHeight;
+      // Markdown and content-visibility refine heights after the first
+      // layout pass; re-pin on the next frame so the floor really is the
+      // floor instead of 16px shy of it.
+      requestAnimationFrame(() => {
+        if (followTail && route.view === "chat") scroll.scrollTop = scroll.scrollHeight;
+      });
     }
   }
   setActivityPill(!wasAtBottom && !options.preserveScroll);
@@ -495,6 +497,7 @@ async function render() {
   const generation = ++renderGeneration;
   setView(parseRoute());
   closeSessionStream();
+  followTail = true; // a fresh route opens at the bottom
   const chatEl = document.getElementById("chat");
 
   if (route.view === "home") {
@@ -581,22 +584,24 @@ async function render() {
     if (scroll) {
       // `content-visibility: auto` refines message heights as the bottom comes
       // into view, so keep the initial scroll pinned until that settles.
-      pinTranscriptBottom(scroll, () => generation === renderGeneration && route.view === "chat");
+      followObserver?.disconnect();
+      followObserver = null;
+      ensureFollowObserver();
+      if (followTail) scroll.scrollTop = scroll.scrollHeight;
     }
     if (info.live !== false) composer.focus();
     setActivityPill(false);
   } catch (err) {
-    if (generation !== renderGeneration) return;
-    renderChatHead({ title: route.name, chips: [], sub: "" });
-    const transcript = document.getElementById("transcript");
-    transcript.replaceChildren();
-    const box = document.createElement("div");
-    box.className = "callout callout--error";
-    const t = document.createElement("div");
-    t.className = "callout-title";
-    t.textContent = "Cannot open this session";
-    box.append(t, String(err.message ?? err));
-    transcript.appendChild(box);
+    if (generation === renderGeneration) {
+      const transcript = document.getElementById("transcript");
+      const box = document.createElement("div");
+      box.className = "callout callout--error";
+      const title = document.createElement("div");
+      title.className = "callout-title";
+      title.textContent = "Cannot open this session";
+      box.append(title, String(err?.message ?? err));
+      transcript?.replaceChildren(box);
+    }
   } finally {
     if (generation === renderGeneration) chatEl.removeAttribute("aria-busy");
   }
@@ -677,7 +682,13 @@ function openModelSheet() {
 transcriptScroll()?.addEventListener("scroll", () => {
   const scroll = transcriptScroll();
   if (!scroll) return;
-  if (atTranscriptBottom(scroll)) setActivityPill(false);
+  const wasFollowing = followTail;
+  followTail = atTranscriptBottom(scroll);
+  if (!wasFollowing && followTail) {
+    // The reader came back to the floor: re-arm the follow observer.
+    ensureFollowObserver();
+  }
+  if (followTail) setActivityPill(false);
   if (scroll.scrollTop <= HISTORY_TOP_GAP) loadOlderHistory();
 }, { passive: true });
 

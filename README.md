@@ -113,7 +113,10 @@ Tailscale ACLs) is the complete trust boundary. With auth enabled, the first sta
 mints a token at `<socket>.web-token` (mode 0600) and prints a one-time tokenized
 URL — open it in a browser and the token is exchanged for a cookie; later requests
 are cookie- or `Bearer`-authenticated. Mutating requests must come from the same
-origin in either mode. The UI covers the full chat + roster surface: live
+origin in either mode. When a trusted HTTPS proxy supplies `X-Forwarded-Host`,
+opt into that behavior with `[webui] trust_forwarded_headers = true`; leave it
+false for any listener reachable by direct clients, because forwarded headers are
+otherwise forgeable. The UI covers the full chat + roster surface: live
 transcripts over SSE, deep history from the durable session store, model/effort
 switching, slash commands, asks, spawn, and worker pokes. On a phone it is a
 roster-first webapp: Add to Home Screen (Share → "Add to Home Screen") installs it
@@ -128,6 +131,8 @@ bind.
 
 Keep evilcode on its loopback bind and let Tailscale provide the tailnet-only
 HTTPS proxy. On the daemon machine:
+Set `[webui] trust_forwarded_headers = true` only for this proxy-only setup;
+otherwise leave it false so direct clients cannot forge the forwarded origin.
 
 ```sh
 evilcode serve -status                 # check whether a daemon is already running

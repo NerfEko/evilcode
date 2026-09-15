@@ -403,7 +403,7 @@ func (f *FS) readTool() Tool {
 
 			// Record what the model is about to see, so a later anchored edit
 			// can tell whether it is acting on this version.
-			f.anchors.record(full, info, lines)
+			f.anchors.recordAt(full, info, lines[start:end], start)
 
 			var b strings.Builder
 			truncated := 0
