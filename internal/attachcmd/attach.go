@@ -221,8 +221,8 @@ func run(args []string, autoStart bool) error {
 			})
 		})
 	}
-	m.WithSwarm(swarm, func(task string) (string, error) {
-		return summon(path, self.get(), task)
+	m.WithSwarm(swarm, func(task, model string) (string, error) {
+		return summon(path, self.get(), task, model)
 	}).
 		WithRemoteModelEffort(func(ref string, effort provider.ReasoningEffort) error {
 			return client.Send(daemon.ClientMsg{
@@ -493,7 +493,7 @@ const SummonTimeout = 30 * time.Second
 // A second connection rather than the attached one: the attached connection is
 // mid-stream with events, and interleaving a request/response exchange into it
 // would mean the reply could arrive behind a hundred deltas.
-func summon(path, sessionName, task string) (string, error) {
+func summon(path, sessionName, task, model string) (string, error) {
 	c, err := daemon.DialPath(path)
 	if err != nil {
 		return "", err
@@ -503,7 +503,7 @@ func summon(path, sessionName, task string) (string, error) {
 		return "", err
 	}
 
-	if err := c.Send(daemon.ClientMsg{Kind: daemon.MsgSpawn, Session: sessionName, Task: task}); err != nil {
+	if err := c.Send(daemon.ClientMsg{Kind: daemon.MsgSpawn, Session: sessionName, Task: task, Model: model}); err != nil {
 		return "", err
 	}
 	for {

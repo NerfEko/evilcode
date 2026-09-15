@@ -18,7 +18,9 @@ type Spawner interface {
 	Self() string
 
 	// SpawnWorker starts a headless worker and returns its session name.
-	SpawnWorker(task string, files []string, schema json.RawMessage) (string, error)
+	// Model is a model@provider ref, or "" for the D3 chain default
+	// (per-call → default_worker_model → session model).
+	SpawnWorker(task string, files []string, schema json.RawMessage, model string) (string, error)
 }
 
 // ForegroundSpawner is implemented by runtimes that can wait for a worker's
@@ -31,7 +33,7 @@ type ForegroundSpawner interface {
 
 	// SpawnWorkerForeground starts a worker and waits for its validated final
 	// answer. The returned name is the same stable worker name as SpawnWorker.
-	SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage) (name, output string, err error)
+	SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage, model string) (name, output string, err error)
 }
 
 // NewSpawn returns the spawn_worker tool (plan.md §20).
@@ -81,6 +83,8 @@ func spawnWorkerTool(s Spawner) Tool {
                    "description": "Files to start from. A hint, not a boundary."},
     "result_schema": {"type": "object",
                       "description": "JSON Schema the worker's final answer must validate against."},
+    "model": {"type": "string",
+              "description": "Model for this worker as model@provider (default: the session model). A bad ref fails fast before any tokens are spent."},
     "wait": {"type": "boolean",
              "description": "Wait for the worker's validated result (default true). False returns immediately with the worker name; the result arrives as a message."}
   },
@@ -91,6 +95,7 @@ func spawnWorkerTool(s Spawner) Tool {
 				Task         string          `json:"task"`
 				FilesHint    []string        `json:"files_hint"`
 				ResultSchema json.RawMessage `json:"result_schema"`
+				Model        string          `json:"model"`
 				Wait         *bool           `json:"wait"`
 			}
 			if err := unmarshalArgs(raw, &args); err != nil {
@@ -106,7 +111,7 @@ func spawnWorkerTool(s Spawner) Tool {
 			if wait {
 				if foreground, ok := s.(ForegroundSpawner); ok {
 					name, output, err := foreground.SpawnWorkerForeground(
-						ctx, args.Task, args.FilesHint, args.ResultSchema)
+						ctx, args.Task, args.FilesHint, args.ResultSchema, args.Model)
 					if err != nil {
 						return Result{}, err
 					}
@@ -117,7 +122,7 @@ func spawnWorkerTool(s Spawner) Tool {
 				}
 			}
 
-			name, err := s.SpawnWorker(args.Task, args.FilesHint, args.ResultSchema)
+			name, err := s.SpawnWorker(args.Task, args.FilesHint, args.ResultSchema, args.Model)
 			if err != nil {
 				return Result{}, err
 			}

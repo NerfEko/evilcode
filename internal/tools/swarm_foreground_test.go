@@ -13,12 +13,12 @@ type foregroundSpawnerTestDouble struct {
 
 func (s *foregroundSpawnerTestDouble) Self() string { return "parent" }
 
-func (s *foregroundSpawnerTestDouble) SpawnWorker(string, []string, json.RawMessage) (string, error) {
+func (s *foregroundSpawnerTestDouble) SpawnWorker(string, []string, json.RawMessage, string) (string, error) {
 	s.asyncCalled = true
 	return "async", nil
 }
 
-func (s *foregroundSpawnerTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage) (string, string, error) {
+func (s *foregroundSpawnerTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage, string) (string, string, error) {
 	s.foregroundCalled = true
 	return "worker-1", `{"changed":true}`, nil
 }

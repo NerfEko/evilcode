@@ -76,7 +76,7 @@ func TestPastingDoesNotBlockTheUpdateLoop(t *testing.T) {
 func TestSummonDoesNotBlockTheUpdateLoop(t *testing.T) {
 	m := newTestModel(t)
 	unblock := make(chan struct{})
-	m.WithSwarm(&SwarmState{}, func(task string) (string, error) {
+	m.WithSwarm(&SwarmState{}, func(task, model string) (string, error) {
 		<-unblock // simulates a daemon that accepted the connection and stalled
 		return "raven", nil
 	})

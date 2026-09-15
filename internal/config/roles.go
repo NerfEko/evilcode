@@ -46,6 +46,9 @@ func (c *Config) LoadRepoOverrides(repoRoot string) error {
 		DefaultModel string        `toml:"default_model"`
 		Roles        Roles         `toml:"roles"`
 		Models       []ModelConfig `toml:"model"`
+		Features     struct {
+			DefaultWorkerModel *string `toml:"default_worker_model"`
+		} `toml:"features"`
 	}
 	if _, err := toml.Decode(string(data), &repo); err != nil {
 		return fmt.Errorf("config: parsing %s: %w", path, err)
@@ -53,6 +56,9 @@ func (c *Config) LoadRepoOverrides(repoRoot string) error {
 
 	if repo.DefaultModel != "" {
 		c.DefaultModel = repo.DefaultModel
+	}
+	if repo.Features.DefaultWorkerModel != nil {
+		c.Features.DefaultWorkerModel = *repo.Features.DefaultWorkerModel
 	}
 	if repo.Roles.Default != nil {
 		c.Roles.Default = repo.Roles.Default

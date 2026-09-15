@@ -31,7 +31,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 	if err := s.swarm.reserve(""); err != nil {
 		return nil, err
 	}
-	sess, err := s.spawn(task, files, schema, nil, s.Cwd)
+	sess, err := s.spawn(task, files, schema, "", nil, s.Cwd)
 	if err != nil && !errors.Is(err, errPublishedWorker) {
 		s.swarm.release("")
 	}
@@ -46,7 +46,7 @@ func (s *Server) Spawn(task string, files []string, schema json.RawMessage) (*Se
 // could end before the spawner was known, and the result was dropped on the
 // floor. Anything the report path needs has to be in place before the goroutine
 // starts.
-func (s *Server) spawn(task string, files []string, schema json.RawMessage, register func(*Session), cwd string) (*Session, error) {
+func (s *Server) spawn(task string, files []string, schema json.RawMessage, workerModel string, register func(*Session), cwd string) (*Session, error) {
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return nil, fmt.Errorf("a worker needs a task")
@@ -99,8 +99,12 @@ func (s *Server) spawn(task string, files []string, schema json.RawMessage, regi
 		}
 		extraTools, extraClosers = mcpClient.Tools(), []func(){mcpClient.Close}
 	}
+	modelRef := s.Model
+	if workerModel != "" {
+		modelRef = workerModel
+	}
 	built, err := wiring.Build(workerCfg, wiring.Options{
-		Model: s.Model, Cwd: cwd, Store: store, Extract: true,
+		Model: modelRef, Cwd: cwd, Store: store, Extract: true,
 		Bank:  bank,
 		Asker: tasks, ExtraTools: extraTools, ExtraClosers: extraClosers,
 	})

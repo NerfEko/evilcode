@@ -191,7 +191,7 @@ func humanSeconds(d time.Duration) string {
 // It returns the worker's name, which attach gets by opening its own short
 // connection rather than borrowing the one the receive loop is reading — two
 // readers on one socket would race for the reply.
-type SummonFunc func(task string) (string, error)
+type SummonFunc func(task, model string) (string, error)
 
 // WithSwarm attaches swarm state and the summon hook.
 func (m *Model) WithSwarm(s *SwarmState, summon SummonFunc) *Model {
@@ -201,31 +201,48 @@ func (m *Model) WithSwarm(s *SwarmState, summon SummonFunc) *Model {
 
 // summonResult carries a /summon round trip back into the update loop.
 type summonResult struct {
-	task string
-	name string
-	err  error
+	task  string
+	model string
+	name  string
+	err   error
 }
 
-// summonCommand implements `/summon <task>` (plan.md §20).
+// parseSummonArgs splits `/summon [-m <model>] <task>`.
+func parseSummonArgs(arg string) (task, model string) {
+	rest := strings.TrimSpace(arg)
+	if rest == "" {
+		return "", ""
+	}
+	fields := strings.Fields(rest)
+	if len(fields) >= 3 && fields[0] == "-m" {
+		model = fields[1]
+		task = strings.TrimSpace(strings.TrimPrefix(rest, "-m "+fields[1]))
+		return strings.TrimSpace(task), model
+	}
+	return rest, ""
+}
+
+// summonCommand implements `/summon [-m <model>] <task>` (plan.md §20).
 //
 // m.summon dials the daemon and waits for it to spawn the worker — a network
 // round trip that used to run straight inside Update, freezing every frame
 // until the daemon answered, with no read deadline to even bound the wait
 // (H5.23). It runs in the returned tea.Cmd now, off the update loop.
-func (m *Model) summonCommand(task string) tea.Cmd {
+func (m *Model) summonCommand(arg string) tea.Cmd {
 	if m.summon == nil {
 		m.notice = "no daemon to summon into — start one with `evilcode serve`"
 		return nil
 	}
+	task, model := parseSummonArgs(arg)
 	if task == "" {
-		m.notice = "usage: /summon <task> — write it as a complete brief"
+		m.notice = "usage: /summon [-m <model>] <task> — write it as a complete brief"
 		return nil
 	}
 
 	m.notice = "summoning…"
 	return func() tea.Msg {
-		name, err := m.summon(task)
-		return summonResult{task: task, name: name, err: err}
+		name, err := m.summon(task, model)
+		return summonResult{task: task, model: model, name: name, err: err}
 	}
 }
 

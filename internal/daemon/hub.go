@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/config"
 	"evilcode/internal/tools"
 )
 
@@ -133,7 +134,14 @@ func (w *swarmState) finished() {
 // SpawnForForeground below so delegation has the same blocking result semantics
 // as OpenCode's task tool.
 func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawMessage) (string, error) {
-	name, _, err := s.SpawnForWithSession(spawner, task, files, schema)
+	return s.SpawnForWithModel(spawner, task, files, schema, "")
+}
+
+// SpawnForWithModel starts an asynchronous worker with a per-call model
+// override (orchestrator D3). Model is a model@provider ref, or "" for the
+// chain default (per-call → default_worker_model → session model).
+func (s *Server) SpawnForWithModel(spawner, task string, files []string, schema json.RawMessage, model string) (string, error) {
+	name, _, err := s.SpawnForWithSession(spawner, task, files, schema, model)
 	return name, err
 }
 
@@ -141,21 +149,27 @@ func (s *Server) SpawnFor(spawner, task string, files []string, schema json.RawM
 // caller gets the worker name immediately and the result arrives as a message
 // (spawn_worker wait:false, /summon). The handle lets later phases roll up
 // per-worker tokens without another lookup.
-func (s *Server) SpawnForWithSession(spawner, task string, files []string, schema json.RawMessage) (string, *Session, error) {
-	return s.spawnForSession(spawner, task, files, schema, false)
+func (s *Server) SpawnForWithSession(spawner, task string, files []string, schema json.RawMessage, model string) (string, *Session, error) {
+	return s.spawnForSession(spawner, task, files, schema, model, false)
 }
 
 // SpawnForForeground starts a worker on behalf of a session and waits for its
 // validated result. Explicit asynchronous callers keep the old SpawnFor API;
 // only the model-facing tool takes this path.
 func (s *Server) SpawnForForeground(ctx context.Context, spawner, task string, files []string, schema json.RawMessage) (string, string, error) {
+	return s.SpawnForForegroundWithModel(ctx, spawner, task, files, schema, "")
+}
+
+// SpawnForForegroundWithModel is the blocking path with a per-call model
+// override (spawn_worker wait:true + model).
+func (s *Server) SpawnForForegroundWithModel(ctx context.Context, spawner, task string, files []string, schema json.RawMessage, model string) (string, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	name, sess, err := s.spawnForSession(spawner, task, files, schema, true)
+	name, sess, err := s.spawnForSession(spawner, task, files, schema, model, true)
 	if err != nil {
 		return "", "", err
 	}
@@ -176,10 +190,14 @@ func (s *Server) SpawnForForeground(ctx context.Context, spawner, task string, f
 	if err := sess.failure(); err != nil {
 		return name, "", err
 	}
-	return name, lastAssistantText(sess), nil
+	output := lastAssistantText(sess)
+	if resolved := workerResolvedModel(sess); resolved != "" {
+		output = fmt.Sprintf("[model %s]\n%s", resolved, output)
+	}
+	return name, output, nil
 }
 
-func (s *Server) spawnForSession(spawner, task string, files []string, schema json.RawMessage, foreground bool) (string, *Session, error) {
+func (s *Server) spawnForSession(spawner, task string, files []string, schema json.RawMessage, model string, foreground bool) (string, *Session, error) {
 	// A schema that does not compile is refused up front. Sending a worker off
 	// with an unusable contract means discovering it only when the worker
 	// finishes, after the tokens are already spent.
@@ -187,6 +205,17 @@ func (s *Server) spawnForSession(spawner, task string, files []string, schema js
 		if _, err := compileSchema(schema); err != nil {
 			return "", nil, fmt.Errorf("the result schema is not valid JSON Schema: %w", err)
 		}
+	}
+
+	// D3: resolve the worker model before reserving a slot, so a bad ref fails
+	// in milliseconds with a readable error the model can correct — before any
+	// session exists and before any tokens are spent. Precedence: per-call
+	// model → default_worker_model → the daemon session model. D3b: a
+	// resolution failure fails the spawn; never silently retry on another
+	// model, which would change worker capability without saying so.
+	workerModel, resolvedRef, err := s.resolveWorkerModel(model)
+	if err != nil {
+		return "", nil, err
 	}
 
 	if err := s.swarm.reserve(spawner); err != nil {
@@ -199,10 +228,13 @@ func (s *Server) spawnForSession(spawner, task string, files []string, schema js
 	}
 	s.mu.Unlock()
 
-	sess, err := s.spawn(task, files, schema, func(sess *Session) {
+	sess, err := s.spawn(task, files, schema, workerModel, func(sess *Session) {
 		sess.mu.Lock()
 		sess.foreground = foreground
 		sess.mu.Unlock()
+		if resolvedRef != "" {
+			sess.ResolvedModel = resolvedRef
+		}
 		s.swarm.mu.Lock()
 		s.swarm.spawnedBy[sess.Name] = spawner
 		if len(schema) > 0 {
@@ -316,8 +348,13 @@ func (s *Server) reportWorkerResult(worker *Session) bool {
 	}
 
 	if !worker.isForeground() {
-		s.deliver(spawner, fmt.Sprintf("✓ worker %s finished %q:\n%s",
-			worker.Name, worker.Task, tools.Truncate(output)))
+		if resolved := workerResolvedModel(worker); resolved != "" {
+			s.deliver(spawner, fmt.Sprintf("✓ worker %s finished %q [model %s]:\n%s",
+				worker.Name, worker.Task, resolved, tools.Truncate(output)))
+		} else {
+			s.deliver(spawner, fmt.Sprintf("✓ worker %s finished %q:\n%s",
+				worker.Name, worker.Task, tools.Truncate(output)))
+		}
 	}
 	return true
 }
@@ -423,10 +460,48 @@ func (v *agentView) Broadcast(text string) int {
 
 func (v *agentView) Peers() []tools.Peer { return v.srv.Peers(v.self) }
 
-func (v *agentView) SpawnWorker(task string, files []string, schema json.RawMessage) (string, error) {
-	return v.srv.SpawnFor(v.self, task, files, schema)
+func (v *agentView) SpawnWorker(task string, files []string, schema json.RawMessage, model string) (string, error) {
+	return v.srv.SpawnForWithModel(v.self, task, files, schema, model)
 }
 
-func (v *agentView) SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage) (string, string, error) {
-	return v.srv.SpawnForForeground(ctx, v.self, task, files, schema)
+func (v *agentView) SpawnWorkerForeground(ctx context.Context, task string, files []string, schema json.RawMessage, model string) (string, string, error) {
+	name, output, err := v.srv.SpawnForForegroundWithModel(ctx, v.self, task, files, schema, model)
+	if err != nil {
+		return name, "", err
+	}
+	return name, output, nil
+}
+
+// resolveWorkerModel applies the D3 precedence chain: per-call model →
+// default_worker_model → the daemon session model. It resolves the winning
+// ref before any reservation, so a bad ref fails fast with a readable error
+// and no session ever exists for it. It returns the ref to build with and
+// the canonical resolved ref for audit.
+func (s *Server) resolveWorkerModel(model string) (buildRef, resolvedRef string, err error) {
+	ref := model
+	if ref == "" && s.Cfg != nil {
+		ref = s.Cfg.Features.DefaultWorkerModel
+	}
+	if ref == "" {
+		ref = s.Model
+	}
+	if ref == "" || s.Cfg == nil {
+		return "", "", nil
+	}
+	prov, modelName, resolveErr := s.Cfg.Resolve(ref)
+	if resolveErr != nil {
+		return "", "", fmt.Errorf("worker model %q: %w", ref, resolveErr)
+	}
+	return ref, config.ModelRef(modelName, prov.Name()), nil
+}
+
+// workerResolvedModel reads the audit ref without holding the swarm lock over
+// the session map.
+func workerResolvedModel(worker *Session) string {
+	if worker == nil {
+		return ""
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	return worker.ResolvedModel
 }

@@ -129,6 +129,11 @@ type Session struct {
 	NoTools bool
 	Started time.Time
 
+	// ResolvedModel is the canonical model@provider ref the worker actually
+	// runs on (orchestrator D3 audit). Empty for non-workers and for workers
+	// that predate the routing change.
+	ResolvedModel string
+
 	built *wiring.Session
 	ring  *Ring
 	srv   *Server
@@ -2690,7 +2695,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			if sess != nil {
 				spawner = sess.Name
 			}
-			name, err := s.SpawnFor(spawner, msg.Task, msg.Files, msg.Schema)
+			name, err := s.SpawnForWithModel(spawner, msg.Task, msg.Files, msg.Schema, msg.Model)
 			if err != nil {
 				send(ServerMsg{Kind: MsgError, Err: err.Error()})
 				continue

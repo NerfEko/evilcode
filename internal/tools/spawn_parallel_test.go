@@ -156,12 +156,12 @@ type waitTestDouble struct {
 
 func (s *waitTestDouble) Self() string { return "parent" }
 
-func (s *waitTestDouble) SpawnWorker(string, []string, json.RawMessage) (string, error) {
+func (s *waitTestDouble) SpawnWorker(string, []string, json.RawMessage, string) (string, error) {
 	s.asyncCalled = true
 	return "async-1", nil
 }
 
-func (s *waitTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage) (string, string, error) {
+func (s *waitTestDouble) SpawnWorkerForeground(context.Context, string, []string, json.RawMessage, string) (string, string, error) {
 	s.foregroundCalled = true
 	return "worker-1", `{"ok":true}`, nil
 }

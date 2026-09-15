@@ -29,6 +29,10 @@ const (
 	EnvConfigPath  = "EVILCODE_CONFIG"
 	EnvOllamaKey   = "OLLAMA_API_KEY"
 	EnvDeepSeekKey = "DEEPSEEK_API_KEY"
+	// EnvOpenCodeGoKey holds the OpenCode Go subscription key (opencode.ai/auth,
+	// the Zen console). OPENCODE_API_KEY is the env name models.dev publishes
+	// for the gateway.
+	EnvOpenCodeGoKey = "OPENCODE_API_KEY"
 	// EnvOllamaSessionCookie feeds the Cloud Usage widget. Ollama exposes no
 	// usage API; the widget reads https://ollama.com/settings with the browser's
 	// session cookie. A bare value is sent as `__Secure-session=<value>`; a
@@ -51,11 +55,12 @@ var configWriteMu sync.Mutex
 type ProviderKind string
 
 const (
-	KindOllama   ProviderKind = "ollama"
-	KindOpenAI   ProviderKind = "openai"
-	KindDeepSeek ProviderKind = "deepseek"
-	KindCodex    ProviderKind = "codex"
-	KindMock     ProviderKind = "mock"
+	KindOllama     ProviderKind = "ollama"
+	KindOpenAI     ProviderKind = "openai"
+	KindDeepSeek   ProviderKind = "deepseek"
+	KindOpenCodeGo ProviderKind = "opencode-go"
+	KindCodex      ProviderKind = "codex"
+	KindMock       ProviderKind = "mock"
 )
 
 // ProviderConfig is one `[[provider]]` block.
@@ -227,6 +232,13 @@ type Features struct {
 	// fixed cap cuts off exactly the turns least able to afford losing the
 	// work. Set it to reinstate a limit.
 	MaxSteps int `toml:"max_steps"`
+
+	// DefaultWorkerModel is the level-3 default for spawned workers
+	// (orchestrator D3): per-call model → this → the daemon session's model.
+	// Empty means the session model (today's behavior). A model@provider ref;
+	// validated for shape, resolved at spawn time so a bad ref fails fast
+	// before any tokens are spent.
+	DefaultWorkerModel string `toml:"default_worker_model"`
 }
 
 // MCPServer is one `[[mcp]]` block.
@@ -300,6 +312,10 @@ const (
 	DefaultCloudModel    = "deepseek-v4-flash:0731@ollama-cloud"
 	DefaultLocalModel    = "deepseek-v4-flash:0731@ollama-local"
 	DefaultDeepSeekModel = "deepseek-v4-flash"
+	// DefaultOpenCodeGoModel is the default workhorse on the OpenCode Go
+	// gateway: cheap, vision-capable, and a full 1M window, mirroring the
+	// flash-tier shape of the other default routes.
+	DefaultOpenCodeGoModel = "glm-5.3-flash@opencode-go"
 )
 
 // Default returns the configuration used when nothing is on disk: a local
@@ -314,6 +330,10 @@ func Default() *Config {
 			// the OpenAI chat completions API, so Build() serves it with the OpenAI
 			// client — only the base URL and key differ.
 			{Name: "deepseek", Kind: KindDeepSeek, BaseURL: "https://api.deepseek.com", APIKeyEnv: EnvDeepSeekKey},
+			// OpenCode Go is opencode's subscription gateway (zen/go). Same story
+			// as DeepSeek: OpenAI-compatible wire, own base URL, key, and bundled
+			// model catalogue with the metadata /v1/models does not carry.
+			{Name: "opencode-go", Kind: KindOpenCodeGo, BaseURL: provider.DefaultOpenCodeGoBaseURL, APIKeyEnv: EnvOpenCodeGoKey},
 		},
 		Display: Display{
 			Theme:           "catppuccin-frappe",
@@ -336,8 +356,9 @@ func Default() *Config {
 	// reasoning effort to high for both the cloud and local routes. A user's
 	// saved preference (ReasoningEffortFor) still overrides this at runtime.
 	c.ReasoningEfforts = map[string]string{
-		DefaultCloudModel: string(provider.ReasoningEffortHigh),
-		DefaultLocalModel: string(provider.ReasoningEffortHigh),
+		DefaultCloudModel:      string(provider.ReasoningEffortHigh),
+		DefaultLocalModel:      string(provider.ReasoningEffortHigh),
+		DefaultOpenCodeGoModel: string(provider.ReasoningEffortHigh),
 	}
 	return c
 }
@@ -354,6 +375,11 @@ func (c *Config) preferredDefaultModel() string {
 	for _, p := range c.Providers {
 		if p.Name == "ollama-cloud" && p.APIKeyValue() != "" {
 			return DefaultCloudModel
+		}
+	}
+	for _, p := range c.Providers {
+		if p.Name == "opencode-go" && p.APIKeyValue() != "" {
+			return DefaultOpenCodeGoModel
 		}
 	}
 	return DefaultLocalModel
@@ -1050,13 +1076,13 @@ func (c *Config) Validate() error {
 		}
 
 		switch p.Kind {
-		case KindOllama, KindOpenAI, KindDeepSeek, KindMock:
+		case KindOllama, KindOpenAI, KindDeepSeek, KindOpenCodeGo, KindMock:
 		case KindCodex:
 			if p.APIKey != "" || p.APIKeyEnv != "" {
 				add(path, fmt.Sprintf("Codex provider %q uses OAuth; remove api_key and api_key_env", p.Name))
 			}
 		case "":
-			add(path+".kind", "must be one of ollama, openai, deepseek, codex, or mock")
+			add(path+".kind", "must be one of ollama, openai, deepseek, opencode-go, codex, or mock")
 		default:
 			add(path+".kind", fmt.Sprintf("unknown provider kind %q", p.Kind))
 		}
@@ -1105,6 +1131,12 @@ func (c *Config) Validate() error {
 		// semantic recall and keeps lexical recall. Validate its shape, but do not
 		// reject a stale provider name here.
 		validateRef("features.embedding_model", c.Features.EmbeddingModel, false)
+	}
+	if c.Features.DefaultWorkerModel != "" {
+		// A worker default may name a provider that is not configured on this
+		// machine; spawn-time resolution refuses it with a readable error the
+		// model can correct. Validate shape only, like embedding_model.
+		validateRef("features.default_worker_model", c.Features.DefaultWorkerModel, false)
 	}
 
 	modelNames := make(map[string]int, len(c.Models))
@@ -1751,6 +1783,12 @@ func ContextLimitsFor(prov provider.Provider, model string, override int) Contex
 			}
 		}
 	}
+	// OpenCode Go's bundled catalogue knows the window statically, so no
+	// discovery request is needed — and one is not possible anyway: the
+	// gateway's model listing carries ids only.
+	if _, ok := prov.(*provider.OpenCodeGo); ok {
+		return ContextLimits{ContextWindow: provider.OpenCodeGoContextWindow(model)}
+	}
 	return ContextLimits{}
 }
 
@@ -1860,6 +1898,10 @@ func (p ProviderConfig) Build() (provider.Provider, error) {
 		// explicitly because DeepSeek's reasoning_effort vocabulary differs.
 		return provider.NewOpenAI(p.Name, p.BaseURL, p.APIKeyValue()).
 			WithDeepSeekReasoning(), nil
+	case KindOpenCodeGo:
+		// OpenCode Go is likewise OpenAI-compatible; its transport adds the
+		// gateway's session header, user agent, and bundled model metadata.
+		return provider.NewOpenCodeGo(p.Name, p.BaseURL, p.APIKeyValue()), nil
 	case KindCodex:
 		auth, err := provider.DiscoverCodexAuthAt(p.AuthFile)
 		if err != nil {
