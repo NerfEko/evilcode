@@ -363,8 +363,8 @@ type SessionInfo struct {
 	// live transport log the preview boxes show. All three are empty/zero
 	// for plain sessions.
 	Spawner  string   `json:"spawner,omitempty"`
-	Finished  bool     `json:"finished,omitempty"`
-	Tail      []string `json:"tail,omitempty"`
+	Finished bool     `json:"finished,omitempty"`
+	Tail     []string `json:"tail,omitempty"`
 }
 
 // ServerStatus is the stable response used by lifecycle commands.

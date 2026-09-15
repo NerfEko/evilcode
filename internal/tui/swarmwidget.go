@@ -27,7 +27,7 @@ type SwarmAgent struct {
 	// Spawner names the session that spawned this worker. Tail is the
 	// worker's recent context lines for the live preview boxes, and
 	// Finished closes a box whose worker is done.
-	Spawner string
+	Spawner  string
 	Tail     []string
 	Finished bool
 }

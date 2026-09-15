@@ -49,7 +49,7 @@ func (r *Renderer) RenderWorkerBoxes(workers []SwarmAgent, width int) []string {
 		}
 		head := amber.Render("🔧 "+w.Name) + dim.Render(" · "+state)
 		if w.Model != "" {
-			head += dim.Render(" · "+w.Model)
+			head += dim.Render(" · " + w.Model)
 		}
 		if w.Tokens > 0 {
 			head += dim.Render(fmt.Sprintf(" · %s tok", humanTokens(w.Tokens)))
