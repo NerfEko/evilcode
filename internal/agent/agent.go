@@ -952,18 +952,23 @@ func (a *Agent) streamOnce(ctx context.Context) (provider.Message, bool, error) 
 			}
 			sawDone = true
 		}
-		if chunk.Text != "" {
-			text.WriteString(chunk.Text)
-			emitted = true
-			e := a.newEvent(EventTextDelta)
-			e.Text = chunk.Text
-			a.emit(e)
-		}
+		// Reasoning before text, even when one chunk carries both: thinking
+		// precedes the answer in the protocol stream, and a coalesced chunk is
+		// one packet in that stream. Emitting the text delta first made the TUI
+		// close the thinking trace on the answer's first token and then reopen
+		// a trace after the reply for the thought's last word.
 		if chunk.Reasoning != "" {
 			reasoning.WriteString(chunk.Reasoning)
 			emitted = true
 			e := a.newEvent(EventReasoningDelta)
 			e.Text = chunk.Reasoning
+			a.emit(e)
+		}
+		if chunk.Text != "" {
+			text.WriteString(chunk.Text)
+			emitted = true
+			e := a.newEvent(EventTextDelta)
+			e.Text = chunk.Text
 			a.emit(e)
 		}
 		// Tool calls may arrive at any point, including with no text before
