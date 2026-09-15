@@ -231,7 +231,8 @@ func runOnce(args []string) (string, error) {
 	// hook that does, or an auto-poked turn is never observed.
 	memoryHook := agent.NewMemoryHook(mem)
 	defer memoryHook.Close()
-	a.Hooks = agent.Chain{memoryHook, poke}
+	orchestrate := agent.NewOrchestrateHook(cfg.Features.OrchestrateKeyword)
+	a.Hooks = agent.Chain{memoryHook, poke, orchestrate}
 	exposure := tools.NewExposure()
 
 	// Compaction persists through the session store rather than only in memory:
@@ -335,6 +336,7 @@ func runOnce(args []string) (string, error) {
 		WithGraphics(graphics.Detect(), filepath.Join(dataDir, "diagrams")).
 		WithMemory(mem).
 		WithAdvisor(advisor, lsps).
+		WithOrchestrate(orchestrate).
 		WithCompactor(compactor).
 		WithVision(overrides.Vision).
 		WithBraveSearch(braveSearch)

@@ -64,7 +64,12 @@ you intend to act on the answer rather than read it.
 
 The worker shares your working directory. Handing it files you are mid-edit on
 means you will both be told about the conflict, and someone still has to
-untangle the edit.`
+untangle the edit.
+
+Fan-out trigger: reach for this in parallel only when 3+ independent briefs
+exist — batch them in one round and wait only for the batch. Load the
+"orchestrate" skill for the decomposition and briefing playbook before
+fanning out.`
 
 func spawnWorkerTool(s Spawner) Tool {
 	return Tool{

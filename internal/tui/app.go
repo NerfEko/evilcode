@@ -600,6 +600,14 @@ type Model struct {
 	swarm  *SwarmState
 	summon SummonFunc
 
+	// orchestrate is the fan-out keyword hook for local sessions (nil when
+	// attached: the daemon owns the hook there and this client forwards
+	// /orchestrate as a remote command). orchestrator is the visible half —
+	// the rainbow composer tint and roster colors — armed by the keyword or
+	// the command until /orchestrate off or session end.
+	orchestrate  *agent.OrchestrateHook
+	orchestrator bool
+
 	// swarmDocked records whether the status widget found a slot last frame,
 	// which is what the strip stands down against.
 	swarmDocked bool
@@ -3861,6 +3869,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "overnight":
 		return m, m.overnightCommand(strings.TrimSpace(m.commandArg))
 
+	case "orchestrate":
+		return m, m.orchestrateCommand(strings.TrimSpace(m.commandArg))
+
 	case "context":
 		return m, m.contextCommand()
 
@@ -4304,6 +4315,10 @@ func (m *Model) submit(text string, wpm int) {
 		text = ExpandPastes(text, m.pastes)
 		m.pastes = nil
 	}
+	// The orchestrate keyword arms the visible half of orchestrator mode; the
+	// contract itself arrives via the hook (local) or the daemon (attached)
+	// at the next turn boundary.
+	m.armOrchestratorFromKeyword(text)
 	// E2: validate attachments before mutating any state. Sending the prompt
 	// with an unstripped [image N] placeholder and discarded image bytes made
 	// the model read about images it could never see. Blocking here keeps the
@@ -5091,6 +5106,8 @@ func (m *Model) composerState() ComposerState {
 		NewSession:      m.startActive,
 		PaletteOpen:     m.paletteOpen(),
 		Masked:          m.loginMode,
+		Orchestrator:    m.orchestrator,
+		Elapsed:         time.Since(m.started),
 	}
 }
 

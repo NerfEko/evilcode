@@ -194,12 +194,13 @@ type Session struct {
 	// lives on the reader, not the writer: a conflict queued on the writer
 	// would wait for the writer's safe point and reach the wrong conversation.
 	// Written by whichever session did the writing, so it is under mu.
-	pending   []Conflict
-	asks      *askBroker
-	mcp       *mcp.Client
-	poke      *agent.PokeHook
-	advisor   *agent.Advisor
-	overnight *overnightState
+	pending     []Conflict
+	asks        *askBroker
+	mcp         *mcp.Client
+	poke        *agent.PokeHook
+	advisor     *agent.Advisor
+	orchestrate *agent.OrchestrateHook
+	overnight   *overnightState
 
 	subs map[chan ServerMsg]struct{}
 
@@ -1029,6 +1030,12 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		poke = agent.NewPokeHook(built.Todos, built.Config.Features.AutoPoke)
 		hooks = append(hooks, poke)
 	}
+	// The keyword detector rides the same chain as poke and the advisor: a
+	// user message containing the standalone word `orchestrate` injects the
+	// fan-out contract at the next turn boundary (fan-out D5). Gated by
+	// [features] orchestrate_keyword; explicit /orchestrate on still arms.
+	orchestrate := agent.NewOrchestrateHook(built.Config.Features.OrchestrateKeyword)
+	hooks = append(hooks, orchestrate)
 	advisor := agent.NewAdvisor(func(ctx context.Context, system, user string) (string, error) {
 		return built.Config.Router().SideCall(ctx, config.RoleSmol, system, user)
 	}, built.Config.Features.Advisor)
@@ -1041,20 +1048,21 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 	}
 
 	sess := &Session{
-		Name:      built.Store.Name,
-		Model:     built.Model,
-		Cwd:       cwd,
-		Started:   time.Now(),
-		built:     built,
-		ring:      NewRing(),
-		srv:       s,
-		asks:      asks,
-		mcp:       mcpClient,
-		poke:      poke,
-		advisor:   advisor,
-		overnight: newOvernightState(),
-		subs:      map[chan ServerMsg]struct{}{},
-		idleSince: time.Now(),
+		Name:        built.Store.Name,
+		Model:       built.Model,
+		Cwd:         cwd,
+		Started:     time.Now(),
+		built:       built,
+		ring:        NewRing(),
+		srv:         s,
+		asks:        asks,
+		mcp:         mcpClient,
+		poke:        poke,
+		advisor:     advisor,
+		orchestrate: orchestrate,
+		overnight:   newOvernightState(),
+		subs:        map[chan ServerMsg]struct{}{},
+		idleSince:   time.Now(),
 	}
 	sess.NoTools = opts.NoTools
 	if built.Exec != nil && built.Exec.Bg != nil {

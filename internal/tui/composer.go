@@ -77,6 +77,12 @@ type ComposerState struct {
 	// PaletteOpen hides the hint line, since the palette floats where it goes.
 	PaletteOpen bool
 
+	// Orchestrator tints the prompt number with a slow rainbow cycle while
+	// orchestrator mode is armed. Elapsed drives the cycle; it freezes with
+	// everything else animated under EVILCODE_DETERMINISTIC (invariant 5).
+	Orchestrator bool
+	Elapsed      time.Duration
+
 	// Masked keeps secrets in the composer while making every rendered frame
 	// safe to screenshot.
 	Masked bool
@@ -85,6 +91,12 @@ type ComposerState struct {
 // MaxComposerRows caps the visible input height; beyond this it scrolls
 // internally following the cursor (plan.md §6.1).
 const MaxComposerRows = 10
+
+// OrchestratorGlowSeconds is how long the composer prompt number holds one
+// rainbow stop while orchestrator mode is armed. A full ramp cycle takes
+// seven times this — deliberately far slower than idle art's 40°/s, so it
+// reads as a calm glow rather than motion.
+const OrchestratorGlowSeconds = 2
 
 // promptGlyph returns the composer's leading glyph and its color for the
 // current state (plan.md §6.1).
@@ -180,6 +192,19 @@ func (r *Renderer) RenderComposer(s ComposerState) []string {
 	glyph, glyphStyle := r.promptGlyph(s)
 	numStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(0)))).Bold(true)
+	if s.Orchestrator {
+		// The composer is borderless, so the prompt number carries the
+		// rainbow state instead of a border tint: one ramp stop every two
+		// seconds, a calm glow beside idle art's 40°/s. Offset by one stop
+		// so the armed state reads distinctly even frozen (invariant 5).
+		elapsed := s.Elapsed
+		if Deterministic() {
+			elapsed = 0
+		}
+		stop := (1 + int(elapsed.Seconds()/OrchestratorGlowSeconds)) % 7
+		numStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(stop)))).Bold(true)
+	}
 
 	label := strconv.Itoa(s.PromptNumber + 1)
 	prefix := label + glyph

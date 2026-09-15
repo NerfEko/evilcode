@@ -124,6 +124,26 @@ func (sess *Session) Command(kind, arg, secret string) error {
 	case "overnight":
 		return sess.overnightCommand(arg)
 
+	case "orchestrate":
+		if sess.orchestrate == nil {
+			return fmt.Errorf("orchestrator mode is not configured for this session")
+		}
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "on":
+			sess.orchestrate.Arm()
+		case "off":
+			sess.orchestrate.Disarm()
+		case "", "status":
+		default:
+			return fmt.Errorf("usage: /orchestrate [on|off|status]")
+		}
+		if sess.orchestrate.Active() {
+			sess.notice("🌈 Orchestrator mode is on · the fan-out contract is in context")
+		} else {
+			sess.notice("Orchestrator mode is off")
+		}
+		return nil
+
 	case "save", "unsave":
 		pinned := kind == "save"
 		if err := session.Save(config.DataDir(), sess.Name, pinned); err != nil {

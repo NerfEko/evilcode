@@ -26,6 +26,11 @@ type SwarmAgent struct {
 type SwarmState struct {
 	mu sync.Mutex
 
+	// Orchestrator tints each live worker with its own rainbow stop while
+	// orchestrator mode is armed, which makes a fan-out roster legible at a
+	// glance. Off keeps the single-name color.
+	Orchestrator bool
+
 	// agents is written by the roster poller and read during render, so it is
 	// behind a mutex rather than an exported field: a render that walked the
 	// slice mid-replacement is the kind of crash that only shows up under a
@@ -116,18 +121,24 @@ func (r *Renderer) SwarmStatusWidget(s *SwarmState, elapsed time.Duration) Widge
 	dim := r.style(theme.RoleDim)
 	name := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.RGB(140, 200, 255)))).Bold(true)
+	rainbow := s != nil && s.Orchestrator
 	doneStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.RGB(100, 200, 100))))
 
 	var lines []string
-	for _, a := range agents {
+	for i, a := range agents {
 		glyph := doneStyle.Render("✓")
 		if a.Running {
 			glyph = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 200, 100)))).
 				Render(SpinnerFrame(elapsed))
 		}
-		row := glyph + " " + name.Render(a.Name)
+		nameStyle := name
+		if rainbow {
+			nameStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(theme.Hex(theme.Rainbow(i)))).Bold(true)
+		}
+		row := glyph + " " + nameStyle.Render(a.Name)
 		if a.Task != "" {
 			row += dim.Render(" · " + truncateCells(a.Task, 20))
 		}

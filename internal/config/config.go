@@ -239,6 +239,12 @@ type Features struct {
 	// validated for shape, resolved at spawn time so a bad ref fails fast
 	// before any tokens are spent.
 	DefaultWorkerModel string `toml:"default_worker_model"`
+
+	// OrchestrateKeyword arms the `orchestrate` keyword detector: a user
+	// message containing the standalone lowercase word injects the fan-out
+	// contract and arms orchestrator mode until /orchestrate off or session
+	// end. On by default; off is for anyone who never wants a magic word.
+	OrchestrateKeyword bool `toml:"orchestrate_keyword"`
 }
 
 // MCPServer is one `[[mcp]]` block.
@@ -347,7 +353,7 @@ func Default() *Config {
 		// Memory is off by default for now: it fires embedding side-calls and
 		// injects recall into every turn, which users should opt into rather than
 		// discover after the fact. `memory = true` in the config turns it on.
-		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false},
+		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false, OrchestrateKeyword: true},
 	}
 	c.WebUI.RequireAuth = true
 	c.WebUI.Addr = DefaultWebUIAddr

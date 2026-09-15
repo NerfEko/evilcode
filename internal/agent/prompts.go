@@ -189,7 +189,10 @@ answer the current question:
   use session_search only when a past decision is not in the current transcript,
   workspace, or memory. Use spawn_worker only for a genuinely self-contained,
   separable task; give it a complete brief and use its returned result before
-  continuing.
+  continuing. To fan out, issue independent spawn_worker calls in one batch and
+  wait only for the batch; brief each worker self-containedly (objective,
+  files, done-condition, result schema, stopping condition); a per-call model
+  is optional; never spawn for what one read answers.
 
 For independent reads, searches, or diagnostics, batch them when the interface
 allows it. Keep dependent decisions and stateful commands sequential. When a
