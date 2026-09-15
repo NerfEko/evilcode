@@ -619,6 +619,15 @@ type Model struct {
 	gruntTask     string
 	gruntModel    string
 
+	// workerBoxTop/workerBoxNames record the last frame's preview-box
+	// geometry for click hit-testing: boxes are fixed height, so a click
+	// maps to a worker by arithmetic. expandedWorker is the worker open in
+	// the side panel ("" when none), expandedAt throttles its refresh.
+	workerBoxTop   int
+	workerBoxNames []string
+	expandedWorker string
+	expandedAt     time.Time
+
 	// swarmDocked records whether the status widget found a slot last frame,
 	// which is what the strip stands down against.
 	swarmDocked bool
@@ -1495,6 +1504,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A click on the compaction record expands or collapses the summary
 		// the conversation was rewritten into.
 		if m.toggleCompactedAt(mouse) {
+			return m, nil
+		}
+		// A click on a live worker preview box opens the bigger
+		// start-screen-style view in the side panel.
+		if m.expandWorkerAt(mouse.Y, mouse.X) {
 			return m, nil
 		}
 		m.openQuickViewAt(mouse)
@@ -4243,6 +4257,7 @@ func (m *Model) closeSplit() {
 	}
 	m.panelOpen = false
 	m.liveView = false
+	m.expandedWorker = ""
 	m.panelScroll.ResetMomentum()
 	m.applyWrapWidth()
 	m.renderer.Graphics, m.renderer.ImagesOn = m.graphics, m.imagesOn
@@ -4878,6 +4893,12 @@ func (m *Model) stackFor(contentHeight int) Stack {
 
 	composer := m.bottomBar()
 	s.Heights[SlotComposer] = len(composer)
+	// The worker preview boxes are fixed chrome above the input, like the
+	// queued prompts: measured here so the transcript shrinks around them
+	// instead of the frame overflowing the terminal.
+	if boxes := m.myWorkerBoxes(); len(boxes) > 0 {
+		s.Heights[SlotSwarm] = len(m.renderer.RenderWorkerBoxes(boxes, m.chatWidth()))
+	}
 	return s
 }
 
@@ -5338,6 +5359,21 @@ func (m *Model) View() tea.View {
 		// input, until the daemon starts their turn (plan.md §6.3).
 		rows = append(rows, m.renderer.RenderQueuedPrompts(m.queuedTexts)...)
 	}
+	// Live worker preview boxes ride above the input: one fixed-height box
+	// per unfinished worker this session spawned, newest tails refreshing on
+	// the roster poll. The geometry is recorded for click-to-expand.
+	if boxes := m.myWorkerBoxes(); len(boxes) > 0 {
+		m.workerBoxTop = len(rows)
+		m.workerBoxNames = m.workerBoxNames[:0]
+		for _, w := range boxes {
+			m.workerBoxNames = append(m.workerBoxNames, w.Name)
+		}
+		rows = append(rows, m.renderer.RenderWorkerBoxes(boxes, m.chatWidth())...)
+	} else {
+		m.workerBoxTop = -1
+		m.workerBoxNames = nil
+	}
+	m.refreshExpandedWorker()
 	rows = append(rows, m.bottomBar()...)
 
 	// The elastic facts line lives below the composer and owns the same facts

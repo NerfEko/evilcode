@@ -782,6 +782,7 @@ func (s *Server) Sessions() []SessionInfo {
 		clients := len(sess.subs)
 		running := sess.running
 		stale := worker && sess.stale && !sess.closedDone
+		finished := worker && sess.closedDone
 		sess.mu.Unlock()
 		// asks is the ask broker; its Snapshot is goroutine-safe, so it can be
 		// read outside the session lock.
@@ -791,10 +792,14 @@ func (s *Server) Sessions() []SessionInfo {
 		}
 		// Conversation length excludes the system message prepended by Conv.
 		msgCount := 0
+		var tail []string
 		if msgs := sess.built.Agent.Conv.Messages(); len(msgs) > 0 {
 			msgCount = len(msgs)
 			if msgs[0].Role == provider.RoleSystem {
 				msgCount--
+			}
+			if worker && !finished {
+				tail = workerTail(msgs)
 			}
 		}
 		seen[name] = true
@@ -813,6 +818,9 @@ func (s *Server) Sessions() []SessionInfo {
 			Pending:  pending,
 			Messages: msgCount,
 			Tokens:   tokens[name],
+			Spawner:  spawners[name],
+			Finished: finished,
+			Tail:     tail,
 		})
 	}
 	s.mu.Unlock()

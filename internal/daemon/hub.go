@@ -12,6 +12,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/config"
+	"evilcode/internal/provider"
 	"evilcode/internal/tools"
 )
 
@@ -536,6 +537,42 @@ func (s *Server) CancelWorker(spawner, worker string) (string, error) {
 	sess.mu.Unlock()
 	sess.cancelTurn()
 	return fmt.Sprintf("Worker %s cancellation requested. Its salvaged output will arrive as a message.", worker), nil
+}
+
+// WorkerTailLines is how many of a worker's recent context lines ride the
+// roster row: the live transport log the parent's preview boxes show.
+const WorkerTailLines = 14
+
+// workerTail flattens the recent conversation to its last non-empty text
+// lines, newest last. System preamble is skipped (it never changes), each
+// line is capped so one pasted file cannot flood the roster, and the window
+// is fixed so every poll costs the same.
+func workerTail(msgs []provider.Message) []string {
+	const maxLine = 160
+	var lines []string
+	for _, m := range msgs {
+		if m.Role == provider.RoleSystem {
+			continue
+		}
+		for _, line := range strings.Split(m.Content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			lines = append(lines, truncateTailLine(line, maxLine))
+		}
+	}
+	if len(lines) > WorkerTailLines {
+		lines = lines[len(lines)-WorkerTailLines:]
+	}
+	return lines
+}
+
+func truncateTailLine(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max]) + "…"
 }
 
 // lastAssistantText is the worker's final message.

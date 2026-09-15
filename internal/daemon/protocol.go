@@ -355,6 +355,16 @@ type SessionInfo struct {
 	// Tokens is a worker's accumulated token total (orchestrator D7), so a
 	// roster can show what each worker spent. Display-only.
 	Tokens int `json:"tokens,omitempty"`
+
+	// Spawner names the session that spawned this worker, so a parent shows
+	// live preview boxes only for its own crew. Finished reports the worker
+	// is done (result delivered or delivering), so boxes close themselves.
+	// Tail is the worker's last WorkerTailLines non-empty context lines, the
+	// live transport log the preview boxes show. All three are empty/zero
+	// for plain sessions.
+	Spawner  string   `json:"spawner,omitempty"`
+	Finished  bool     `json:"finished,omitempty"`
+	Tail      []string `json:"tail,omitempty"`
 }
 
 // ServerStatus is the stable response used by lifecycle commands.

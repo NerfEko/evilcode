@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"evilcode/internal/provider"
 )
 
 // Workers are grunts: grunt-N off the on-disk high-water mark, never a
@@ -254,6 +256,81 @@ func TestSchemaExhaustionReportsFailedResultWithContent(t *testing.T) {
 	worker.mu.Unlock()
 	if retries != 2 {
 		t.Fatalf("retries = %d, want 2 (3 total prompts)", retries)
+	}
+}
+
+// The roster carries each live worker's spawner, finished flag, and recent
+// context tail so parents render preview boxes only for their own crew.
+func TestRosterCarriesWorkerTailAndOwnership(t *testing.T) {
+	srv, _ := testServer(t)
+	defer srv.Close()
+
+	spawner, err := srv.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := srv.SpawnFor(spawner.Name, "grunt brief", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	worker := srv.sessions[name]
+	srv.mu.Unlock()
+	waitFor(t, "the worker to finish", worker.finished)
+
+	var row *SessionInfo
+	for _, info := range srv.Sessions() {
+		if info.Name == name {
+			row = &info
+		}
+	}
+	if row == nil {
+		t.Fatalf("worker %q missing from the roster", name)
+	}
+	if row.Spawner != spawner.Name {
+		t.Errorf("spawner = %q, want %q", row.Spawner, spawner.Name)
+	}
+	if !row.Finished {
+		t.Error("finished worker not marked finished")
+	}
+	if len(row.Tail) != 0 {
+		t.Errorf("finished worker still carries a %d-line tail", len(row.Tail))
+	}
+
+	var parentRow *SessionInfo
+	for _, info := range srv.Sessions() {
+		if info.Name == spawner.Name {
+			parentRow = &info
+		}
+	}
+	if parentRow == nil {
+		t.Fatal("spawner missing from the roster")
+	}
+	if parentRow.Spawner != "" || parentRow.Finished || len(parentRow.Tail) != 0 {
+		t.Errorf("plain session carries worker fields: %+v", parentRow)
+	}
+}
+
+func TestWorkerTailWindowsFourteenLines(t *testing.T) {
+	msgs := []provider.Message{{Role: provider.RoleSystem, Content: "preamble"}}
+	for i := 0; i < 20; i++ {
+		msgs = append(msgs, provider.Message{
+			Role:    provider.RoleAssistant,
+			Content: strings.Repeat("x", 200),
+		})
+	}
+	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: "  \n "})
+	tail := workerTail(msgs)
+	if len(tail) != WorkerTailLines {
+		t.Fatalf("tail = %d lines, want %d", len(tail), WorkerTailLines)
+	}
+	for _, line := range tail {
+		if len(line) > 165 {
+			t.Fatalf("tail line not capped: %q", line)
+		}
+	}
+	if got := workerTail(nil); len(got) != 0 {
+		t.Fatalf("empty conversation tailed %d lines", len(got))
 	}
 }
 

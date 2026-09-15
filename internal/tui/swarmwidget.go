@@ -24,6 +24,12 @@ type SwarmAgent struct {
 	// sessions and older daemons.
 	Model  string
 	Tokens int
+	// Spawner names the session that spawned this worker. Tail is the
+	// worker's recent context lines for the live preview boxes, and
+	// Finished closes a box whose worker is done.
+	Spawner string
+	Tail     []string
+	Finished bool
 }
 
 // SwarmState is the live swarm, plus the hysteresis that keeps the strip and
@@ -82,6 +88,22 @@ func (s *SwarmState) Live() []SwarmAgent {
 	var out []SwarmAgent
 	for _, a := range s.Agents() {
 		if a.Running {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// MyWorkers returns the calling session's unfinished workers: the crew the
+// live preview boxes follow. Finished workers drop out on the next poll, so
+// boxes close themselves when results land.
+func (s *SwarmState) MyWorkers(self string) []SwarmAgent {
+	if s == nil || self == "" {
+		return nil
+	}
+	var out []SwarmAgent
+	for _, a := range s.Agents() {
+		if a.Worker && !a.Finished && a.Spawner == self {
 			out = append(out, a)
 		}
 	}
