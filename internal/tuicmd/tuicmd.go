@@ -259,6 +259,12 @@ func runOnce(args []string) (string, error) {
 		},
 		OnCompaction: exposure.Reset,
 	}
+	// omp per-turn pruning: blank superseded reads in the durable log.
+	if cfg.CompactionSettings().PruneReads {
+		a.Compactor.PruneRuns = func() (int, int, error) {
+			return session.PruneSupersededReads(dataDir, store.Name)
+		}
+	}
 	compactor.Settings = cfg.CompactionSettings()
 	compactor.SessionModel = a.Model
 	compactor.Candidates = nil

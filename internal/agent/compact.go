@@ -90,6 +90,11 @@ type Compactor struct {
 	// the model context (for example the tool exposure ledger).
 	OnCompaction func()
 
+	// PruneRuns the omp per-turn pruning pass: superseded reads blanked in
+	// the durable log. Nil disables. Wiring gives it the data dir + session
+	// name closure; the Compactor invokes it after a completed turn.
+	PruneRuns func() (pruned int, tokensSaved int, err error)
+
 	mu    sync.Mutex
 	count int
 

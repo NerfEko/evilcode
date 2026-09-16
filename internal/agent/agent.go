@@ -818,6 +818,14 @@ func (a *Agent) loop(ctx context.Context) error {
 		injected := a.injectInterrupts(false)
 
 		if !injected {
+			// omp prunes superseded tool results after every completed turn
+			// (agent-session.ts:8334), keeping context growth linear so the
+			// threshold — not a panic — decides when compaction runs.
+			if a.Compactor != nil && a.Compactor.PruneRuns != nil {
+				if _, _, err := a.Compactor.PruneRuns(); err != nil {
+					a.Notice(LevelWarning, "read prune: %v", err)
+				}
+			}
 			if a.Hooks != nil {
 				appended, err := a.Hooks.PostTurn(ctx, a)
 				if err != nil {

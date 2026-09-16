@@ -396,6 +396,12 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		},
 		OnCompaction: exposure.Reset,
 	}
+	// omp per-turn pruning: blank superseded reads in the durable log.
+	if cfg.CompactionSettings().PruneReads {
+		a.Compactor.PruneRuns = func() (int, int, error) {
+			return session.PruneSupersededReads(dataDir, store.Name)
+		}
+	}
 	// omp compaction engine wiring: settings from [compaction], and the
 	// candidate chain (session model → roles → largest window).
 	a.Compactor.Settings = cfg.CompactionSettings()
