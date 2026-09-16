@@ -103,13 +103,8 @@ func TestModelSwitchKeepsTheDedicatedEmbeddingBackend(t *testing.T) {
 	if !ok || ep.Name() != "other" {
 		t.Errorf("post-switch embedder = %T, want the dedicated embedding backend", sess.built.Memory.Embedder)
 	}
-	c := sess.built.Agent.Compactor
-	if c == nil || c.Embedding == nil {
-		t.Fatal("compaction lost its embedder across the switch")
-	}
-	if cp, ok := c.Embedding.(provider.Provider); !ok || cp.Name() != "other" {
-		t.Errorf("compactor embedder = %T, want the dedicated backend, not the chat provider", c.Embedding)
-	}
+	// The compaction embedder is gone with the omp port: compaction no
+	// longer runs a semantic layer, so the invariant collapses to memory.
 }
 
 // Build wiring stamps per-model overrides onto the agent; a runtime switch has

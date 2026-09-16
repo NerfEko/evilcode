@@ -18,6 +18,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/provider"
 )
 
@@ -317,6 +318,13 @@ type Config struct {
 	// rather than a bundled engine: STT setups are personal — a local
 	// whisper.cpp, a cloud key, a wrapper script — and evilcode has no business
 	// having an opinion about which.
+
+	// Compaction is the context-rewrite settings group (plan-compaction-port.md).
+	// Defaults mirror omp's DEFAULT_COMPACTION_SETTINGS; the zero value of a
+	// missing [compaction] block must mean the same thing, so the getters
+	// normalize instead of trusting the raw fields.
+	Compaction CompactionConfig `toml:"compaction"`
+
 	Dictate []string    `toml:"dictate"`
 	MCP     []MCPServer `toml:"mcp"`
 
@@ -326,6 +334,80 @@ type Config struct {
 
 	// Path records where this config was loaded from, or "" for defaults.
 	Path string `toml:"-"`
+}
+
+// CompactionConfig is the [compaction] settings group
+// (plan-compaction-port.md). Fields are raw TOML values; use the Compaction
+// accessor, which fills unset fields with omp's defaults.
+type CompactionConfig struct {
+	// Enabled gates automatic compaction. Manual /compact always works.
+	// Missing (false) is normalized to true, matching omp's default.
+	Enabled *bool `toml:"enabled"`
+	// Strategy: context-full | handoff | shake | off. Empty = context-full.
+	Strategy string `toml:"strategy"`
+	// ThresholdPercent 1..99, or <=0 meaning the window minus the reserve.
+	ThresholdPercent int `toml:"threshold_percent"`
+	// ThresholdTokens >0 wins over the percentage.
+	ThresholdTokens int `toml:"threshold_tokens"`
+	// ReserveTokens keeps this much of the window free for the answer.
+	ReserveTokens int `toml:"reserve_tokens"`
+	// KeepRecentTokens is the verbatim recent-tail budget.
+	KeepRecentTokens int `toml:"keep_recent_tokens"`
+	// AutoContinue schedules the agent-authored continuation prompt after a
+	// compaction. Missing = true.
+	AutoContinue *bool `toml:"auto_continue"`
+	// PruneReads elides superseded read results after every turn.
+	PruneReads *bool `toml:"prune_reads"`
+	// HandoffSaveToDisk writes auto-handoff documents to the artifacts dir.
+	HandoffSaveToDisk bool `toml:"handoff_save_to_disk"`
+}
+
+// Compaction returns the settings group with omp's defaults applied to any
+// field the config file left unset. This is the only accessor the runtime
+// uses — raw field reads would misread a missing [compaction] block as
+// "everything zero", which for Enabled and AutoContinue means off.
+func (c *Config) CompactionSettings() compact.Settings {
+	cfg := c.Compaction
+	if cfg.Enabled == nil {
+		cfg.Enabled = new(true)
+	}
+	if cfg.AutoContinue == nil {
+		cfg.AutoContinue = new(true)
+	}
+	out := compact.DefaultSettings()
+	out.Enabled = *cfg.Enabled
+	out.AutoContinue = *cfg.AutoContinue
+	if s := normalizeStrategy(cfg.Strategy); s != "" {
+		out.Strategy = s
+	}
+	if cfg.ThresholdPercent != 0 {
+		out.ThresholdPercent = cfg.ThresholdPercent
+	}
+	if cfg.ThresholdTokens != 0 {
+		out.ThresholdTokens = cfg.ThresholdTokens
+	}
+	if cfg.ReserveTokens > 0 {
+		out.ReserveTokens = cfg.ReserveTokens
+	}
+	if cfg.KeepRecentTokens > 0 {
+		out.KeepRecentTokens = cfg.KeepRecentTokens
+	}
+	if cfg.PruneReads != nil {
+		out.PruneReads = *cfg.PruneReads
+	}
+	out.HandoffSaveToDisk = cfg.HandoffSaveToDisk
+	return out
+}
+
+func normalizeStrategy(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "context-full", "":
+		return "context-full"
+	case "handoff", "shake", "off":
+		return strings.ToLower(strings.TrimSpace(s))
+	default:
+		return "context-full"
+	}
 }
 
 // The model both default routes point at. Same model either way — only the

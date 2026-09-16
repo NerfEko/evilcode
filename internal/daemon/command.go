@@ -364,9 +364,6 @@ func (sess *Session) setCredential(target, key string) error {
 			if live.built.Memory != nil && live.built.EmbeddingProvider == nil {
 				live.built.Memory.Embedder = rebuilt
 			}
-			if live.built.Agent.Compactor != nil && live.built.EmbeddingProvider == nil {
-				live.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
-			}
 		} else if uses {
 			// A busy session keeps its in-flight provider instance; the new key
 			// applies at its next turn boundary (R2-12).
@@ -413,9 +410,6 @@ func (sess *Session) applyPendingCredential() {
 		// embedder, so it follows; with one, rotation leaves it alone.
 		if sess.built.Memory != nil {
 			sess.built.Memory.Embedder = rebuilt
-		}
-		if sess.built.Agent.Compactor != nil {
-			sess.built.Agent.Compactor.SetEmbeddingProvider(rebuilt)
 		}
 	}
 	sess.mu.Unlock()
@@ -554,9 +548,6 @@ func (sess *Session) rewind(arg string) error {
 	kept, err := sess.built.Store.Rewind(config.DataDir(), points[n-1].Entry)
 	if err != nil {
 		return err
-	}
-	if sess.built.Agent.Compactor != nil {
-		sess.built.Agent.Compactor.ResetSemanticHistory()
 	}
 	discarded := before
 	if len(before) > len(kept) {

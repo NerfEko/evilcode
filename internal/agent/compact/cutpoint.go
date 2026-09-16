@@ -264,7 +264,17 @@ func PrepareCompaction(msgs []provider.Message, s Settings, tokensBefore, provid
 	}
 	recent = append(recent, msgs[cut.FirstKept:]...)
 
-	if len(toSummarize) == 0 && len(turnPrefix) == 0 {
+	// omp's no-op gate counts only messages that produce transcript text;
+	// a system-only prefix is nothing to summarize.
+	summarizable := 0
+	for _, m := range toSummarize {
+		if m.Role == provider.RoleSystem || (m.Hidden && !isCompactionMarker(m) && !isCompactionRecentMarker(m)) {
+			continue
+		}
+		summarizable++
+		break
+	}
+	if summarizable == 0 && len(turnPrefix) == 0 {
 		return nil
 	}
 

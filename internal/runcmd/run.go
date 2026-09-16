@@ -224,7 +224,6 @@ func Run(args []string) (int, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
-		Embedding: prov,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
@@ -233,6 +232,9 @@ func Run(args []string) (int, error) {
 		},
 		OnCompaction: exposure.Reset,
 	}
+	a.Compactor.Settings = cfg.CompactionSettings()
+	a.Compactor.SessionModel = a.Model
+	a.Compactor.Candidates = nil // headless: the smol summarizer only
 	defer a.Close()
 
 	// Headless recalls but does not extract: a one-shot invocation has no turn

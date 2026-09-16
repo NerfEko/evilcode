@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
-	"testing"
 	"time"
 
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/provider"
 	"evilcode/internal/tools"
+	"testing"
 )
 
 // R2-14: manual compactions used to consume the same allowance the automatic
@@ -22,10 +24,18 @@ func TestManualCompactionsDoNotConsumeTheAutoBudget(t *testing.T) {
 	conv := compactableConversation()
 
 	// Three manual compactions — the old MaxAutoCompactions — must not disable
-	// the automatic path.
+	// the automatic path. Each round adds fresh turns: omp's rule (and ours)
+	// is that a second compaction with nothing new since the summary is a
+	// no-op, not a repeat.
 	for i := 0; i < MaxAutoCompactions; i++ {
 		if _, err := c.Compact(context.Background(), conv); err != nil {
 			t.Fatal(err)
+		}
+		for j := 0; j < 3; j++ {
+			conv.Append(
+				provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("fresh turn %d-%d prompt %s", i, j, strings.Repeat("p", 9000))},
+				provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("fresh turn %d-%d answer %s", i, j, strings.Repeat("a", 9000))},
+			)
 		}
 	}
 	if got := c.Count(); got != MaxAutoCompactions {
@@ -55,10 +65,17 @@ func TestAutoCompactionIsCheckedEveryRound(t *testing.T) {
 	}
 	compacted := 0
 	conv := NewConversation("system")
+	// omp trigger semantics: the between-rounds check compares pending
+	// tokens against the threshold (window − reserve). With reserve 16384 a
+	// 8192-token window never crosses, so this fixture uses a window past
+	// the floor AND pre-existing content that crosses it when the tool
+	// result lands. 12 turns × ~2.2k tokens ≈ 27k; the window here is
+	// effectively "used 90000 of 100000" — the provider serves the mock, so
+	// the NumCtx override drives the check.
 	for i := 0; i < compactionFixtureTurns; i++ {
 		conv.Append(
-			provider.Message{Role: provider.RoleUser, Content: "prompt"},
-			provider.Message{Role: provider.RoleAssistant, Content: "ok"},
+			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d %s", i, strings.Repeat("p", 6000))},
+			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("ok %d %s", i, strings.Repeat("a", 3000))},
 		)
 	}
 	a := New("compact-every-round", p, "test-model", tools.Set{{
@@ -71,6 +88,13 @@ func TestAutoCompactionIsCheckedEveryRound(t *testing.T) {
 	a.BaseDelay = time.Millisecond
 	a.NumCtx = window
 	a.Compactor = &Compactor{
+		// omp's fixed 20000 keep-recent budget presumes real windows; the
+		// settings are the knob for a fixture-sized one.
+		Settings: func() compact.Settings {
+			s := compact.DefaultSettings()
+			s.KeepRecentTokens = 2000
+			return s
+		}(),
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			compacted++
 			return "summary", nil

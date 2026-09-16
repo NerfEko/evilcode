@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/memory"
 	"evilcode/internal/provider"
 	"evilcode/internal/todo"
@@ -1029,15 +1030,21 @@ func TestSystemPromptListsSkillsWithoutBodies(t *testing.T) {
 }
 
 func TestCompactPromptPreservesActionableState(t *testing.T) {
+	// The omp prompt suite replaced the old CompactPrompt: the summary
+	// skeleton must demand progress state, exact identifiers, and a
+	// next-action list (plan-compaction-port.md).
 	for _, want := range []string{
-		"acceptance criteria and whether each is done, pending, or blocked",
-		"Distinguish planned work from work actually performed",
-		"claim completion from intent alone",
-		"next action concrete enough",
+		"### Done",
+		"### In Progress",
+		"preserve exact file paths, function names, error messages",
+		"## Next Steps",
 	} {
-		if !strings.Contains(CompactPrompt, want) {
-			t.Errorf("compact prompt is missing %q: %s", want, CompactPrompt)
+		if !strings.Contains(compact.CompactionSummaryPrompt, want) {
+			t.Errorf("compaction prompt is missing %q", want)
 		}
+	}
+	if !strings.Contains(compact.SummarizationSystemPrompt, "NEVER continue the conversation") {
+		t.Error("the summarizer system prompt lost its anti-continuation guard")
 	}
 }
 

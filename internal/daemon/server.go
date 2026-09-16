@@ -2286,15 +2286,6 @@ func (sess *Session) setModel(ref string, requested provider.ReasoningEffort) er
 		sess.built.Memory.Embedder = embedder
 		sess.built.Memory.SetEmbeddingModel(identity)
 	}
-	if sess.built.Agent.Compactor != nil {
-		if eref := cfg.Features.EmbeddingModel; eref != "" {
-			ep, _, rerr := cfg.Resolve(eref)
-			if rerr != nil {
-				ep = nil
-			}
-			sess.built.Agent.Compactor.SetEmbeddingProvider(ep)
-		}
-	}
 	sess.mu.Unlock()
 	sess.refreshSystemPrompt()
 

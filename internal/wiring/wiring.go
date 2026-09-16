@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/config"
 	"evilcode/internal/lsp"
 	"evilcode/internal/memory"
@@ -378,7 +380,6 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
-		Embedding: out.EmbeddingProvider,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
@@ -387,6 +388,11 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		},
 		OnCompaction: exposure.Reset,
 	}
+	// omp compaction engine wiring: settings from [compaction], and the
+	// candidate chain (session model → roles → largest window).
+	a.Compactor.Settings = cfg.CompactionSettings()
+	a.Compactor.SessionModel = a.Model
+	a.Compactor.Candidates = compactionCandidates(cfg, a.Model)
 	out.Agent = a
 	out.closers = append(out.closers, a.Close)
 
@@ -479,4 +485,54 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		}
 	}
 	return out, nil
+}
+
+// compactionCandidates builds the omp model fallback chain for the
+// summarizer side-calls: the session model first, then each configured role
+// model, then the largest-context model available across the config's
+// providers (agent-session.ts #resolveCompactionModelCandidates).
+func compactionCandidates(cfg *config.Config, sessionModel string) []compact.ModelInfoLite {
+	roles := cfg.RoleChain(config.RoleDefault)
+	roles = append(roles, cfg.RoleChain(config.RoleSmol)...)
+	roles = append(roles, cfg.RoleChain(config.RolePlan)...)
+	roles = append(roles, cfg.RoleChain(config.RoleCommit)...)
+
+	seen := map[string]bool{}
+	var refs []string
+	add := func(ref string) {
+		if ref == "" || seen[ref] {
+			return
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	add(sessionModel)
+	for _, r := range roles {
+		add(r)
+	}
+
+	var available []compact.ModelInfoLite
+	provs := map[string]provider.Provider{}
+	for _, ref := range refs {
+		parts := strings.SplitN(ref, "@", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		provName := parts[1]
+		prov := provs[provName]
+		if prov == nil {
+			if pc := cfg.FindProvider(provName); pc != nil {
+				if p, err := pc.Build(); err == nil {
+					prov = p
+					provs[provName] = prov
+				}
+			}
+		}
+		if prov == nil {
+			continue
+		}
+		window := config.ContextWindowFor(prov, parts[0], 0)
+		available = append(available, compact.ModelInfoLite{Ref: ref, ContextWindow: window})
+	}
+	return compact.CandidateChain(sessionModel, roles, available)
 }

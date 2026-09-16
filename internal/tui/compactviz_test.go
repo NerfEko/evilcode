@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/provider"
 )
 
@@ -32,9 +33,16 @@ func compactTestModel(t *testing.T) *Model {
 	m := NewModel(a, HeaderState{SessionName: "bat", Model: "mock-large"})
 	m.width, m.height = 100, 40
 	m.ctxMax = 2000
+	// omp engine: keep-recent is a settings knob; the old 2000-token
+	// preserve budget maps to KeepRecentTokens here.
 	m.WithCompactor(&agent.Compactor{
+		Settings: func() compact.Settings {
+			s := compact.DefaultSettings()
+			s.KeepRecentTokens = 500
+			return s
+		}(),
 		Summarize: func(context.Context, string, string) (string, error) {
-			return "The conversation covered counting in Spanish.", nil
+			return "## Goal\nThe conversation covered counting in Spanish.\n\n## Progress\n\n### Done\n- [x] x\n\n## Next Steps\n1. next", nil
 		},
 	})
 	return m

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/provider"
 	"evilcode/internal/tools"
 )
@@ -590,19 +591,11 @@ func (a *Agent) autoCompact(ctx context.Context) {
 		return
 	}
 	window := a.effectiveCompactionWindow()
-	// Keep the relevance prewarm and the actual rewrite on the same effective
-	// window, including the fallback used when model discovery was unavailable.
 	a.Compactor.ContextWindow = window
+	a.Compactor.SetPromptTokens(a.pendingContextSize())
 	if !a.Compactor.ShouldCompactForConversation(a.pendingContextSize(), window, a.Conv) {
 		return
 	}
-	// Queue the exact snapshot that will be compacted, including the prompt
-	// that Run appended. Give an already-started lookup a small grace period;
-	// Compact itself still never waits on the provider and falls back to the
-	// ordinary recency boundary when this snapshot is unavailable.
-	msgs := a.Conv.Messages()
-	a.Compactor.PrepareRelevance(ctx, msgs)
-	a.Compactor.WaitForRelevance(ctx, msgs, CompactRelevanceWait)
 	if _, err := a.Compactor.CompactWithWindow(ctx, a.Conv, window); err != nil {
 		a.Notice(LevelWarning, "Could not compact: %v", err)
 		return
@@ -626,11 +619,11 @@ func (a *Agent) ctxUsed() int {
 // pendingContextSize estimates what the next provider request will carry.
 // After a tool round the conversation already includes the results, while
 // lastCtx still describes the request that preceded them — the largest gap
-// between "checked" and "sent" a turn can have (R2-14). Characters-to-tokens
-// at four to one, the same rule the status line's live estimate uses.
+// between "checked" and "sent" a turn can have (R2-14). cl100k estimates via
+// the compaction package, the same accounting the compaction decision uses.
 func (a *Agent) pendingContextSize() int {
 	used := a.ctxUsed()
-	if est := compactMessagesTokens(a.Conv.MessagesForModel()); est > used {
+	if est := compact.EstimateConversation(a.Conv.MessagesForModel()); est > used {
 		used = est
 	}
 	return used
@@ -782,13 +775,6 @@ func (a *Agent) loop(ctx context.Context) error {
 			}
 		}
 		a.Conv.Append(msg)
-		// A tool-call assistant message is an intermediate step, not the
-		// completed turn. Snapshot only the final assistant response so the
-		// semantic window describes what the user actually received.
-		if len(msg.ToolCalls) == 0 && a.Compactor != nil {
-			a.Compactor.RecordEmbeddingSnapshot(ctx, msg.Content)
-		}
-
 		if len(msg.ToolCalls) > 0 {
 			// The cap counts executed tool rounds, not model requests: with
 			// max_steps=1, one tool call runs and the concluding answer is
@@ -840,9 +826,6 @@ func (a *Agent) loop(ctx context.Context) error {
 				if appended {
 					continue
 				}
-			}
-			if a.Compactor != nil {
-				a.Compactor.PrepareRelevanceIfNeeded(ctx, a.ctxUsed(), a.effectiveCompactionWindow(), a.Conv)
 			}
 			a.endTurn(EndComplete)
 			return nil

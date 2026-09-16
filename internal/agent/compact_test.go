@@ -6,26 +6,33 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/provider"
 )
 
 const compactionFixtureTurns = 12
 
 func summarizer(reply string, err error) Summarizer {
-	return func(context.Context, string, string) (string, error) { return reply, err }
+	return func(context.Context, string, string) (string, error) {
+		if err != nil {
+			return "", err
+		}
+		return ompOK(reply), nil
+	}
 }
 
 func compactableConversation() *Conversation {
 	conv := NewConversation("sys")
 	for i := 0; i < compactionFixtureTurns; i++ {
+		// ~2.5k tokens per turn so the 20000-token keep-recent budget leaves
+		// a real summarized prefix in a 12-turn fixture (omp cut semantics).
 		conv.Append(
-			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn %02d prompt", i)},
-			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("turn %02d answer", i)},
+			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn %02d prompt %s", i, strings.Repeat("p", 6000))},
+			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("turn %02d answer %s", i, strings.Repeat("a", 2000))},
 		)
 	}
 	return conv
@@ -45,12 +52,24 @@ func largeCompactionConversation() *Conversation {
 	return conv
 }
 
+// ompOK is the minimal omp-skeleton summary the gate accepts for the
+// compactionFixtureTurns fixture; the fixture goal "turn NN prompt" is not
+// real-world text, so FirstUserMessage is empty in these tests and the
+// goal-echo gate is inert.
+func ompOK(summary string) string {
+	return "## Goal\n" + summary + "\n\n## Progress\n\n### Done\n- [x] x\n\n## Next Steps\n1. next"
+}
+
 func TestCompactReplacesTheConversation(t *testing.T) {
 	conv := compactableConversation()
-	var summarized string
+	var summarized, shortInput string
 	c := &Compactor{Summarize: func(_ context.Context, _, user string) (string, error) {
-		summarized = user
-		return "we wired auth", nil
+		if summarized == "" {
+			summarized = user
+		} else if shortInput == "" {
+			shortInput = user
+		}
+		return ompOK("we wired auth"), nil
 	}}
 
 	if _, err := c.Compact(context.Background(), conv); err != nil {
@@ -60,14 +79,29 @@ func TestCompactReplacesTheConversation(t *testing.T) {
 	if !strings.Contains(msgs[1].Content, "we wired auth") {
 		t.Errorf("summary message = %q", msgs[1].Content)
 	}
-	if strings.Contains(summarized, "turn 11") || !strings.Contains(summarized, "turn 00") {
-		t.Errorf("summarizer saw the wrong portion: %q", summarized)
+	if !strings.HasPrefix(msgs[1].Content, "[conversation compacted]") {
+		t.Errorf("summary message lost the marker: %q", msgs[1].Content[:40])
+	}
+	// omp cut semantics on this fixture: the summarizer sees turns 00-04;
+	// turns 05..11 stay verbatim in the recent tail (FirstKept=11).
+	for _, kept := range []string{"turn 05", "turn 11"} {
+		if strings.Contains(summarized, kept) {
+			t.Errorf("summarizer saw kept-tail turn %q", kept)
+		}
+	}
+	if !strings.Contains(summarized, "turn 00") {
+		t.Errorf("summarizer missed the oldest turn: %q", summarized)
+	}
+	if !strings.Contains(summarized, "<conversation>") {
+		t.Errorf("transcript lost the omp conversation wrapper")
 	}
 	if strings.Contains(strings.Join(messageContents(msgs), "\n"), "turn 00") {
 		t.Error("the old turn survived instead of being summarized")
 	}
-	if !strings.Contains(strings.Join(messageContents(msgs), "\n"), "turn 11 answer") {
-		t.Error("the newest turn was not preserved verbatim")
+	for _, kept := range []string{"turn 05 prompt", "turn 11 answer"} {
+		if !strings.Contains(strings.Join(messageContents(msgs), "\n"), kept) {
+			t.Errorf("kept turn %q did not survive verbatim", kept)
+		}
 	}
 	if c.Count() != 1 {
 		t.Errorf("count = %d, want 1", c.Count())
@@ -79,22 +113,35 @@ func TestCompactCarriesForwardPriorSummary(t *testing.T) {
 	const prior = "FACT_EXACT_731 means preserve the rollback checklist"
 	summaries := []string{prior, "newer work summary"}
 	var inputs []string
-	c := &Compactor{Summarize: func(_ context.Context, _, user string) (string, error) {
-		inputs = append(inputs, user)
-		return summaries[len(inputs)-1], nil
-	}}
+	c := &Compactor{
+		FirstUserMessage: "",
+		Summarize: func(_ context.Context, _, user string) (string, error) {
+			inputs = append(inputs, user)
+			// Two side-calls per compaction: history summary then short
+			// summary. Map each to its slot: history calls are inputs 0 and 2.
+			idx := (len(inputs)+1)/2 - 1
+			if idx >= len(summaries) {
+				idx = len(summaries) - 1
+			}
+			return ompOK(summaries[idx]), nil
+		},
+	}
 
 	if _, err := c.Compact(context.Background(), conv); err != nil {
 		t.Fatal(err)
 	}
-	conv.Append(
-		provider.Message{Role: provider.RoleUser, Content: "new work"},
-		provider.Message{Role: provider.RoleAssistant, Content: "done"},
-	)
+	for j := 0; j < 3; j++ {
+		conv.Append(
+			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("new work %d %s", j, strings.Repeat("n", 6000))},
+			provider.Message{Role: provider.RoleAssistant, Content: fmt.Sprintf("done %d %s", j, strings.Repeat("d", 6000))},
+		)
+	}
 	if _, err := c.Compact(context.Background(), conv); err != nil {
 		t.Fatal(err)
 	}
-	if len(inputs) != 2 || !strings.Contains(inputs[1], prior) {
+	// Two side-calls per compaction: [hist1, short1, hist2, short2]. The
+	// second history summary rides the <previous-summary> block.
+	if len(inputs) != 4 || !strings.Contains(inputs[2], "<previous-summary>") || !strings.Contains(inputs[2], prior) {
 		t.Fatalf("second summary did not receive the prior summary: %#v", inputs)
 	}
 	joined := strings.Join(messageContents(conv.Messages()), "\n")
@@ -124,7 +171,7 @@ func TestCompactDropsProviderStateFromTheCheckpointTail(t *testing.T) {
 	c := &Compactor{
 		Summarize: summarizer("summary", nil),
 		PersistWithTail: func(_ string, tail []provider.Message) ([]provider.Message, error) {
-			persisted = cloneMessages(tail)
+			persisted = append(persisted, tail...)
 			return tail, nil
 		},
 	}
@@ -164,9 +211,15 @@ func TestCompactDoesNotLoseAnAppendDuringSummarization(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	c := &Compactor{Summarize: func(context.Context, string, string) (string, error) {
-		close(started)
+		// Two side-calls per compaction now; only the first must block the
+		// racing append. closing an already-closed channel panics.
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
 		<-release
-		return "summary", nil
+		return ompOK("summary"), nil
 	}}
 
 	done := make(chan error, 1)
@@ -265,116 +318,6 @@ func TestCompactUsesWhatPersistWithTailReturned(t *testing.T) {
 	}
 }
 
-func TestCompactKeepsARelevantOlderMessage(t *testing.T) {
-	conv := NewConversation("sys")
-	for i := 0; i < compactionFixtureTurns; i++ {
-		user := fmt.Sprintf("ordinary setup turn %02d", i)
-		if i == 1 {
-			user = "critical OAuth migration requirement"
-		}
-		if i >= compactionFixtureTurns-2 {
-			user = fmt.Sprintf("current OAuth migration work turn %02d", i)
-		}
-		conv.Append(
-			provider.Message{Role: provider.RoleUser, Content: user},
-			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
-		)
-	}
-
-	var summarized string
-	c := &Compactor{
-		Summarize: func(_ context.Context, _, user string) (string, error) {
-			summarized = user
-			return "summary", nil
-		},
-		Embedding: keywordCompactionEmbedder{},
-	}
-	prepareAndWaitForRelevance(t, c, conv)
-	if _, err := c.Compact(context.Background(), conv); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(summarized, "critical OAuth migration requirement") {
-		t.Fatal("the relevant older message was summarized away")
-	}
-	if !strings.Contains(summarized, "ordinary setup turn 00") {
-		t.Fatal("the unrelated older prefix was not summarized")
-	}
-	if !strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "critical OAuth migration requirement") {
-		t.Fatal("the relevant older message did not survive in the kept tail")
-	}
-}
-
-func TestCompactFallsBackToTheRecencyCutoffWhenRelevanceFails(t *testing.T) {
-	conv := compactableConversation()
-	var summarized string
-	c := &Compactor{
-		Summarize: func(_ context.Context, _, user string) (string, error) {
-			summarized = user
-			return "summary", nil
-		},
-		Embedding: failingCompactionEmbedder{},
-	}
-	if _, err := c.Compact(context.Background(), conv); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(summarized, "turn 00 prompt") {
-		t.Fatal("recency fallback did not summarize the old prefix")
-	}
-}
-
-func TestCompactKeepsARelevantToolPairTogether(t *testing.T) {
-	conv := NewConversation("sys")
-	for i := 0; i < compactionFixtureTurns; i++ {
-		user := fmt.Sprintf("ordinary turn %02d", i)
-		if i >= compactionFixtureTurns-2 {
-			user = fmt.Sprintf("current OAuth turn %02d", i)
-		}
-		conv.Append(provider.Message{
-			Role:    provider.RoleUser,
-			Content: user,
-		})
-		if i == 1 {
-			conv.Append(provider.Message{
-				Role:      provider.RoleAssistant,
-				ToolCalls: []provider.ToolCall{{ID: "oauth-call", Name: "read"}},
-			})
-			conv.Append(provider.Message{
-				Role:       provider.RoleTool,
-				ToolCallID: "oauth-call",
-				Content:    "critical OAuth migration details",
-			})
-		} else {
-			conv.Append(provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"})
-		}
-	}
-
-	var summarized string
-	c := &Compactor{
-		Summarize: func(_ context.Context, _, user string) (string, error) {
-			summarized = user
-			return "summary", nil
-		},
-		Embedding: keywordCompactionEmbedder{},
-	}
-	prepareAndWaitForRelevance(t, c, conv)
-	if _, err := c.Compact(context.Background(), conv); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(summarized, "critical OAuth migration details") {
-		t.Fatal("the relevant tool result was summarized away")
-	}
-	joined := strings.Join(messageContents(conv.Messages()), "\n")
-	if !strings.Contains(joined, "[Tool: read") ||
-		!strings.Contains(joined, "[Result] critical OAuth migration details") {
-		t.Fatalf("relevant tool pair was not kept together in the checkpoint: %q", joined)
-	}
-	for _, msg := range conv.Messages() {
-		if msg.Role == provider.RoleAssistant || msg.Role == provider.RoleTool {
-			t.Fatalf("raw tool message crossed the compaction boundary: %#v", msg)
-		}
-	}
-}
-
 type keywordCompactionEmbedder struct{}
 
 func (keywordCompactionEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -387,176 +330,6 @@ func (keywordCompactionEmbedder) Embed(_ context.Context, texts []string) ([][]f
 		}
 	}
 	return vectors, nil
-}
-
-type failingCompactionEmbedder struct{}
-
-func (failingCompactionEmbedder) Embed(context.Context, []string) ([][]float32, error) {
-	return nil, errors.New("embedding unavailable")
-}
-
-func prepareAndWaitForRelevance(t *testing.T, c *Compactor, conv *Conversation) {
-	t.Helper()
-	c.PrepareRelevance(context.Background(), conv.Messages())
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		c.mu.Lock()
-		ready, inFlight := c.relevanceReady, c.relevanceInFlight
-		c.mu.Unlock()
-		if ready {
-			return
-		}
-		if !inFlight {
-			t.Fatal("relevance lookup finished without a result")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("timed out waiting for relevance lookup")
-}
-
-type recordingRelevanceEmbedder struct {
-	mu       sync.Mutex
-	maxBatch int
-}
-
-func (r *recordingRelevanceEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
-	r.mu.Lock()
-	r.maxBatch = max(r.maxBatch, len(texts))
-	r.mu.Unlock()
-	vectors := make([][]float32, len(texts))
-	for i := range vectors {
-		vectors[i] = []float32{0, 1}
-	}
-	return vectors, nil
-}
-
-func TestRelevanceEmbeddingBatchesAreBounded(t *testing.T) {
-	conv := NewConversation("sys")
-	for i := 0; i < compactionFixtureTurns+300; i++ {
-		conv.Append(
-			provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("setup %03d", i)},
-			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
-		)
-	}
-	embedder := &recordingRelevanceEmbedder{}
-	c := &Compactor{Summarize: summarizer("summary", nil), Embedding: embedder}
-	prepareAndWaitForRelevance(t, c, conv)
-	embedder.mu.Lock()
-	maxBatch := embedder.maxBatch
-	embedder.mu.Unlock()
-	if maxBatch > CompactRelevanceBatchSize {
-		t.Fatalf("relevance batch = %d, want <= %d", maxBatch, CompactRelevanceBatchSize)
-	}
-}
-
-func TestCompactScoresCandidatesBeyondTheOldestBatchWindow(t *testing.T) {
-	conv := NewConversation("sys")
-	const relevantTurn = 150
-	for i := 0; i < compactionFixtureTurns+170; i++ {
-		user := fmt.Sprintf("ordinary setup turn %03d", i)
-		if i == relevantTurn {
-			user = "critical OAuth migration requirement"
-		}
-		if i >= compactionFixtureTurns+165 {
-			user = fmt.Sprintf("current OAuth migration work turn %03d", i)
-		}
-		conv.Append(
-			provider.Message{Role: provider.RoleUser, Content: user},
-			provider.Message{Role: provider.RoleAssistant, Content: "acknowledged"},
-		)
-	}
-
-	var summarized string
-	c := &Compactor{
-		Summarize: func(_ context.Context, _, user string) (string, error) {
-			summarized = user
-			return "summary", nil
-		},
-		Embedding: keywordCompactionEmbedder{},
-	}
-	prepareAndWaitForRelevance(t, c, conv)
-	if _, err := c.Compact(context.Background(), conv); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(summarized, "critical OAuth migration requirement") {
-		t.Fatal("a relevant message after the first 256 candidates was summarized away")
-	}
-}
-
-func TestPrepareRelevanceIfNeededSkipsLowContext(t *testing.T) {
-	conv := compactableConversation()
-	embedder := &recordingRelevanceEmbedder{}
-	c := &Compactor{Summarize: summarizer("summary", nil), Embedding: embedder}
-	c.PrepareRelevanceIfNeeded(context.Background(), 10, 100, conv)
-	time.Sleep(10 * time.Millisecond)
-	embedder.mu.Lock()
-	maxBatch := embedder.maxBatch
-	embedder.mu.Unlock()
-	if maxBatch != 0 {
-		t.Fatalf("low context launched relevance work with batch %d", maxBatch)
-	}
-}
-
-type blockingRelevanceEmbedder struct {
-	started      chan struct{}
-	release      chan struct{}
-	finished     chan struct{}
-	once         sync.Once
-	finishedOnce sync.Once
-}
-
-func (b *blockingRelevanceEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	first := false
-	b.once.Do(func() {
-		first = true
-		close(b.started)
-	})
-	if first {
-		select {
-		case <-b.release:
-		case <-ctx.Done():
-			b.finishedOnce.Do(func() { close(b.finished) })
-			return nil, ctx.Err()
-		}
-	} else {
-		b.finishedOnce.Do(func() { close(b.finished) })
-	}
-	vectors := make([][]float32, len(texts))
-	for i := range vectors {
-		vectors[i] = []float32{0, 1}
-	}
-	return vectors, nil
-}
-
-func TestCompactDoesNotWaitForRelevanceEmbedding(t *testing.T) {
-	embedder := &blockingRelevanceEmbedder{
-		started:  make(chan struct{}),
-		release:  make(chan struct{}),
-		finished: make(chan struct{}),
-	}
-	c := &Compactor{Summarize: summarizer("summary", nil), Embedding: embedder}
-	conv := compactableConversation()
-	c.PrepareRelevance(context.Background(), conv.Messages())
-	select {
-	case <-embedder.started:
-	case <-time.After(time.Second):
-		t.Fatal("the asynchronous relevance lookup did not start")
-	}
-
-	started := time.Now()
-	if _, err := c.Compact(context.Background(), conv); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
-		t.Fatalf("compaction waited %s for optional relevance", elapsed)
-	}
-
-	close(embedder.release)
-	select {
-	case <-embedder.finished:
-	case <-time.After(time.Second):
-		t.Fatal("the relevance lookup did not finish after release")
-	}
 }
 
 func TestCompactCallsOnCompactionAfterReset(t *testing.T) {
@@ -582,12 +355,14 @@ func TestAutoCompactHasABreaker(t *testing.T) {
 	conv := compactableConversation()
 
 	for i := 0; i < MaxAutoCompactions+3; i++ {
-		conv.Append(provider.Message{Role: provider.RoleUser, Content: "x"})
+		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("x%d %s", i, strings.Repeat("y", 6000))})
 		if !c.ShouldCompact(99, 100) {
 			break
 		}
+		// omp rule: a compaction with nothing new since the last summary is a
+		// no-op; only the count of SUCCESSFUL compactions feeds the breaker.
 		if _, err := c.Compact(context.Background(), conv); err != nil {
-			t.Fatal(err)
+			break // history exhausted: every surviving turn is in the tail
 		}
 		// The automatic path records its compaction against its own budget
 		// (R2-14); manual /compact calls do not.
@@ -596,7 +371,11 @@ func TestAutoCompactHasABreaker(t *testing.T) {
 	if c.Count() > MaxAutoCompactions {
 		t.Errorf("compacted %d times, past the cap of %d", c.Count(), MaxAutoCompactions)
 	}
-	if c.ShouldCompact(99, 100) {
+	c2 := &Compactor{Summarize: summarizer("s", nil), Settings: compact.DefaultSettings()}
+	for range MaxAutoCompactions {
+		c2.noteAutoCompaction()
+	}
+	if c2.ShouldCompact(90000, 100000) {
 		t.Error("still willing to compact after hitting the cap")
 	}
 }
@@ -607,7 +386,7 @@ func TestCompactionDoesNotSplitToolCallResult(t *testing.T) {
 		{Role: provider.RoleTool, ToolCallID: "call-1", ToolName: "read", Content: "ok"},
 		{Role: provider.RoleUser, Content: "continue"},
 	}
-	if got := safeToolBoundary(msgs, 1); got != 0 {
+	if got := compact.SafeToolBoundary(msgs, 1); got != 0 {
 		t.Fatalf("cutoff = %d, want compaction refused for a split tool pair", got)
 	}
 
@@ -623,9 +402,12 @@ func TestCompactionDoesNotSplitToolCallResult(t *testing.T) {
 }
 
 func TestCompactRequiresAnOlderTurn(t *testing.T) {
+	// omp: prepareCompaction returns undefined when nothing would be
+	// summarized — a conversation with only the newest turn kept has an
+	// empty old prefix. One small turn: everything stays in the tail.
 	conv := NewConversation("sys")
-	for i := 0; i < 1; i++ {
-		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
+	for range 1 {
+		conv.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", 0)})
 	}
 	c := &Compactor{Summarize: summarizer("summary", nil)}
 	if _, err := c.Compact(context.Background(), conv); err == nil {
@@ -635,7 +417,10 @@ func TestCompactRequiresAnOlderTurn(t *testing.T) {
 
 func TestCompactUsesATokenTailBeforeTenTurns(t *testing.T) {
 	conv := NewConversation("sys")
-	for i := 0; i < 3; i++ {
+	// 10 turns × ~1.3k tokens: the 2500-token keep-recent budget keeps only
+	// the newest turns; the older prefix is summarized before any turn-count
+	// gate would fire (omp cut semantics vs the old fixed ten-turn rule).
+	for i := 0; i < 10; i++ {
 		conv.Append(
 			provider.Message{
 				Role:    provider.RoleUser,
@@ -648,9 +433,18 @@ func TestCompactUsesATokenTailBeforeTenTurns(t *testing.T) {
 	var summarized string
 	c := &Compactor{
 		ContextWindow: 10_000,
+		// omp fixed keep-recent budget scaled to the small fixture window:
+		// settings are the knob; the 20000 default presumes real windows.
+		Settings: func() compact.Settings {
+			s := compact.DefaultSettings()
+			s.KeepRecentTokens = 2500
+			return s
+		}(),
 		Summarize: func(_ context.Context, _, user string) (string, error) {
-			summarized = user
-			return "summary", nil
+			if summarized == "" {
+				summarized = user
+			}
+			return ompOK("summary"), nil
 		},
 	}
 	if _, err := c.Compact(context.Background(), conv); err != nil {
@@ -662,7 +456,7 @@ func TestCompactUsesATokenTailBeforeTenTurns(t *testing.T) {
 	if strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "turn 00") {
 		t.Fatal("the oldest turn survived instead of being compacted")
 	}
-	if !strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "turn 02") {
+	if !strings.Contains(strings.Join(messageContents(conv.Messages()), "\n"), "turn 09") {
 		t.Fatal("the newest turn was not preserved")
 	}
 }
@@ -676,85 +470,26 @@ func messageContents(msgs []provider.Message) []string {
 }
 
 func TestShouldCompactOnlyNearTheLimit(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	if c.ShouldCompact(10, 100) {
+	c := &Compactor{Summarize: summarizer("s", nil), Settings: compact.DefaultSettings()}
+	// omp: threshold = window - max(15% window, 16384) → 100k window
+	// compacts past 83616.
+	if c.ShouldCompact(10000, 100000) {
 		t.Error("compacted at 10% of the window")
 	}
-	if !c.ShouldCompact(90, 100) {
+	if !c.ShouldCompact(90000, 100000) {
 		t.Error("did not compact at 90% of the window")
 	}
-	// An unknown window must never trigger it: dividing by zero would.
-	if c.ShouldCompact(90, 0) {
+	// An unknown window must never trigger it.
+	if c.ShouldCompact(90000, 0) {
 		t.Error("compacted with an unknown context window")
 	}
 }
 
-func TestShouldCompactProjectsAheadOfTheThreshold(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	if c.ShouldCompact(50, 100) {
-		t.Fatal("compacted before collecting a growth delta")
-	}
-	if c.ShouldCompact(52, 100) {
-		t.Fatal("compacted when the projection still fits below the threshold")
-	}
-	if !c.ShouldCompact(55, 100) {
-		t.Fatal("did not compact on a projection that crosses the threshold")
-	}
-}
-
-func TestCompactionResetsTheGrowthProjection(t *testing.T) {
-	conv := compactableConversation()
-	c := &Compactor{Summarize: summarizer("summary", nil)}
-	if c.ShouldCompact(50, 100) || !c.ShouldCompact(55, 100) {
-		t.Fatal("expected the rising context to trigger a projected compaction")
-	}
-	if _, err := c.Compact(context.Background(), conv); err != nil {
-		t.Fatal(err)
-	}
-	if c.ShouldCompact(50, 100) {
-		t.Fatal("the pre-compaction growth slope leaked into the new context")
-	}
-	if c.ShouldCompact(52, 100) {
-		t.Fatal("a fresh projection compacted before it had enough headroom evidence")
-	}
-}
-
-func TestShouldCompactDropsStaleGrowthAfterContextShrinks(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	if c.ShouldCompact(50, 100) || !c.ShouldCompact(55, 100) {
-		t.Fatal("expected the rising context to trigger a projected compaction")
-	}
-	if c.ShouldCompact(40, 100) {
-		t.Fatal("a lower context should discard the stale growth projection")
-	}
-	if c.ShouldCompact(42, 100) {
-		t.Fatal("a fresh low context should not compact immediately")
-	}
-}
-
-func TestShouldCompactOnTopicShiftBeforeTheFixedThreshold(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{1, 0})
-	}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{0, 1})
-	}
-
-	if !c.ShouldCompact(40, 100) {
-		t.Fatal("a low-similarity topic shift should compact above the proactive floor")
-	}
-}
-
 func TestShouldCompactForConversationRequiresAnOlderPrefix(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{1, 0})
-	}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{0, 1})
-	}
+	c := &Compactor{Summarize: summarizer("s", nil), Settings: compact.DefaultSettings()}
 
+	// omp trigger semantics: the threshold needs a window past the reserve
+	// floor; 100 tokens sits inside the 16384 default reserve.
 	short := NewConversation("sys")
 	for i := 0; i < 4; i++ {
 		short.Append(
@@ -762,139 +497,11 @@ func TestShouldCompactForConversationRequiresAnOlderPrefix(t *testing.T) {
 			provider.Message{Role: provider.RoleAssistant, Content: "answer"},
 		)
 	}
-	if c.ShouldCompactForConversation(40, 100, short) {
-		t.Fatal("a topic shift should not fire when there is no prefix to summarize")
+	if c.ShouldCompactForConversation(10000, 100000, short) {
+		t.Fatal("compacted under the threshold")
 	}
-	if !c.ShouldCompactForConversation(40, 100, largeCompactionConversation()) {
-		t.Fatal("a topic shift should fire once an older prefix can be compacted")
-	}
-}
-
-func TestShouldCompactForConversationKeepsGrowthHistoryBeforePrefix(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	short := NewConversation("sys")
-	for i := 0; i < compactionFixtureTurns; i++ {
-		short.Append(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("prompt %d", i)})
-	}
-
-	if c.ShouldCompactForConversation(50, 100, short) {
-		t.Fatal("an uncompactable conversation should not compact")
-	}
-	if c.ShouldCompactForConversation(55, 100, short) {
-		t.Fatal("an uncompactable conversation should still suppress the action")
-	}
-	if !c.ShouldCompactForConversation(55, 100, largeCompactionConversation()) {
-		t.Fatal("predictive history was lost before the conversation became compactable")
-	}
-}
-
-func TestShouldCompactUsesGrowthWhenTopicsStaySimilar(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	for range 4 {
-		c.AddEmbeddingSnapshot([]float32{1, 0})
-	}
-
-	if c.ShouldCompact(50, 100) {
-		t.Fatal("similar topics should not trigger semantic compaction by themselves")
-	}
-	if c.ShouldCompact(52, 100) {
-		t.Fatal("the predictive fallback should still respect its growth evidence")
-	}
-	if !c.ShouldCompact(55, 100) {
-		t.Fatal("the predictive fallback did not trigger when its projection crossed the threshold")
-	}
-}
-
-func TestCompactionEmbeddingRequestDoesNotBlockShouldCompact(t *testing.T) {
-	embedder := &blockingCompactionEmbedder{
-		started:  make(chan struct{}),
-		release:  make(chan struct{}),
-		finished: make(chan struct{}),
-	}
-	c := &Compactor{
-		Summarize: summarizer("s", nil),
-		Embedding: embedder,
-	}
-	c.RecordEmbeddingSnapshot(context.Background(), "a completed assistant turn")
-	select {
-	case <-embedder.started:
-	case <-time.After(time.Second):
-		t.Fatal("the asynchronous embedding request did not start")
-	}
-
-	decision := make(chan bool, 1)
-	go func() { decision <- c.ShouldCompact(40, 100) }()
-	select {
-	case <-decision:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("ShouldCompact waited for a slow embedding provider")
-	}
-
-	close(embedder.release)
-	select {
-	case <-embedder.finished:
-	case <-time.After(time.Second):
-		t.Fatal("the embedding request did not finish after release")
-	}
-}
-
-func TestCompactionEmbeddingSurvivesTurnCancellation(t *testing.T) {
-	embedder := &cancellationAwareCompactionEmbedder{
-		started:  make(chan struct{}),
-		release:  make(chan struct{}),
-		finished: make(chan struct{}),
-		canceled: make(chan struct{}),
-	}
-	c := &Compactor{Summarize: summarizer("s", nil), Embedding: embedder}
-	ctx, cancel := context.WithCancel(context.Background())
-	c.RecordEmbeddingSnapshot(ctx, "a completed assistant turn")
-	select {
-	case <-embedder.started:
-	case <-time.After(time.Second):
-		t.Fatal("the asynchronous embedding request did not start")
-	}
-	cancel()
-	close(embedder.release)
-	select {
-	case <-embedder.finished:
-	case <-time.After(time.Second):
-		t.Fatal("the detached embedding request did not finish")
-	}
-	select {
-	case <-embedder.canceled:
-		t.Fatal("the turn cancellation canceled the detached embedding")
-	default:
-	}
-
-	c.mu.Lock()
-	history := len(c.embeddingHistory)
-	c.mu.Unlock()
-	if history != 1 {
-		t.Fatalf("embedding history length = %d, want 1", history)
-	}
-}
-
-func TestResetSemanticHistoryDiscardsOldTopics(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{1, 0})
-	}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{0, 1})
-	}
-	c.ResetSemanticHistory()
-	if c.ShouldCompact(40, 100) {
-		t.Fatal("reset semantic history left a stale topic shift")
-	}
-}
-
-func TestShouldCompactIgnoresZeroNormEmbeddings(t *testing.T) {
-	c := &Compactor{Summarize: summarizer("s", nil)}
-	for range 4 {
-		c.AddEmbeddingSnapshot([]float32{0, 0})
-	}
-	if c.ShouldCompact(40, 100) {
-		t.Fatal("zero-norm embeddings should fall back instead of signaling a topic shift")
+	if !c.ShouldCompactForConversation(90000, 100000, largeCompactionConversation()) {
+		t.Fatal("did not compact past the threshold with a summarizable prefix")
 	}
 }
 
@@ -941,48 +548,50 @@ func TestNilCompactorIsInert(t *testing.T) {
 	}
 }
 
-func TestTranscriptCapDoesNotSplitARune(t *testing.T) {
-	// "é" is two bytes; placed so the cap (a byte index) lands on its second
-	// byte, a naive text[:CompactMessageCap] slice would split it in half.
-	content := strings.Repeat("a", CompactMessageCap-1) + "é" + strings.Repeat("b", 10)
+func TestTranscriptKeepsMultibyteTextIntact(t *testing.T) {
+	// The omp serializer truncates tool results at a char budget; multibyte
+	// text must survive intact either way.
+	content := "ok é " + strings.Repeat("b", 10)
 	msgs := []provider.Message{{Role: provider.RoleUser, Content: content}}
 	got := Transcript(msgs)
 	if !utf8.ValidString(got) {
 		t.Errorf("transcript is not valid UTF-8: %q", got)
 	}
+	if !strings.Contains(got, "ok é") {
+		t.Errorf("multibyte content mangled: %q", got)
+	}
 }
 
-func TestTranscriptSkipsSystemAndCapsAMessage(t *testing.T) {
+func TestTranscriptSkipsSystem(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: provider.RoleSystem, Content: "the system prompt"},
-		{Role: provider.RoleUser, Content: strings.Repeat("x", CompactMessageCap*2)},
+		{Role: provider.RoleUser, Content: "visible"},
 	}
 	got := Transcript(msgs)
 	if strings.Contains(got, "the system prompt") {
 		t.Error("the system prompt reached the summarizer; it is the same every turn")
 	}
-	if len(got) > CompactMessageCap*2 {
-		t.Errorf("transcript is %d bytes; one pasted file should not crowd out the rest", len(got))
+	if !strings.Contains(got, "visible") {
+		t.Errorf("user content lost: %q", got)
 	}
 }
 
-func TestTranscriptCapsTheWholeHistory(t *testing.T) {
+func TestTranscriptKeepsEveryTurn(t *testing.T) {
+	// omp sends the full history to the summarizer: no byte cap, no middle
+	// elision. Long sessions rely on the model window, not a byte clamp.
 	msgs := []provider.Message{{Role: provider.RoleUser, Content: "first goal"}}
 	for i := 0; i < 100; i++ {
 		msgs = append(msgs, provider.Message{
 			Role:    provider.RoleAssistant,
-			Content: fmt.Sprintf("middle %03d %s", i, strings.Repeat("x", CompactMessageCap)),
+			Content: fmt.Sprintf("middle %03d %s", i, strings.Repeat("x", 500)),
 		})
 	}
 	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: "last active state"})
 
 	got := Transcript(msgs)
-	if len(got) > CompactTranscriptMaxBytes {
-		t.Fatalf("transcript is %d bytes; maximum is %d", len(got), CompactTranscriptMaxBytes)
-	}
 	if !strings.Contains(got, "first goal") || !strings.Contains(got, "last active state") ||
-		!strings.Contains(got, "middle of transcript omitted") {
-		t.Fatalf("bounded transcript lost its boundary records: %q", got)
+		!strings.Contains(got, "middle 050") {
+		t.Fatalf("transcript lost its turns: %q", got)
 	}
 }
 
@@ -992,10 +601,11 @@ func TestTranscriptDescribesToolCallsAndResults(t *testing.T) {
 		{Role: provider.RoleTool, ToolCallID: "call-1", ToolName: "read", Content: "the complete plan"},
 	}
 	got := Transcript(msgs)
-	if !strings.Contains(got, `[Tool: read - {"path":"plan4.md"}]`) {
+	// omp serializer markers: name(args) for calls, labeled results.
+	if !strings.Contains(got, `[Tool Call]: read({"path":"plan4.md"})`) {
 		t.Fatalf("tool invocation was absent from compaction transcript: %q", got)
 	}
-	if !strings.Contains(got, "[Result: read] the complete plan") {
+	if !strings.Contains(got, "[Tool Result (read)]: the complete plan") {
 		t.Fatalf("tool result identity was absent from compaction transcript: %q", got)
 	}
 }

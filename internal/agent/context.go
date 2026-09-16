@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"evilcode/internal/agent/compact"
+
 	"evilcode/internal/provider"
 )
 
@@ -168,7 +170,7 @@ func pruneModelToolResults(msgs []provider.Message) []provider.Message {
 		// Do not revisit history that has already been represented by a
 		// compaction summary. The summary is itself small, and the tail after
 		// it is the only part that can still contain live tool output.
-		if isCompactionMarker(msg) {
+		if compact.IsCompactionMarker(msg) {
 			break
 		}
 		if userTurns < 2 || msg.Role != provider.RoleTool || msg.ToolName == "skill" {

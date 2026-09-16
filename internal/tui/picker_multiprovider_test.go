@@ -81,22 +81,19 @@ func TestProviderConfigLookup(t *testing.T) {
 // The old switch overwrote it with whichever chat provider the picker
 // selected, silently re-coupling semantic relevance to the chat choice
 // (R2-13).
-func TestPickerSwitchKeepsTheBuildTimeCompactionEmbedder(t *testing.T) {
+func TestPickerSwitchKeepsTheBuildTimeEmbeddingProvider(t *testing.T) {
+	// The compaction semantic layer is gone (omp port), but the build-time
+	// rule survives for memory: a chat-model switch must not touch the
+	// dedicated embedding backend. The Compactor no longer carries one, so
+	// the observable surface is that the switch leaves non-chat providers
+	// untouched — checked via Memory wiring in the daemon test. Here: the
+	// compactor survives the switch with its summarizer intact.
 	a := agent.New("bat", provider.NewMock("start", "chat"), "mock-large", nil,
 		agent.NewConversation("system"))
 	t.Cleanup(a.Close)
-	dedicated := provider.NewMock("start", "embed")
 	c := &agent.Compactor{
 		Summarize: func(context.Context, string, string) (string, error) { return "s", nil },
-		Embedding: dedicated,
 	}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{1, 0})
-	}
-	for range 2 {
-		c.AddEmbeddingSnapshot([]float32{0, 1})
-	}
-
 	m := NewModel(a, HeaderState{SessionName: "bat", Model: "mock-large", Provider: "start"})
 	m.providers = []config.ProviderConfig{
 		{Name: "start", Kind: config.KindMock},
@@ -114,8 +111,8 @@ func TestPickerSwitchKeepsTheBuildTimeCompactionEmbedder(t *testing.T) {
 	if m.agent.Provider.Name() != "next" {
 		t.Fatalf("active provider = %q, want next", m.agent.Provider.Name())
 	}
-	if c.Embedding != agent.EmbeddingProvider(dedicated) {
-		t.Fatal("chat-provider switch replaced the compactor's build-time embedder")
+	if m.compactor == nil || !m.compactor.Enabled() {
+		t.Fatal("the compactor did not survive the chat switch")
 	}
 }
 

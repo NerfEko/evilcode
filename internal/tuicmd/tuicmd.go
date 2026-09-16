@@ -242,7 +242,6 @@ func runOnce(args []string) (string, error) {
 		Summarize: func(ctx context.Context, system, user string) (string, error) {
 			return cfg.Router().SideCall(ctx, config.RoleSmol, system, user)
 		},
-		Embedding: prov,
 		Persist: func(summary string) ([]provider.Message, error) {
 			return store.Compact(dataDir, summary)
 		},
@@ -251,6 +250,9 @@ func runOnce(args []string) (string, error) {
 		},
 		OnCompaction: exposure.Reset,
 	}
+	compactor.Settings = cfg.CompactionSettings()
+	compactor.SessionModel = a.Model
+	compactor.Candidates = nil
 	a.Compactor = compactor
 
 	prompts, err := session.OpenHistory(dataDir)
