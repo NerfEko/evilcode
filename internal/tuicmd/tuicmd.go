@@ -259,6 +259,14 @@ func runOnce(args []string) (string, error) {
 		},
 		OnCompaction: exposure.Reset,
 	}
+	// omp shake strategy: the deterministic reclaim pass.
+	a.Compactor.ShakeRuns = func(aggressive bool) (int, int, error) {
+		result, err := session.Shake(dataDir, store.Name, aggressive, compact.Settings{})
+		if err != nil {
+			return 0, 0, err
+		}
+		return result.ToolResultsDropped + result.BlocksDropped, result.TokensFreed, nil
+	}
 	// omp per-turn pruning: blank superseded reads in the durable log.
 	if cfg.CompactionSettings().PruneReads {
 		a.Compactor.PruneRuns = func() (int, int, error) {

@@ -11,9 +11,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/ansirender"
 	"evilcode/internal/config"
 	"evilcode/internal/provider"
+	"evilcode/internal/session"
 )
 
 // runCompact summarizes the conversation and starts a fresh context from it.
@@ -92,6 +94,36 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 
 // CompactTimeout bounds the summarising side-call.
 const CompactTimeout = 60 * time.Second
+
+// runShake elides large tool results and blocks across history, preserving
+// the originals in a recoverable offload document (omp /shake).
+func (m *Model) runShake(aggressive bool) (tea.Model, tea.Cmd) {
+	if m.store == nil {
+		m.notice = "shake is not available without a session"
+		return m, nil
+	}
+	if m.agent.Running() {
+		m.notice = "shake refused: a turn is in flight"
+		return m, nil
+	}
+	m.notice = "📦 Shaking…"
+	m.compacting = true
+	m.compactingSince = time.Now()
+	m.compactingCount = m.agent.Conv.Len()
+	dataDir, name := m.dataDir, m.store.Name
+	return m, func() tea.Msg {
+		result, err := session.Shake(dataDir, name, aggressive, compact.DefaultSettings())
+		if err != nil {
+			return compactDone{err: err}
+		}
+		if result.ToolResultsDropped+result.BlocksDropped == 0 {
+			return compactDone{err: fmt.Errorf("nothing eligible to shake")}
+		}
+		notice := fmt.Sprintf("📦 Shook %d tool results, %d blocks (~%d tokens) — originals in %s",
+			result.ToolResultsDropped, result.BlocksDropped, result.TokensFreed, result.OffloadPath)
+		return compactDone{summary: notice}
+	}
+}
 
 // applyCompaction folds a finished compaction into the transcript.
 func (m *Model) applyCompaction(done compactDone) {

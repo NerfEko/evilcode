@@ -4150,6 +4150,9 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 	case "compact":
 		return m.runCompact()
 
+	case "shake":
+		return m.runShake(strings.Contains(strings.ToLower(arg), "aggressive"))
+
 	case "fix":
 		// A recovery prompt for when the model has stalled or lost the thread.
 		m.submitHidden("You seem to have stalled or lost track of the task. " +

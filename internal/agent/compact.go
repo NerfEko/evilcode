@@ -95,6 +95,10 @@ type Compactor struct {
 	// name closure; the Compactor invokes it after a completed turn.
 	PruneRuns func() (pruned int, tokensSaved int, err error)
 
+	// ShakeRuns the omp deterministic reclaim: tool results and big blocks
+	// elided to placeholders, originals recoverable. Nil disables.
+	ShakeRuns func(aggressive bool) (regions int, tokensFreed int, err error)
+
 	mu    sync.Mutex
 	count int
 

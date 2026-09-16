@@ -140,6 +140,11 @@ var Commands = []Command{
 		Long: "Replaces the history with a dense summary produced by the smol role,\n" +
 			"and bumps the context epoch. This is the one sanctioned rewrite of the\n" +
 			"append-only rule."},
+	{Name: "shake", Help: "Elide big tool results and code blocks (aggressive with `aggressive`)",
+		Long: "Drops every eligible region across history: tool results and fenced\n" +
+			"code / XML blocks over 400 tokens. Originals are saved to\n" +
+			"~/.local/share/evilcode/shakes/ so nothing is lost.\n" +
+			"/shake aggressive drops everything; plain /shake protects the recent tail."},
 	{Name: "fix", Help: "Nudge a stalled model back on track"},
 	{Name: "btw", Help: "Ask a side question without touching the conversation",
 		Long: "/btw <question>\n\nAnswered by the smol role in the side panel, so asking\n" +
@@ -203,7 +208,7 @@ var HelpSections = []HelpSection{
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "login", "connect", "terminal-setup", "screenshot",
-		"compact", "fix", "btw", "cancel", "quit"}},
+		"compact", "shake", "fix", "btw", "cancel", "quit"}},
 }
 
 // UncoveredCommands returns visible commands no section lists.
