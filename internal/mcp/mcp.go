@@ -542,6 +542,52 @@ func (s *Server) toolNames() []string {
 	return out
 }
 
+// withLiveSession runs fn against a live session under one bounded deadline,
+// sharing the hardened policy every MCP operation uses: the smaller of the
+// server's own timeout and any deadline the caller already set wins, a
+// disconnected server gets one lazy reconnect, and a transport-level failure
+// earns one ping-gated retry within the same bound. Result mapping stays with
+// the caller.
+func (s *Server) withLiveSession(ctx context.Context, toolLabel string, fn func(ctx context.Context, sess *sdk.ClientSession) error) error {
+	bound := s.timeout
+	if d, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(d); remaining < bound {
+			bound = remaining
+		}
+	}
+	if !s.isConnected() {
+		if err := s.reattach(); err != nil {
+			return fmt.Errorf("mcp server %s is not connected: %w", s.Name, err)
+		}
+	}
+	bctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	sess := s.currentSession()
+	if sess == nil {
+		return fmt.Errorf("mcp server %s is not connected", s.Name)
+	}
+	if err := fn(bctx, sess); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("mcp tool %s: no response in %s; the call was abandoned — the server may be wedged, retry or narrow it", toolLabel, bound)
+		}
+		if perr := s.ping(); perr != nil {
+			if rerr := s.reattach(); rerr == nil {
+				if sess2 := s.currentSession(); sess2 != nil {
+					if rerr := fn(bctx, sess2); rerr != nil {
+						if errors.Is(rerr, context.DeadlineExceeded) {
+							return fmt.Errorf("mcp tool %s: no response in %s; the call was abandoned — the server may be wedged, retry or narrow it", toolLabel, bound)
+						}
+						return rerr
+					}
+					return nil
+				}
+			}
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (tools.Result, error) {
 	var parsed map[string]any
 	if len(args) > 0 {
@@ -550,53 +596,18 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (t
 		}
 	}
 
-	// Bound the call so a wedged server costs one tool result, not the turn.
-	// The smaller of the server's own timeout and any deadline the caller
-	// already set wins; the error names the bound that actually applied.
-	bound := s.timeout
-	if d, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(d); remaining < bound {
-			bound = remaining
-		}
-	}
-	// A server the monitor has not yet marked dead gets one lazy reconnect
-	// attempt here, so a session does not stay unusable while a background
-	// backoff is still counting down.
-	if !s.isConnected() {
-		if err := s.reattach(); err != nil {
-			return tools.Result{}, fmt.Errorf("mcp server %s is not connected: %w", s.Name, err)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-
-	session := s.currentSession()
-	res, err := session.CallTool(ctx, &sdk.CallToolParams{
-		Name:      name,
-		Arguments: parsed,
-	})
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return tools.Result{}, fmt.Errorf(
-				"mcp tool %s__%s: no response in %s; the call was abandoned — the server may be wedged, retry or narrow it",
-				s.Name, name, bound)
-		}
-		// A protocol-level error (unknown tool, bad params) rides a live
-		// transport, so a cheap ping separates "the server said no" from "the
-		// transport died". Only a dead transport earns a reconnect, and the
-		// retry happens once within the same bound.
-		if perr := s.ping(); perr != nil {
-			if rerr := s.reattach(); rerr == nil {
-				res, err = s.currentSession().CallTool(ctx, &sdk.CallToolParams{
-					Name:      name,
-					Arguments: parsed,
-				})
-			}
-		}
-		if err != nil {
-			return tools.Result{}, err
-		}
+	// All MCP operations share one bounded-session policy (timeout, lazy
+	// reconnect, ping-gated retry) via withLiveSession; mapping stays here.
+	var res *sdk.CallToolResult
+	if err := s.withLiveSession(ctx, s.Name+"__"+name, func(bctx context.Context, sess *sdk.ClientSession) error {
+		var err error
+		res, err = sess.CallTool(bctx, &sdk.CallToolParams{
+			Name:      name,
+			Arguments: parsed,
+		})
+		return err
+	}); err != nil {
+		return tools.Result{}, err
 	}
 
 	out, err := s.mapResult(name, res)

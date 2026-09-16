@@ -108,7 +108,7 @@ func (r *Renderer) RenderGruntBar(d GruntDetails) []string {
 	}
 	head := amber.Render("🔧 "+d.Name) + dim.Render(" · "+state)
 	if d.Model != "" {
-		head += dim.Render(" · "+d.Model)
+		head += dim.Render(" · " + d.Model)
 	}
 	task := strings.TrimSpace(d.Task)
 	if task == "" {

@@ -31,10 +31,17 @@ func (s *Server) capabilityTools(session *sdk.ClientSession, seen map[string]boo
 	}
 	caps := init.Capabilities
 	if caps.Resources != nil {
-		out = append(out, s.readResourceTool(seen), s.listResourcesTool(seen))
+		if t, ok := s.readResourceTool(seen); ok {
+			out = append(out, t)
+		}
+		if t, ok := s.listResourcesTool(seen); ok {
+			out = append(out, t)
+		}
 	}
 	if caps.Prompts != nil {
-		out = append(out, s.getPromptTool(seen))
+		if t, ok := s.getPromptTool(seen); ok {
+			out = append(out, t)
+		}
 	}
 	return out
 }
@@ -57,7 +64,7 @@ func (s *Server) namespaced(remote, desc string, schema json.RawMessage, run fun
 	}, true
 }
 
-func (s *Server) readResourceTool(seen map[string]bool) tools.Tool {
+func (s *Server) readResourceTool(seen map[string]bool) (tools.Tool, bool) {
 	run := func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
 		var params struct {
 			URI string `json:"uri"`
@@ -65,60 +72,69 @@ func (s *Server) readResourceTool(seen map[string]bool) tools.Tool {
 		if err := json.Unmarshal(args, &params); err != nil || strings.TrimSpace(params.URI) == "" {
 			return tools.Result{}, fmt.Errorf("read_resource needs a uri (discover one with %s__list_resources)", s.Name)
 		}
-		res, err := s.currentSession().ReadResource(ctx, &sdk.ReadResourceParams{URI: params.URI})
-		if err != nil {
+		var res *sdk.ReadResourceResult
+		if err := s.withLiveSession(ctx, s.Name+"__read_resource", func(bctx context.Context, sess *sdk.ClientSession) error {
+			var err error
+			res, err = sess.ReadResource(bctx, &sdk.ReadResourceParams{URI: params.URI})
+			return err
+		}); err != nil {
 			return tools.Result{}, err
 		}
 		out, images := resourceContentsText(res.Contents)
 		return tools.Result{Output: out, Images: images, Intent: s.Name + " · read_resource"}, nil
 	}
-	tool, _ := s.namespaced("read_resource",
+	return s.namespaced("read_resource",
 		"Read one resource from the "+s.Name+" MCP server by URI. Use "+s.Name+"__list_resources to discover URIs.",
 		json.RawMessage(`{"type":"object","properties":{"uri":{"type":"string","description":"resource URI"}},"required":["uri"]}`),
 		run, seen)
-	return tool
 }
 
-func (s *Server) listResourcesTool(seen map[string]bool) tools.Tool {
+func (s *Server) listResourcesTool(seen map[string]bool) (tools.Tool, bool) {
 	run := func(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
-		var b strings.Builder
-		cursor := ""
-		for page := 1; ; page++ {
-			if page > maxListPages {
-				return tools.Result{}, fmt.Errorf("resource list exceeds %d pages; refusing a truncated list", maxListPages)
-			}
-			res, err := s.currentSession().ListResources(ctx, &sdk.ListResourcesParams{Cursor: cursor})
-			if err != nil {
-				return tools.Result{}, err
-			}
-			for _, r := range res.Resources {
-				fmt.Fprintf(&b, "%s — %s", r.URI, r.Name)
-				if r.MIMEType != "" {
-					fmt.Fprintf(&b, " (%s)", r.MIMEType)
+		var rendered string
+		if err := s.withLiveSession(ctx, s.Name+"__list_resources", func(bctx context.Context, sess *sdk.ClientSession) error {
+			var b strings.Builder
+			cursor := ""
+			for page := 1; ; page++ {
+				if page > maxListPages {
+					return fmt.Errorf("resource list exceeds %d pages; refusing a truncated list", maxListPages)
 				}
-				if r.Description != "" {
-					fmt.Fprintf(&b, ": %s", r.Description)
+				res, err := sess.ListResources(bctx, &sdk.ListResourcesParams{Cursor: cursor})
+				if err != nil {
+					return err
 				}
-				b.WriteByte('\n')
+				for _, r := range res.Resources {
+					fmt.Fprintf(&b, "%s — %s", r.URI, r.Name)
+					if r.MIMEType != "" {
+						fmt.Fprintf(&b, " (%s)", r.MIMEType)
+					}
+					if r.Description != "" {
+						fmt.Fprintf(&b, ": %s", r.Description)
+					}
+					b.WriteByte('\n')
+				}
+				if len(res.Resources) == 0 && page == 1 && res.NextCursor == "" {
+					b.WriteString("(the server lists no resources)\n")
+				}
+				if res.NextCursor == "" {
+					break
+				}
+				cursor = res.NextCursor
 			}
-			if len(res.Resources) == 0 && page == 1 && res.NextCursor == "" {
-				b.WriteString("(the server lists no resources)\n")
-			}
-			if res.NextCursor == "" {
-				break
-			}
-			cursor = res.NextCursor
+			rendered = b.String()
+			return nil
+		}); err != nil {
+			return tools.Result{}, err
 		}
-		return tools.Result{Output: strings.TrimRight(b.String(), "\n"), Intent: s.Name + " · list_resources"}, nil
+		return tools.Result{Output: strings.TrimRight(rendered, "\n"), Intent: s.Name + " · list_resources"}, nil
 	}
-	tool, _ := s.namespaced("list_resources",
+	return s.namespaced("list_resources",
 		"List the resources the "+s.Name+" MCP server offers, with their URIs for read_resource.",
 		json.RawMessage(`{"type":"object","properties":{}`),
 		run, seen)
-	return tool
 }
 
-func (s *Server) getPromptTool(seen map[string]bool) tools.Tool {
+func (s *Server) getPromptTool(seen map[string]bool) (tools.Tool, bool) {
 	run := func(ctx context.Context, args json.RawMessage) (tools.Result, error) {
 		var params struct {
 			Name      string            `json:"name"`
@@ -127,8 +143,12 @@ func (s *Server) getPromptTool(seen map[string]bool) tools.Tool {
 		if err := json.Unmarshal(args, &params); err != nil || strings.TrimSpace(params.Name) == "" {
 			return tools.Result{}, fmt.Errorf("get_prompt needs a prompt name")
 		}
-		res, err := s.currentSession().GetPrompt(ctx, &sdk.GetPromptParams{Name: params.Name, Arguments: params.Arguments})
-		if err != nil {
+		var res *sdk.GetPromptResult
+		if err := s.withLiveSession(ctx, s.Name+"__get_prompt", func(bctx context.Context, sess *sdk.ClientSession) error {
+			var err error
+			res, err = sess.GetPrompt(bctx, &sdk.GetPromptParams{Name: params.Name, Arguments: params.Arguments})
+			return err
+		}); err != nil {
 			return tools.Result{}, err
 		}
 		var b strings.Builder
@@ -153,11 +173,10 @@ func (s *Server) getPromptTool(seen map[string]bool) tools.Tool {
 		}
 		return tools.Result{Output: out, Intent: s.Name + " · get_prompt"}, nil
 	}
-	tool, _ := s.namespaced("get_prompt",
+	return s.namespaced("get_prompt",
 		"Render one prompt template from the "+s.Name+" MCP server. Arguments are the template's placeholders.",
 		json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object","additionalProperties":{"type":"string"}}},"required":["name"]}`),
 		run, seen)
-	return tool
 }
 
 // resourceContentsText renders resource contents: text becomes output, image

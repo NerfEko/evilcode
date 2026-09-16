@@ -204,12 +204,12 @@ var (
 
 // webEvents serves GET /api/sessions/{name}/events.
 //
-// Slow-client rule (§5): Session.broadcast already drops for a full
-// subscription queue without ever blocking the session's pump — verified in
-// TestWebEventsSlowClientDoesNotStallTheSession. On this side, each frame
-// write runs under a deadline: a client whose TCP buffer is full is
-// disconnected rather than buffered without bound, and it reconnects with its
-// last sequence, which the ring replays.
+// Slow-client rule (§5): Session.broadcast never blocks the session's pump;
+// on the first full send it evicts the subscription and closes its done
+// signal (EC-003). This loop then exits, terminating the stream, and the
+// client reconnects with its last sequence, which the ring replays. Each
+// frame write also runs under a deadline: a client whose TCP buffer is full
+// is disconnected rather than buffered without bound.
 func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := session.ValidName(name); err != nil {
@@ -236,8 +236,19 @@ func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Subscribe before the snapshot, exactly like MsgAttach: an event landing
-	// mid-sequence queues instead of falling into the gap.
-	sub := sess.subscribe()
+	// mid-sequence queues instead of falling into the gap (EC-002). replay is
+	// bounded to highWater; queued live MsgEvents at or below it duplicate
+	// the replay and are skipped. Snapshots and non-event frames always pass.
+	since := intQuery(r, "since", 0)
+	if since == 0 {
+		// The browser replays its last seen id automatically on reconnect.
+		if last := r.Header.Get("Last-Event-ID"); last != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(last)); err == nil && n > 0 {
+				since = n
+			}
+		}
+	}
+	sub, replay, highWater := sess.attachSubscribe(since)
 	defer sess.unsubscribe(sub)
 
 	write := func(frame string) bool {
@@ -249,10 +260,19 @@ func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 	sendSnapshot := func() bool {
+		// EC-F-001: the initial snapshot goes through the same bounded
+		// path as the socket attach (fitServerFrame), so a huge
+		// conversation arrives truncated with Oldest set instead of as an
+		// unbounded frame. The data line reuses the fitted bytes, so the
+		// cap the fitter enforced is the cap the client reads.
 		snap := sess.snapshot()
-		return write(sseFrame(snap.Seq, "snapshot", ServerMsg{
+		fitted, buf, ok := fitServerFrame(ServerMsg{
 			Version: ProtocolVersion, Kind: MsgSnapshot, Snapshot: snap,
-		}))
+		})
+		if !ok || fitted.Snapshot == nil {
+			return false
+		}
+		return write(sseDataFrame(fitted.Snapshot.Seq, "snapshot", buf))
 	}
 	if !sendSnapshot() {
 		return
@@ -261,22 +281,8 @@ func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
 	// Replay: an explicit since (query param or the browser's automatic
 	// Last-Event-ID) gets exactly the gap; a fresh connect replays only the
 	// turn in flight, matching MsgAttach so completed history is not drawn
-	// twice on top of the snapshot.
-	since := intQuery(r, "since", 0)
-	if since == 0 {
-		// The browser replays its last seen id automatically on reconnect.
-		if last := r.Header.Get("Last-Event-ID"); last != "" {
-			if n, err := strconv.Atoi(strings.TrimSpace(last)); err == nil && n > 0 {
-				since = n
-			}
-		}
-	}
-	var replay []agent.Event
-	if since > 0 {
-		replay, _ = sess.ring.Since(since)
-	} else {
-		replay = sess.ring.SinceLastTurn()
-	}
+	// twice on top of the snapshot. replay is already bounded to highWater by
+	// attachSubscribe.
 	for i := range replay {
 		if !write(sseEvent(&replay[i])) {
 			return
@@ -287,9 +293,9 @@ func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 	for {
 		select {
-		case msg, ok := <-sub:
-			if !ok {
-				return
+		case msg := <-sub.ch:
+			if isLiveDuplicate(msg, highWater) {
+				continue
 			}
 			switch {
 			case msg.Kind == MsgEvent && msg.Event != nil:
@@ -311,6 +317,11 @@ func (s *Server) webEvents(w http.ResponseWriter, r *http.Request) {
 			if !write(": ping\n\n") {
 				return
 			}
+		case <-sub.done:
+			// Overflow (EC-003): the queue lost at least one event, so the
+			// stream has a gap only a reconnect replay can repair. Exit to
+			// terminate the stream; the client reconnects with its last id.
+			return
 		case <-r.Context().Done():
 			return
 		}
@@ -335,7 +346,13 @@ func sseFrame(id int, kind string, msg ServerMsg) string {
 		b = []byte(fmt.Sprintf(`{"version":%d,"kind":"error","error":%q}`,
 			ProtocolVersion, err.Error()))
 	}
-	return fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", id, kind, b)
+	return sseDataFrame(id, kind, b)
+}
+
+// sseDataFrame renders one SSE frame around already-encoded JSON, for callers
+// that fitted the payload first and must send exactly those bytes.
+func sseDataFrame(id int, kind string, data []byte) string {
+	return fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", id, kind, data)
 }
 
 // webErrorf is webError with formatting: uniform body, caller picks the code.

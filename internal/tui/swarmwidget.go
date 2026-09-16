@@ -46,7 +46,8 @@ type SwarmState struct {
 	// behind a mutex rather than an exported field: a render that walked the
 	// slice mid-replacement is the kind of crash that only shows up under a
 	// real swarm.
-	agents []SwarmAgent
+	agents  []SwarmAgent
+	version uint64
 
 	// stripSince is when the strip last became eligible to stand down.
 	stripSince time.Time
@@ -68,7 +69,18 @@ const StandDownDelay = 2 * time.Second
 func (s *SwarmState) Publish(agents []SwarmAgent) {
 	s.mu.Lock()
 	s.agents = agents
+	s.version++
 	s.mu.Unlock()
+}
+
+// Version changes whenever the roster poller publishes a new snapshot.
+func (s *SwarmState) Version() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
 }
 
 // Agents returns the roster.

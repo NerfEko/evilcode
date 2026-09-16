@@ -28,8 +28,11 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing config file must not be an error: %v", err)
 	}
-	if len(cfg.Providers) != 3 {
-		t.Errorf("providers = %d, want the three defaults", len(cfg.Providers))
+	if len(cfg.Providers) != 4 {
+		t.Errorf("providers = %d, want the four defaults", len(cfg.Providers))
+	}
+	if p := cfg.FindProvider("opencode-go"); p == nil || p.Kind != KindOpenCodeGo {
+		t.Errorf("providers missing the opencode-go default: %+v", cfg.Providers)
 	}
 	if cfg.Path != path {
 		t.Errorf("Path = %q, want %q — the path must be recorded even for a missing file, so a daemon can start refreshing last_model once the file appears (A4)", cfg.Path, path)
@@ -117,7 +120,7 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if cfg.Display.Theme != "catppuccin-frappe" {
 		t.Errorf("theme = %q, want the default", cfg.Display.Theme)
 	}
-	if len(cfg.Providers) != 3 {
+	if len(cfg.Providers) != 4 {
 		t.Errorf("providers = %d, want the defaults kept", len(cfg.Providers))
 	}
 }

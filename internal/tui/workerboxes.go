@@ -30,6 +30,21 @@ const ExpandedWorkerTailLines = 120
 // expansion is a disk read, so it refreshes slower.
 const ExpandedWorkerRefresh = 3 * time.Second
 
+// workerBoxPlacement records a preview's absolute transcript range. Keeping the
+// range in Rows makes scrolling and hit-testing use the same window math.
+type workerBoxPlacement struct {
+	Name   string
+	Start  int
+	Height int
+}
+
+// workerBoxHit is the visible screen-space range from the last rendered frame.
+type workerBoxHit struct {
+	Name   string
+	Top    int
+	Height int
+}
+
 // RenderWorkerBoxes draws one live preview box per worker: an info header,
 // the last WorkerBoxTailLines context lines, and the expand hint. Boxes
 // stack, so N simultaneous workers show N boxes. Every box is exactly
@@ -75,6 +90,31 @@ func (r *Renderer) RenderWorkerBoxes(workers []SwarmAgent, width int) []string {
 	return out
 }
 
+// workerBoxForBlock associates a live worker with a spawn_worker result. Current
+// results name the worker in their intent/output; the ordered fallback keeps
+// older daemons useful when those fields were not populated.
+func workerBoxForBlock(b *Block, workers []SwarmAgent, used map[string]bool) (SwarmAgent, bool) {
+	if b == nil || !strings.EqualFold(b.ToolName, "spawn_worker") {
+		return SwarmAgent{}, false
+	}
+	for _, w := range workers {
+		if used[w.Name] {
+			continue
+		}
+		if strings.Contains(b.ToolIntent, w.Name) || strings.Contains(b.ToolOutput, w.Name) {
+			used[w.Name] = true
+			return w, true
+		}
+	}
+	for _, w := range workers {
+		if !used[w.Name] {
+			used[w.Name] = true
+			return w, true
+		}
+	}
+	return SwarmAgent{}, false
+}
+
 // myWorkerBoxes returns this session's live crew for the preview boxes.
 // Nil-safe: local sessions without a daemon have no swarm and no boxes.
 func (m *Model) myWorkerBoxes() []SwarmAgent {
@@ -88,7 +128,7 @@ func (m *Model) myWorkerBoxes() []SwarmAgent {
 // geometry over the last frame's recorded box top, so it is unit-testable
 // without a terminal.
 func workerBoxAt(names []string, boxTop, y, x, chatWidth int) string {
-	if len(names) == 0 || x >= chatWidth {
+	if len(names) == 0 || x < 0 || x >= chatWidth {
 		return ""
 	}
 	rel := y - boxTop
@@ -106,7 +146,23 @@ func workerBoxAt(names []string, boxTop, y, x, chatWidth int) string {
 // uses. False when the click is not on a box.
 func (m *Model) expandWorkerAt(y, x int) bool {
 	_, pad := ContentWidth(m.width, m.centered)
-	name := workerBoxAt(m.workerBoxNames, m.workerBoxTop, y, x-pad, m.chatWidth())
+	x -= pad
+	if x < 0 || x >= m.chatWidth() ||
+		(m.scrollbarOn && x >= m.chatWidth()-ScrollbarReserve) {
+		return false
+	}
+	var name string
+	for _, hit := range m.workerBoxHits {
+		if y >= hit.Top && y < hit.Top+hit.Height {
+			name = hit.Name
+			break
+		}
+	}
+	if name == "" {
+		// Keep the old arithmetic path for callers that record fixed-bottom
+		// geometry directly (and for older integrations without Rows metadata).
+		name = workerBoxAt(m.workerBoxNames, m.workerBoxTop, y, x, m.chatWidth())
+	}
 	if name == "" {
 		return false
 	}

@@ -70,6 +70,12 @@ type FS struct {
 
 	// exposure is shared with the command/search tools for one session.
 	exposure *Exposure
+
+	// readHookForTest injects a pre-read failure for a path, so tests can
+	// simulate EACCES/EIO even when running as root (where chmod 0200 still
+	// reads, since uid 0 bypasses permission checks). When set and returning
+	// a non-nil error, readConfined returns that error. Nil in production.
+	readHookForTest func(full string) error
 }
 
 // lockPath serializes changes to one file, returning the unlock.
@@ -679,6 +685,11 @@ func (f *FS) openConfined(full string) (*os.File, error) {
 
 // readConfined reads a whole file through the confined open.
 func (f *FS) readConfined(full string) ([]byte, error) {
+	if f.readHookForTest != nil {
+		if err := f.readHookForTest(full); err != nil {
+			return nil, err
+		}
+	}
 	file, err := f.openConfined(full)
 	if err != nil {
 		return nil, err
@@ -813,6 +824,8 @@ func (f *FS) writeTool() Tool {
 				before = string(old)
 			} else if errors.Is(err, os.ErrNotExist) {
 				existed = false
+			} else {
+				return Result{}, fmt.Errorf("read existing file for diff: %w", err)
 			}
 			if err := f.mkdirAllConfined(full); err != nil {
 				return Result{}, err

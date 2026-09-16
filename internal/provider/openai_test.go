@@ -321,18 +321,30 @@ func TestOpenAISynthesizedIDsAreUniqueAcrossResponses(t *testing.T) {
 	}
 }
 
-// H5.6: some OpenAI-compatible gateways require role:"tool" messages to carry
-// the tool's name, not just the call ID. toOAIMessages must copy it from
-// Message.ToolName.
-func TestToOAIMessagesSetsToolName(t *testing.T) {
+// H5.6, revised by live OpenCode Go traffic: the legacy per-message "name"
+// field must NOT be sent. Tool correlation is tool_call_id alone, and strict
+// OpenAI-compatible gateways reject "name" on tool results
+// ("name" is not supported by this endpoint).
+func TestToOAIMessagesOmitToolName(t *testing.T) {
 	out := (&OpenAI{}).toOAIMessages([]Message{
 		{Role: RoleTool, Content: "result", ToolCallID: "call_a", ToolName: "get_weather"},
 	})
 	if len(out) != 1 {
 		t.Fatalf("want 1 message, got %d", len(out))
 	}
-	if out[0].Name != "get_weather" {
-		t.Errorf("Name = %q, want %q", out[0].Name, "get_weather")
+	data, err := json.Marshal(out[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := wire["name"]; ok {
+		t.Errorf("tool message still carries the rejected legacy name field: %s", data)
+	}
+	if wire["tool_call_id"] != "call_a" {
+		t.Errorf("tool_call_id = %v, want call_a", wire["tool_call_id"])
 	}
 }
 
@@ -373,5 +385,85 @@ func TestDeepSeekCacheTokensParsed(t *testing.T) {
 	}
 	if got.Usage.CacheWriteTokens != 20 {
 		t.Errorf("CacheWriteTokens = %d, want 20", got.Usage.CacheWriteTokens)
+	}
+}
+
+// EC-009: one JSON payload split across two data: fields in the same event
+// must accumulate and parse; every data: line is not complete JSON.
+func TestOpenAIMultilineEventParses(t *testing.T) {
+	body := "data: {\"choices\":\n" +
+		"data: [{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	text, _, _, _, err := collectOpenAI(t, body)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if text != "hello" {
+		t.Errorf("text = %q, want %q", text, "hello")
+	}
+}
+
+// EC-009: CRLF line endings, SSE comments, and other fields (event:/id:) must
+// not break decoding; the terminal marker arrives after assembly.
+func TestOpenAISSECRLFCommentOtherFields(t *testing.T) {
+	body := ": heartbeat\r\n" +
+		"event: message\r\n" +
+		"id: 1\r\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n" +
+		"\r\n" +
+		": another comment\r\n" +
+		"data: [DONE]\r\n" +
+		"\r\n"
+	text, _, _, _, err := collectOpenAI(t, body)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if text != "hi" {
+		t.Errorf("text = %q, want %q", text, "hi")
+	}
+}
+
+// EC-009: the final event and [DONE] dispatched by EOF without a trailing
+// blank line must still complete the stream.
+func TestOpenAISSEEOFWithoutBlankCompletes(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: [DONE]"
+	text, _, _, _, err := collectOpenAI(t, body)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if text != "hi" {
+		t.Errorf("text = %q, want %q", text, "hi")
+	}
+}
+
+// EC-009: a malformed assembled event must surface as a payload error.
+func TestOpenAISSEMalformedEventIsError(t *testing.T) {
+	body := "data: not-json\n\n" +
+		"data: [DONE]\n\n"
+	_, _, _, _, err := collectOpenAI(t, body)
+	if err == nil {
+		t.Fatal("want an error for malformed event, got nil")
+	}
+	if !strings.Contains(err.Error(), "bad SSE payload") {
+		t.Errorf("err = %v, want bad SSE payload", err)
+	}
+}
+
+// EC-009: a tool-call payload split across two data: fields must reassemble
+// and accumulate into one call.
+func TestOpenAIMultilineToolFragment(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":\n" +
+		"data: [{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+	_, _, calls, _, err := collectOpenAI(t, body)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].ID != "call_1" || calls[0].Name != "read" {
+		t.Errorf("call = %+v, want id call_1 name read", calls[0])
 	}
 }

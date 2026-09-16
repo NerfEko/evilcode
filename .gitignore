@@ -17,3 +17,4 @@ lorem.md
 
 # Benchmark rig: local-only, not shipped. Harbor runs, adapters, configs, results.
 bench/
+*.test

@@ -28,6 +28,11 @@ func helpFooter(width int) string {
 }
 
 func (r *Renderer) RenderHelp(scroll, width, height int) []string {
+	return r.RenderHelpFor(scroll, width, height, false)
+}
+
+// RenderHelpFor renders help with mode-specific command visibility.
+func (r *Renderer) RenderHelpFor(scroll, width, height int, orchestrator bool) []string {
 	accent := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(r.Palette.Hex(theme.RoleAccent))).Bold(true)
 	name := lipgloss.NewStyle().Bold(true)
@@ -40,6 +45,9 @@ func (r *Renderer) RenderHelp(scroll, width, height int) []string {
 	for _, sec := range HelpSections {
 		add(accent.Render(sec.Title))
 		for _, n := range sec.Names {
+			if orchestrator && (n == "todos" || n == "poke") {
+				continue
+			}
 			c, ok := FindCommand(n)
 			if !ok {
 				continue
@@ -52,7 +60,7 @@ func (r *Renderer) RenderHelp(scroll, width, height int) []string {
 
 	// Anything the curated sections missed, so drift is visible rather than
 	// silent.
-	if extra := UncoveredCommands(); len(extra) > 0 {
+	if extra := UncoveredCommandsFor(orchestrator); len(extra) > 0 {
 		add(accent.Render("More commands"))
 		for _, c := range extra {
 			add("  " + name.Render("/"+c.Name) +

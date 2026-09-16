@@ -155,7 +155,7 @@ func webRowOf(t *testing.T, resp *http.Response, path string) SessionInfo {
 type eventTap struct {
 	t    *testing.T
 	sess *Session
-	sub  chan ServerMsg
+	sub  *subscription
 }
 
 func tapEvents(t *testing.T, sess *Session) *eventTap {
@@ -171,7 +171,7 @@ func (tap *eventTap) next(want func(*agent.Event) bool, desc string) *agent.Even
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case msg := <-tap.sub:
+		case msg := <-tap.sub.ch:
 			if msg.Kind == MsgEvent && msg.Event != nil && want(msg.Event) {
 				return msg.Event
 			}

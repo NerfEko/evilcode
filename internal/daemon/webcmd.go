@@ -52,11 +52,27 @@ func webRecover(next http.Handler) http.Handler {
 // pre-checks ~6 MiB of raw attachments before sending (§8).
 const webMaxBodyBytes = MaxClientFrameBytes
 
+// webBodyReadTimeout bounds how long the server waits for one request body
+// to arrive (EC-013). Only the read side is bounded: there is no
+// WriteTimeout anywhere on this surface, and the SSE stream never sets a
+// read deadline, so a client dribbling a POST body cannot tie up a handler
+// goroutine while long-lived streams survive past it. Package var so tests
+// can shrink it.
+var webBodyReadTimeout = 30 * time.Second
+
 // readWebBody decodes one JSON request body into dst. The body is capped at
 // webMaxBodyBytes; anything over is 413 with the uniform shape. Malformed
 // JSON, wrong types, or trailing garbage is 400 — the client sent something it
 // must fix, so the message names the JSON failure.
 func readWebBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	// A client that stalls mid-body must not hold the handler forever. The
+	// deadline covers only the decode below and is cleared before returning,
+	// so keep-alive reuse of the connection is unaffected. Writers without
+	// deadline support (test recorders) report an error here that is safe to
+	// ignore: the byte cap below still bounds the read.
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(webBodyReadTimeout))
+	defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
 	r.Body = http.MaxBytesReader(w, r.Body, webMaxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {
@@ -146,11 +162,28 @@ func (s *Server) webInput(w http.ResponseWriter, r *http.Request) {
 		}
 		images = append(images, raw)
 	}
-	if req.Text == "" && len(images) == 0 {
+	// EC-001/EC-005: whitespace-only text with no images is a no-op the
+	// agent would drop. Refuse it here, before the queue or the turn takes
+	// ownership of the decoded image bytes.
+	if !hasInputContent(req.Text, images) {
 		webErrorf(w, http.StatusBadRequest, "input needs text or at least one image")
 		return
 	}
-	sess.InputRequestHidden(req.RequestID, req.Text, req.Hidden, images)
+	// EC-005: the ack goes out only after the queue or the turn owns the
+	// prompt. A full queue is 429 (retry when the turn ends); a closing
+	// session is 409 (the runtime is going away, not merely busy).
+	status, err := sess.InputRequestHidden(req.RequestID, req.Text, req.Hidden, images)
+	if err != nil {
+		switch status {
+		case inputQueueFull:
+			webErrorf(w, http.StatusTooManyRequests, "%v", err)
+		case inputClosing:
+			webErrorf(w, http.StatusConflict, "%v", err)
+		default:
+			webCommandError(w, sess, err)
+		}
+		return
+	}
 	writeJSON(w, webOK)
 }
 
@@ -462,16 +495,55 @@ type webModelsCache struct {
 	mu      sync.Mutex
 	entries []webModelEntry
 	fetched time.Time
+	// inflight is non-nil while one fetch is running (EC-I-001): the first
+	// miss becomes the leader and fetches, later misses wait on its
+	// completion (or their request context) and then read the stored
+	// result. No singleflight dependency — one channel under this mutex.
+	inflight chan struct{}
 }
 
 // webAPIModels serves GET /api/models.
 func (s *Server) webAPIModels(w http.ResponseWriter, r *http.Request) {
-	entries, ok := s.webModels.cached()
-	if !ok {
-		entries = s.webFetchModels()
-		s.webModels.store(entries)
+	entries, wait, leader := s.webModels.beginFetch()
+	switch {
+	case wait != nil:
+		// A fetch is already running: wait for the leader or the client
+		// going away, then read whatever it stored.
+		select {
+		case <-wait:
+			entries, _ = s.webModels.cached()
+			writeJSON(w, entries)
+		case <-r.Context().Done():
+		}
+	case !leader:
+		writeJSON(w, entries)
+	default:
+		// The leader fetches with no lock held and stores on all paths
+		// (deferred, so even a panicking provider releases the waiters),
+		// then answers from the same stored result the followers read.
+		func() {
+			defer func() { s.webModels.finishFetch(entries) }()
+			entries = s.webFetchModels()
+		}()
+		writeJSON(w, entries)
 	}
-	writeJSON(w, entries)
+}
+
+// beginFetch checks freshness and joins or starts a fetch under one lock, so
+// a burst of concurrent misses produces exactly one upstream aggregation.
+// It returns the fresh entries (leader=false, wait=nil), the in-flight
+// channel to wait on (wait!=nil), or leadership (leader=true).
+func (c *webModelsCache) beginFetch() (entries []webModelEntry, wait chan struct{}, leader bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries != nil && time.Since(c.fetched) < webModelsCacheTTL {
+		return c.entries, nil, false
+	}
+	if c.inflight != nil {
+		return nil, c.inflight, false
+	}
+	c.inflight = make(chan struct{})
+	return nil, nil, true
 }
 
 // cached returns the entries while they are fresh.
@@ -489,6 +561,20 @@ func (c *webModelsCache) store(entries []webModelEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries, c.fetched = entries, time.Now()
+}
+
+// finishFetch stores the leader's result and wakes every waiter. It runs on
+// all leader paths, so a closed channel always follows an in-flight one, and
+// the mutex is held only for the swap — never across provider I/O.
+func (c *webModelsCache) finishFetch(entries []webModelEntry) {
+	c.mu.Lock()
+	c.entries, c.fetched = entries, time.Now()
+	ch := c.inflight
+	c.inflight = nil
+	c.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
 
 // webFetchModels asks every configured provider concurrently. A provider that

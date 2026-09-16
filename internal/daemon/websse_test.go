@@ -211,12 +211,17 @@ func TestWebEventsSlowClientDoesNotStallTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = openSSE(t, srv, addr, sess.Name, "", "") // connected, deliberately unread
+
+	baseSeq := publish(t, sess, "base-marker")
+	stream := openSSE(t, srv, addr, sess.Name, "", "")
+	if _, kind, _ := stream.next(); kind != "snapshot" {
+		t.Fatalf("first frame kind = %q, want snapshot", kind)
+	}
 
 	// The §5 rule: a web client that cannot keep up must never stall the
-	// session's event pump. broadcast drops for a full queue instead of
-	// blocking; publish a burst far past the subscription capacity and bound
-	// the whole thing with a deadline.
+	// session's event pump. broadcast evicts on the first full send instead
+	// of blocking; publish a burst far past the subscription capacity and
+	// bound the whole thing with a deadline.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -230,11 +235,52 @@ func TestWebEventsSlowClientDoesNotStallTheSession(t *testing.T) {
 		t.Fatal("publishing stalled: the slow client is blocking the session pump")
 	}
 
-	// The subscription counts toward Clients while it lives.
-	for _, info := range srv.Sessions() {
-		if info.Name == sess.Name && info.Clients != 1 {
-			t.Errorf("live SSE client not counted in the roster: %+v", info)
+	// Fill-queue observes termination: the overflowed subscription is evicted.
+	waitFor(t, "overflow eviction", func() bool {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return len(sess.subs) == 0
+	})
+	// The SSE loop exits, terminating the stream; draining the buffered bytes
+	// must reach EOF instead of hanging on a live stream.
+	terminated := make(chan struct{})
+	go func() {
+		defer close(terminated)
+		for {
+			if _, err := stream.br.ReadString('\n'); err != nil {
+				return
+			}
 		}
+	}()
+	select {
+	case <-terminated:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow SSE stream did not terminate after overflow")
+	}
+
+	// Clients decremented once on eviction; the deferred unsubscribe after the
+	// handler returns is a no-op.
+	for _, info := range srv.Sessions() {
+		if info.Name == sess.Name && info.Clients != 0 {
+			t.Errorf("Clients = %d after overflow, want 0 (evicted once)", info.Clients)
+		}
+	}
+
+	// Reconnect with the last sequence from before the burst: the ring replays
+	// the gap the terminated stream missed.
+	reconnect := openSSE(t, srv, addr, sess.Name, "?since="+strconv.Itoa(baseSeq), "")
+	if _, kind, _ := reconnect.next(); kind != "snapshot" {
+		t.Fatalf("reconnect first frame kind = %q, want snapshot", kind)
+	}
+	id, kind, data := reconnect.next()
+	if kind != "event" {
+		t.Fatalf("reconnect replay kind = %q, want event", kind)
+	}
+	if id <= baseSeq {
+		t.Errorf("replayed id %d is not past since=%d", id, baseSeq)
+	}
+	if !strings.Contains(data, strings.Repeat("x", 16)) {
+		t.Errorf("reconnect replay data does not carry the burst gap: %q", data)
 	}
 }
 

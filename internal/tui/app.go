@@ -141,9 +141,11 @@ type Model struct {
 	// slice avoids rebuilding every old row twelve times a second. It is cleared
 	// before state-changing messages and never populated for live streaming or
 	// entry animation.
-	transcriptCache      Rows
-	transcriptCacheWidth int
-	transcriptCacheValid bool
+	transcriptCache             Rows
+	transcriptCacheWidth        int
+	transcriptCacheValid        bool
+	transcriptCacheSwarmVersion uint64
+	transcriptCacheOrchestrator bool
 
 	// startPageCache is separate from transcriptCache because the empty-state
 	// page has a height that follows the composer. Keeping its own key lets
@@ -605,8 +607,11 @@ type Model struct {
 	// /orchestrate as a remote command). orchestrator is the visible half —
 	// the rainbow composer tint and roster colors — armed by the keyword or
 	// the command until /orchestrate off or session end.
-	orchestrate  *agent.OrchestrateHook
-	orchestrator bool
+	orchestrate             *agent.OrchestrateHook
+	orchestrator            bool
+	orchestratorPokeEnabled bool
+	orchestratorPokeSaved   bool
+	orchestratorMu          sync.Mutex
 
 	// observeGrunt is grunt observe mode: attached to a worker session, the
 	// bottom bar shows session details instead of an input box. Typing has
@@ -619,12 +624,14 @@ type Model struct {
 	gruntTask     string
 	gruntModel    string
 
-	// workerBoxTop/workerBoxNames record the last frame's preview-box
-	// geometry for click hit-testing: boxes are fixed height, so a click
-	// maps to a worker by arithmetic. expandedWorker is the worker open in
-	// the side panel ("" when none), expandedAt throttles its refresh.
+	// workerBoxHits records the last frame's transcript-space preview ranges for
+	// click hit-testing. workerBoxTop/workerBoxNames remain as a compatibility
+	// fallback for callers that supply fixed-bottom geometry. expandedWorker is
+	// the worker open in the side panel ("" when none), expandedAt throttles its
+	// refresh.
 	workerBoxTop   int
 	workerBoxNames []string
+	workerBoxHits  []workerBoxHit
 	expandedWorker string
 	expandedAt     time.Time
 
@@ -2700,7 +2707,7 @@ func (m *Model) paletteSuggestions() []Suggestion {
 	if !m.paletteOpen() {
 		return nil
 	}
-	return RankCommands(strings.TrimPrefix(m.editor.Text, "/"), VisibleCommands())
+	return RankCommands(strings.TrimPrefix(m.editor.Text, "/"), VisibleCommandsFor(m.orchestratorActive()))
 }
 
 func (m *Model) reasoningEffortAvailable() bool {
@@ -2799,6 +2806,10 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 		m.widgetsOn = !m.widgetsOn
 		m.notice = map[bool]string{true: "Info widgets: ON", false: "Info widgets: OFF"}[m.widgetsOn]
 	case ActionTodoCard:
+		if m.orchestratorActive() {
+			m.notice = "Todo tracking is unavailable while orchestrator mode is on"
+			return true, m, nil
+		}
 		m.showTodoCard = !m.showTodoCard
 	case ActionTypingLock:
 		m.typingLock = !m.typingLock
@@ -2808,6 +2819,10 @@ func (m *Model) runAction(a Action) (bool, tea.Model, tea.Cmd) {
 			m.notice = "Typing scroll lock: OFF - typing follows chat bottom"
 		}
 	case ActionAutoPoke:
+		if m.orchestratorActive() {
+			m.notice = "Auto-poke is unavailable while orchestrator mode is on"
+			return true, m, nil
+		}
 		if m.poke == nil {
 			return false, m, nil
 		}
@@ -3858,6 +3873,10 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "poke":
+		if m.orchestratorActive() {
+			m.notice = "Auto-poke is unavailable while orchestrator mode is on"
+			return m, nil
+		}
 		if m.poke == nil {
 			if m.remoteCommand != nil {
 				if err := m.remoteCommand("poke", strings.TrimSpace(m.commandArg), ""); err != nil {
@@ -3935,6 +3954,10 @@ func (m *Model) runCommandWithArg(name, arg string) (tea.Model, tea.Cmd) {
 		return m, m.agentsCommand()
 
 	case "todos", "todo":
+		if m.orchestratorActive() {
+			m.notice = "Todo tracking is unavailable while orchestrator mode is on"
+			return m, nil
+		}
 		m.showTodoCard = !m.showTodoCard
 		return m, nil
 
@@ -4728,10 +4751,21 @@ func (m *Model) rememberTranscriptHeight(width, height int) {
 
 // transcriptLines renders every block to lines plus the provenance of each line
 // (§1.2). Owner[i] is the index into m.blocks that rendered Lines[i], or -1 for
-// chrome (the header, inter-block gaps, welcome art, todo card). The
-// per-block render cache is untouched: provenance is recorded around the cache,
-// not inside it, so a cache hit still costs nothing.
+// chrome (the header, inter-block gaps, welcome art, todo card). Live worker
+// previews are appended to their spawn_worker owner here, so they scroll with
+// the same content window rather than behaving like fixed chrome. The per-block
+// render cache is untouched: provenance is recorded around the cache, not
+// inside it, so a cache hit still costs nothing.
 func (m *Model) transcriptLines() Rows {
+	swarmVersion := uint64(0)
+	if m.swarm != nil {
+		swarmVersion = m.swarm.Version()
+	}
+	orchestrator := m.orchestratorActive()
+	if m.transcriptCacheValid && (m.transcriptCacheSwarmVersion != swarmVersion ||
+		m.transcriptCacheOrchestrator != orchestrator) {
+		m.invalidateTranscriptCache()
+	}
 	if m.renderer.DiffMode != m.diffMode {
 		m.renderer.DiffMode = m.diffMode
 		for i := range m.blocks {
@@ -4771,6 +4805,9 @@ func (m *Model) transcriptLines() Rows {
 	for i := range first {
 		first[i] = -1
 	}
+	workers := m.myWorkerBoxes()
+	usedWorkers := make(map[string]bool, len(workers))
+	var workerBoxes []workerBoxPlacement
 	addChrome := func(lines []string) {
 		out = append(out, lines...)
 		for range lines {
@@ -4810,6 +4847,14 @@ func (m *Model) transcriptLines() Rows {
 			lines = m.renderer.animateEntry(lines, animT)
 		}
 		addOwned(i, lines)
+		if worker, ok := workerBoxForBlock(block, workers, usedWorkers); ok {
+			start := len(out)
+			boxLines := m.renderer.RenderWorkerBoxes([]SwarmAgent{worker}, m.renderer.Width)
+			addOwned(i, boxLines)
+			workerBoxes = append(workerBoxes, workerBoxPlacement{
+				Name: worker.Name, Start: start, Height: len(boxLines),
+			})
+		}
 
 		// Blank lines separate *ideas*, not every block. A batch of tool calls
 		// is one idea, so consecutive tool rows stay packed; a gap between each
@@ -4823,7 +4868,7 @@ func (m *Model) transcriptLines() Rows {
 	// The inline todo card is a single card pinned to the transcript tail, so
 	// re-toggling moves it to the bottom rather than leaving copies behind
 	// (plan.md §12.5).
-	if m.showTodoCard && m.todos != nil {
+	if m.showTodoCard && m.todos != nil && !m.orchestratorActive() {
 		addChrome(m.renderer.RenderTodoCard(TodoCardState{
 			Items: m.todos.Items(),
 			Plan:  m.todos.Plan(),
@@ -4837,10 +4882,12 @@ func (m *Model) transcriptLines() Rows {
 	if len(out) != len(owner) {
 		panic(fmt.Sprintf("transcriptLines: len(Lines)=%d != len(Owner)=%d", len(out), len(owner)))
 	}
-	rows := Rows{Lines: out, Owner: owner, First: first}
+	rows := Rows{Lines: out, Owner: owner, First: first, WorkerBoxes: workerBoxes}
 	if cacheable && (!m.transcriptCacheValid || m.transcriptCacheWidth == m.renderer.Width) {
 		m.transcriptCache = rows
 		m.transcriptCacheWidth = m.renderer.Width
+		m.transcriptCacheSwarmVersion = swarmVersion
+		m.transcriptCacheOrchestrator = orchestrator
 		m.transcriptCacheValid = true
 		m.rememberTranscriptHeight(m.renderer.Width, len(rows.Lines))
 	}
@@ -4893,12 +4940,6 @@ func (m *Model) stackFor(contentHeight int) Stack {
 
 	composer := m.bottomBar()
 	s.Heights[SlotComposer] = len(composer)
-	// The worker preview boxes are fixed chrome above the input, like the
-	// queued prompts: measured here so the transcript shrinks around them
-	// instead of the frame overflowing the terminal.
-	if boxes := m.myWorkerBoxes(); len(boxes) > 0 {
-		s.Heights[SlotSwarm] = len(m.renderer.RenderWorkerBoxes(boxes, m.chatWidth()))
-	}
 	return s
 }
 
@@ -4949,14 +4990,19 @@ func (m *Model) transcriptHeightOnly() int {
 		return height
 	}
 	height := len(m.renderer.RenderHeader(m.header)) + 1
+	workers := m.myWorkerBoxes()
+	usedWorkers := make(map[string]bool, len(workers))
 	for i := range m.blocks {
 		lines := m.renderer.Lines(&m.blocks[i])
 		height += len(lines)
+		if worker, ok := workerBoxForBlock(&m.blocks[i], workers, usedWorkers); ok {
+			height += len(m.renderer.RenderWorkerBoxes([]SwarmAgent{worker}, m.renderer.Width))
+		}
 		if len(lines) > 0 && needsGapAfter(m.blocks, i) {
 			height++
 		}
 	}
-	if m.showTodoCard && m.todos != nil {
+	if m.showTodoCard && m.todos != nil && !m.orchestratorActive() {
 		height += len(m.renderer.RenderTodoCard(TodoCardState{
 			Items: m.todos.Items(), Plan: m.todos.Plan(), Goals: m.todos.Goals(),
 		})) + 1
@@ -5153,7 +5199,7 @@ func (m *Model) composerState() ComposerState {
 		NewSession:      m.startActive,
 		PaletteOpen:     m.paletteOpen(),
 		Masked:          m.loginMode,
-		Orchestrator:    m.orchestrator,
+		Orchestrator:    m.orchestratorActive(),
 		Elapsed:         time.Since(m.started),
 	}
 }
@@ -5206,7 +5252,7 @@ func (m *Model) View() tea.View {
 	if m.helpOpen {
 		m.clearDrawnImages()
 		v := tea.NewView(strings.Join(
-			m.renderer.RenderHelp(m.helpScroll, m.width, m.height), "\n"))
+			m.renderer.RenderHelpFor(m.helpScroll, m.width, m.height, m.orchestratorActive()), "\n"))
 		v.AltScreen = true
 		return v
 	}
@@ -5233,6 +5279,15 @@ func (m *Model) View() tea.View {
 		end = start
 	}
 	visible := content[start:end]
+	m.workerBoxHits = m.workerBoxHits[:0]
+	for _, box := range tr.WorkerBoxes {
+		top := box.Start - start
+		if top+box.Height > 0 && top < res.Transcript {
+			m.workerBoxHits = append(m.workerBoxHits, workerBoxHit{
+				Name: box.Name, Top: top, Height: box.Height,
+			})
+		}
+	}
 
 	// The slack itself is blank rows below the text. They are real rows, so the
 	// dock and the scrollbar see a stable region rather than one that shrinks
@@ -5358,20 +5413,6 @@ func (m *Model) View() tea.View {
 		// Prompts this window queued behind a busy session wait here, above the
 		// input, until the daemon starts their turn (plan.md §6.3).
 		rows = append(rows, m.renderer.RenderQueuedPrompts(m.queuedTexts)...)
-	}
-	// Live worker preview boxes ride above the input: one fixed-height box
-	// per unfinished worker this session spawned, newest tails refreshing on
-	// the roster poll. The geometry is recorded for click-to-expand.
-	if boxes := m.myWorkerBoxes(); len(boxes) > 0 {
-		m.workerBoxTop = len(rows)
-		m.workerBoxNames = m.workerBoxNames[:0]
-		for _, w := range boxes {
-			m.workerBoxNames = append(m.workerBoxNames, w.Name)
-		}
-		rows = append(rows, m.renderer.RenderWorkerBoxes(boxes, m.chatWidth())...)
-	} else {
-		m.workerBoxTop = -1
-		m.workerBoxNames = nil
 	}
 	m.refreshExpandedWorker()
 	rows = append(rows, m.bottomBar()...)
@@ -5693,7 +5734,7 @@ func (m *Model) activeWidgets() []Widget {
 		}
 	}
 
-	if m.todos != nil {
+	if m.todos != nil && !m.orchestratorActive() {
 		add(m.renderer.TodosWidget(m.todos.Items(), m.todos.Goals(), 4))
 	}
 	if m.ctxUsed > 0 && m.contextMax() > 0 {

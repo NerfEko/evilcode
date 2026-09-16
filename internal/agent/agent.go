@@ -170,6 +170,10 @@ type Agent struct {
 	// batch.
 	toolPolicy *tools.ToolPolicy
 
+	// blockedTools are runtime capability gates. They are applied when a request
+	// snapshots the set, so an orchestration toggle survives MCP/tool reloads.
+	blockedTools map[string]bool
+
 	// Compactor collapses the conversation when it approaches the window. Nil
 	// disables it, which is what a session with no summariser gets.
 	Compactor *Compactor
@@ -401,11 +405,47 @@ func (a *Agent) SetTools(ts tools.Set) {
 	a.mu.Unlock()
 }
 
+// SetToolBlocked toggles a runtime capability gate. Blocking affects only new
+// request snapshots; an already-running tool round keeps its original set and
+// still receives normal results for every call it emitted.
+func (a *Agent) SetToolBlocked(name string, blocked bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if blocked {
+		if a.blockedTools == nil {
+			a.blockedTools = map[string]bool{}
+		}
+		a.blockedTools[name] = true
+	} else if a.blockedTools != nil {
+		delete(a.blockedTools, name)
+	}
+}
+
+// ToolBlocked reports whether a runtime capability is currently withdrawn.
+func (a *Agent) ToolBlocked(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.blockedTools[strings.TrimSpace(name)]
+}
+
 // toolSet snapshots the current tool set for the per-request reads.
 func (a *Agent) toolSet() tools.Set {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.Tools
+	if len(a.blockedTools) == 0 {
+		return a.Tools
+	}
+	out := make(tools.Set, 0, len(a.Tools))
+	for _, tool := range a.Tools {
+		if !a.blockedTools[tool.Name] {
+			out = append(out, tool)
+		}
+	}
+	return out
 }
 
 func (a *Agent) currentToolPolicy() *tools.ToolPolicy {
@@ -498,16 +538,23 @@ func (a *Agent) run(ctx context.Context, userInput string, hidden bool) error {
 	}
 	defer a.endRun(gen)
 
-	if strings.TrimSpace(userInput) != "" {
-		msg := provider.Message{Role: provider.RoleUser, Content: userInput, Hidden: hidden}
-		a.mu.Lock()
+	// Attach stages pendingImages under the lock, so the take has to happen
+	// under the same lock — and for every accepted run, even an image-only
+	// one, or the staging leaks into the next turn.
+	hasText := strings.TrimSpace(userInput) != ""
+	a.mu.Lock()
+	images := a.pendingImages
+	a.pendingImages = nil
+	if hasText || len(images) > 0 {
 		a.prompt = userInput
-		// Attach writes pendingImages under the lock; the swap has to take it
-		// too. Safe until now only because the TUI happened to attach before
-		// starting the run goroutine.
-		msg.Images, a.pendingImages = a.pendingImages, nil
-		a.mu.Unlock()
-		a.Conv.Append(msg)
+	}
+	a.mu.Unlock()
+	if !hasText && len(images) == 0 {
+		return nil
+	}
+	msg := provider.Message{Role: provider.RoleUser, Content: userInput, Hidden: hidden, Images: images}
+	a.Conv.Append(msg)
+	if hasText {
 		a.recall(ctx, userInput)
 	}
 	return a.loop(ctx)

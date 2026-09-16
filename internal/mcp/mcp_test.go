@@ -869,3 +869,169 @@ func TestLoadWarnsSurfaceInStatus(t *testing.T) {
 		t.Errorf("status = %+v, want the warning while connected", st)
 	}
 }
+
+// EC-007: all three adapter names collide with server-owned tools — the
+// server wins for each, with exact names, exact length, and no empty entries.
+func TestCapabilityCollisionAllThreeServerWin(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "collide", Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{
+			Resources: &sdk.ResourceCapabilities{},
+			Prompts:   &sdk.PromptCapabilities{},
+		},
+	})
+	for _, name := range []string{"read_resource", "list_resources", "get_prompt"} {
+		n := name
+		server.AddTool(&sdk.Tool{Name: n, InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "own " + n}}}, nil
+		})
+	}
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv"}, nil)
+	got := toolsSetNames(srv.toolsSnapshot())
+	if len(got) != 3 {
+		t.Fatalf("tools = %v, want exactly the 3 server-owned tools", got)
+	}
+	want := map[string]bool{
+		"srv__read_resource":  true,
+		"srv__list_resources": true,
+		"srv__get_prompt":     true,
+	}
+	for _, n := range got {
+		if n == "" {
+			t.Fatalf("empty tool name in %v", got)
+		}
+		if !want[n] {
+			t.Fatalf("unexpected tool %q in %v", n, got)
+		}
+	}
+	set := tools.Set(srv.toolsSnapshot())
+	for _, remote := range []string{"read_resource", "list_resources", "get_prompt"} {
+		tool, ok := set.Find("srv__" + remote)
+		if !ok {
+			t.Fatalf("srv__%s missing from %v", remote, got)
+		}
+		res, err := tool.Run(context.Background(), json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("srv__%s call: %v", remote, err)
+		}
+		if res.Output != "own "+remote {
+			t.Errorf("srv__%s output = %q, want %q (adapter shadowed the server)", remote, res.Output, "own "+remote)
+		}
+	}
+}
+
+// EC-015: a wedged resource handler costs one bounded result, not the turn.
+func TestCapabilityReadResourceTimeout(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "slowres", Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{Resources: &sdk.ResourceCapabilities{}},
+	})
+	server.AddResource(&sdk.Resource{URI: "file:///slow.txt", Name: "slow", MIMEType: "text/plain"},
+		func(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Second):
+				return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{
+					{URI: "file:///slow.txt", Text: "late"},
+				}}, nil
+			}
+		})
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv", Timeout: 20 * time.Millisecond}, nil)
+	set := tools.Set(srv.toolsSnapshot())
+	rt, ok := set.Find("srv__read_resource")
+	if !ok {
+		t.Fatalf("read_resource missing: %v", toolsSetNames(srv.toolsSnapshot()))
+	}
+	_, err := rt.Run(context.Background(), json.RawMessage(`{"uri":"file:///slow.txt"}`))
+	if err == nil {
+		t.Fatal("wedged read_resource succeeded, want a timeout")
+	}
+	if !strings.Contains(err.Error(), "no response in 20ms") {
+		t.Errorf("error does not name the 20ms bound: %v", err)
+	}
+	if !strings.Contains(err.Error(), "srv__read_resource") {
+		t.Errorf("error does not name the tool: %v", err)
+	}
+}
+
+// EC-015: a wedged prompt handler is bounded the same way.
+func TestCapabilityGetPromptTimeout(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "slowprompt", Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{Prompts: &sdk.PromptCapabilities{}},
+	})
+	server.AddPrompt(&sdk.Prompt{Name: "slow", Description: "slow"},
+		func(ctx context.Context, req *sdk.GetPromptRequest) (*sdk.GetPromptResult, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Second):
+				return &sdk.GetPromptResult{Messages: []*sdk.PromptMessage{
+					{Role: "user", Content: &sdk.TextContent{Text: "late"}},
+				}}, nil
+			}
+		})
+	_, srv := newInProcessClient(t, server, ServerConfig{Name: "srv", Timeout: 20 * time.Millisecond}, nil)
+	set := tools.Set(srv.toolsSnapshot())
+	pt, ok := set.Find("srv__get_prompt")
+	if !ok {
+		t.Fatalf("get_prompt missing: %v", toolsSetNames(srv.toolsSnapshot()))
+	}
+	_, err := pt.Run(context.Background(), json.RawMessage(`{"name":"slow"}`))
+	if err == nil {
+		t.Fatal("wedged get_prompt succeeded, want a timeout")
+	}
+	if !strings.Contains(err.Error(), "no response in 20ms") {
+		t.Errorf("error does not name the 20ms bound: %v", err)
+	}
+	if !strings.Contains(err.Error(), "srv__get_prompt") {
+		t.Errorf("error does not name the tool: %v", err)
+	}
+}
+
+// EC-015: a dead transport earns one reconnect for capability ops, reusing the
+// same bounded-session policy as normal calls.
+func TestCapabilityResourceReconnectsAfterTransportDeath(t *testing.T) {
+	restore := setBackoff(5 * time.Millisecond)
+	defer restore()
+	server := sdk.NewServer(&sdk.Implementation{Name: "healres", Version: "1"}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{Resources: &sdk.ResourceCapabilities{}},
+	})
+	server.AddResource(&sdk.Resource{URI: "file:///notes.txt", Name: "notes", MIMEType: "text/plain"},
+		func(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+			return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{
+				{URI: "file:///notes.txt", Text: "note body"},
+			}}, nil
+		})
+	httpSrv := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
+	defer httpSrv.Close()
+	c := New()
+	for _, err := range c.Connect(context.Background(), []ServerConfig{{Name: "srv", URL: httpSrv.URL}}) {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if len(c.servers) != 1 {
+		t.Fatalf("servers = %d, want 1", len(c.servers))
+	}
+	srv := c.servers[0]
+	_ = srv.currentSession().Close()
+	set := c.Tools()
+	rt, ok := set.Find("srv__read_resource")
+	if !ok {
+		t.Fatalf("read_resource missing: %v", set.Names())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var res tools.Result
+	var runErr error
+	for time.Now().Before(deadline) {
+		res, runErr = rt.Run(context.Background(), json.RawMessage(`{"uri":"file:///notes.txt"}`))
+		if runErr == nil && res.Output == "note body" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+		set = c.Tools()
+		rt, ok = set.Find("srv__read_resource")
+		if !ok {
+			t.Fatalf("read_resource missing after reconnect: %v", set.Names())
+		}
+	}
+	t.Fatalf("capability op never reconnected: res=%v err=%v connected=%v status=%+v", res, runErr, srv.isConnected(), srv.status())
+}

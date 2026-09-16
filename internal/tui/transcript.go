@@ -190,6 +190,8 @@ type Rows struct {
 	// emitted no rows. It is assembled with Owner so dock/prompt navigation do
 	// not rescan every transcript row on each frame.
 	First []int32
+	// WorkerBoxes are the live preview ranges embedded after spawn_worker rows.
+	WorkerBoxes []workerBoxPlacement
 }
 
 // Renderer turns blocks into styled lines.

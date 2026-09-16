@@ -44,6 +44,9 @@ func (sess *Session) Command(kind, arg, secret string) error {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case "poke":
+		if sess.orchestrate != nil && sess.orchestrate.Active() {
+			return fmt.Errorf("auto-poke is unavailable while orchestrator mode is on")
+		}
 		if sess.poke == nil {
 			return fmt.Errorf("auto-poke is not configured for this session")
 		}
@@ -137,6 +140,7 @@ func (sess *Session) Command(kind, arg, secret string) error {
 		default:
 			return fmt.Errorf("usage: /orchestrate [on|off|status]")
 		}
+		sess.setOrchestratorCapabilities(sess.orchestrate.Active())
 		if sess.orchestrate.Active() {
 			sess.notice("🌈 Orchestrator mode is on · the fan-out contract is in context")
 		} else {
@@ -196,6 +200,32 @@ func (sess *Session) Command(kind, arg, secret string) error {
 
 	default:
 		return fmt.Errorf("unknown server command %q", kind)
+	}
+}
+
+// setOrchestratorCapabilities withdraws todo and auto-poke from new daemon
+// requests while delegation owns the turn-control loop.
+func (sess *Session) setOrchestratorCapabilities(on bool) {
+	if sess == nil {
+		return
+	}
+	sess.controlMu.Lock()
+	defer sess.controlMu.Unlock()
+	if sess.built != nil && sess.built.Agent != nil {
+		sess.built.Agent.SetToolBlocked("todo", on)
+	}
+	if sess.poke == nil {
+		return
+	}
+	if on {
+		if !sess.orchestratorPokeSaved {
+			sess.orchestratorPokeEnabled = sess.poke.Enabled()
+			sess.orchestratorPokeSaved = true
+		}
+		sess.poke.SetEnabled(false)
+	} else if sess.orchestratorPokeSaved {
+		sess.poke.SetEnabled(sess.orchestratorPokeEnabled)
+		sess.orchestratorPokeSaved = false
 	}
 }
 

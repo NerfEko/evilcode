@@ -484,12 +484,86 @@ func (m *Manager) peekTranscript() (string, int) {
 	return strings.Join(m.transcript, "\n"), len(m.transcript)
 }
 
+// extractMaxBytes bounds one extraction prompt. It is a batch size, not a
+// truncation cap: turns beyond it stay queued for the next pass.
+const extractMaxBytes = 12000
+
+// splitExtractBatch selects the next extraction prompt from queued turns: the
+// longest whole-turn prefix fitting in maxBytes. When the lead turn alone
+// exceeds maxBytes it returns a rune-safe prefix of that turn with n == 0 and
+// the unsent suffix to retain, so an oversized turn is chunked across passes
+// without loss.
+func splitExtractBatch(turns []string, maxBytes int) (batch string, n int, suffix string) {
+	if len(turns) == 0 || maxBytes <= 0 {
+		return "", 0, ""
+	}
+	if len(turns[0]) > maxBytes {
+		cut := maxBytes
+		for cut > 0 && cut < len(turns[0]) && !isRuneStart(turns[0][cut]) {
+			cut--
+		}
+		return turns[0][:cut], 0, turns[0][cut:]
+	}
+	var b strings.Builder
+	for _, turn := range turns {
+		add := len(turn)
+		if n > 0 {
+			add++ // "\n" separator Join would insert
+		}
+		if b.Len()+add > maxBytes {
+			break
+		}
+		if n > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(turn)
+		n++
+	}
+	return b.String(), n, ""
+}
+
+// peekExtractBatch snapshots the queue and selects the next bounded batch.
+// The returned n counts whole turns represented in batch; when n == 0 and
+// suffix != "" the batch is a rune-safe prefix of the lead turn and suffix is
+// the remainder to retain.
+func (m *Manager) peekExtractBatch() (batch string, n int, suffix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return splitExtractBatch(m.transcript, extractMaxBytes)
+}
+
+// consumeExtractBatch drops exactly the submitted prefix: the first n whole
+// turns, or the sent prefix of the lead turn when n == 0. Turns appended
+// while the extraction was in flight land after the prefix and stay queued.
+func (m *Manager) consumeExtractBatch(n int, suffix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n > 0 {
+		if n > len(m.transcript) {
+			n = len(m.transcript)
+		}
+		m.transcript = append([]string(nil), m.transcript[n:]...)
+		return
+	}
+	// Partial batch: the lead turn was chunked, so retain its unsent suffix
+	// in place. Appends land at the tail, so index 0 is still the chunked turn.
+	if suffix != "" && len(m.transcript) > 0 {
+		m.transcript[0] = suffix
+	}
+}
+
 // clearTranscript drops the first n turns, which is exactly the batch a
 // successful extraction just consumed. Turns appended while that extraction
 // was in flight land after them and stay queued for the next pass.
 func (m *Manager) clearTranscript(n int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if n < 0 {
+		n = 0
+	}
+	if n > len(m.transcript) {
+		n = len(m.transcript)
+	}
 	m.transcript = append([]string(nil), m.transcript[n:]...)
 }
 
@@ -517,12 +591,12 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 	m.extractMu.Lock()
 	defer m.extractMu.Unlock()
 
-	text, n := m.peekTranscript()
-	if strings.TrimSpace(text) == "" {
+	batch, n, suffix := m.peekExtractBatch()
+	if strings.TrimSpace(batch) == "" {
 		return 0, nil
 	}
 
-	out, err := m.Router.SideCall(ctx, "smol", extractSystem, Truncate(text, 12000))
+	out, err := m.Router.SideCall(ctx, "smol", extractSystem, batch)
 	if err != nil {
 		m.setStage(StageIdle, func(a *Activity) { a.Failed = err.Error() })
 		return 0, err
@@ -560,8 +634,10 @@ func (m *Manager) Extract(ctx context.Context) (int, error) {
 	}
 	// Keep the source turns until every extracted record is durable. A failed
 	// store append must be retryable rather than silently deleting the only
-	// copy of the conversation.
-	m.clearTranscript(n)
+	// copy of the conversation. On success drop only the submitted prefix:
+	// turns beyond the byte cap and the remainder of a chunked oversized turn
+	// stay queued, as do turns appended while the call was in flight.
+	m.consumeExtractBatch(n, suffix)
 	m.setStage(StageIdle, nil)
 	return saved, nil
 }

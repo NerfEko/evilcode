@@ -777,14 +777,19 @@ func (m *Model) handleLoginKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.
 		m.notice = target + " API key saved"
 		if m.agent != nil && !m.processing {
 			// Only while nothing is in flight: the request goroutine reads this
-			// field, so writing it under a live turn is a data race. Both
-			// wire-format clients carry an APIKey field set at their own edge.
+			// field, so writing it under a live turn is a data race. Every
+			// wire-format client carries an APIKey field set at its own edge;
+			// OpenCodeGo's is promoted from its embedded OpenAI transport.
 			switch p := m.agent.Provider.(type) {
 			case *provider.Ollama:
 				if p.Name() == target {
 					p.APIKey = keyText
 				}
 			case *provider.OpenAI:
+				if p.Name() == target {
+					p.APIKey = keyText
+				}
+			case *provider.OpenCodeGo:
 				if p.Name() == target {
 					p.APIKey = keyText
 				}

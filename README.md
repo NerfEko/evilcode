@@ -201,7 +201,10 @@ so a misconfigured file can be fixed in one edit instead of one restart per fiel
 
 Ollama Cloud is the easiest route to try. With `OLLAMA_API_KEY`, the default model is
 `deepseek-v4-flash:0731@ollama-cloud` (reasoning effort high); without a key, the local Ollama route is used when it is
-available. You can also use OpenAI-compatible providers, DeepSeek, Codex, Ollama Local,
+available. With `OPENCODE_API_KEY`, the default routes to OpenCode Go — opencode's
+subscription gateway for open coding models (`glm-5.3-flash@opencode-go`) — whose picker
+entries carry context windows, vision, and per-model reasoning levels. You can also use
+OpenAI-compatible providers, DeepSeek, Codex, Ollama Local,
 or the deterministic mock provider used by tests.
 
 For example:
@@ -236,6 +239,19 @@ the advertised reasoning effort when a provider supports it. The model catalog i
 fetched live from each provider once per session and then cached, so newly released
 models will not appear until you run `/refresh-model-list` (or restart) — it drops the
 cache and re-runs discovery against every configured provider.
+
+API keys are entered with `/login <provider>` (or `/login` to pick from a selector),
+which saves them to the user-only config. OpenCode Go's key comes from
+opencode.ai/auth — sign in, subscribe to Go, and paste the key at
+`/login opencode-go`. Its bundled model metadata is generated from models.dev; if the
+gateway publishes a model the metadata lacks, it still appears (without window or
+reasoning details) via the live listing, and `go run ./cmd/gen-opencode-models`
+regenerates the table.
+
+One gateway quirk is handled transparently: the muse-spark, grok, and gpt-5.6
+families are not served over chat completions (they return 500 there) and are
+routed to the gateway's `/responses` endpoint instead, matching how opencode's
+own client addresses them.
 
 Use `/connect brave` to enable the optional Brave-backed `web_search` tool. Credentials
 are masked and stored in the user-only config, or can be supplied through
@@ -382,7 +398,7 @@ internal/attachcmd   socket client and remote TUI wiring
 internal/tuicmd      default TUI entrypoint
 internal/runcmd      local and daemon-backed headless runs
 internal/servecmd    daemon entrypoint
-internal/provider    Ollama, OpenAI-compatible, DeepSeek, Codex, and mock providers
+internal/provider    Ollama, OpenAI-compatible, DeepSeek, OpenCode Go, Codex, and mock providers
 internal/tools       built-in tools
 internal/daemon      server, sessions, reconnects, and swarms
 internal/wiring      shared provider/tool/session construction

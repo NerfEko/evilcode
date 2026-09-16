@@ -310,7 +310,7 @@ func (e *Exec) bashTool() Tool {
   "type": "object",
   "properties": {
     "cmd":     {"type": "string",  "description": "Shell command to run"},
-    "timeout": {"type": "integer", "description": "Timeout in seconds; defaults to 120"},
+    "timeout": {"type": "integer", "minimum": 0, "maximum": 1800, "description": "Timeout in seconds; defaults to 120, max 1800 (30 minutes, the detached-command ceiling)"},
     "background": {"type": "boolean",
                    "description": "Return immediately and report when it finishes. Use for long builds, watchers, and servers."},
     "stdin":    {"type": "string", "description": "Optional input written to the command's stdin"},
@@ -337,6 +337,18 @@ func (e *Exec) bashTool() Tool {
 			}
 
 			if a.Background {
+				if a.Timeout > MaxBackgroundTimeoutSeconds {
+					return Result{
+						Output: fmt.Sprintf("timeout %d exceeds the detached-command ceiling of %d seconds (30 minutes)", a.Timeout, MaxBackgroundTimeoutSeconds),
+						Intent: "background timeout rejected",
+					}, fmt.Errorf("timeout %d exceeds the detached-command ceiling of %d seconds", a.Timeout, MaxBackgroundTimeoutSeconds)
+				}
+				if int64(a.Timeout) > maxTimeoutSeconds {
+					return Result{
+						Output: fmt.Sprintf("timeout %d is too large", a.Timeout),
+						Intent: "background timeout rejected",
+					}, fmt.Errorf("timeout %d is too large", a.Timeout)
+				}
 				timeout := time.Duration(0)
 				if a.Timeout > 0 {
 					timeout = time.Duration(a.Timeout) * time.Second
@@ -346,6 +358,9 @@ func (e *Exec) bashTool() Tool {
 
 			timeout := e.Timeout
 			if a.Timeout > 0 {
+				if int64(a.Timeout) > maxTimeoutSeconds {
+					return Result{}, fmt.Errorf("timeout %d is too large", a.Timeout)
+				}
 				timeout = time.Duration(a.Timeout) * time.Second
 			}
 
@@ -446,6 +461,12 @@ func (e *Exec) finishForeground(runErr error, output, workingDir, marker string)
 func (e *Exec) runBackground(command, stdin string, timeout time.Duration) (Result, error) {
 	if e.Bg == nil {
 		e.Bg = &Background{}
+	}
+	if timeout > BackgroundTimeout {
+		return Result{
+			Output: fmt.Sprintf("timeout %s exceeds the detached-command ceiling of %s", timeout, BackgroundTimeout),
+			Intent: "background timeout rejected",
+		}, fmt.Errorf("timeout %s exceeds the detached-command ceiling of %s", timeout, BackgroundTimeout)
 	}
 	background := e.Bg
 	workingDir := e.Cwd()
@@ -678,6 +699,16 @@ func (w *ringWriter) Tail() string {
 // BackgroundTimeout is the ceiling on a detached command, so a runaway watcher
 // cannot outlive the session indefinitely.
 const BackgroundTimeout = 30 * time.Minute
+
+// MaxBackgroundTimeoutSeconds is the largest timeout in seconds a detached
+// command accepts. It is checked before the seconds-to-Duration conversion so
+// a huge value can never overflow into a nonpositive duration and silently
+// fall back to the default.
+const MaxBackgroundTimeoutSeconds = int(BackgroundTimeout / time.Second)
+
+// maxTimeoutSeconds is the largest seconds value that converts to a
+// time.Duration without overflow.
+const maxTimeoutSeconds = int64(9223372036854775807 / int64(time.Second))
 
 func exitStatus(err error) string {
 	var ee *exec.ExitError

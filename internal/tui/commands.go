@@ -146,13 +146,19 @@ var Commands = []Command{
 			"costs nothing in your main context."},
 }
 
-// VisibleCommands returns the commands the palette and help may offer.
-func VisibleCommands() []Command {
+// VisibleCommands returns the ordinary command surface.
+func VisibleCommands() []Command { return VisibleCommandsFor(false) }
+
+// VisibleCommandsFor returns commands that may be offered for a mode. Todo
+// tracking and auto-poke are deliberately unavailable during orchestration;
+// delegation owns that control loop instead of competing with it.
+func VisibleCommandsFor(orchestrator bool) []Command {
 	out := make([]Command, 0, len(Commands))
 	for _, c := range Commands {
-		if !c.Hidden {
-			out = append(out, c)
+		if c.Hidden || orchestrator && (c.Name == "todos" || c.Name == "poke") {
+			continue
 		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -201,7 +207,10 @@ var HelpSections = []HelpSection{
 }
 
 // UncoveredCommands returns visible commands no section lists.
-func UncoveredCommands() []Command {
+func UncoveredCommands() []Command { return UncoveredCommandsFor(false) }
+
+// UncoveredCommandsFor applies the same mode filter as VisibleCommandsFor.
+func UncoveredCommandsFor(orchestrator bool) []Command {
 	covered := map[string]bool{}
 	for _, sec := range HelpSections {
 		for _, n := range sec.Names {
@@ -209,7 +218,7 @@ func UncoveredCommands() []Command {
 		}
 	}
 	var out []Command
-	for _, c := range VisibleCommands() {
+	for _, c := range VisibleCommandsFor(orchestrator) {
 		if !covered[c.Name] {
 			out = append(out, c)
 		}

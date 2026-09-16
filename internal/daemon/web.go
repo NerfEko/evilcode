@@ -6,6 +6,7 @@ import (
 	"fmt"
 	htmltemplate "html/template"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	texttemplate "text/template"
@@ -80,15 +81,6 @@ func (s *Server) ListenWeb(addr string) error {
 
 	var token string
 	var minted bool
-	if requireAuth {
-		// Auth without a secret is impossible, so a token failure must not start
-		// a listener that would then 401 on everything.
-		var err error
-		token, minted, err = loadOrMintWebToken(s.webTokenPath())
-		if err != nil {
-			return err
-		}
-	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("daemon: web UI cannot bind %s: %w", addr, err)
@@ -96,6 +88,36 @@ func (s *Server) ListenWeb(addr string) error {
 	// ":0" and hostless forms resolve to something concrete; report and
 	// enforce that form, not the requested one.
 	bound := ln.Addr().String()
+
+	if requireAuth {
+		// Auth without a secret is impossible, so a token failure must not
+		// leave a listener that would then 401 on everything. The bind
+		// happens first (EC-010) so a refused port leaves no token file
+		// behind and never disturbs a pre-existing one.
+		var terr error
+		token, minted, terr = loadOrMintWebToken(s.webTokenPath())
+		if terr != nil {
+			ln.Close()
+			return terr
+		}
+	}
+
+	// Build the mux and server before publication (EC-004): s.web must never
+	// be visible with a nil srv, which Close would then skip. This stays
+	// outside s.mu — mux construction reads config/theme.
+	w := &webState{
+		ln:             ln,
+		addr:           bound,
+		token:          token,
+		minted:         minted,
+		requireAuth:    requireAuth,
+		trustForwarded: trustForwarded,
+	}
+	srv := &http.Server{
+		Handler:           w.mux(s),
+		ReadHeaderTimeout: webReadHeaderTimeout,
+	}
+	w.srv = srv
 
 	s.mu.Lock()
 	if s.closed {
@@ -109,26 +131,22 @@ func (s *Server) ListenWeb(addr string) error {
 		ln.Close()
 		return fmt.Errorf("daemon: the web UI is already listening on %s", old)
 	}
-	w := &webState{
-		ln:             ln,
-		addr:           bound,
-		token:          token,
-		minted:         minted,
-		requireAuth:    requireAuth,
-		trustForwarded: trustForwarded,
-	}
 	s.web = w
 	s.mu.Unlock()
 
-	srv := &http.Server{
-		Handler:           w.mux(s),
-		ReadHeaderTimeout: webReadHeaderTimeout,
-	}
-	w.srv = srv
 	go func() {
 		// Serve returns ErrServerClosed on Close; anything else means the
-		// listener died underneath us, which the Close path already handles.
-		_ = srv.Serve(ln)
+		// listener died underneath us, so clear the stale entry (EC-011).
+		// Only the same pointer is cleared — a successor listener must
+		// survive a late exit from its predecessor. Never call Close here.
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("daemon: web UI listener on %s exited: %v", bound, err)
+			s.mu.Lock()
+			if s.web == w {
+				s.web = nil
+			}
+			s.mu.Unlock()
+		}
 	}()
 	return nil
 }

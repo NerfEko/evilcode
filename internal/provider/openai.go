@@ -33,6 +33,17 @@ type OpenAI struct {
 	// just within one — a repeated ID would pair a tool result to the wrong
 	// call on a later replay (see Ollama.callSeq).
 	callSeq atomic.Int64
+
+	// SessionHeader, when set, carries the request's stable session id on
+	// every chat request. OpenCode Go routes and prompt-caches per
+	// conversation through x-opencode-session; gateways that do not know the
+	// header simply never see it set, because it is sent only when named.
+	SessionHeader string
+
+	// UserAgent identifies evilcode to the backend. Gateways fronted for
+	// coding agents ask to be addressed by the real client name instead of a
+	// generic HTTP-library default; empty leaves net/http's default.
+	UserAgent string
 }
 
 type openAIReasoningProtocol uint8
@@ -54,6 +65,22 @@ func NewOpenAI(name, baseURL, apiKey string) *OpenAI {
 		supportsReasoningEffort: true,
 		reasoningProtocol:       openAIReasoningProtocolStandard,
 	}
+}
+
+// WithSessionHeader names an HTTP header that carries Req.SessionID on every
+// chat request. It is used for gateways that key routing or prompt caching on
+// a conversation id, and stays inert for requests without a session id.
+func (o *OpenAI) WithSessionHeader(name string) *OpenAI {
+	if name != "" {
+		o.SessionHeader = name
+	}
+	return o
+}
+
+// WithUserAgent replaces the default User-Agent the transport sends.
+func (o *OpenAI) WithUserAgent(ua string) *OpenAI {
+	o.UserAgent = ua
+	return o
 }
 
 func (o *OpenAI) Name() string { return o.name }
@@ -119,10 +146,12 @@ type oaiMessage struct {
 	// images are attached. The API accepts either, and every text-only request
 	// must keep emitting the bare string — treating images as parts would
 	// change the shape of every request to serve the rare one.
-	Content    any           `json:"content"`
-	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
-	Name       string        `json:"name,omitempty"`
+	Content   any           `json:"content"`
+	ToolCalls []oaiToolCall `json:"tool_calls,omitempty"`
+	// The legacy per-message "name" field is deliberately not sent: modern
+	// tool correlation is tool_call_id alone, and strict OpenAI-compatible
+	// gateways (OpenCode Go observed) reject "name" outright on tool results.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 
 	// ReasoningContent carries a DeepSeek thinking trace back on assistant
 	// messages. DeepSeek requires the previous response's reasoning_content to
@@ -262,7 +291,6 @@ func (o *OpenAI) toOAIMessages(msgs []Message) []oaiMessage {
 			Role:       string(m.Role),
 			Content:    oaiContent(m),
 			ToolCallID: m.ToolCallID,
-			Name:       m.ToolName,
 		}
 		if o.isDeepSeekReasoning() && m.Role == RoleAssistant && m.Reasoning != "" {
 			// B1: DeepSeek requires the previous assistant reasoning to be
@@ -332,17 +360,39 @@ func (o *OpenAI) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) 
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		o.BaseURL+"/v1/chat/completions", bytes.NewReader(buf))
+	resp, err := o.doStream(ctx, o.BaseURL+"/v1/chat/completions", buf, req)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan Chunk)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		streamOpenAISSE(ctx, resp.Body, ch, &o.callSeq)
+	}()
+	return ch, nil
+}
+
+// doStream POSTs a payload with the transport's standard streaming headers
+// (bearer key, per-gateway session header, user agent) and rejects non-200
+// responses with a parsed error.
+func (o *OpenAI) doStream(ctx context.Context, url string, payload []byte, req Req) (*http.Response, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if o.UserAgent != "" {
+		httpReq.Header.Set("User-Agent", o.UserAgent)
+	}
+	if session := strings.TrimSpace(req.SessionID); session != "" && o.SessionHeader != "" {
+		httpReq.Header.Set(o.SessionHeader, session)
+	}
 	if o.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
 	}
-
 	resp, err := o.HTTP.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -351,12 +401,64 @@ func (o *OpenAI) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) 
 		defer resp.Body.Close()
 		return nil, httpError(resp.StatusCode, resp.Body)
 	}
+	return resp, nil
+}
+
+// chatStreamResponses posts the OpenAI Responses wire (/responses) instead of
+// chat completions. Some gateways serve only part of their catalogue through
+// chat completions: the OpenCode Go gateway returns 500 for muse-spark and
+// gpt-5.6 ids and rejects grok-4.6 with "not supported for format
+// oa-compat" (observed 2026-09-15), while /responses streams normally for
+// those ids. Input, tools, and stream decoding are shared with the Codex
+// backend, which speaks the same wire to the ChatGPT backend.
+func (o *OpenAI) chatStreamResponses(ctx context.Context, req Req) (<-chan Chunk, error) {
+	if strings.TrimSpace(req.Model) == "" {
+		return nil, fmt.Errorf("%s: model is required", o.name)
+	}
+	instructions, input, err := toResponsesInput(req.Messages)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := toResponsesTools(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"model":  req.Model,
+		"stream": true,
+		"store":  false,
+	}
+	if instructions != "" {
+		body["instructions"] = instructions
+	}
+	if len(input) > 0 {
+		body["input"] = input
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
+		body["tool_choice"] = "auto"
+		body["parallel_tool_calls"] = true
+	}
+	// The effort arrives catalogue-gated from the calling provider; "none" is
+	// deliberately omitted — there is no reliable way to switch thinking off
+	// through this wire, so the model's default stands.
+	if req.ReasoningEffort.Valid() && req.ReasoningEffort != ReasoningEffortNone {
+		body["reasoning"] = map[string]any{"effort": string(req.ReasoningEffort)}
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := o.doStream(ctx, o.BaseURL+"/v1/responses", payload, req)
+	if err != nil {
+		return nil, err
+	}
 
 	ch := make(chan Chunk)
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
-		streamOpenAISSE(ctx, resp.Body, ch, &o.callSeq)
+		streamResponsesSSE(ctx, resp.Body, ch, o.name)
 	}()
 	return ch, nil
 }
@@ -433,19 +535,16 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk, callSeq 
 		}
 	}
 
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
+	dataLines := make([]string, 0, 2)
+	failed := false
+	process := func(data string) bool {
+		trimmed := strings.TrimSpace(data)
+		if trimmed == "" {
+			return true
 		}
-		data, ok := strings.CutPrefix(line, "data:")
-		if !ok {
-			continue
-		}
-		data = strings.TrimSpace(data)
-		if data == "[DONE]" {
+		if trimmed == "[DONE]" {
 			gotDone = true
-			break
+			return false
 		}
 
 		var resp oaiStreamResp
@@ -456,11 +555,13 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk, callSeq 
 			// the response body and the connection for the rest of the turn,
 			// while a retry opens another.
 			send(Chunk{Err: fmt.Errorf("openai: bad SSE payload: %w", err)})
-			return
+			failed = true
+			return false
 		}
 		if resp.Error != nil {
 			send(Chunk{Err: fmt.Errorf("openai: %s", resp.Error.Message)})
-			return
+			failed = true
+			return false
 		}
 		if resp.Usage != nil {
 			usage = &Usage{
@@ -484,8 +585,51 @@ func streamOpenAISSE(ctx context.Context, r io.Reader, ch chan<- Chunk, callSeq 
 			}
 			if d.Content != "" || reasoning != "" {
 				if !send(Chunk{Text: d.Content, Reasoning: reasoning}) {
-					return
+					return false
 				}
+			}
+		}
+		return true
+	}
+	flush := func() bool {
+		if len(dataLines) == 0 {
+			return true
+		}
+		data := strings.Join(dataLines, "\n")
+		dataLines = dataLines[:0]
+		return process(data)
+	}
+
+	for sc.Scan() {
+		line := strings.TrimSuffix(sc.Text(), "\r")
+		if line == "" {
+			if !flush() {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if data, ok := strings.CutPrefix(line, "data:"); ok {
+			dataLines = append(dataLines, strings.TrimPrefix(data, " "))
+			continue
+		}
+		// Ignore other SSE fields (event:, id:, retry:) and unknown lines.
+	}
+	if failed {
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if !gotDone && len(dataLines) > 0 {
+		if !flush() {
+			if failed {
+				return
+			}
+			if ctx.Err() != nil {
+				return
 			}
 		}
 	}

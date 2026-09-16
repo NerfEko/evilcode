@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,6 +57,19 @@ func TestHasOrchestrateKeyword(t *testing.T) {
 		if HasOrchestrateKeyword(text) {
 			t.Errorf("HasOrchestrateKeyword(%q) = true, want false", text)
 		}
+	}
+}
+
+func TestOrchestrateHookNotifiesStateChanges(t *testing.T) {
+	hook := NewOrchestrateHook(true)
+	var states []bool
+	hook.SetOnChange(func(on bool) { states = append(states, on) })
+	hook.Arm()
+	hook.Arm()
+	hook.Disarm()
+	hook.Disarm()
+	if got, want := states, []bool{false, true, false}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("state callbacks = %v, want %v", got, want)
 	}
 }
 

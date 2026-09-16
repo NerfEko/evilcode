@@ -948,6 +948,165 @@ func TestExtractKeepsTurnsQueuedDuringAnInFlightCall(t *testing.T) {
 	}
 }
 
+func TestExtractRetainsTurnsBeyondByteCap(t *testing.T) {
+	// EC-008: success must drop only the submitted whole-turn prefix, not the
+	// entire transcript. Four ~5000-byte turns exceed the 12000-byte batch, so
+	// the first extraction sends two and retains two.
+	router := &stubRouter{reply: "[]"}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	turns := []string{
+		"TURN-ONE-" + strings.Repeat("a", 5000),
+		"TURN-TWO-" + strings.Repeat("b", 5000),
+		"TURN-THREE-" + strings.Repeat("c", 5000),
+		"TURN-FOUR-" + strings.Repeat("d", 5000),
+	}
+	for _, turn := range turns {
+		m.ObserveTurn(turn)
+	}
+	if _, err := m.Extract(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(router.user, "TURN-ONE-") || !strings.Contains(router.user, "TURN-TWO-") {
+		t.Fatalf("first batch missed submitted turns: %d bytes", len(router.user))
+	}
+	if strings.Contains(router.user, "TURN-THREE-") || strings.Contains(router.user, "TURN-FOUR-") {
+		t.Fatalf("first batch leaked beyond the byte cap: %d bytes", len(router.user))
+	}
+	if len(router.user) > 12000 {
+		t.Fatalf("batch = %d bytes, want <= 12000", len(router.user))
+	}
+	remaining, _ := m.peekTranscript()
+	if strings.Contains(remaining, "TURN-ONE-") || strings.Contains(remaining, "TURN-TWO-") {
+		t.Errorf("submitted turns were not dequeued")
+	}
+	if !strings.Contains(remaining, "TURN-THREE-") || !strings.Contains(remaining, "TURN-FOUR-") {
+		t.Fatalf("turns beyond the cap were discarded, remaining %d bytes", len(remaining))
+	}
+	// The retained tail must be extractable on the next pass.
+	router.user = ""
+	if _, err := m.Extract(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(router.user, "TURN-THREE-") {
+		t.Errorf("second batch missed retained turns, saw %d bytes", len(router.user))
+	}
+}
+
+func TestExtractChunksOversizedTurnWithoutLoss(t *testing.T) {
+	// A single turn larger than the cap is chunked rune-safely: the prefix is
+	// sent and the suffix stays queued, so repeated passes reassemble it.
+	router := &stubRouter{reply: "[]"}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	// Multibyte tail proves the chunk lands on a rune boundary.
+	original := "OVERSIZED-" + strings.Repeat("x", 15000) + strings.Repeat("héllo", 2000)
+	m.ObserveTurn(original)
+
+	var sent strings.Builder
+	for i := 0; i < 10; i++ {
+		text, _ := m.peekTranscript()
+		if text == "" {
+			break
+		}
+		router.user = ""
+		if _, err := m.Extract(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(router.user) > 12000 {
+			t.Fatalf("pass %d sent %d bytes, want <= 12000", i, len(router.user))
+		}
+		for _, r := range router.user {
+			if r == '\uFFFD' {
+				t.Fatalf("pass %d split a rune", i)
+			}
+		}
+		sent.WriteString(router.user)
+		// Chunks after the first have no separator: the whole queue is one turn.
+		if i > 0 && strings.Contains(router.user, "\n") {
+			t.Fatalf("oversized chunk %d unexpectedly holds multiple turns", i)
+		}
+	}
+	if got := sent.String(); got != original {
+		t.Fatalf("chunked round-trip lost bytes: got %d, want %d", len(got), len(original))
+	}
+	if text, _ := m.peekTranscript(); text != "" {
+		t.Fatalf("oversized turn did not drain, %d bytes remain", len(text))
+	}
+}
+
+func TestExtractKeepsUnsubmittedTailOnProviderError(t *testing.T) {
+	router := &stubRouter{err: errors.New("network blip")}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	m.ObserveTurn("SMALL-" + strings.Repeat("a", 100))
+	m.ObserveTurn("TAIL-" + strings.Repeat("b", 20000))
+	if _, err := m.Extract(context.Background()); err == nil {
+		t.Fatal("expected the provider error to surface")
+	}
+	text, _ := m.peekTranscript()
+	if !strings.Contains(text, "SMALL-") || !strings.Contains(text, "TAIL-") {
+		t.Errorf("provider failure must retain submitted and unsubmitted turns, got %d bytes", len(text))
+	}
+}
+
+func TestExtractKeepsUnsubmittedTailWhenSaveFails(t *testing.T) {
+	store := openTemp(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(store, nil, &stubRouter{reply: `[{"text":"keep this","kind":"fact"}]`}, "a", true)
+	m.ObserveTurn("SMALL-" + strings.Repeat("a", 100))
+	m.ObserveTurn("TAIL-" + strings.Repeat("b", 20000))
+	if _, err := m.Extract(context.Background()); err == nil {
+		t.Fatal("expected the closed store to reject the extracted record")
+	}
+	text, _ := m.peekTranscript()
+	if !strings.Contains(text, "SMALL-") || !strings.Contains(text, "TAIL-") {
+		t.Errorf("store failure must retain submitted and unsubmitted turns, got %d bytes", len(text))
+	}
+}
+
+func TestExtractKeepsAppendsDuringBoundedBatch(t *testing.T) {
+	// A turn arriving mid-flight lands after the bounded batch and must survive
+	// the success that dequeues only the submitted prefix.
+	router := &blockingRouter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		replies: []string{"[]", "[]"},
+	}
+	m := NewManager(openTemp(t), nil, router, "a", true)
+	m.ObserveTurn("FIRST-" + strings.Repeat("a", 5000))
+	m.ObserveTurn("SECOND-" + strings.Repeat("b", 5000))
+	m.ObserveTurn("THIRD-" + strings.Repeat("c", 5000))
+
+	done := make(chan error, 1)
+	go func() { _, err := m.Extract(context.Background()); done <- err }()
+	<-router.started
+	m.ObserveTurn("MIDFLIGHT-arrived-during-call")
+	close(router.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	remaining, _ := m.peekTranscript()
+	if strings.Contains(remaining, "FIRST-") || strings.Contains(remaining, "SECOND-") {
+		t.Errorf("submitted prefix was not dequeued: %d bytes remain", len(remaining))
+	}
+	for _, want := range []string{"THIRD-", "MIDFLIGHT-"} {
+		if !strings.Contains(remaining, want) {
+			t.Errorf("remaining transcript lost %q (%d bytes remain)", want, len(remaining))
+		}
+	}
+}
+
+func TestSplitExtractBatchPrefersWholeTurns(t *testing.T) {
+	turns := []string{strings.Repeat("a", 8000), strings.Repeat("b", 3999), strings.Repeat("c", 10)}
+	batch, n, suffix := splitExtractBatch(turns, 12000)
+	if n != 2 || suffix != "" {
+		t.Fatalf("batch = n=%d suffix=%q, want n=2 no partial", n, suffix)
+	}
+	if batch != turns[0]+"\n"+turns[1] {
+		t.Errorf("batch split mid-turn: %d bytes", len(batch))
+	}
+}
+
 func TestConsolidateStoresASearchableEpisode(t *testing.T) {
 	store := openTemp(t)
 	router := &stubRouter{reply: "Wired the auth redirect loop and fixed the token refresh."}

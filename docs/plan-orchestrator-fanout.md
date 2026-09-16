@@ -155,7 +155,7 @@ partial contract):
   treats worker failure as data and re-spawns with accumulated knowledge —
   that needs the orchestrator to see partial output, not just an error.
 
-### D5 — Orchestration guidance: three layers, not one skill
+### D5 — Orchestration guidance: four layers, not one skill
 
 omp layers the same rules in four places; a skill alone underweights it.
 evicode ships:
@@ -179,6 +179,34 @@ evicode ships:
    fan out only when 3+ independent briefs exist; the assignment format; and
    a pointer to the `orchestrate` skill. The tool description is the one
    place a model reaching for the tool certainly looks.
+4. **`orchestrate` keyword + rainbow mode** (Claude's `ultrathink` / omp's
+   `orchestrate` keyword precedent): a user message containing the standalone
+   word `orchestrate` injects the orchestrator contract as a hidden
+   system-authored notice and arms orchestrator mode for the session until
+   `/orchestrate off` or session end. Trigger semantics follow omp's verified
+   behavior: standalone lowercase word, prose only — quoted occurrences,
+   path components, and words like `orchestrated` never fire. The contract
+   is one Go const in `internal/agent` (the `OvernightPrompt` pattern),
+   detected by a hook in `agent.Chain`; the skill and the notice share the
+   same rules so they cannot drift. Gated by `[features]
+   orchestrate_keyword = true` (omp gates its magic keywords too; a user
+   who never wants it can turn the detector off).
+   The visible half: orchestrator mode is a rainbow state, not a hidden
+   flag. The composer border tint cycles the existing rainbow ramp
+   (`internal/theme/procedural.go`; slower than idle art's 40°/s so it
+   reads as a calm glow), and the swarm widget colors each live worker with
+   its own rainbow stop, which makes a fan-out roster legible at a glance.
+   `/orchestrate on|off|status` joins the command registry for explicit
+   control (omp replaced its slash command with the keyword; evilcode keeps
+   both — the keyword for muscle memory, the command for control.)
+
+   Change list additions:
+
+| Phase | File | Change |
+| 3 | `internal/agent` | `orchestrate` keyword hook: detection + hidden notice |
+| 3 | `internal/config` | `[features] orchestrate_keyword` gate |
+| 3 | `internal/tui` | `/orchestrate on/off/status` command; rainbow border tint while active |
+| 3 | `internal/tui/swarmwidget.go` | per-worker rainbow-stop roster colors |
 
 ### D6 — Cancellation and failure semantics (the survey's biggest gap)
 
@@ -255,6 +283,10 @@ punish read-only surveys, which are the main fan-out win.
 | 3 | `internal/agent/prompts.go` | fan-out bullet in `toolGuidance` |
 | 3 | repo skill dir | `orchestrate` skill (markdown) |
 | 3 | `internal/tools/swarm.go` | Desc pointer to the skill |
+| 3 | `internal/agent` | `orchestrate` keyword hook: detection + hidden notice |
+| 3 | `internal/config` | `[features] orchestrate_keyword` gate |
+| 3 | `internal/tui` | `/orchestrate on/off/status` command; rainbow border tint while active |
+| 3 | `internal/tui/swarmwidget.go` | per-worker rainbow-stop roster colors |
 | 4 | `internal/config` | `max_live_workers`, `default_worker_model`, `worker_max_steps`, `worker_spawning` |
 | 3/4 | `internal/daemon/hub.go` | depth-1 default: strip `spawn_worker` from worker tool sets unless `worker_spawning` |
 | 4 | `internal/daemon/spawn.go` | cancel + partial-result salvage path |
@@ -280,6 +312,9 @@ punish read-only surveys, which are the main fan-out win.
   fires.
 - Guidance: skill indexes and loads; `toolGuidance` bullet present in
   system prompt snapshot test.
+- Keyword: standalone `orchestrate` in a user message injects the notice;
+  quoted/path occurrences do not; `[features] orchestrate_keyword = false`
+  disables detection; `/orchestrate on|off|status` state round-trips.
 
 ## Order of work
 
@@ -287,8 +322,9 @@ punish read-only surveys, which are the main fan-out win.
    Independently shippable; alone it makes fan-out real.
 2. **Phase 2 — model routing** (per-call model + resolution + audit).
 3. **Phase 3 — guidance** (system-prompt bullet + `orchestrate` skill + tool
-   Desc pointer). Land with Phase 1 ideally, never later than Phase 2 —
-   scheduling only helps a model that emits parallel calls.
+   Desc pointer + keyword/notice + rainbow roster). Land with Phase 1
+   ideally, never later than Phase 2 — scheduling only helps a model that
+   emits parallel calls.
 4. **Phase 4 — operations** (config knobs, cancel/partial, depth flag, cost
    rollup).
 

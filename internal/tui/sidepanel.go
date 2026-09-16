@@ -223,6 +223,10 @@ type diffRow struct {
 	text   string
 }
 
+// maxPanelRowCacheEntries bounds temporary deduplication for unusually large
+// files; rows beyond it are rendered normally rather than retained in maps.
+const maxPanelRowCacheEntries = 1024
+
 // renderDiffRows draws gutter rows: number, marker, then the line, highlighted
 // and tinted so code keeps its shape while still reading as an add or delete.
 func (r *Renderer) renderDiffRows(rows []diffRow, lang string, width int) []string {
@@ -240,12 +244,37 @@ func (r *Renderer) renderDiffRows(rows []diffRow, lang string, width int) []stri
 		}
 	}
 
-	out := make([]string, 0, len(rows))
-	for _, rw := range rows {
-		num := strings.Repeat(" ", digits)
-		if rw.num > 0 {
-			num = fmt.Sprintf("%*d", digits, rw.num)
+	// Keep these caches local to one render. They remove repeated syntax styling
+	// and cell-width scans in generated files without allowing a theme change to
+	// reuse stale ANSI output across renders.
+	contentWidth := max(width-digits-3, 8)
+	truncated := make(map[string]string)
+	normal := make(map[string]string)
+	marker := map[string]string{
+		"+": addStyle.Render("+"),
+		"-": delStyle.Render("-"),
+		" ": body.Render(" "),
+	}
+	separator := gutter.Render("│ ")
+	blankNumber := strings.Repeat(" ", digits)
+	var lineNumbers []string
+	if len(rows) <= maxPanelRowCacheEntries {
+		// One lipgloss call handles the ordinary pane-sized gutter. Do not build
+		// a joined temporary for a huge file; that would add another O(rows)
+		// buffer to an already large render.
+		numberText := make([]string, len(rows))
+		for i, rw := range rows {
+			num := blankNumber
+			if rw.num > 0 {
+				num = fmt.Sprintf("%*d", digits, rw.num)
+			}
+			numberText[i] = num + " "
 		}
+		lineNumbers = strings.Split(gutter.Render(strings.Join(numberText, "\n")), "\n")
+	}
+
+	out := make([]string, 0, len(rows))
+	for i, rw := range rows {
 
 		var style lipgloss.Style
 		switch rw.marker {
@@ -257,18 +286,52 @@ func (r *Renderer) renderDiffRows(rows []diffRow, lang string, width int) []stri
 			style = body
 		}
 
-		text := truncateCells(rw.text, max(width-digits-3, 8))
+		text, ok := truncated[rw.text]
+		if !ok {
+			text = truncateCells(rw.text, contentWidth)
+			if len(truncated) < maxPanelRowCacheEntries {
+				truncated[rw.text] = text
+			}
+		}
+
 		// Highlight then tint, so code keeps its shape (§9.3).
 		var rendered string
-		if lines := tokenize(lang, text); len(lines) > 0 && rw.marker == " " {
-			rendered = renderTokens(lines[0], nil)
+		if rw.marker == " " {
+			var ok bool
+			rendered, ok = normal[text]
+			if !ok {
+				if lines := tokenize(lang, text); len(lines) > 0 {
+					rendered = renderTokens(lines[0], nil)
+				} else {
+					rendered = body.Render(text)
+				}
+				if len(normal) < maxPanelRowCacheEntries {
+					normal[text] = rendered
+				}
+			}
 		} else {
 			rendered = style.Render(text)
 		}
 
+		lineNumber := ""
+		if lineNumbers != nil {
+			lineNumber = lineNumbers[i]
+		} else {
+			num := blankNumber
+			if rw.num > 0 {
+				num = fmt.Sprintf("%*d", digits, rw.num)
+			}
+			lineNumber = gutter.Render(num + " ")
+		}
+		markerText, ok := marker[rw.marker]
+		if !ok {
+			// Keep the previous default styling for an unexpected marker rather
+			// than silently dropping it.
+			markerText = style.Render(rw.marker)
+		}
 		// The marker sits after the line number and before the separator, so
 		// the gutter reads number, change, then the line: `11 +│ text`.
-		out = append(out, gutter.Render(num+" ")+style.Render(rw.marker)+gutter.Render("│ ")+rendered)
+		out = append(out, lineNumber+markerText+separator+rendered)
 	}
 	return out
 }

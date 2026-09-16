@@ -30,6 +30,53 @@ func TestRenderWorkerBoxesFixedHeight(t *testing.T) {
 	}
 }
 
+func TestWorkerBoxesFollowTheirSpawnRows(t *testing.T) {
+	m := newTestModel(t)
+	m.blocks = []Block{
+		{Kind: BlockUser, Number: 1, Text: "delegate the auth survey"},
+		{Kind: BlockTool, ToolName: "spawn_worker", ToolIntent: "grunt-1 · auth survey"},
+		{Kind: BlockAssistant, Text: "I will integrate the result."},
+	}
+	swarm := &SwarmState{}
+	swarm.Publish([]SwarmAgent{
+		{Name: "grunt-1", Worker: true, Spawner: "dracula", Running: true,
+			Tail: []string{"reading auth.go"}},
+	})
+	m.swarm = swarm
+
+	rows := m.transcriptLines()
+	if len(rows.WorkerBoxes) != 1 {
+		t.Fatalf("worker boxes = %+v, want one", rows.WorkerBoxes)
+	}
+	box := rows.WorkerBoxes[0]
+	if box.Start <= int(rows.First[1]) {
+		t.Fatalf("box starts at %d, want after spawn row at %d", box.Start, rows.First[1])
+	}
+	if !strings.Contains(plain(rows.Lines[box.Start]), "grunt-1") {
+		t.Fatalf("box line = %q, want worker name", plain(rows.Lines[box.Start]))
+	}
+	if got := m.stackFor(len(rows.Lines)).Heights[SlotSwarm]; got != 0 {
+		t.Fatalf("SlotSwarm = %d, want no fixed chrome reservation", got)
+	}
+
+	swarm.Publish([]SwarmAgent{
+		{Name: "grunt-1", Worker: true, Spawner: "dracula", Running: true,
+			Tail: []string{"found the race"}},
+	})
+	rows = m.transcriptLines()
+	if !strings.Contains(plain(rows.Lines[rows.WorkerBoxes[0].Start+1]), "found the race") {
+		t.Fatalf("updated box tail missing: %q", plain(rows.Lines[rows.WorkerBoxes[0].Start+1]))
+	}
+
+	m.View()
+	if len(m.workerBoxHits) != 1 {
+		t.Fatalf("visible worker hits = %+v, want one", m.workerBoxHits)
+	}
+	if !m.expandWorkerAt(m.workerBoxHits[0].Top, 5) || m.expandedWorker != "grunt-1" {
+		t.Fatalf("click on transcript-anchored box did not expand: %+v", m.workerBoxHits)
+	}
+}
+
 func TestWorkerBoxAtMapsClicks(t *testing.T) {
 	names := []string{"grunt-1", "grunt-2"}
 	if got := workerBoxAt(names, 10, 10, 5, 80); got != "grunt-1" {

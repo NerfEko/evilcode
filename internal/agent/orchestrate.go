@@ -25,6 +25,8 @@ const OrchestrateContract = `Orchestrator mode is on: fan out with spawn_worker.
   condition. A worker sees only its brief.
 - A per-call model is optional; default is the session model. Never spawn for
   what one read answers.
+- Todo tracking and auto-poke are disabled while this mode is active; use the
+  worker results and the delegation contract instead.
 - You validate and integrate results; workers do not coordinate each other.
   A failed worker is data — re-spawn the gap, do not absorb it.
 - Prefer messaging an idle worker with its context over spawning fresh for a
@@ -120,7 +122,8 @@ func isPathUse(text string, pos, wordLen int) bool {
 // injects the contract (fan-out D5). It is a Chain hook like auto-poke and
 // the advisor, so the loop stays readable and it can be tested alone.
 type OrchestrateHook struct {
-	mu sync.Mutex
+	mu       sync.Mutex
+	changeMu sync.Mutex
 
 	// enabled is the [features] orchestrate_keyword gate. Off means the
 	// detector never fires; explicit /orchestrate on still arms.
@@ -137,12 +140,41 @@ type OrchestrateHook struct {
 	// scanned is how many conversation messages have been checked for the
 	// keyword, so each message is considered once.
 	scanned int
+
+	// onChange runs after armed changes, outside the hook lock. Runtimes use it
+	// to gate mode-specific capabilities without polling between turns.
+	onChange func(bool)
 }
 
 // NewOrchestrateHook builds the hook. Enabled defaults from config
 // `features.orchestrate_keyword`.
 func NewOrchestrateHook(enabled bool) *OrchestrateHook {
 	return &OrchestrateHook{enabled: enabled}
+}
+
+// notifyStateChange serializes callbacks and reads the current state at
+// delivery time, so a concurrent disarm cannot be followed by a stale "on".
+func (h *OrchestrateHook) notifyStateChange() {
+	h.changeMu.Lock()
+	defer h.changeMu.Unlock()
+	h.mu.Lock()
+	armed, fn := h.armed, h.onChange
+	h.mu.Unlock()
+	if fn != nil {
+		fn(armed)
+	}
+}
+
+// SetOnChange registers a runtime callback and immediately synchronizes it with
+// the current armed state. The callback always runs outside the hook lock.
+func (h *OrchestrateHook) SetOnChange(fn func(bool)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.onChange = fn
+	h.mu.Unlock()
+	h.notifyStateChange()
 }
 
 // Active reports whether orchestrator mode is armed.
@@ -173,10 +205,14 @@ func (h *OrchestrateHook) Arm() {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.armed {
+	changed := !h.armed
+	if changed {
 		h.armed = true
 		h.pending = true
+	}
+	h.mu.Unlock()
+	if changed {
+		h.notifyStateChange()
 	}
 }
 
@@ -187,9 +223,13 @@ func (h *OrchestrateHook) Disarm() {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	changed := h.armed
 	h.armed = false
 	h.pending = false
+	h.mu.Unlock()
+	if changed {
+		h.notifyStateChange()
+	}
 }
 
 // PostTurn implements Hooks.
@@ -198,28 +238,38 @@ func (h *OrchestrateHook) PostTurn(_ context.Context, a *Agent) (bool, error) {
 		return false, nil
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	msgs := a.Conv.Messages()
 	if h.scanned > len(msgs) {
 		// The conversation shrank under the hook (compact, rewind): rescan
 		// from the start rather than slicing past the end.
 		h.scanned = 0
 	}
+	changed := false
 	if h.enabled && !h.armed {
 		for _, m := range msgs[h.scanned:] {
 			if m.Role == provider.RoleUser && HasOrchestrateKeyword(m.Content) {
 				h.armed = true
 				h.pending = true
+				changed = true
 				break
 			}
 		}
 	}
 	h.scanned = len(msgs)
 
-	if h.armed && h.pending {
+	appendContract := h.armed && h.pending
+	if appendContract {
 		h.pending = false
+	}
+	if appendContract {
 		a.Conv.Append(provider.Message{Role: provider.RoleSystem, Content: OrchestrateContract})
+	}
+	h.mu.Unlock()
+
+	if changed {
+		h.notifyStateChange()
+	}
+	if appendContract {
 		return true, nil
 	}
 	return false, nil

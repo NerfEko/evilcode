@@ -27,6 +27,15 @@ func TestOrchestrateCommandRoundTrips(t *testing.T) {
 	if !sess.orchestrate.Active() {
 		t.Fatal("/orchestrate on did not arm")
 	}
+	if !sess.built.Agent.ToolBlocked("todo") {
+		t.Fatal("todo tool remained available in orchestrator mode")
+	}
+	if sess.poke != nil && sess.poke.Enabled() {
+		t.Fatal("auto-poke remained enabled in orchestrator mode")
+	}
+	if err := sess.Command("poke", "on", ""); err == nil {
+		t.Fatal("/poke on was accepted while orchestrator mode was active")
+	}
 	if err := sess.Command("orchestrate", "bogus", ""); err == nil {
 		t.Fatal("/orchestrate bogus did not fail")
 	}
@@ -35,5 +44,11 @@ func TestOrchestrateCommandRoundTrips(t *testing.T) {
 	}
 	if sess.orchestrate.Active() {
 		t.Fatal("/orchestrate off did not disarm")
+	}
+	if sess.built.Agent.ToolBlocked("todo") {
+		t.Fatal("todo tool stayed blocked after orchestrator mode ended")
+	}
+	if sess.poke != nil && !sess.poke.Enabled() {
+		t.Fatal("auto-poke was not restored after orchestrator mode ended")
 	}
 }

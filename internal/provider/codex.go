@@ -33,10 +33,10 @@ const (
 	// makes the endpoint return an empty catalog with HTTP 200. Keep this at a
 	// recent compatible Codex protocol version rather than coupling discovery to
 	// Evilcode's own release stamp.
-	codexClientVersion  = "0.147.0"
-	codexAuthMaxBytes   = 1 << 20
-	codexStreamMaxBytes = 8 << 20
-	codexRefreshWindow  = 5 * time.Minute
+	codexClientVersion      = "0.147.0"
+	codexAuthMaxBytes       = 1 << 20
+	responsesStreamMaxBytes = 8 << 20
+	codexRefreshWindow      = 5 * time.Minute
 )
 
 var ErrCodexAuthNotFound = errors.New("codex: ChatGPT OAuth account not found")
@@ -435,11 +435,11 @@ func (c *Codex) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 	if err != nil {
 		return nil, err
 	}
-	instructions, input, err := toCodexInput(req.Messages)
+	instructions, input, err := toResponsesInput(req.Messages)
 	if err != nil {
 		return nil, err
 	}
-	tools, err := toCodexTools(req.Tools)
+	tools, err := toResponsesTools(req.Tools)
 	if err != nil {
 		return nil, err
 	}
@@ -485,12 +485,17 @@ func (c *Codex) ChatStream(ctx context.Context, req Req) (<-chan Chunk, error) {
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
-		streamCodexSSE(ctx, resp.Body, ch)
+		streamResponsesSSE(ctx, resp.Body, ch, "codex")
 	}()
 	return ch, nil
 }
 
-func toCodexInput(msgs []Message) (string, []json.RawMessage, error) {
+// toResponsesInput maps a conversation to the OpenAI Responses wire: system
+// text becomes `instructions`, other roles become input items (messages,
+// function calls, function call outputs). Shared by the ChatGPT Codex backend
+// and by gateways that serve part of their catalogue only through /responses
+// (OpenCode Go's muse-spark, grok, gpt-5.6 families).
+func toResponsesInput(msgs []Message) (string, []json.RawMessage, error) {
 	var instructions []string
 	input := make([]json.RawMessage, 0, len(msgs))
 	for _, msg := range msgs {
@@ -500,11 +505,11 @@ func toCodexInput(msgs []Message) (string, []json.RawMessage, error) {
 				instructions = append(instructions, msg.Content)
 			}
 		case RoleUser:
-			content := codexContent(msg.Content, msg.Images, "input")
+			content := responsesContent(msg.Content, msg.Images, "input")
 			item := map[string]any{"type": "message", "role": "user", "content": content}
 			raw, err := json.Marshal(item)
 			if err != nil {
-				return "", nil, fmt.Errorf("codex: encode user message: %w", err)
+				return "", nil, fmt.Errorf("responses: encode user message: %w", err)
 			}
 			input = append(input, raw)
 		case RoleAssistant:
@@ -515,7 +520,7 @@ func toCodexInput(msgs []Message) (string, []json.RawMessage, error) {
 					}
 					if !json.Valid(item) || json.Unmarshal(item, &envelope) != nil ||
 						strings.TrimSpace(envelope.Type) == "" {
-						return "", nil, fmt.Errorf("codex: provider output item %d is invalid", i+1)
+						return "", nil, fmt.Errorf("responses: provider output item %d is invalid", i+1)
 					}
 					// Copy the raw bytes so the request does not alias mutable
 					// session state while it is being marshalled.
@@ -525,17 +530,17 @@ func toCodexInput(msgs []Message) (string, []json.RawMessage, error) {
 			}
 			if msg.Content != "" || len(msg.Images) > 0 {
 				item := map[string]any{"type": "message", "role": "assistant",
-					"content": codexContent(msg.Content, msg.Images, "output")}
+					"content": responsesContent(msg.Content, msg.Images, "output")}
 				raw, err := json.Marshal(item)
 				if err != nil {
-					return "", nil, fmt.Errorf("codex: encode assistant message: %w", err)
+					return "", nil, fmt.Errorf("responses: encode assistant message: %w", err)
 				}
 				input = append(input, raw)
 			}
 			for _, call := range msg.ToolCalls {
 				id := strings.TrimSpace(call.ID)
 				if id == "" {
-					return "", nil, fmt.Errorf("codex: assistant tool call %q has no id", call.Name)
+					return "", nil, fmt.Errorf("responses: assistant tool call %q has no id", call.Name)
 				}
 				args := string(call.Args)
 				if strings.TrimSpace(args) == "" {
@@ -545,33 +550,33 @@ func toCodexInput(msgs []Message) (string, []json.RawMessage, error) {
 					"name": call.Name, "arguments": args}
 				raw, err := json.Marshal(item)
 				if err != nil {
-					return "", nil, fmt.Errorf("codex: encode function call: %w", err)
+					return "", nil, fmt.Errorf("responses: encode function call: %w", err)
 				}
 				input = append(input, raw)
 			}
 		case RoleTool:
 			id := strings.TrimSpace(msg.ToolCallID)
 			if id == "" {
-				return "", nil, fmt.Errorf("codex: tool result has no call id")
+				return "", nil, fmt.Errorf("responses: tool result has no call id")
 			}
 			output := any(msg.Content)
 			if len(msg.Images) > 0 {
-				output = codexContent(msg.Content, msg.Images, "input")
+				output = responsesContent(msg.Content, msg.Images, "input")
 			}
 			item := map[string]any{"type": "function_call_output", "call_id": id, "output": output}
 			raw, err := json.Marshal(item)
 			if err != nil {
-				return "", nil, fmt.Errorf("codex: encode tool result: %w", err)
+				return "", nil, fmt.Errorf("responses: encode tool result: %w", err)
 			}
 			input = append(input, raw)
 		default:
-			return "", nil, fmt.Errorf("codex: unsupported message role %q", msg.Role)
+			return "", nil, fmt.Errorf("responses: unsupported message role %q", msg.Role)
 		}
 	}
 	return strings.Join(instructions, "\n\n"), input, nil
 }
 
-func codexContent(text string, images [][]byte, mode string) []map[string]any {
+func responsesContent(text string, images [][]byte, mode string) []map[string]any {
 	content := make([]map[string]any, 0, len(images)+1)
 	if text != "" {
 		kind := "input_text"
@@ -589,34 +594,34 @@ func codexContent(text string, images [][]byte, mode string) []map[string]any {
 	return content
 }
 
-func toCodexTools(tools []ToolDef) ([]json.RawMessage, error) {
+func toResponsesTools(tools []ToolDef) ([]json.RawMessage, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
 	out := make([]json.RawMessage, 0, len(tools))
 	for _, tool := range tools {
 		if strings.TrimSpace(tool.Name) == "" {
-			return nil, fmt.Errorf("codex: tool name is empty")
+			return nil, fmt.Errorf("responses: tool name is empty")
 		}
 		schema := tool.Schema
 		if len(bytes.TrimSpace(schema)) == 0 {
 			schema = json.RawMessage(`{"type":"object"}`)
 		}
 		if !json.Valid(schema) {
-			return nil, fmt.Errorf("codex: tool %q has invalid JSON schema", tool.Name)
+			return nil, fmt.Errorf("responses: tool %q has invalid JSON schema", tool.Name)
 		}
 		item := map[string]any{"type": "function", "name": tool.Name,
 			"description": tool.Desc, "strict": false, "parameters": schema}
 		raw, err := json.Marshal(item)
 		if err != nil {
-			return nil, fmt.Errorf("codex: encode tool %q: %w", tool.Name, err)
+			return nil, fmt.Errorf("responses: encode tool %q: %w", tool.Name, err)
 		}
 		out = append(out, raw)
 	}
 	return out, nil
 }
 
-type codexCallAccum struct {
+type responsesCallAccum struct {
 	order []string
 	byKey map[string]*codexCall
 }
@@ -629,11 +634,11 @@ type codexCall struct {
 	Args   strings.Builder
 }
 
-func newCodexCallAccum() *codexCallAccum {
-	return &codexCallAccum{byKey: make(map[string]*codexCall)}
+func newResponsesCallAccum() *responsesCallAccum {
+	return &responsesCallAccum{byKey: make(map[string]*codexCall)}
 }
 
-func (a *codexCallAccum) get(item map[string]any) *codexCall {
+func (a *responsesCallAccum) get(item map[string]any) *codexCall {
 	callID, _ := item["call_id"].(string)
 	itemID, _ := item["item_id"].(string)
 	if itemID == "" {
@@ -679,7 +684,7 @@ func (a *codexCallAccum) get(item map[string]any) *codexCall {
 	return call
 }
 
-func (a *codexCallAccum) merge(primary, secondary *codexCall) *codexCall {
+func (a *responsesCallAccum) merge(primary, secondary *codexCall) *codexCall {
 	if primary == secondary {
 		return primary
 	}
@@ -709,7 +714,7 @@ func (a *codexCallAccum) merge(primary, secondary *codexCall) *codexCall {
 	return primary
 }
 
-func (a *codexCallAccum) addItem(item map[string]any) {
+func (a *responsesCallAccum) addItem(item map[string]any) {
 	if typ, _ := item["type"].(string); typ != "function_call" {
 		return
 	}
@@ -729,12 +734,12 @@ func (a *codexCallAccum) addItem(item map[string]any) {
 	}
 }
 
-func (a *codexCallAccum) addDelta(item map[string]any, delta string) {
+func (a *responsesCallAccum) addDelta(item map[string]any, delta string) {
 	call := a.get(item)
 	call.Args.WriteString(delta)
 }
 
-func (a *codexCallAccum) setArguments(item map[string]any, arguments string) {
+func (a *responsesCallAccum) setArguments(item map[string]any, arguments string) {
 	call := a.get(item)
 	if name, ok := item["name"].(string); ok && strings.TrimSpace(name) != "" {
 		call.Name = name
@@ -743,7 +748,7 @@ func (a *codexCallAccum) setArguments(item map[string]any, arguments string) {
 	call.Args.WriteString(arguments)
 }
 
-func (a *codexCallAccum) finish() []ToolCall {
+func (a *responsesCallAccum) finish() []ToolCall {
 	out := make([]ToolCall, 0, len(a.order))
 	for i, key := range a.order {
 		call := a.byKey[key]
@@ -763,13 +768,15 @@ func (a *codexCallAccum) finish() []ToolCall {
 	return out
 }
 
-// streamCodexSSE decodes Responses API events and emits text/reasoning live,
+// streamResponsesSSE decodes Responses API events and emits text/reasoning live,
 // then emits complete function calls and usage on one terminal Done chunk.
-func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
-	sc := bufio.NewScanner(io.LimitReader(r, codexStreamMaxBytes))
-	sc.Buffer(make([]byte, 0, 64*1024), codexStreamMaxBytes)
+// source names the speaking provider in error prefixes ("codex", an OpenCode
+// gateway's name, ...).
+func streamResponsesSSE(ctx context.Context, r io.Reader, ch chan<- Chunk, source string) {
+	sc := bufio.NewScanner(io.LimitReader(r, responsesStreamMaxBytes))
+	sc.Buffer(make([]byte, 0, 64*1024), responsesStreamMaxBytes)
 	dataLines := make([]string, 0, 2)
-	calls := newCodexCallAccum()
+	calls := newResponsesCallAccum()
 	var providerItems []json.RawMessage
 	completed := false
 	terminal := false
@@ -789,7 +796,7 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		}
 		var event map[string]any
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			send(Chunk{Err: fmt.Errorf("codex: bad SSE payload: %w", err)})
+			send(Chunk{Err: fmt.Errorf("%s: bad SSE payload: %w", source, err)})
 			terminal = true
 			return false
 		}
@@ -861,14 +868,14 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 			// this backend reports an empty response.output array. Completed
 			// output items are retained from their individual done events above;
 			// an itemless completion is a completed no-op, not a transport error.
-			usage := codexUsage(event)
+			usage := responsesUsage(event)
 			completed = true
 			terminal = true
 			return send(Chunk{ToolCalls: calls.finish(), ProviderItems: providerItems,
 				Usage: usage, Done: true})
 		case "response.failed", "response.incomplete", "error":
-			message := codexEventError(event, kind)
-			send(Chunk{Err: fmt.Errorf("codex: %s", message)})
+			message := responsesEventError(event, kind)
+			send(Chunk{Err: fmt.Errorf("%s: %s", source, message)})
 			terminal = true
 			return false
 		}
@@ -905,15 +912,15 @@ func streamCodexSSE(ctx context.Context, r io.Reader, ch chan<- Chunk) {
 		return
 	}
 	if err := sc.Err(); err != nil {
-		send(Chunk{Err: fmt.Errorf("codex: read SSE stream: %w", err)})
+		send(Chunk{Err: fmt.Errorf("%s: read SSE stream: %w", source, err)})
 		return
 	}
 	if !completed {
-		send(Chunk{Err: fmt.Errorf("codex: stream closed before response.completed")})
+		send(Chunk{Err: fmt.Errorf("%s: stream closed before response.completed", source)})
 	}
 }
 
-func codexEventError(event map[string]any, kind string) string {
+func responsesEventError(event map[string]any, kind string) string {
 	for _, candidate := range []any{event["error"], event["response"]} {
 		if value, ok := candidate.(map[string]any); ok {
 			if nested, ok := value["error"].(map[string]any); ok {
@@ -935,21 +942,21 @@ func codexEventError(event map[string]any, kind string) string {
 	return "response failed"
 }
 
-func codexUsage(event map[string]any) *Usage {
+func responsesUsage(event map[string]any) *Usage {
 	response, _ := event["response"].(map[string]any)
 	usage, _ := response["usage"].(map[string]any)
 	if usage == nil {
 		return nil
 	}
 	return &Usage{
-		PromptTokens:     codexJSONInt(usage["input_tokens"]),
-		CompletionTokens: codexJSONInt(usage["output_tokens"]),
-		CacheReadTokens:  codexJSONIntNested(usage, "input_tokens_details", "cached_tokens"),
-		CacheWriteTokens: codexJSONIntNested(usage, "input_tokens_details", "cache_write_tokens"),
+		PromptTokens:     responsesJSONInt(usage["input_tokens"]),
+		CompletionTokens: responsesJSONInt(usage["output_tokens"]),
+		CacheReadTokens:  responsesJSONIntNested(usage, "input_tokens_details", "cached_tokens"),
+		CacheWriteTokens: responsesJSONIntNested(usage, "input_tokens_details", "cache_write_tokens"),
 	}
 }
 
-func codexJSONInt(value any) int {
+func responsesJSONInt(value any) int {
 	switch n := value.(type) {
 	case float64:
 		return int(n)
@@ -962,9 +969,9 @@ func codexJSONInt(value any) int {
 	return 0
 }
 
-func codexJSONIntNested(value map[string]any, outer, inner string) int {
+func responsesJSONIntNested(value map[string]any, outer, inner string) int {
 	nested, _ := value[outer].(map[string]any)
-	return codexJSONInt(nested[inner])
+	return responsesJSONInt(nested[inner])
 }
 
 type codexModelsResponse struct {

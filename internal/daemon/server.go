@@ -213,15 +213,17 @@ type Session struct {
 	// lives on the reader, not the writer: a conflict queued on the writer
 	// would wait for the writer's safe point and reach the wrong conversation.
 	// Written by whichever session did the writing, so it is under mu.
-	pending     []Conflict
-	asks        *askBroker
-	mcp         *mcp.Client
-	poke        *agent.PokeHook
-	advisor     *agent.Advisor
-	orchestrate *agent.OrchestrateHook
-	overnight   *overnightState
+	pending                 []Conflict
+	asks                    *askBroker
+	mcp                     *mcp.Client
+	poke                    *agent.PokeHook
+	advisor                 *agent.Advisor
+	orchestrate             *agent.OrchestrateHook
+	orchestratorPokeEnabled bool
+	orchestratorPokeSaved   bool
+	overnight               *overnightState
 
-	subs map[chan ServerMsg]struct{}
+	subs map[*subscription]struct{}
 
 	cancel context.CancelFunc
 
@@ -646,10 +648,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 	}
 	s.startIdleWatchdog()
-	go func() {
-		<-ctx.Done()
-		s.Close()
-	}()
+	stop := context.AfterFunc(ctx, s.Close)
+	defer stop()
 
 	for {
 		conn, err := s.listener.Accept()
@@ -760,12 +760,16 @@ func waitForBuilds(wg *sync.WaitGroup, budget time.Duration) bool {
 
 // Sessions lists what the server is holding.
 func (s *Server) Sessions() []SessionInfo {
-	// Token totals live on the swarm ledger; snapshot them before taking the
-	// session lock so the two mutexes never nest.
+	// Token totals and spawner links live on the swarm ledger; snapshot them
+	// before taking the session lock so the two mutexes never nest.
 	s.swarm.mu.Lock()
 	tokens := make(map[string]int, len(s.swarm.tokens))
 	for name, total := range s.swarm.tokens {
 		tokens[name] = total
+	}
+	spawners := make(map[string]string, len(s.swarm.spawnedBy))
+	for worker, spawner := range s.swarm.spawnedBy {
+		spawners[worker] = spawner
 	}
 	s.swarm.mu.Unlock()
 
@@ -1101,9 +1105,10 @@ func (s *Server) OpenWithOptions(name string, opts OpenOptions) (*Session, error
 		advisor:     advisor,
 		orchestrate: orchestrate,
 		overnight:   newOvernightState(),
-		subs:        map[chan ServerMsg]struct{}{},
+		subs:        map[*subscription]struct{}{},
 		idleSince:   time.Now(),
 	}
+	orchestrate.SetOnChange(sess.setOrchestratorCapabilities)
 	sess.NoTools = opts.NoTools
 	if built.Exec != nil && built.Exec.Bg != nil {
 		built.Exec.Bg.OnDone = func(task *tools.BackgroundTask) {
@@ -1667,31 +1672,56 @@ func (sess *Session) deliverConflicts() {
 func (sess *Session) broadcast(msg ServerMsg) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for ch := range sess.subs {
+	for sub := range sess.subs {
 		select {
-		case ch <- msg:
+		case sub.ch <- msg:
 		default:
-			// A client that cannot keep up is skipped rather than blocking the
-			// agent. It reconnects with `since` and the ring fills the gap,
-			// which is exactly what the ring is for.
+			// A client that cannot keep up is evicted rather than blocking
+			// the agent (EC-003). The relay/SSE loop observes done and
+			// exits, so the client notices the termination and reconnects
+			// with `since`; the ring replays the gap. ch is never closed:
+			// a concurrent broadcaster may hold a copy and a send on a
+			// closed channel panics. Only done is closed.
+			delete(sess.subs, sub)
+			close(sub.done)
+			if len(sess.subs) == 0 && !sess.closing {
+				sess.idleSince = time.Now()
+			}
 		}
 	}
 }
 
-func (sess *Session) subscribe() chan ServerMsg {
-	ch := make(chan ServerMsg, 256)
+// subscription is one attached client's live queue: ch carries live frames
+// and done is closed exactly once on the first overflow (EC-003).
+type subscription struct {
+	ch   chan ServerMsg
+	done chan struct{}
+}
+
+func (sess *Session) subscribe() *subscription {
+	sub := &subscription{ch: make(chan ServerMsg, 256), done: make(chan struct{})}
 	sess.mu.Lock()
-	sess.subs[ch] = struct{}{}
+	sess.subs[sub] = struct{}{}
 	// An attached window keeps the hydrated runtime alive regardless of when
 	// the last turn ended.
 	sess.idleSince = time.Time{}
 	sess.mu.Unlock()
-	return ch
+	return sub
 }
 
-func (sess *Session) unsubscribe(ch chan ServerMsg) {
+func (sess *Session) unsubscribe(sub *subscription) {
+	if sub == nil {
+		return
+	}
 	sess.mu.Lock()
-	delete(sess.subs, ch)
+	if _, ok := sess.subs[sub]; !ok {
+		// Already evicted by broadcast overflow: Clients already decremented
+		// and the idle countdown already started. Touching idleSince again
+		// would extend the windowless interval behind the watchdog's back.
+		sess.mu.Unlock()
+		return
+	}
+	delete(sess.subs, sub)
 	if len(sess.subs) == 0 && !sess.closing {
 		// Start the countdown when the last window leaves. A turn that is still
 		// running is allowed to finish, but it does not reset the windowless
@@ -1701,6 +1731,39 @@ func (sess *Session) unsubscribe(ch chan ServerMsg) {
 		sess.idleSince = time.Time{}
 	}
 	sess.mu.Unlock()
+}
+
+// attachSubscribe subscribes, then captures the replay high-water sequence
+// (EC-002). The caller sends the snapshot, then the returned replay (already
+// bounded to highWater), then tails sub.ch discarding live MsgEvents with
+// Seq<=highWater via isLiveDuplicate. Snapshot and non-event frames are never
+// discarded: only ring-sequenced MsgEvents can duplicate the replay.
+func (sess *Session) attachSubscribe(since int) (*subscription, []agent.Event, int) {
+	sub := sess.subscribe()
+	highWater := sess.ring.Seq()
+	var replay []agent.Event
+	if since > 0 {
+		replay, _ = sess.ring.Since(since)
+	} else {
+		replay = sess.ring.SinceLastTurn()
+	}
+	if highWater > 0 && len(replay) > 0 {
+		kept := replay[:0]
+		for _, e := range replay {
+			if e.Seq <= highWater {
+				kept = append(kept, e)
+			}
+		}
+		replay = kept
+	}
+	return sub, replay, highWater
+}
+
+// isLiveDuplicate reports whether a live frame duplicates replay already sent
+// for highWater. Only ring-sequenced MsgEvents qualify; snapshots, errors,
+// and unsequenced events (Seq 0) always pass through.
+func isLiveDuplicate(msg ServerMsg, highWater int) bool {
+	return msg.Kind == MsgEvent && msg.Event != nil && msg.Event.Seq > 0 && msg.Event.Seq <= highWater
 }
 
 // close tears down one live runtime. A session that is between turns gets the
@@ -1906,24 +1969,54 @@ func shapeConversationMessages(msgs []provider.Message) []Message {
 // Input starts a turn. A turn already in flight is queued, which gives every
 // attached client one ordered input stream instead of letting two windows race
 // to mutate the same provider conversation.
-func (sess *Session) Input(text string, images ...[][]byte) {
-	sess.InputRequest("", text, images...)
+func (sess *Session) Input(text string, images ...[][]byte) (inputStatus, error) {
+	return sess.InputRequest("", text, images...)
 }
 
 // InputRequest starts or queues a prompt and carries a caller request id into
 // TurnStart. Headless waiters use that id to distinguish their queued turn from
 // an older turn already running in the same session.
-func (sess *Session) InputRequest(requestID, text string, images ...[][]byte) {
-	sess.inputRequest(requestID, text, false, images...)
+func (sess *Session) InputRequest(requestID, text string, images ...[][]byte) (inputStatus, error) {
+	return sess.inputRequest(requestID, text, false, images...)
 }
 
 // InputRequestHidden carries the render-only visibility marker for prompts
 // authored by a frontend harness. The provider still receives the full text.
-func (sess *Session) InputRequestHidden(requestID, text string, hidden bool, images ...[][]byte) {
-	sess.inputRequest(requestID, text, hidden, images...)
+func (sess *Session) InputRequestHidden(requestID, text string, hidden bool, images ...[][]byte) (inputStatus, error) {
+	return sess.inputRequest(requestID, text, hidden, images...)
 }
 
-func (sess *Session) inputRequest(requestID, text string, hidden bool, images ...[][]byte) {
+// inputStatus is what inputRequest decided about a prompt (EC-005). The
+// caller reports queue-full and closing synchronously — the socket handler as
+// MsgError, the web handler as 429/409 — while started and queued are
+// acknowledged and their progress arrives asynchronously on the streams, so
+// every observer (not just the sender) sees the same notices.
+type inputStatus int
+
+const (
+	// inputStarted means the prompt took the turn reservation and is running;
+	// its image bytes are owned by the turn.
+	inputStarted inputStatus = iota + 1
+	// inputQueued means a turn was already in flight; the prompt (with its
+	// image bytes) waits in the bounded FIFO for its turn.
+	inputQueued
+	// inputQueueFull means the bounded queue refused the prompt visibly.
+	inputQueueFull
+	// inputClosing means the session is tearing down and takes no prompts.
+	inputClosing
+)
+
+// hasInputContent mirrors the agent's own run rule (EC-001): a prompt carries
+// something runnable when its text is not blank, or when it stages images for
+// an image-only turn. A whitespace-only prompt with no images is a no-op the
+// agent would drop, so both entries refuse it up front instead of occupying
+// the turn for nothing. Validation runs before the queue or the turn takes
+// ownership of any image bytes.
+func hasInputContent(text string, images [][]byte) bool {
+	return strings.TrimSpace(text) != "" || len(images) > 0
+}
+
+func (sess *Session) inputRequest(requestID, text string, hidden bool, images ...[][]byte) (inputStatus, error) {
 	hidden = hidden || isOvernightRequest(requestID)
 	if sess.overnight != nil && !isOvernightRequest(requestID) && sess.overnight.isActive() {
 		if sess.overnight.stop("you stopped it by sending a prompt") {
@@ -1954,22 +2047,27 @@ func (sess *Session) inputRequest(requestID, text string, hidden bool, images ..
 			if len(sess.queued) >= MaxQueuedInputs ||
 				queuedInputBytes(sess.queued)+newBytes > MaxQueuedInputBytes {
 				sess.mu.Unlock()
-				a.Notice(agent.LevelError,
+				err := fmt.Errorf(
 					"queued input rejected: the session's queue is full "+
 						"(max %d prompts or %d MiB); wait for the current turn to end",
 					MaxQueuedInputs, MaxQueuedInputBytes/(1<<20))
-				return
+				// Observers see the refusal on the stream; the caller also
+				// reports it synchronously (EC-005).
+				a.Notice(agent.LevelError, "%s", err)
+				return inputQueueFull, err
 			}
 			sess.queued = append(sess.queued, queuedInput{
 				requestID: requestID, text: text, images: attached, hidden: hidden,
 			})
 		}
 		position := len(sess.queued)
+		name := sess.Name
 		sess.mu.Unlock()
-		if !closing {
-			a.Notice(agent.LevelInfo, "queued prompt %d until the current turn ends", position)
+		if closing {
+			return inputClosing, fmt.Errorf("session %q is closing", name)
 		}
-		return
+		a.Notice(agent.LevelInfo, "queued prompt %d until the current turn ends", position)
+		return inputQueued, nil
 	}
 	sess.mu.Lock()
 	sess.requestID = requestID
@@ -1980,6 +2078,7 @@ func (sess *Session) inputRequest(requestID, text string, hidden bool, images ..
 		attached = images[0]
 	}
 	sess.launchTurn(text, attached, hidden, ctx, cancel, done)
+	return inputStarted, nil
 }
 
 func (sess *Session) launchTurn(text string, images [][]byte, hidden bool, ctx context.Context, cancel context.CancelFunc, done chan struct{}) {
@@ -2429,8 +2528,14 @@ func fitServerFrame(msg ServerMsg) (ServerMsg, []byte, bool) {
 	if msg.Snapshot != nil {
 		s := *msg.Snapshot
 		msg.Snapshot = &s
+		// EC-F-001: every drop from the oldest side advances Oldest by the
+		// dropped count, so Messages[0] is always the shaped-list index
+		// Oldest and /messages?before=Oldest returns the adjacent page with
+		// no overlap. A snapshot that fits keeps Oldest 0.
 		for len(s.Messages) > 1 {
-			s.Messages = s.Messages[max(1, len(s.Messages)/2):]
+			drop := max(1, len(s.Messages)/2)
+			s.Messages = s.Messages[drop:]
+			s.Oldest += drop
 			s.Truncated = true
 			if buf, ok := marshalServerFrame(msg); ok {
 				return msg, buf, true
@@ -2438,7 +2543,9 @@ func fitServerFrame(msg ServerMsg) (ServerMsg, []byte, bool) {
 		}
 		// A single message over the frame budget: deliver the envelope so the
 		// client attaches and learns the session exists, without the history.
+		// The last removal lands Oldest on the original length.
 		if len(s.Messages) > 0 {
+			s.Oldest += len(s.Messages)
 			s.Messages, s.Truncated = nil, true
 			if buf, ok := marshalServerFrame(msg); ok {
 				return msg, buf, true
@@ -2473,7 +2580,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 	var (
 		sess *Session
-		sub  chan ServerMsg
+		sub  *subscription
 		done = make(chan struct{})
 
 		// pending holds a deferred attach's creation options: this connection
@@ -2549,33 +2656,51 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 		sess = opened
 		// Subscribe before replaying, so an event arriving mid-replay is
-		// queued rather than dropped into the gap between the two.
-		sub = sess.subscribe()
+		// queued rather than dropped into the gap between the two (EC-002).
+		// replay is bounded to highWater; the relay skips queued live
+		// MsgEvents at or below it so each sequence arrives exactly once.
+		// Snapshots and non-event frames always pass through.
+		sub, replay, highWater := sess.attachSubscribe(since)
 		send(ServerMsg{Kind: MsgSnapshot, Snapshot: sess.snapshot()})
 		// A fresh attach replays only the turn in flight: the snapshot
 		// already holds every completed message, so replaying their deltas
 		// too would draw the conversation twice. A reconnecting client
 		// names the last sequence it saw and gets the gap instead.
-		replay := sess.ring.SinceLastTurn()
-		if since > 0 {
-			replay, _ = sess.ring.Since(since)
-		}
 		for i := range replay {
 			send(ServerMsg{Kind: MsgEvent, Event: &replay[i]})
 		}
 		relayStop = make(chan struct{})
-		go func(sub chan ServerMsg, stop chan struct{}) {
+		go func(sub *subscription, stop chan struct{}, highWater int) {
 			for {
 				select {
-				case msg := <-sub:
-					send(msg)
+				case msg := <-sub.ch:
+					if isLiveDuplicate(msg, highWater) {
+						continue
+					}
+					select {
+					case out <- msg:
+					case <-stop:
+						return
+					case <-done:
+						return
+					case <-sub.done:
+						// Overflow (EC-003): the queue lost at least one
+						// event, so the stream has a gap only a reconnect
+						// replay can repair. Drop the connection so the
+						// client notices instead of silently missing it.
+						drop()
+						return
+					}
 				case <-stop:
 					return
 				case <-done:
 					return
+				case <-sub.done:
+					drop()
+					return
 				}
 			}
-		}(sub, relayStop)
+		}(sub, relayStop, highWater)
 	}
 
 	sc := bufio.NewScanner(conn)
@@ -2656,7 +2781,16 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				send(ServerMsg{Kind: MsgError, Err: "input before attach"})
 				continue
 			}
-			sess.InputRequestHidden(msg.RequestID, msg.Text, msg.Hidden, msg.Images)
+			// EC-001/EC-005: a whitespace-only prompt with no images is a
+			// no-op the agent would drop. Refuse it here, before the queue
+			// or the turn takes ownership of any image bytes.
+			if !hasInputContent(msg.Text, msg.Images) {
+				send(ServerMsg{Kind: MsgError, Err: "input needs text or at least one image"})
+				continue
+			}
+			if _, err := sess.InputRequestHidden(msg.RequestID, msg.Text, msg.Hidden, msg.Images); err != nil {
+				send(ServerMsg{Kind: MsgError, Err: err.Error()})
+			}
 
 		case MsgInterrupt:
 			if sess == nil {

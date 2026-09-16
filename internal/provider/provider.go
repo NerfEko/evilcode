@@ -401,6 +401,8 @@ func SupportsReasoningEffort(p Provider) bool {
 		return true
 	case *OpenAI:
 		return p.supportsReasoningEffort
+	case *OpenCodeGo:
+		return true
 	case *Ollama:
 		return true
 	default:
@@ -419,6 +421,8 @@ func ReasoningEffortLevelsForProvider(p Provider, model string) []ReasoningEffor
 	case *Mock:
 		return p.reasoningEffortLevelsForModel(model)
 	case *OpenAI:
+		return p.reasoningEffortLevelsForModel(model)
+	case *OpenCodeGo:
 		return p.reasoningEffortLevelsForModel(model)
 	case *Ollama:
 		return p.reasoningEffortLevelsForModel(model)

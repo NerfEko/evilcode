@@ -250,7 +250,7 @@ func TestCodexReplaysProviderOutputItemsWithoutReconstruction(t *testing.T) {
 	message := json.RawMessage(`{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"working"}]}`)
 	call := json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{\"path\":\"x\"}"}`)
 
-	_, input, err := toCodexInput([]Message{
+	_, input, err := toResponsesInput([]Message{
 		{Role: RoleUser, Content: "inspect x"},
 		{
 			Role:          RoleAssistant,
@@ -298,7 +298,7 @@ func TestCodexRetainsDoneItemsWhenCompletedOutputIsEmpty(t *testing.T) {
 	}, "\n")
 
 	ch := make(chan Chunk, 4)
-	streamCodexSSE(context.Background(), strings.NewReader(sse), ch)
+	streamResponsesSSE(context.Background(), strings.NewReader(sse), ch, "codex")
 	close(ch)
 	var done Chunk
 	for chunk := range ch {
@@ -335,7 +335,7 @@ func TestCodexReasoningOnlyResponseCompletes(t *testing.T) {
 	}, "\n")
 
 	ch := make(chan Chunk, 4)
-	streamCodexSSE(context.Background(), strings.NewReader(sse), ch)
+	streamResponsesSSE(context.Background(), strings.NewReader(sse), ch, "codex")
 	close(ch)
 	var done Chunk
 	var reasoning string

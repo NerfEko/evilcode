@@ -7,6 +7,7 @@ import (
 
 	"evilcode/internal/agent"
 	"evilcode/internal/theme"
+	"evilcode/internal/tools"
 )
 
 func TestOrchestrateCommandRoundTripsLocally(t *testing.T) {
@@ -26,6 +27,39 @@ func TestOrchestrateCommandRoundTripsLocally(t *testing.T) {
 	m.orchestrateCommand("off")
 	if m.orchestrator || m.orchestrate.Active() {
 		t.Fatal("/orchestrate off did not disarm the flag and the hook")
+	}
+}
+
+func TestOrchestratorGatesTodoAndPoke(t *testing.T) {
+	m := newTestModel(t)
+	m.agent.SetTools(tools.Set{{Name: "todo"}, {Name: "read"}})
+	poke := agent.NewPokeHook(nil, true)
+	m.WithTodos(nil, poke).WithOrchestrate(agent.NewOrchestrateHook(true))
+	m.editor.Text = "/"
+
+	m.orchestrateCommand("on")
+	if !m.agent.ToolBlocked("todo") {
+		t.Fatal("todo tool remained available in orchestrator mode")
+	}
+	if poke.Enabled() {
+		t.Fatal("auto-poke remained enabled in orchestrator mode")
+	}
+	for _, suggestion := range m.paletteSuggestions() {
+		if suggestion.Name == "todo" || suggestion.Name == "todos" || suggestion.Name == "poke" {
+			t.Fatalf("gated command was advertised: %q", suggestion.Name)
+		}
+	}
+	help := strings.Join(plainLines(m.renderer.RenderHelpFor(0, 100, 200, true)), "\n")
+	if strings.Contains(help, "/todos") || strings.Contains(help, "/poke") {
+		t.Fatalf("gated command leaked into help: %s", help)
+	}
+
+	m.orchestrateCommand("off")
+	if m.agent.ToolBlocked("todo") {
+		t.Fatal("todo tool stayed blocked after orchestrator mode ended")
+	}
+	if !poke.Enabled() {
+		t.Fatal("auto-poke was not restored after orchestrator mode ended")
 	}
 }
 

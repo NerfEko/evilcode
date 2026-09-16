@@ -14,18 +14,51 @@ import (
 // which owns the hook there.
 func (m *Model) WithOrchestrate(h *agent.OrchestrateHook) *Model {
 	m.orchestrate = h
+	if h != nil {
+		h.SetOnChange(m.setOrchestratorCapabilities)
+	}
 	return m
 }
 
+// orchestratorActive reports the effective mode for command surfaces. The hook
+// is included because its keyword detector runs on the agent goroutine.
+func (m *Model) orchestratorActive() bool {
+	return m.orchestrator || m.orchestrate != nil && m.orchestrate.Active()
+}
+
+// setOrchestratorCapabilities is safe for hook callbacks that run outside the
+// Bubble Tea loop. It withdraws todo and auto-poke while delegation owns the
+// control loop.
+func (m *Model) setOrchestratorCapabilities(on bool) {
+	m.orchestratorMu.Lock()
+	defer m.orchestratorMu.Unlock()
+	if m.agent != nil {
+		m.agent.SetToolBlocked("todo", on)
+	}
+	if m.poke == nil {
+		return
+	}
+	if on {
+		if !m.orchestratorPokeSaved {
+			m.orchestratorPokeEnabled = m.poke.Enabled()
+			m.orchestratorPokeSaved = true
+		}
+		m.poke.SetEnabled(false)
+	} else if m.orchestratorPokeSaved {
+		m.poke.SetEnabled(m.orchestratorPokeEnabled)
+		m.orchestratorPokeSaved = false
+	}
+}
+
 // setOrchestrator flips the visible half of orchestrator mode: the rainbow
-// composer tint and the per-worker roster colors. The model-visible half
-// (the contract) is owned by the hook locally, or by the daemon when
-// attached.
+// composer tint and the per-worker roster colors. Capability synchronization is
+// repeated here because explicit commands run on the update loop.
 func (m *Model) setOrchestrator(on bool) {
 	m.orchestrator = on
 	if m.swarm != nil {
 		m.swarm.Orchestrator = on
 	}
+	m.setOrchestratorCapabilities(on)
 }
 
 // orchestrateCommand implements `/orchestrate on|off|status` (fan-out D5).
@@ -77,7 +110,7 @@ func (m *Model) orchestrateCommand(arg string) tea.Cmd {
 // injected by the hook (locally) or the daemon (attached) at the next turn
 // boundary, so the tint never promises guidance that is not coming.
 func (m *Model) armOrchestratorFromKeyword(text string) {
-	if m.orchestrator || !agent.HasOrchestrateKeyword(text) {
+	if m.orchestratorActive() || !agent.HasOrchestrateKeyword(text) {
 		return
 	}
 	m.setOrchestrator(true)
