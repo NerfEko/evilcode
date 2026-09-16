@@ -98,9 +98,12 @@ type Block struct {
 
 	// CompactedFrom and Epoch describe a BlockCompacted: how many messages
 	// the summary replaced and which context epoch the rewrite produced.
-	// They are display data for the collapsed row, not conversation state.
+	// ShortSummary is the omp PR-style display summary; TokensBefore the
+	// context size that triggered the rewrite. Display data only.
 	CompactedFrom int
 	Epoch         int
+	ShortSummary  string
+	TokensBefore  int
 
 	// Hovered and HoverCodeSegment are transient paint state. The model supplies
 	// them for the block under the mouse; they are not persisted with a session.
@@ -858,12 +861,21 @@ func (r *Renderer) renderCompacted(b *Block) []string {
 	system := r.style(theme.RoleSystem)
 	dim := r.style(theme.RoleDim)
 	label := fmt.Sprintf("📦 context compacted — %d messages → summary", b.CompactedFrom)
+	if b.TokensBefore > 0 {
+		label += fmt.Sprintf(", %d tokens before", b.TokensBefore)
+	}
 	if b.Epoch > 0 {
 		label += fmt.Sprintf(" (context epoch %d)", b.Epoch)
 	}
 
 	if b.Collapsed {
-		line := system.Render("▸ "+label) + dim.Render(" · click to view")
+		line := system.Render("▸ " + label)
+		if b.ShortSummary != "" {
+			// omp: the collapsed row carries the PR-style one-liner, so the
+			// picker-speed scan of the transcript says what happened.
+			line += dim.Render(" — " + strings.TrimSpace(b.ShortSummary))
+		}
+		line += dim.Render(" · click to view")
 		if b.Hovered {
 			line = jaggedUnderline(line)
 		}

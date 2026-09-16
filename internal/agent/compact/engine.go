@@ -205,3 +205,13 @@ func RunSummarizer(ctx context.Context, summarize Summarizer, candidates []Model
 // side-call that would treat it as instructions: evilcode's sideCallOnce
 // already separates system and user; this only normalizes emptiness.
 func normalizeUser(s string) string { return strings.TrimSpace(s) }
+
+// CompactInfo mirrors session.CompactInfo without the session-package
+// dependency: the adapter translates. ShortSummary and token accounting ride
+// the compaction meta entry.
+type CompactInfo struct {
+	Summary      string
+	ShortSummary string
+	TokensBefore int
+	KeptTokens   int
+}

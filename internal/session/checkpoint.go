@@ -393,6 +393,22 @@ func Compact(dataDir, name, summary string) ([]provider.Message, error) {
 // summary and before the compact marker, so resume reconstructs the same live
 // suffix instead of silently losing the task that was in progress.
 func CompactWithTail(dataDir, name, summary string, tail []provider.Message) ([]provider.Message, error) {
+	return CompactWithTailInfo(dataDir, name, CompactInfo{Summary: summary}, tail)
+}
+
+// CompactInfo carries the omp compaction-entry metadata into the log:
+// short summary for the picker, token accounting for the compacted block.
+type CompactInfo struct {
+	Summary      string
+	ShortSummary string
+	TokensBefore int
+	KeptTokens   int
+}
+
+// CompactWithTailInfo is the full form: summary, sanitized tail, and the
+// compaction meta entry.
+func CompactWithTailInfo(dataDir, name string, info CompactInfo, tail []provider.Message) ([]provider.Message, error) {
+	summary := info.Summary
 	path, err := pathFor(dataDir, name)
 	if err != nil {
 		return nil, err
@@ -447,7 +463,12 @@ func CompactWithTail(dataDir, name, summary string, tail []provider.Message) ([]
 		}
 		write(Entry{TS: time.Now(), Type: t, Data: data})
 	}
-	if data, err := json.Marshal(Meta{Kind: MetaCompact}); err == nil {
+	if data, err := json.Marshal(Meta{
+		Kind:         MetaCompact,
+		ShortSummary: info.ShortSummary,
+		TokensBefore: info.TokensBefore,
+		KeptTokens:   info.KeptTokens,
+	}); err == nil {
 		write(Entry{TS: time.Now(), Type: TypeMeta, Data: data})
 	}
 
@@ -468,7 +489,13 @@ func (s *Store) Compact(dataDir, summary string) ([]provider.Message, error) {
 // CompactWithTail rewrites the live session and preserves the recent messages
 // that remain verbatim after the summary.
 func (s *Store) CompactWithTail(dataDir, summary string, tail []provider.Message) ([]provider.Message, error) {
+	return s.CompactWithTailInfo(dataDir, CompactInfo{Summary: summary}, tail)
+}
+
+// CompactWithTailInfo rewrites the live session carrying full compaction
+// metadata (short summary, token accounting).
+func (s *Store) CompactWithTailInfo(dataDir string, info CompactInfo, tail []provider.Message) ([]provider.Message, error) {
 	return s.rewrite(func() ([]provider.Message, error) {
-		return CompactWithTail(dataDir, s.Name, summary, tail)
+		return CompactWithTailInfo(dataDir, s.Name, info, tail)
 	})
 }

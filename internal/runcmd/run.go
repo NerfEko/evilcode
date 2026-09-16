@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"evilcode/internal/agent"
+	"evilcode/internal/agent/compact"
 	"evilcode/internal/config"
 	"evilcode/internal/core"
 	"evilcode/internal/lsp"
@@ -229,6 +230,14 @@ func Run(args []string) (int, error) {
 		},
 		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
 			return store.CompactWithTail(dataDir, summary, tail)
+		},
+		PersistWithInfo: func(info compact.CompactInfo, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTailInfo(dataDir, session.CompactInfo{
+				Summary:      info.Summary,
+				ShortSummary: info.ShortSummary,
+				TokensBefore: info.TokensBefore,
+				KeptTokens:   info.KeptTokens,
+			}, tail)
 		},
 		OnCompaction: exposure.Reset,
 	}

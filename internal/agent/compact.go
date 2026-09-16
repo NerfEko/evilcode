@@ -82,6 +82,10 @@ type Compactor struct {
 	// provider messages.
 	PersistWithTail func(summary string, tail []provider.Message) ([]provider.Message, error)
 
+	// PersistWithInfo is the full omp form: short summary + token accounting
+	// ride the compaction meta entry. Nil falls back to PersistWithTail.
+	PersistWithInfo func(info compact.CompactInfo, tail []provider.Message) ([]provider.Message, error)
+
 	// OnCompaction resets session-local caches whose contents are no longer in
 	// the model context (for example the tool exposure ledger).
 	OnCompaction func()
@@ -96,6 +100,9 @@ type Compactor struct {
 	// lastPromptTokens is the newest request's provider-reported prompt size,
 	// fed to the engine's floor-and-max token rule by SetPromptTokens.
 	lastPromptTokens int
+
+	// lastResult is the newest compaction's full result for display.
+	lastResult *compact.Result
 }
 
 // SetPromptTokens records the newest request's provider-reported prompt size
@@ -269,15 +276,28 @@ func (c *Compactor) CompactWithWindow(ctx context.Context, conv *Conversation, w
 	}
 	replay := append([]provider.Message{compact.SummaryMessage(res.Summary)}, checkpointTail...)
 	var stored []provider.Message
-	if c.PersistWithTail != nil {
+	switch {
+	case c.PersistWithInfo != nil:
+		stored, err = c.PersistWithInfo(compact.CompactInfo{
+			Summary:      res.Summary,
+			ShortSummary: res.ShortSummary,
+			TokensBefore: res.TokensBefore,
+			KeptTokens:   res.KeptTokens,
+		}, checkpointTail)
+		if err != nil {
+			return "", fmt.Errorf("compaction was not saved: %w", err)
+		}
+	case c.PersistWithTail != nil:
 		stored, err = c.PersistWithTail(res.Summary, checkpointTail)
 		if err != nil {
 			return "", fmt.Errorf("compaction was not saved: %w", err)
 		}
-	} else if c.Persist != nil {
-		stored, err = c.Persist(res.Summary)
-		if err != nil {
-			return "", fmt.Errorf("compaction was not saved: %w", err)
+	default:
+		if c.Persist != nil {
+			stored, err = c.Persist(res.Summary)
+			if err != nil {
+				return "", fmt.Errorf("compaction was not saved: %w", err)
+			}
 		}
 	}
 	if len(stored) > 0 {
@@ -293,8 +313,20 @@ func (c *Compactor) CompactWithWindow(ctx context.Context, conv *Conversation, w
 
 	c.mu.Lock()
 	c.count++
+	c.lastResult = res
 	c.mu.Unlock()
 	return res.Summary, nil
+}
+
+// LastResult returns the newest compaction's full result (short summary,
+// token accounting) for display surfaces.
+func (c *Compactor) LastResult() *compact.Result {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastResult
 }
 
 // summarizerAdapter feeds one candidate through the configured Summarizer.

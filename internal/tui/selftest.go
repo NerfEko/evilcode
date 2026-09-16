@@ -25,9 +25,11 @@ import (
 // prevent (plan.md §16).
 // compactDone carries a finished compaction back into the render loop.
 type compactDone struct {
-	summary string
-	before  int
-	err     error
+	summary      string
+	shortSummary string
+	tokensBefore int
+	before       int
+	err          error
 }
 
 // runCompact summarises the conversation and replaces it with the summary.
@@ -79,7 +81,12 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 			window = m.agent.CompactionWindow
 		}
 		summary, err := m.compactor.CompactWithWindow(ctx, m.agent.Conv, window)
-		return compactDone{summary: summary, before: before, err: err}
+		done := compactDone{summary: summary, before: before, err: err}
+		if res := m.compactor.LastResult(); res != nil {
+			done.shortSummary = res.ShortSummary
+			done.tokensBefore = res.TokensBefore
+		}
+		return done
 	}
 }
 
@@ -115,6 +122,8 @@ func (m *Model) applyCompaction(done compactDone) {
 	m.blocks = append(m.blocks, Block{
 		Kind:          BlockCompacted,
 		Text:          done.summary,
+		ShortSummary:  done.shortSummary,
+		TokensBefore:  done.tokensBefore,
 		CompactedFrom: done.before,
 		Epoch:         m.agent.Conv.Epoch(),
 		Collapsed:     true,

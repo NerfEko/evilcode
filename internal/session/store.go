@@ -52,6 +52,14 @@ type Meta struct {
 	SourceID  string `json:"source_id,omitempty"`
 	TokensIn  int    `json:"tokens_in,omitempty"`
 	TokensOut int    `json:"tokens_out,omitempty"`
+
+	// Compaction metadata rides the MetaCompact entry (omp CompactionEntry).
+	// ShortSummary is the PR-style display summary; TokensBefore is the
+	// context size that triggered the rewrite; KeptTokens estimates the
+	// serialized recent context stored beside the summary.
+	ShortSummary string `json:"short_summary,omitempty"`
+	TokensBefore int    `json:"tokens_before,omitempty"`
+	KeptTokens   int    `json:"kept_tokens,omitempty"`
 }
 
 // Meta kinds.
@@ -630,6 +638,11 @@ type Info struct {
 	// resumed run reflects the model the previous one switched to. Empty for
 	// sessions recorded before the field existed.
 	Model string
+
+	// ShortSummary is the newest compaction's PR-style display summary (omp
+	// shortSummary), for the picker row. Empty for sessions compacted before
+	// the field existed.
+	ShortSummary string
 }
 
 // List returns every stored session, most recently modified first.
@@ -717,6 +730,10 @@ func Describe(dataDir, name string) (Info, error) {
 				info.Title = m.Note
 			case MetaCompact:
 				info.Compactions++
+				if m.ShortSummary != "" {
+					// Last-write-wins: the newest compaction's display summary.
+					info.ShortSummary = m.ShortSummary
+				}
 			case MetaSaved:
 				info.Saved = true
 			case MetaUnsaved:

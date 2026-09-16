@@ -386,6 +386,14 @@ func Build(cfg *config.Config, opts Options) (*Session, error) {
 		PersistWithTail: func(summary string, tail []provider.Message) ([]provider.Message, error) {
 			return store.CompactWithTail(dataDir, summary, tail)
 		},
+		PersistWithInfo: func(info compact.CompactInfo, tail []provider.Message) ([]provider.Message, error) {
+			return store.CompactWithTailInfo(dataDir, session.CompactInfo{
+				Summary:      info.Summary,
+				ShortSummary: info.ShortSummary,
+				TokensBefore: info.TokensBefore,
+				KeptTokens:   info.KeptTokens,
+			}, tail)
+		},
 		OnCompaction: exposure.Reset,
 	}
 	// omp compaction engine wiring: settings from [compaction], and the
