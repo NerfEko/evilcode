@@ -137,3 +137,66 @@ func TestNilSwarmStateIsInert(t *testing.T) {
 		t.Error("a nil swarm wants a strip")
 	}
 }
+
+func TestStatusSharesRowWithSwarmStrip(t *testing.T) {
+	r := testRenderer(80)
+	s := &SwarmState{}
+	s.Publish([]SwarmAgent{{Name: "bat", Running: true}})
+
+	// Streaming + another agent: one left-aligned row naming both, so the
+	// reader can tell the current turn from the rest of the swarm.
+	merged := plain(r.RenderStatusWithSwarm(StatusState{
+		Phase: PhaseStreaming, TokensOut: 1200,
+	}, s, 0))
+	if strings.Contains(merged, "\n") {
+		t.Fatalf("merged status spans rows: %q", merged)
+	}
+	for _, want := range []string{"streaming", "1 agent", "bat"} {
+		if !strings.Contains(merged, want) {
+			t.Errorf("merged status %q is missing %q", merged, want)
+		}
+	}
+
+	// Idle with no tip: the strip alone owns the row, no leading separator.
+	merged = plain(r.RenderStatusWithSwarm(StatusState{Phase: PhaseIdle}, s, 0))
+	if !strings.Contains(merged, "1 agent") {
+		t.Errorf("idle merged status = %q, want the strip", merged)
+	}
+
+	// No swarm, or nothing live: plain status, unchanged.
+	plainStatus := plain(r.RenderStatus(StatusState{Phase: PhaseThinking}))
+	if got := plain(r.RenderStatusWithSwarm(StatusState{Phase: PhaseThinking}, nil, 0)); got != plainStatus {
+		t.Errorf("nil swarm changed the status: %q vs %q", got, plainStatus)
+	}
+	quiet := &SwarmState{}
+	quiet.Publish([]SwarmAgent{{Name: "bat", Running: false}})
+	if got := plain(r.RenderStatusWithSwarm(StatusState{Phase: PhaseThinking}, quiet, 0)); got != plainStatus {
+		t.Errorf("quiet swarm changed the status: %q vs %q", got, plainStatus)
+	}
+}
+
+func TestViewPutsOtherAgentsOnTheStreamingLine(t *testing.T) {
+	m := clickModel(nil, t.TempDir())
+	m.width, m.height = 100, 20
+	m.status = StatusState{Phase: PhaseStreaming, TokensOut: 1200}
+	s := &SwarmState{}
+	s.Publish([]SwarmAgent{{Name: "bat", Running: true}})
+	m.swarm = s
+
+	m.View()
+	var hit string
+	for _, row := range strings.Split(m.lastFrame, "\n") {
+		if strings.Contains(row, "streaming") {
+			hit = row
+			break
+		}
+	}
+	if hit == "" {
+		t.Fatal("no streaming line in the frame")
+	}
+	for _, want := range []string{"1 agent", "bat"} {
+		if !strings.Contains(hit, want) {
+			t.Errorf("streaming line %q is missing %q (other agents should share it)", hit, want)
+		}
+	}
+}

@@ -177,11 +177,28 @@ type Model struct {
 
 	processing bool
 
-	status  StatusState
-	header  HeaderState
-	notice  string
-	started time.Time
-	turnAt  time.Time
+	status StatusState
+	header HeaderState
+	notice string
+	// noticeSeen/noticeSeenAt lazily stamp the current notice for expiry
+	// (notice.go): the first tick that sees a new text records it, and a
+	// later tick clears it past the effective TTL. noticePin/noticePinText exempt
+	// one pinned prompt, which clears on replace or submit instead.
+	noticeSeen    string
+	noticeSeenAt  time.Time
+	noticePin     bool
+	noticePinText string
+	// noticeTTL overrides DefaultNoticeTTL when positive, from
+	// display.notice_ttl via WithDisplay. Zero means the default.
+	noticeTTL time.Duration
+	started   time.Time
+	turnAt    time.Time
+
+	// overscrollPaint holds the elastic panel's rows for the current frame:
+	// View renders them once, stackFor reserves their height, and the paint
+	// appends the same rows. Rendering twice could straddle the dwell
+	// boundary and disagree about whether the panel is showing.
+	overscrollPaint []string
 
 	// promptCount is how many user prompts have been submitted, which drives
 	// the rainbow numbering.
@@ -1392,6 +1409,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.header.MCP = status
 			}
 		}
+		if !Deterministic() {
+			// Transient status lines clear themselves past NoticeTTL; only
+			// pinned prompts survive (notice.go). Frozen under Deterministic
+			// like every other wall-clock read.
+			m.expireNotice(time.Time(msg))
+		}
 		if m.startPageVisible() && !Deterministic() {
 			m.startWaveFrame = (m.startWaveFrame + 1) % startPageWaveCycle
 		}
@@ -1406,7 +1429,16 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.takeSideAnswer()
 		if done := m.bgDone.Swap(nil); done != nil {
 			if done.Failed {
-				m.notice = "✗ background: " + done.Label + " failed"
+				// A failed background task is about the world, not your last
+				// keystroke: it goes in the transcript (notice.go), where a
+				// later scrollback still finds it. Success stays a flash.
+				// tickMsg deliberately keeps the settled transcript cache, so
+				// this append must invalidate it — the same exception the
+				// overnight report completion makes — or the failure would
+				// wait for the next keystroke to appear.
+				m.blocks = append(m.blocks, Block{Kind: BlockError, Text: "✗ background: " + done.Label + " failed"})
+				m.invalidateTranscriptCache()
+				m.followUnlessReading()
 			} else {
 				m.notice = "✓ background: " + done.Label
 			}
@@ -2253,6 +2285,18 @@ func (m *Model) followIfPinned() {
 	}
 }
 
+// followUnlessReading snaps to the bottom like FollowBottom, unless the
+// reader scrolled up to read old context — background completions (a failed
+// background task, an overnight report landing) must not yank the window out
+// from under them. User-initiated paths keep calling FollowBottom directly:
+// submit, Esc, a jump key are explicit "take me back" actions.
+func (m *Model) followUnlessReading() {
+	if m.scroll.Paused {
+		return
+	}
+	m.scroll.FollowBottom()
+}
+
 // flushPending sends queued messages once a turn ends. Every staged message
 // is undelivered — the send model has no immediate path — so all of them go
 // out together (plan.md §6.3).
@@ -2424,9 +2468,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.confirmQuit = true
 		if m.processing {
-			m.notice = "Press Ctrl+C again to detach (the agent keeps running)"
+			m.setPinnedNotice("Press Ctrl+C again to detach (the agent keeps running)")
 		} else {
-			m.notice = "Press Ctrl+C again to detach"
+			m.setPinnedNotice("Press Ctrl+C again to detach")
 		}
 		return m, nil
 
@@ -4946,6 +4990,9 @@ func (m *Model) stackFor(contentHeight int) Stack {
 
 	composer := m.bottomBar()
 	s.Heights[SlotComposer] = len(composer)
+	if h := m.overscrollHeight(); h > 0 {
+		s.Heights[SlotOverscroll] = h
+	}
 	return s
 }
 
@@ -5264,6 +5311,15 @@ func (m *Model) View() tea.View {
 	}
 
 	tr := m.transcriptLines()
+	// The elastic panel is rendered once per frame (§4.4): stackFor reserves
+	// its height from these rows and the paint below appends the same rows.
+	// Measuring and painting separately could straddle the dwell boundary and
+	// disagree about whether the panel is showing.
+	m.overscrollPaint = nil
+	if now := time.Now(); m.overscroll.Visible(now, m.scroll.AtBottom()) {
+		m.overscrollPaint = m.renderer.RenderOverscrollFacts(
+			m.factStack(), m.overscroll.Remaining(now))
+	}
 	res := m.stackFor(len(tr.Lines)).Resolve()
 	content := tr.Lines
 	owner := tr.Owner
@@ -5375,19 +5431,14 @@ func (m *Model) View() tea.View {
 		m.status.Tip = TipAt(time.Since(m.started), m.width)
 	}
 	m.status.Queued = len(m.pending) + len(m.queuedTexts)
-	rows = append(rows, m.renderer.RenderStatus(m.status))
-
 	// The swarm strip is the fallback for when the dock widget cannot find a
-	// slot. Whether the widget is up is only known after docking, so the strip
-	// reads last frame's answer through the hysteresis — which is the point:
-	// deciding from the current frame would make the two flicker against each
-	// other every time a wide line slid under the widget.
-	if m.swarm != nil {
-		if strip := m.renderer.RenderSwarmStrip(m.swarm,
-			time.Since(m.started)); strip != "" && m.swarm.StripVisible() {
-			rows = append(rows, strip)
-		}
-	}
+	// slot, and it shares the status row left-aligned rather than spending its
+	// own row below it. Whether the widget is up is only known after docking,
+	// so the strip reads last frame's answer through the hysteresis — which is
+	// the point: deciding from the current frame would make the two flicker
+	// against each other every time a wide line slid under the widget.
+	rows = append(rows, m.renderer.RenderStatusWithSwarm(m.status, m.swarm,
+		time.Since(m.started)))
 
 	if m.notice != "" && !m.compacting {
 		// Sanitized at the draw rather than at each of the hundred-odd
@@ -5423,12 +5474,12 @@ func (m *Model) View() tea.View {
 	m.refreshExpandedWorker()
 	rows = append(rows, m.bottomBar()...)
 
-	// The elastic facts line lives below the composer and owns the same facts
+	// The elastic panel lives below the composer and owns the same facts
 	// as the fact stack, so only one of them shows at a time (§4.4, §8.6).
-	now := time.Now()
-	if m.overscroll.Visible(now, m.scroll.AtBottom()) {
-		rows = append(rows, m.renderer.RenderOverscrollFacts(
-			m.factStack(), m.overscroll.Remaining(now)))
+	// Its rows are reserved in stackFor, so the transcript shrinks to make
+	// room and the reveal stays on screen even when the window is full.
+	if len(m.overscrollPaint) > 0 {
+		rows = append(rows, m.overscrollPaint...)
 	}
 
 	// Carve the side pane off the right before anything else measures width
@@ -5693,15 +5744,35 @@ func (m *Model) attachSidePanel(rows []string, transcriptRows int) []string {
 
 // factStack gathers the always-true, never-urgent facts (§8.6).
 func (m *Model) factStack() FactStack {
-	return FactStack{
-		Provider: m.header.Provider,
-		Auth:     m.header.AuthKind,
-		Model:    m.header.Model,
-		Cwd:      m.header.Cwd,
-		Branch:   m.header.Branch,
-		Used:     m.ctxUsed,
-		Total:    m.contextMax(),
+	effort := m.header.ReasoningEffort
+	if m.reasoningEffortAvailable() {
+		effort = m.reasoningEffort
 	}
+	return FactStack{
+		Provider:    m.header.Provider,
+		Auth:        m.header.AuthKind,
+		Model:       m.header.Model,
+		Cwd:         m.header.Cwd,
+		Branch:      m.header.Branch,
+		Used:        m.ctxUsed,
+		Total:       m.contextMax(),
+		CacheRead:   m.cacheRead,
+		CacheWrite:  m.cacheWrite,
+		CacheActive: m.cacheProviderActive(),
+		Effort:      effort,
+		Thinking:    m.thinking,
+	}
+}
+
+// overscrollHeight reserves the elastic panel's rows in the layout so the
+// reveal fits inside the terminal instead of overflowing past it. Without
+// this the extra rows below the composer were clipped by the terminal when
+// the window was full, and the gesture looked dead. The rows come from the
+// per-frame cache View fills; callers outside a frame — wheel handlers
+// measuring transcriptHeight — read the previous frame's rows, the same
+// one-frame hysteresis the scrollbar decision already rides.
+func (m *Model) overscrollHeight() int {
+	return len(m.overscrollPaint)
 }
 
 // The salience knobs. Salience decides one thing only: which widget moves in
@@ -6313,6 +6384,11 @@ func (m *Model) WithDisplay(d config.Display) *Model {
 	}
 	m.keepThinking = d.KeepThinking
 	m.renderer.ThinkingLines = d.ThinkingLines
+	if d.NoticeTTL > 0 {
+		m.noticeTTL = time.Duration(d.NoticeTTL) * time.Second
+	} else {
+		m.noticeTTL = 0
+	}
 	if !d.InlineDiffs {
 		m.renderer.DiffMode = DiffOff
 	}

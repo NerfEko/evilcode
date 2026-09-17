@@ -86,7 +86,16 @@ func (s *Scroll) Observe(contentHeight, viewportHeight int) {
 		// anchored to content, so a gap held below the text is a hole in their
 		// view, and it shifts the window forward, which hid the oldest lines
 		// once they scrolled all the way back.
-		s.slack, s.lastHeight = 0, contentHeight
+		s.slack = 0
+		if contentHeight > s.lastHeight {
+			// The window is measured from the bottom, so appended lines would
+			// drag it down even though the offset never moved — the reader's
+			// lines slide away while the agent streams. Spend the growth into
+			// the offset instead, holding the window on the same lines until
+			// the reader scrolls back down (Down clears the pause at zero).
+			s.Offset = min(s.Offset+(contentHeight-s.lastHeight), Max(contentHeight, viewportHeight))
+		}
+		s.lastHeight = contentHeight
 		return
 	}
 	switch {

@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"evilcode/internal/provider"
 	"evilcode/internal/theme"
 	"evilcode/internal/todo"
 )
@@ -313,6 +314,18 @@ type FactStack struct {
 	Branch   string
 	Used     int
 	Total    int
+
+	// CacheRead/CacheWrite accumulate KV-cache token counts, and CacheActive
+	// reports whether the provider reports caching at all. Inactive providers
+	// still render a dim n/a row so the absence reads as intentional.
+	CacheRead   int
+	CacheWrite  int
+	CacheActive bool
+
+	// Effort is the live reasoning level ("" when unsupported) and Thinking
+	// is the reasoning display mode.
+	Effort   provider.ReasoningEffort
+	Thinking ThinkingMode
 }
 
 // RenderFactStack draws the bottom-right fact rows.
@@ -351,34 +364,103 @@ func (r *Renderer) RenderFactStack(f FactStack) []string {
 	return rows
 }
 
-// RenderOverscrollFacts draws the one-row elastic facts line with its live
-// countdown (plan.md §4.4). It is the same information as the fact stack,
-// which is why only one of them shows at a time.
-func (r *Renderer) RenderOverscrollFacts(f FactStack, remaining float64) string {
+// RenderOverscrollFacts draws the elastic panel revealed by pulling past the
+// bottom (plan.md §4.4): identity, context window, cache hit rate, and
+// location, plus the live countdown. It is the same information as the fact
+// stack, which is why only one of them shows at a time.
+func (r *Renderer) RenderOverscrollFacts(f FactStack, remaining float64) []string {
 	meta := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Hex(theme.RGB(140, 140, 150))))
 	countdown := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(theme.Hex(theme.RGB(150, 150, 165)))).Italic(true)
+	hi := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(theme.Hex(theme.RGB(255, 150, 200)))).Bold(true)
 
-	var parts []string
+	width := max(r.Width, 1)
+
+	// Row 1: identity — model + effort + provider + thinking — with the
+	// countdown pinned right so the dwell reads as a rebound, not a mode.
+	var idParts []string
 	if f.Model != "" {
-		parts = append(parts, f.Model)
+		name := f.Model
+		if f.Effort.Valid() {
+			name += " " + string(f.Effort)
+		}
+		idParts = append(idParts, hi.Render(truncateCells(name, 40)))
 	}
+	var src []string
 	if f.Provider != "" {
-		parts = append(parts, f.Provider)
+		src = append(src, f.Provider)
 	}
 	if f.Auth != "" {
-		parts = append(parts, f.Auth)
+		src = append(src, f.Auth)
 	}
+	if len(src) > 0 {
+		idParts = append(idParts, meta.Render(strings.Join(src, ":")))
+	}
+	if f.Thinking != "" {
+		idParts = append(idParts, meta.Render("thinking "+string(f.Thinking)))
+	}
+	if len(idParts) == 0 {
+		idParts = append(idParts, meta.Render("overscroll"))
+	}
+	// The countdown only counts down a dwell. Always mode shows the panel
+	// continuously, so it has nothing to count and gets no countdown.
+	var right string
+	if remaining > 0 {
+		right = countdown.Render(fmt.Sprintf("(overscroll %.1fs)", remaining))
+	}
+	// On a narrow terminal the identity yields before the countdown: the
+	// left is elided first, so the row keeps the bit that explains it.
+	avail := width
+	if right != "" {
+		avail = max(width-lipgloss.Width(right)-1, 0)
+	}
+	left := truncateCells(strings.Join(idParts, meta.Render(" · ")), avail)
+	var rows []string
+	if right == "" {
+		rows = append(rows, left)
+	} else {
+		gap := max(width-lipgloss.Width(left)-lipgloss.Width(right), 1)
+		rows = append(rows, truncateCells(left+strings.Repeat(" ", gap)+right, width))
+	}
+
+	// Row 2: context window with the same meter the dock uses.
 	if f.Total > 0 {
-		parts = append(parts, fmt.Sprintf("%s/%s", humanTokens(f.Used), humanTokens(f.Total)))
+		used := min(f.Used, f.Total)
+		ctx := meta.Render(fmt.Sprintf("ctx %s/%s ", humanTokens(used), roundTokens(f.Total))) +
+			SegmentedBar(used, f.Total, 10) +
+			meta.Render(fmt.Sprintf(" %d%%", percentOf(used, f.Total)))
+		rows = append(rows, truncateCells(ctx, width))
 	}
+
+	// Row 3: cache hit rate. Always shown so a missing cache reads as
+	// intentional rather than broken.
+	switch {
+	case f.CacheActive && f.CacheRead+f.CacheWrite > 0:
+		total := f.CacheRead + f.CacheWrite
+		rate := percentOf(f.CacheRead, total)
+		bar := SegmentedBar(f.CacheRead, total, 10)
+		rows = append(rows, truncateCells(meta.Render(
+			fmt.Sprintf("cache %s/%s ", humanTokens(f.CacheRead), humanTokens(f.CacheWrite)))+
+			bar+meta.Render(fmt.Sprintf(" %d%% hit", rate)), width))
+	case f.CacheActive:
+		rows = append(rows, truncateCells(meta.Render("cache waiting for usage"), width))
+	default:
+		if f.Provider != "" {
+			rows = append(rows, truncateCells(
+				meta.Render(fmt.Sprintf("cache n/a · %s reports no KV cache", f.Provider)), width))
+		} else {
+			rows = append(rows, truncateCells(meta.Render("cache n/a"), width))
+		}
+	}
+
+	// Row 4: location, dim and elided — useful, never urgent.
 	if f.Cwd != "" {
-		parts = append(parts, f.Cwd)
+		loc := truncateCells(f.Cwd, 40)
+		if f.Branch != "" {
+			loc += "   " + f.Branch
+		}
+		rows = append(rows, truncateCells(meta.Render(loc), width))
 	}
-
-	left := meta.Render(strings.Join(parts, " · "))
-	right := countdown.Render(fmt.Sprintf("(overscroll %.1f)", remaining))
-
-	gap := max(r.Width-lipgloss.Width(left)-lipgloss.Width(right), 1)
-	return left + strings.Repeat(" ", gap) + right
+	return rows
 }

@@ -616,9 +616,9 @@ func (m *Model) connectCommand(arg string) tea.Cmd {
 	m.loginProvider = target
 	m.editor = Editor{}
 	if target == "brave" {
-		m.notice = "Brave Search API key · input hidden · Enter saves · Esc cancels"
+		m.setPinnedNotice("Brave Search API key · input hidden · Enter saves · Esc cancels")
 	} else {
-		m.notice = "Ollama session cookie · input hidden · Enter saves · Esc cancels"
+		m.setPinnedNotice("Ollama session cookie · input hidden · Enter saves · Esc cancels")
 	}
 	return nil
 }
@@ -671,7 +671,7 @@ func (m *Model) loginCommand(arg string) tea.Cmd {
 		}
 		m.loginPicker = LoginPickerState{Entries: entries}
 		m.loginPickerOpen = true
-		m.notice = "select a provider to enter a key for"
+		m.setPinnedNotice("select a provider to enter a key for")
 		return nil
 	}
 	cfg, err := config.Load()
@@ -703,7 +703,7 @@ func (m *Model) loginCommand(arg string) tea.Cmd {
 	m.loginMode = true
 	m.loginProvider = target
 	m.editor = Editor{}
-	m.notice = target + " API key · input hidden · Enter saves · Esc cancels"
+	m.setPinnedNotice(target + " API key · input hidden · Enter saves · Esc cancels")
 	return nil
 }
 
@@ -759,7 +759,7 @@ func (m *Model) handleLoginPickerKey(key string) (tea.Model, tea.Cmd) {
 		m.loginMode = true
 		m.loginProvider = sel.Name
 		m.editor = Editor{}
-		m.notice = sel.Name + " API key · input hidden · Enter saves · Esc cancels"
+		m.setPinnedNotice(sel.Name + " API key · input hidden · Enter saves · Esc cancels")
 		return m, nil
 	case "backspace":
 		if r := []rune(m.loginPicker.Filter); len(r) > 0 {

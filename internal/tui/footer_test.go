@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// TestPanelFooterStaysOnScreenWhenChatOverflows reproduces the report that the
+// TestPanelFooterStaysOnScreenWhenChatOverflows covers the report that the
 // footer text at the bottom of the live view vanished: when the chat frame is
-// taller than the terminal (an overscroll facts line, a notice, an ask
-// picker), the panel used to be as tall as the overflowing frame, so its
-// footer row landed below the last visible row and the terminal clipped it.
+// taller than the terminal, the panel used to be as tall as the overflowing
+// frame, so its footer row landed below the last visible row and the terminal
+// clipped it. The panel is capped at the terminal height, so the footer stays
+// on the last visible row.
 func TestPanelFooterStaysOnScreenWhenChatOverflows(t *testing.T) {
 	m := clickModel(nil, t.TempDir())
 	m.width, m.height = 100, 10
@@ -17,7 +18,8 @@ func TestPanelFooterStaysOnScreenWhenChatOverflows(t *testing.T) {
 	m.liveView = true
 	m.panel = PanelContent{Body: []string{"a", "b"}}
 	// Fill the chat so the frame is exactly the terminal height, then reveal
-	// the overscroll facts line, which appends one more row.
+	// the overscroll panel, which reserves layout and shrinks the transcript
+	// instead of appending past the terminal.
 	for i := 0; i < 6; i++ {
 		m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: "row"})
 	}
@@ -25,12 +27,17 @@ func TestPanelFooterStaysOnScreenWhenChatOverflows(t *testing.T) {
 
 	m.View()
 	rows := strings.Split(m.lastFrame, "\n")
-	if len(rows) <= m.height {
-		t.Fatalf("frame has %d rows, want an overflow past %d", len(rows), m.height)
+	if len(rows) > m.height {
+		t.Fatalf("frame has %d rows, want it to fit within %d (overscroll reserves layout)", len(rows), m.height)
 	}
 	// The footer must be on the last visible row, not clipped off-screen.
-	last := rows[m.height-1]
+	last := rows[len(rows)-1]
 	if !strings.Contains(last, "ctrl+q to close, ctrl+L for live view") {
 		t.Fatalf("footer missing from the last visible row: %q", last)
+	}
+	// And the overscroll panel itself must be on screen — before the layout
+	// reservation it was clipped away whenever the window was full.
+	if joined := strings.Join(rows, "\n"); !strings.Contains(joined, "overscroll") {
+		t.Fatalf("overscroll panel missing from a full window:\n%s", joined)
 	}
 }

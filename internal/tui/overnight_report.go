@@ -774,7 +774,7 @@ func (m *Model) finishOvernight(reason string) {
 	message := fmt.Sprintf("⏳ Overnight stopped after %d turns: %s; writing report...", m.overnight.Turns, reason)
 	m.notice = message
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: message})
-	m.scroll.FollowBottom()
+	m.followUnlessReading()
 }
 
 func (m *Model) applyOvernightReportCompletion(done *overnightReportCompletion) {
@@ -790,7 +790,7 @@ func (m *Model) applyOvernightReportCompletion(done *overnightReportCompletion) 
 	}
 	m.notice = message
 	m.blocks = append(m.blocks, Block{Kind: BlockNotice, Text: message})
-	m.scroll.FollowBottom()
+	m.followUnlessReading()
 	// Completions are consumed by tickMsg, whose ordinary job is animation and
 	// deliberately keeps the settled transcript cache. This completion is the
 	// exception: it appends durable history and must invalidate that cache here.

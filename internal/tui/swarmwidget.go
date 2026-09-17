@@ -215,6 +215,29 @@ func (r *Renderer) RenderSwarmStrip(s *SwarmState, elapsed time.Duration) string
 		len(live), agentNoun(len(live)), label))
 }
 
+// RenderStatusWithSwarm shares the status row with the swarm fallback instead
+// of spending a second row on it. The strip used to sit below the streaming
+// line, which cost a row and — worse — read as a second status: with the
+// current agent streaming and another agent running, two stacked spinner rows
+// never said which was which. Joined left-aligned on one row
+// ("streaming… · 1 agent · bat"), the current turn owns the left and the other
+// agents ride along behind it.
+func (r *Renderer) RenderStatusWithSwarm(s StatusState, swarm *SwarmState, elapsed time.Duration) string {
+	status := r.RenderStatus(s)
+	if swarm == nil || !swarm.StripVisible() {
+		return status
+	}
+	strip := r.RenderSwarmStrip(swarm, elapsed)
+	if strip == "" {
+		return status
+	}
+	if status == "" {
+		return truncateCells(strip, max(r.Width, 1))
+	}
+	joined := status + r.style(theme.RoleDim).Render(" · ") + strip
+	return truncateCells(joined, max(r.Width, 1))
+}
+
 func agentNoun(n int) string {
 	if n == 1 {
 		return "agent"

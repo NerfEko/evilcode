@@ -141,6 +141,48 @@ func TestInsetAndContentWidth(t *testing.T) {
 	}
 }
 
+func TestPausedWindowHoldsWhileContentGrows(t *testing.T) {
+	// Scrolling up to read old context must freeze the window: appended
+	// lines grow the offset instead of dragging the view down, until the
+	// reader scrolls back to the bottom (which unpauses).
+	var s Scroll
+	s.Observe(100, 20)
+	s.Up(10, 100, 20)
+	before := 100 - 20 - s.Offset
+	s.Observe(130, 20)
+	if !s.Paused {
+		t.Error("growth must not unpause a reading window")
+	}
+	if s.Offset != 40 {
+		t.Fatalf("offset = %d, want 40 (10 + 30 streamed lines)", s.Offset)
+	}
+	if after := 130 - 20 - s.Offset; after != before {
+		t.Fatalf("window starts at %d, want it held at %d", after, before)
+	}
+	// Scrolling back down resumes the follow.
+	s.Down(40)
+	if s.AtBottom() != true || s.Paused {
+		t.Error("reaching the bottom must unpause and resume the follow")
+	}
+}
+
+func TestFollowUnlessReadingHoldsWhilePaused(t *testing.T) {
+	// Background completions snap like FollowBottom when following, and do
+	// nothing while the reader is scrolled up.
+	m := clickModel(nil, t.TempDir())
+	m.scroll.Offset, m.scroll.Paused = 12, true
+	m.followUnlessReading()
+	if m.scroll.Offset != 12 || !m.scroll.Paused {
+		t.Fatalf("a background snap moved a reading window: offset=%d paused=%v",
+			m.scroll.Offset, m.scroll.Paused)
+	}
+	m.scroll.Offset, m.scroll.Paused = 3, false
+	m.followUnlessReading()
+	if !m.scroll.AtBottom() || m.scroll.Paused {
+		t.Error("followUnlessReading must snap when the view is following")
+	}
+}
+
 func TestScrollBasics(t *testing.T) {
 	var s Scroll
 	if !s.AtBottom() {
