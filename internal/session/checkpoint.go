@@ -321,6 +321,41 @@ func Transfer(dataDir, from, to, summary string) error {
 	return nil
 }
 
+// HandoffContext is the marker wrapper a fresh session's first message
+// carries, so a resumed run knows its context came from a handoff document
+// rather than an ordinary prompt. omp appends it as a custom message
+// (agent-session:8104).
+const HandoffPrefix = "[handoff] Continuing from session %s. The document below is everything needed to continue the work without access to the original conversation.\n\n"
+
+// TransferHandoff carries a generated handoff document into a fresh session
+// (omp handoff(): generate → newSession → appendCustomMessageEntry). Todos
+// and memories are session-global durable state and survive by design.
+func TransferHandoff(dataDir, from, to, document string) error {
+	st, err := createExclusive(dataDir, to)
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = st.Close()
+		if !ok {
+			_ = os.Remove(st.Path)
+		}
+	}()
+
+	if err := st.WriteMeta(Meta{Kind: MetaStart, Note: "handoff from " + from}); err != nil {
+		return err
+	}
+	if err := st.WriteMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: fmt.Sprintf(HandoffPrefix, from) + document,
+	}); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
 func createExclusive(dataDir, name string) (*Store, error) {
 	path, err := pathFor(dataDir, name)
 	if err != nil {

@@ -259,6 +259,45 @@ func IsGruntName(name string) bool {
 	return strings.HasPrefix(name, "grunt-")
 }
 
+// PickDerivedName proposes name-N one past the highest N already claimed for
+// that base: toad-22 → toad-23 (or toad, if unnumbered). A handoff continues
+// its source's lineage so the picker shows the pair together.
+//
+// It claims nothing — CreateNamed does that, exclusively.
+func PickDerivedName(dataDir, base string) string {
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	// Split any existing numeric suffix: toad-22 → base "toad", n 22.
+	high := 0
+	prefix := base
+	if i := strings.LastIndex(base, "-"); i > 0 {
+		rest := base[i+1:]
+		var n int
+		if _, err := fmt.Sscanf(rest, "%d", &n); err == nil && rest == fmt.Sprintf("%d", n) {
+			prefix = base[:i]
+			high = n
+		}
+	}
+	for name := range takenNames(dataDir) {
+		rest, ok := strings.CutPrefix(name, prefix+"-")
+		if !ok {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(rest, "%d", &n); err != nil {
+			continue
+		}
+		if rest == fmt.Sprintf("%d", n) && n > high {
+			high = n
+		}
+	}
+	for attempt := high + 1; ; attempt++ {
+		proposal := fmt.Sprintf("%s-%d", prefix, attempt)
+		if !takenNames(dataDir)[proposal] {
+			return proposal
+		}
+	}
+}
+
 // PickGruntName proposes the next worker name: grunt-N one past the highest
 // N already claimed on disk. Workers read as a numbered crew, never as normal
 // sessions — the start screen colors and sections them off by the prefix.

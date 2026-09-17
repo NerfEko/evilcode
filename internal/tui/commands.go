@@ -140,6 +140,10 @@ var Commands = []Command{
 		Long: "Replaces the history with a dense summary produced by the smol role,\n" +
 			"and bumps the context epoch. This is the one sanctioned rewrite of the\n" +
 			"append-only rule."},
+	{Name: "handoff", Help: "Continue in a fresh session from a generated handoff document",
+		Long: "/handoff [focus]\n\nGenerates a full continuation document with the current model, starts a\n" +
+			"fresh session carrying todos and memories, and injects the document as\n" +
+			"the first message. The original session stays on disk untouched."},
 	{Name: "shake", Help: "Elide big tool results and code blocks (aggressive with `aggressive`)",
 		Long: "Drops every eligible region across history: tool results and fenced\n" +
 			"code / XML blocks over 400 tokens. Originals are saved to\n" +
@@ -208,7 +212,7 @@ var HelpSections = []HelpSection{
 	{"Sessions", []string{"resume", "sessions", "rename", "save", "fork",
 		"checkpoint", "rewind", "clear"}},
 	{"System", []string{"config", "theme", "login", "connect", "terminal-setup", "screenshot",
-		"compact", "shake", "fix", "btw", "cancel", "quit"}},
+		"compact", "shake", "handoff", "fix", "btw", "cancel", "quit"}},
 }
 
 // UncoveredCommands returns visible commands no section lists.

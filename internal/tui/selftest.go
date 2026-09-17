@@ -95,6 +95,60 @@ func (m *Model) runCompact() (tea.Model, tea.Cmd) {
 // CompactTimeout bounds the summarising side-call.
 const CompactTimeout = 60 * time.Second
 
+// runHandoff generates a continuation document with the live model and
+// starts a fresh session carrying it (omp handoff(), agent-session:8005).
+func (m *Model) runHandoff(focus string) (tea.Model, tea.Cmd) {
+	if m.store == nil || m.compactor == nil || !m.compactor.Enabled() {
+		m.notice = "handoff is not available in this session"
+		return m, nil
+	}
+	if m.agent.Running() {
+		m.notice = "handoff refused: a turn is in flight"
+		return m, nil
+	}
+	m.notice = "📦 Generating handoff…"
+	m.compacting = true
+	m.compactingSince = time.Now()
+	m.compactingCount = m.agent.Conv.Len()
+	dataDir, from := m.dataDir, m.store.Name
+	systemPrompt := m.agent.Conv.SystemPrompt()
+	msgs := m.agent.Conv.Messages()
+	summarizer := m.compactor.Summarize
+	sessionModel := m.agent.Model
+	candidates := m.compactor.Candidates
+	if len(candidates) == 0 {
+		candidates = []compact.ModelInfoLite{{Ref: sessionModel}}
+	}
+	return m, func() tea.Msg {
+		document, _, err := compact.RunSummarizer(context.Background(), func(ctx context.Context, model compact.ModelRef, system, user string) (string, error) {
+			return summarizer(ctx, system, user)
+		}, candidates, func(ctx context.Context, model compact.ModelRef) (string, error) {
+			return compact.GenerateHandoff(ctx, func(ctx context.Context, _ compact.ModelRef, system, user string) (string, error) {
+				return summarizer(ctx, system, user)
+			}, model, msgs, systemPrompt, focus)
+		})
+		if err != nil {
+			return compactDone{err: err}
+		}
+		if document == "" {
+			return compactDone{err: fmt.Errorf("handoff generation returned nothing")}
+		}
+		// A fresh numbered name derived from the source: toad-22 → toad-23.
+		to := session.PickDerivedName(dataDir, from)
+		if err := session.TransferHandoff(dataDir, from, to, document); err != nil {
+			return compactDone{err: err}
+		}
+		if m.compactor.Settings.HandoffSaveToDisk {
+			dir := filepath.Join(dataDir, "handoffs")
+			if mkErr := os.MkdirAll(dir, 0o700); mkErr == nil {
+				path := filepath.Join(dir, "handoff-"+time.Now().Format("20060102-150405")+".md")
+				_ = os.WriteFile(path, []byte(document+"\n"), 0o600)
+			}
+		}
+		return compactDone{summary: "handoff: continue in " + to}
+	}
+}
+
 // runShake elides large tool results and blocks across history, preserving
 // the originals in a recoverable offload document (omp /shake).
 func (m *Model) runShake(aggressive bool) (tea.Model, tea.Cmd) {
