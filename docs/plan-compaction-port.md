@@ -15,7 +15,7 @@ Status: approved plan. Target: behavior parity with `~/projects/omp-fork/package
 | `Compactor` struct, `CompactWithWindow` persist-before-memory ordering, `conv.compactionMu` | **keep** — matches omp invariants |
 | `session.CompactWithTail` atomic rewrite + `backup()` | **keep** |
 | `CompactThreshold 0.85`, `CompactPreserveRecentFraction` 25% clamp 2k..15k | **replace** with omp constants: reserve = max(15% window, 16384), keepRecent = 20000, threshold = window − reserve |
-| Projection (EWMA × 15 lookahead), semantic topic-shift, relevance cutoff, `PrepareRelevance*`, `AddEmbeddingSnapshot`, `RecordEmbeddingSnapshot`, `SetEmbeddingProvider`, `ResetSemanticHistory`, cosine helpers, epoch logic | **delete** — omp has none of this; they are the Toad-22 over-trigger. EmbeddingProvider stays only if `features.embedding_model` is used elsewhere (it is — memory feature) — compaction simply stops consuming it. |
+| Projection (EWMA × 15 lookahead), semantic topic-shift, relevance cutoff, `PrepareRelevance*`, `AddEmbeddingSnapshot`, `RecordEmbeddingSnapshot`, `SetEmbeddingProvider`, `ResetSemanticHistory`, cosine helpers, epoch logic | **delete** — omp has none of this; they are the a real session over-trigger. EmbeddingProvider stays only if `features.embedding_model` is used elsewhere (it is — memory feature) — compaction simply stops consuming it. |
 | `MaxAutoCompactions` breaker | **keep** — evilcode has no provider-overflow recovery yet; breaker stays as the runaway guard until recovery paths exist (phase 6) |
 | `compactPreserveBudget`, `compactionCutoffByBudget`, `compactionCutoffByTurns`, `splitCompactTurn`, `compactTurns` | **replace** with omp's `findCutPoint`/`findValidCutPoints`/`findTurnStartIndex` ported exactly |
 | `compactMessageTokens` bytes/4 | **replace** with cl100k |
@@ -145,7 +145,7 @@ Settings parsed with the existing TOML group pattern; defaults = omp `DEFAULT_CO
 
 - Port omp's own unit-test *cases* (cut points, split turns, serialization, shake regions, ratio recalibration) as Go table tests with the same fixtures.
 - `probe/` golden: new scenario `compaction/` driving a mock provider through threshold → compaction → resume, asserting the replayed context equals summary+tail and the summary contains the `<files>` block and goal line.
-- Toad-22 regression: fixture reproducing the 50KB tool-result wall + trailing question; assert (a) no compaction until threshold, (b) summary preserves user goal verbatim, (c) serialized tool result truncated at 2000 chars with marker, (d) summary contains no trailing question answer.
+- a real session regression: fixture reproducing the 50KB tool-result wall + trailing question; assert (a) no compaction until threshold, (b) summary preserves user goal verbatim, (c) serialized tool result truncated at 2000 chars with marker, (d) summary contains no trailing question answer.
 - Full suite + `go vet`; TUI smoke: `/compact`, `/shake`, `/handoff` against mock provider.
 - No docs touched beyond README compaction section rewrite at the end.
 

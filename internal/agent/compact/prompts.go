@@ -1,7 +1,7 @@
 // Compaction prompts — verbatim ports of omp's compaction/prompts/*.md.
 //
 // The system prompt is the load-bearing piece: it forbids the exact failure
-// that destroyed the Toad-22 session, where the summarizer answered the
+// observed in a real session, where the summarizer answered the
 // transcript's trailing question and invented APIs instead of summarizing.
 package compact
 

@@ -135,7 +135,8 @@ func (e *ValidationError) Error() string { return e.Reason }
 //  3. structured: carries at least one omp skeleton section header
 //  4. goal echo: mentions something from the first user message (the
 //     session's goal). A summary that dropped the goal is what erased the
-//     Toad-22 task; the check makes that unshippable.
+//     erased the session's task in a real failure; the check makes that
+//     unshippable.
 //  5. no continuation: must not end asking the user/model a question.
 func ValidateSummary(summary string, firstUserMessage string) error {
 	summary = strings.TrimSpace(summary)

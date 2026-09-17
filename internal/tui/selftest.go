@@ -133,7 +133,7 @@ func (m *Model) runHandoff(focus string) (tea.Model, tea.Cmd) {
 		if document == "" {
 			return compactDone{err: fmt.Errorf("handoff generation returned nothing")}
 		}
-		// A fresh numbered name derived from the source: toad-22 → toad-23.
+		// A fresh numbered name derived from the source session.
 		to := session.PickDerivedName(dataDir, from)
 		if err := session.TransferHandoff(dataDir, from, to, document); err != nil {
 			return compactDone{err: err}

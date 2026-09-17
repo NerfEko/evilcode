@@ -21,7 +21,7 @@ Fix the auth.go login bug.
 ## Next Steps
 1. run tests`
 
-// chatTurn mimics the Toad-22 failure: the summarizer answered the
+// chatTurn mimics a real failure: the summarizer answered the
 // transcript instead of summarizing it.
 const chatTurn = `Great question! Would you like me to continue reading the file next?`
 

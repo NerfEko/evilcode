@@ -8,8 +8,7 @@ package agent
 // persistence callbacks, the runaway breaker, and the manual entry points.
 // The projection EWMA, semantic topic-shift, and relevance cutoff are gone —
 // omp compacts when the context is genuinely near full, and every
-// speculative trigger multiplied exposure to a weak summarizer (the Toad-22
-// failure; docs/plan-compaction-port.md).
+// speculative trigger multiplied exposure to a weak summarizer (docs/plan-compaction-port.md).
 
 import (
 	"context"

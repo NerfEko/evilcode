@@ -260,13 +260,13 @@ func IsGruntName(name string) bool {
 }
 
 // PickDerivedName proposes name-N one past the highest N already claimed for
-// that base: toad-22 → toad-23 (or toad, if unnumbered). A handoff continues
+// that base: name-2 → name-3 (or name, if unnumbered). A handoff continues
 // its source's lineage so the picker shows the pair together.
 //
 // It claims nothing — CreateNamed does that, exclusively.
 func PickDerivedName(dataDir, base string) string {
 	base = strings.TrimSuffix(base, filepath.Ext(base))
-	// Split any existing numeric suffix: toad-22 → base "toad", n 22.
+	// Split any existing numeric suffix: name-2 → base "name", n 2.
 	high := 0
 	prefix := base
 	if i := strings.LastIndex(base, "-"); i > 0 {

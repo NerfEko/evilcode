@@ -8,30 +8,30 @@ import (
 	"evilcode/internal/provider"
 )
 
-// The Toad-22 failure (2026-09-16): a 3.5-minute session was compacted by
-// the old projection trigger; the weak summarizer answered the transcript's
-// trailing question ("What do you want to continue reading next? 🔍"),
-// invented SubmitTask/StartTurn APIs, and the user's goal — "agents should
-// only run on the keyword" — vanished. The session then chased phantom code.
+// Regression fixture for a real compaction failure: a session was compacted
+// early by the old projection trigger; the weak summarizer answered the
+// transcript's trailing question instead of summarizing, invented APIs, and
+// the user's goal vanished — the session then chased phantom code.
 //
-// This fixture pins every defense the omp port added against it.
+// This file pins every defense the omp port added against that class of
+// failure.
 
-// toad22Goal is the session's actual first user message.
-const toad22Goal = "sometimes evilcode will use agents and orchestrates even when the user doesnt ask. it should only happen when the user says the keyword or when specifically asked"
+// regressionGoal is the session's actual first user message.
+const regressionGoal = "sometimes evilcode will use agents and orchestrates even when the user doesnt ask. it should only happen when the user says the keyword or when specifically asked"
 
-// toad22ChatTurn mimics the bad summarizer output that passed all the old
+// regressionChatTurn mimics the bad summarizer output that passed all the old
 // gates: emoji headers, a trailing question, invented code.
-const toad22ChatTurn = "**🎯 Interrupt Analysis & Continuation Guide**\n\n### **Next Steps:**\n1. Want me to read through hub.go lines ~250-400 next?\n\n```go\n// Likely around offset ~350:\nfunc (s *Server) SubmitTask(taskName string) { ... }\n```\n\n**What do you want to continue reading or analyze next?** 🔍"
+const regressionChatTurn = "**🎯 Interrupt Analysis & Continuation Guide**\n\n### **Next Steps:**\n1. Want me to read through hub.go lines ~250-400 next?\n\n```go\n// Likely around offset ~350:\nfunc (s *Server) SubmitTask(taskName string) { ... }\n```\n\n**What do you want to continue reading or analyze next?** 🔍"
 
-// toad22OK is what a correct summary looks like for the same session.
-const toad22Good = "## Goal\nThe user wants the agents/orchestrates keyword gating fixed: agents should run only when the user says the keyword or explicitly asks.\n\n## Progress\n\n### Done\n- [x] located NewOrchestrateHook in internal/agent/orchestrate.go\n\n## Next Steps\n1. gate the hook on the keyword"
+// regressionOK is what a correct summary looks like for the same session.
+const regressionGood = "## Goal\nThe user wants the agents/orchestrates keyword gating fixed: agents should run only when the user says the keyword or explicitly asks.\n\n## Progress\n\n### Done\n- [x] located NewOrchestrateHook in internal/agent/orchestrate.go\n\n## Next Steps\n1. gate the hook on the keyword"
 
-// toad22Transcript builds the shape that killed the session: a 50KB
+// regressionTranscript builds the shape that killed the session: a 50KB
 // renderer-noise tool result and a trailing question in the last turn.
-func toad22Transcript() []provider.Message {
+func regressionTranscript() []provider.Message {
 	noise := strings.Repeat("internal/agent/agent.go:495 — shown above\n", 2400)
 	return []provider.Message{
-		{Role: provider.RoleUser, Content: toad22Goal},
+		{Role: provider.RoleUser, Content: regressionGoal},
 		{Role: provider.RoleAssistant, Content: "**Inspecting repo for system prompts**", ToolCalls: []provider.ToolCall{{ID: "c1", Name: "grep", Args: []byte(`{"pattern":"NewOrchestrateHook"}`)}}},
 		{Role: provider.RoleTool, ToolCallID: "c1", ToolName: "grep", Content: noise},
 		{Role: provider.RoleUser, Content: "keep going"},
@@ -40,12 +40,12 @@ func toad22Transcript() []provider.Message {
 	}
 }
 
-// TestToad22TriggerDoesNotFireEarly: omp compacts only near the real window.
+// TestSummaryRejectionTriggerDoesNotFireEarly: omp compacts only near the real window.
 // The old engine's projection (2 samples × 15-turn lookahead) compacted
-// Toad-22 at 3.5 minutes of age with the context nowhere near full. On the
+// a session at 3.5 minutes of age with the context nowhere near full. On the
 // omp rule, a context 40% into the window must NOT compact.
-func TestToad22TriggerDoesNotFireEarly(t *testing.T) {
-	msgs := toad22Transcript()
+func TestSummaryRejectionTriggerDoesNotFireEarly(t *testing.T) {
+	msgs := regressionTranscript()
 	est := EstimateConversation(msgs) // ~3-4k tokens
 	s := DefaultSettings()
 	if ShouldCompact(est, 100000, s) {
@@ -53,29 +53,29 @@ func TestToad22TriggerDoesNotFireEarly(t *testing.T) {
 	}
 }
 
-// TestToad22SummaryCannotAnswerTheTranscript pins the anti-continuation
+// TestSummaryRejectionSummaryCannotAnswerTheTranscript pins the anti-continuation
 // gates: the mimicked chat turn fails every one.
-func TestToad22SummaryCannotBeAChatTurn(t *testing.T) {
-	if err := ValidateSummary(toad22ChatTurn, toad22Goal); err == nil {
-		t.Fatal("the Toad-22 chat-turn summary passed validation")
+func TestSummaryRejectionSummaryCannotBeAChatTurn(t *testing.T) {
+	if err := ValidateSummary(regressionChatTurn, regressionGoal); err == nil {
+		t.Fatal("the chat-turn summary passed validation")
 	}
 }
 
-// TestToad22SummaryMustPreserveGoal pins the goal-echo gate on a good
+// TestSummaryRejectionSummaryMustPreserveGoal pins the goal-echo gate on a good
 // summary.
-func TestToad22SummaryPreservesGoal(t *testing.T) {
-	if err := ValidateSummary(toad22Good, toad22Goal); err != nil {
+func TestSummaryRejectionSummaryPreservesGoal(t *testing.T) {
+	if err := ValidateSummary(regressionGood, regressionGoal); err != nil {
 		t.Fatalf("the well-formed goal-preserving summary was rejected: %v", err)
 	}
 }
 
-// TestToad22FullFlow: the Toad-22 log's newest stretch is one fat tool
+// TestSummaryRejectionFullFlow: the log's newest stretch is one fat tool
 // result — no valid cut point at or after the budget crossing, so omp's
 // prepare returns undefined exactly like ours. omp recovers that shape
 // through the overflow path (CompactWhole): the request fails, recovery
 // folds everything with no tail. The flow test drives it.
-func TestToad22FullFlow(t *testing.T) {
-	msgs := toad22Transcript()
+func TestSummaryRejectionFullFlow(t *testing.T) {
+	msgs := regressionTranscript()
 	est := EstimateConversation(msgs)
 	prep := PrepareCompaction(msgs, DefaultSettings(), est, est)
 	if prep == nil {
@@ -92,9 +92,9 @@ func TestToad22FullFlow(t *testing.T) {
 			if strings.Contains(user, CompactionShortSummaryPrompt) {
 				return "I fixed the keyword gating.", nil
 			}
-			return toad22Good, nil
+			return regressionGood, nil
 		},
-		oneCandidate(), "", SummaryOptions{}, toad22Goal)
+		oneCandidate(), "", SummaryOptions{}, regressionGoal)
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
