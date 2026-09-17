@@ -319,6 +319,9 @@ func TestOpenCodeGoResponsesPayload(t *testing.T) {
 	if reasoning["effort"] != "low" {
 		t.Errorf("advertised effort = %v, want low", reasoning)
 	}
+	if reasoning["summary"] != "auto" {
+		t.Errorf("reasoning summary = %v, want auto", reasoning["summary"])
+	}
 	req.ReasoningEffort = ReasoningEffortMax
 	ch, err = o.ChatStream(context.Background(), req)
 	if err != nil {

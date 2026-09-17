@@ -439,11 +439,13 @@ func (o *OpenAI) chatStreamResponses(ctx context.Context, req Req) (<-chan Chunk
 		body["tool_choice"] = "auto"
 		body["parallel_tool_calls"] = true
 	}
-	// The effort arrives catalogue-gated from the calling provider; "none" is
-	// deliberately omitted — there is no reliable way to switch thinking off
-	// through this wire, so the model's default stands.
+	// Request a visible summary; without it Responses returns only opaque
+	// encrypted reasoning items, leaving the TUI with no thinking deltas.
 	if req.ReasoningEffort.Valid() && req.ReasoningEffort != ReasoningEffortNone {
-		body["reasoning"] = map[string]any{"effort": string(req.ReasoningEffort)}
+		body["reasoning"] = map[string]any{
+			"effort":  string(req.ReasoningEffort),
+			"summary": "auto",
+		}
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
