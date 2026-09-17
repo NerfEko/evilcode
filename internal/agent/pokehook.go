@@ -19,7 +19,7 @@ type PokeHook struct {
 	enabled bool
 }
 
-// NewPokeHook builds the hook. Auto-poke defaults on (config `features.auto_poke`).
+// NewPokeHook builds the hook. Auto-poke defaults off (config `features.auto_poke`).
 func NewPokeHook(store *todo.Store, enabled bool) *PokeHook {
 	return &PokeHook{Store: store, enabled: enabled}
 }

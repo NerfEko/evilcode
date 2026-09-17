@@ -111,11 +111,14 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	if !cfg.Display.IdleAnimation {
 		t.Error("idle_animation defaults to true and was not set in the file")
 	}
-	if !cfg.Features.AutoPoke {
-		t.Error("auto_poke defaults to true and was not set in the file")
+	if cfg.Features.AutoPoke {
+		t.Error("auto_poke defaults to false and was not set in the file")
 	}
 	if cfg.Features.SkillRetrieval {
 		t.Error("skill_retrieval defaults to false and was not set in the file")
+	}
+	if cfg.Display.NoticeTTL != DefaultNoticeTTLSeconds {
+		t.Errorf("notice_ttl = %d, want the default %d", cfg.Display.NoticeTTL, DefaultNoticeTTLSeconds)
 	}
 	if cfg.Display.Theme != "catppuccin-frappe" {
 		t.Errorf("theme = %q, want the default", cfg.Display.Theme)
@@ -125,14 +128,14 @@ func TestPartialConfigKeepsDefaults(t *testing.T) {
 	}
 }
 
-func TestExplicitFalseIsHonored(t *testing.T) {
+func TestExplicitTrueIsHonored(t *testing.T) {
 	t.Setenv(EnvOllamaKey, "")
 	path := write(t, `
 default_model = "m@ollama-local"
 [display]
 keybinding_hints = false
 [features]
-auto_poke = false
+auto_poke = true
 skill_retrieval = true
 `)
 	cfg, err := LoadFrom(path)
@@ -142,8 +145,8 @@ skill_retrieval = true
 	if cfg.Display.KeybindingHints {
 		t.Error("an explicit false must win over the default true")
 	}
-	if cfg.Features.AutoPoke {
-		t.Error("an explicit false must win over the default true")
+	if !cfg.Features.AutoPoke {
+		t.Error("an explicit true must win over the default false")
 	}
 	if !cfg.Features.SkillRetrieval {
 		t.Error("an explicit skill_retrieval true must be honored")
@@ -330,6 +333,7 @@ func TestValidateAggregatesProblemsWithTOMLPaths(t *testing.T) {
 			Overscroll:      "unknown",
 			ThinkingDisplay: "unknown",
 			ThinkingLines:   -1,
+			NoticeTTL:       -1,
 		},
 		Features: Features{
 			MaxSteps:       -1,
@@ -362,7 +366,7 @@ func TestValidateAggregatesProblemsWithTOMLPaths(t *testing.T) {
 		"provider[1].base_url", "provider[2].name", "provider[2]", "model[0].context_window",
 		"model[1].name", "model[1].context_window", "roles.smol[0]", "roles.smol[1]",
 		"reasoning_efforts.m", "display.theme", "display.overscroll", "display.thinking_display",
-		"display.thinking_lines", "features.env_passthrough[0]", "features.env_passthrough[2]",
+		"display.thinking_lines", "display.notice_ttl", "features.env_passthrough[0]", "features.env_passthrough[2]",
 		"features.max_steps", "keybindings.not_an_action", "keybindings.scroll_up", "mcp[1].name",
 		"mcp[1].command", "lsp.go",
 	} {
@@ -585,6 +589,7 @@ plan = ["deepseek-v3.1:671b-cloud@ollama-cloud"]
 centered = true
 theme = "nosferatu"
 overscroll = "off"
+notice_ttl = 30
 
 [features]
 auto_poke = true
@@ -599,6 +604,9 @@ scroll_up = "ctrl+shift+k"
 	}
 	if cfg.Display.Theme != "nosferatu" || !cfg.Display.Centered || cfg.Display.Overscroll != "off" {
 		t.Errorf("display = %+v", cfg.Display)
+	}
+	if cfg.Display.NoticeTTL != 30 {
+		t.Errorf("notice_ttl = %d, want 30", cfg.Display.NoticeTTL)
 	}
 	if !cfg.Features.Memory || !cfg.Features.AutoPoke {
 		t.Errorf("features = %+v", cfg.Features)

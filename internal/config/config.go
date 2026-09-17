@@ -180,6 +180,10 @@ type Display struct {
 	// place. Zero uses the built-in default.
 	ThinkingLines int `toml:"thinking_lines"`
 
+	// NoticeTTL is how many seconds a transient status line stays visible
+	// before it clears itself. Zero uses the built-in default (8s).
+	NoticeTTL int `toml:"notice_ttl"`
+
 	// KeepThinking leaves a finished trace expanded instead of collapsing it
 	// to `▸ thought (N lines)` when the answer starts.
 	KeepThinking bool `toml:"keep_thinking"`
@@ -285,6 +289,10 @@ type MCPServer struct {
 // imported because config must not depend on the UI — the daemon and headless
 // both load config and neither draws anything.
 const DefaultThinkingLines = 6
+
+// DefaultNoticeTTLSeconds mirrors tui.DefaultNoticeTTL (in seconds), same
+// reason as above: the TUI reads seconds off Display and converts.
+const DefaultNoticeTTLSeconds = 8
 
 // Config is the whole configuration.
 type Config struct {
@@ -448,12 +456,15 @@ func Default() *Config {
 			Overscroll:      "overscroll",
 			ThinkingDisplay: "current",
 			ThinkingLines:   DefaultThinkingLines,
+			NoticeTTL:       DefaultNoticeTTLSeconds,
 			InlineDiffs:     true,
 		},
 		// Memory is off by default for now: it fires embedding side-calls and
 		// injects recall into every turn, which users should opt into rather than
 		// discover after the fact. `memory = true` in the config turns it on.
-		Features: Features{AutoPoke: true, Memory: false, SkillRetrieval: false, OrchestrateKeyword: true},
+		// Auto-poke is off by default for the same reason: an agent that keeps
+		// going after "done" should be opt-in. `auto_poke = true` turns it on.
+		Features: Features{AutoPoke: false, Memory: false, SkillRetrieval: false, OrchestrateKeyword: true},
 	}
 	c.WebUI.RequireAuth = true
 	c.WebUI.Addr = DefaultWebUIAddr
@@ -1292,6 +1303,11 @@ func (c *Config) Validate() error {
 	} else if c.Display.ThinkingLines > maxConfigThinkingLines {
 		add("display.thinking_lines", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigThinkingLines))
 	}
+	if c.Display.NoticeTTL < 0 {
+		add("display.notice_ttl", "must not be negative (0 uses the default)")
+	} else if c.Display.NoticeTTL > maxConfigNoticeTTL {
+		add("display.notice_ttl", fmt.Sprintf("is unreasonably large (maximum %d)", maxConfigNoticeTTL))
+	}
 
 	if c.Features.MaxSteps < 0 {
 		add("features.max_steps", "must be 0 (unlimited) or a positive number of tool rounds")
@@ -1383,7 +1399,10 @@ func (c *Config) Validate() error {
 const (
 	maxConfigContextWindow = 1 << 30
 	maxConfigThinkingLines = 1 << 16
-	maxConfigSteps         = 1 << 20
+	// maxConfigNoticeTTL caps display.notice_ttl at an hour: past that a
+	// "transient" status is a permanent one with extra steps.
+	maxConfigNoticeTTL = 3600
+	maxConfigSteps     = 1 << 20
 	// maxConfigLiveWorkers caps [features] max_live_workers. Live workers each
 	// hold a full agent turn; past this the breaker stops being a breaker.
 	maxConfigLiveWorkers = 64

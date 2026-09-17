@@ -21,6 +21,14 @@ func TestOrchestrateCommandRoundTrips(t *testing.T) {
 	if sess.orchestrate.Active() {
 		t.Fatal("orchestrator mode armed itself")
 	}
+	// Auto-poke defaults off, so opt in first: this test round-trips the
+	// save/restore of an enabled hook, not the default.
+	if err := sess.Command("poke", "on", ""); err != nil {
+		t.Fatal(err)
+	}
+	if sess.poke != nil && !sess.poke.Enabled() {
+		t.Fatal("/poke on did not enable auto-poke")
+	}
 	if err := sess.Command("orchestrate", "on", ""); err != nil {
 		t.Fatal(err)
 	}
