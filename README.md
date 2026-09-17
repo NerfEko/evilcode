@@ -309,10 +309,41 @@ anchored changes so stale context is refused instead of being applied fuzzily.
 
 ### Sessions and memory
 
-Every message is written as it arrives. `/compact` and `/rewind` rewrite logs atomically,
-and resumed sessions restore their working directory and last model. The daemon marks
-idle shutdowns cleanly; if it is stopped while a turn is genuinely active, that run is
-left crash-detectable so it cannot be mistaken for a completed answer.
+Every message is written as it arrives. `/compact`, `/rewind`, `/shake`, and `/handoff`
+rewrite logs atomically, and resumed sessions restore their working directory and last
+model. The daemon marks idle shutdowns cleanly; if it is stopped while a turn is
+genuinely active, that run is left crash-detectable so it cannot be mistaken for a
+completed answer.
+
+### Context management
+
+Compaction is a port of oh-my-pi's engine (docs/plan-compaction-port.md). It fires when
+the context is genuinely near full — the window minus max(15%, 16384 tokens) — plus
+recovery paths when a provider rejects the request (overflow compacts everything; a
+length cap keeps the tail). There is no speculative trigger: no growth projection, no
+topic-shift guessing.
+
+The summary comes from a candidate chain — the session model first, then every
+configured role model, then the largest-context model available — with per-model retry
+and backoff. Its format is fixed (Goal / Progress / Decisions / Next Steps), validated
+mechanically: a summary that dropped the user's goal or answered the transcript's
+trailing question is rejected and retried once before falling to the next model. Exact
+file paths are injected from the actual tool calls, not trusted to the model.
+
+Between turns, superseded reads of the same file are blanked in the log, so context
+grows slowly and compaction stays rare. `/shake` is a no-LLM alternative: it elides big
+tool results and fenced blocks, keeping the originals in a recoverable document.
+`/handoff` continues in a fresh session from a generated document; the original stays
+on disk untouched.
+
+```toml
+[compaction]
+strategy = "context-full"   # context-full | handoff | shake | off
+reserve_tokens = 16384
+keep_recent_tokens = 20000
+auto_continue = true
+prune_reads = true
+```
 
 Memory is optional and best-effort. Relevant facts can be recalled into a turn, and a
 summary is written when a session is actually torn down. If the embedding provider is
