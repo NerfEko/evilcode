@@ -608,6 +608,57 @@ func (a *Agent) autoCompact(ctx context.Context) {
 	a.Notice(LevelInfo, "✓ Context compacted. Retrying...")
 }
 
+// recoverOverflow compacts inline for a provider context-overflow or
+// length-cap error (omp #runAutoCompaction("overflow"/"incomplete")). whole
+// = overflow: the entire conversation is summarized with no verbatim tail;
+// otherwise the length-cap path keeps the tail. One recovery attempt per
+// turn: a summary that itself overflows ends the turn with the original
+// error. Returns whether the loop should retry the dispatch.
+func (a *Agent) recoverOverflow(ctx context.Context, whole bool) bool {
+	// The provider already told us the request did not fit; the recovery
+	// compacts against the same window the summarizer chain was configured
+	// with (wiring sets it from discovery), not the generic default guess.
+	window := a.Compactor.ContextWindow
+	if window <= 0 {
+		window = a.effectiveCompactionWindow()
+	}
+	a.Compactor.ContextWindow = window
+	a.Compactor.SetPromptTokens(a.pendingContextSize())
+	var err error
+	if whole {
+		_, err = a.Compactor.CompactWhole(ctx, a.Conv)
+	} else {
+		_, err = a.Compactor.CompactWithWindow(ctx, a.Conv, window)
+	}
+	if err != nil {
+		a.Notice(LevelWarning, "overflow recovery compaction failed: %v", err)
+		return false
+	}
+	a.ResetContextUsage()
+	a.Notice(LevelInfo, "✓ Context compacted after overflow. Retrying...")
+	return true
+}
+
+// isContextOverflow reports a provider error that means the request exceeded
+// the model's context window (omp overflow detection, agent-session:8267).
+// The classification matches the compact engine's overflow patterns.
+func isContextOverflow(err error) bool {
+	if err == nil {
+		return false
+	}
+	return compact.IsContextOverflow(err)
+}
+
+// isLengthCap reports a provider error that means the response hit its
+// length cap — the request fit, the completion could not finish (omp
+// "incomplete" recovery, agent-session:8299).
+func isLengthCap(err error) bool {
+	if err == nil {
+		return false
+	}
+	return compact.IsLengthCap(err)
+}
+
 // ctxUsed is the size of the last request, which is what the threshold is
 // measured against.
 func (a *Agent) ctxUsed() int {
@@ -751,6 +802,18 @@ func (a *Agent) loop(ctx context.Context) error {
 				a.commitPartial(msg)
 				a.endTurn(EndInterrupted)
 				return nil
+			}
+			// omp recovery (agent-session:8267-8313): a provider context-
+			// overflow or length-cap error is not an end-state. The turn
+			// compacts inline — overflow summarizes the ENTIRE conversation
+			// (no tail, or the retry overflows again); a length-cap keeps the
+			// tail — and retries the dispatch once. Everything else ends the
+			// turn as an error exactly as before.
+			if a.Compactor != nil && a.Compactor.Enabled() && (isContextOverflow(err) || isLengthCap(err)) {
+				a.commitPartial(msg)
+				if a.recoverOverflow(ctx, isContextOverflow(err)) {
+					continue // retry the dispatch from the new checkpoint
+				}
 			}
 			// A mid-stream error that already showed deltas keeps the partial too:
 			// the reader watched the answer form, and discarding it here would

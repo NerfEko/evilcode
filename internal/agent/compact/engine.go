@@ -201,6 +201,33 @@ func RunSummarizer(ctx context.Context, summarize Summarizer, candidates []Model
 	return "", "", lastErr
 }
 
+// isContextOverflowRe reports a provider error meaning the request exceeded
+// the model's context window.
+var isContextOverflowRe = regexp.MustCompile(`(?i)context (length|window)|too many tokens|maximum context|input.*too (long|large)|exceeds.*context|prompt is too long|reduce the length`)
+
+// isLengthCapRe reports a provider error meaning the COMPLETION hit its
+// length cap — the request fit; the answer was cut.
+var isLengthCapRe = regexp.MustCompile(`(?i)length (limit|cap)|max_tokens|finish_reason.*length|incomplete`)
+
+// IsContextOverflow reports whether err is a provider context-overflow.
+func IsContextOverflow(err error) bool {
+	if err == nil {
+		return false
+	}
+	if ClassifyError(err) == ErrContextOverflow {
+		return true
+	}
+	return isContextOverflowRe.MatchString(err.Error())
+}
+
+// IsLengthCap reports whether err is a completion length-cap.
+func IsLengthCap(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isLengthCapRe.MatchString(err.Error())
+}
+
 // sanitizeUser ensures the user prompt never carries a system role into a
 // side-call that would treat it as instructions: evilcode's sideCallOnce
 // already separates system and user; this only normalizes emptiness.

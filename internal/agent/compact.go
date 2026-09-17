@@ -232,7 +232,22 @@ func (c *Compactor) Compact(ctx context.Context, conv *Conversation) (string, er
 // CompactWithWindow compacts using window as the active model context limit.
 // The explicit argument keeps the automatic preflight and the actual rewrite
 // on the same model boundary even when a caller has just switched models.
+// CompactWhole summarizes the ENTIRE conversation with no verbatim tail —
+// omp's overflow recovery shape, for a provider that refused the request.
+func (c *Compactor) CompactWhole(ctx context.Context, conv *Conversation) (string, error) {
+	window := c.ContextWindow
+	if window <= 0 {
+		window = DefaultContextWindow
+	}
+	return c.compactWindow(ctx, conv, window, true)
+}
+
+// CompactWithWindow compacts using window as the active model context limit.
 func (c *Compactor) CompactWithWindow(ctx context.Context, conv *Conversation, window int) (string, error) {
+	return c.compactWindow(ctx, conv, window, false)
+}
+
+func (c *Compactor) compactWindow(ctx context.Context, conv *Conversation, window int, forceWhole bool) (string, error) {
 	if !c.Enabled() {
 		return "", fmt.Errorf("no summarizer is configured")
 	}
@@ -261,6 +276,16 @@ func (c *Compactor) CompactWithWindow(ctx context.Context, conv *Conversation, w
 		// The context is already past the window: compaction must not keep a
 		// tail at all, or the next request overflows before the summary pays
 		// off. omp's overflow path summarizes the whole conversation.
+		prep.RecentMessages = nil
+		prep.TurnPrefixMessages = nil
+		prep.IsSplitTurn = false
+	}
+
+	if forceWhole {
+		// omp overflow recovery: the provider refused the request outright,
+		// so the retry must start from summary alone — no verbatim tail,
+		// whatever the local estimate said (agent-session #runAutoCompaction
+		// "overflow").
 		prep.RecentMessages = nil
 		prep.TurnPrefixMessages = nil
 		prep.IsSplitTurn = false
